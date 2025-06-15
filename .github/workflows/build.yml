@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - id: setup
-        uses: ./.github/actions/setup
+        uses: sava-software/sava-build@main
 
       - name: Gradle Check
         run: ./gradlew --stacktrace -PjavaVersion=${{ steps.setup.outputs.java-version }} check

@@ -18,10 +18,8 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
-
       - id: setup
-        uses: ./.github/actions/setup
+        uses: sava-software/sava-build@main
 
       - name: Publish Packages
         id: publish
