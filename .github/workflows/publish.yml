@@ -2,21 +2,17 @@ name: Publish Release
 
 on:
   workflow_call:
-    secrets:
-      GITHUB_TOKEN:
-        required: true
-      GPG_PUBLISH_SECRET:
-        required: true
-      GPG_PUBLISH_PHRASE:
-        required: true
-      MAVEN_CENTRAL_TOKEN:
-        required: true
-      MAVEN_CENTRAL_SECRET:
-        required: true
+    outputs:
+      java-version:
+        description: "Java version"
+        value: ${{ jobs.publish.outputs.java-version }}
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+
+    outputs:
+      java-version: ${{ steps.publish.outputs.java-version }}
 
     permissions:
       contents: read
@@ -27,8 +23,10 @@ jobs:
         uses: ./.github/workflows/setup.yml
 
       - name: Publish Packages
+        id: publish
         run: |
           ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check publishAggregationToCentralPortal
+          echo "java-version=$JAVA_VERSION" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
