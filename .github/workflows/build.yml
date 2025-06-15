@@ -13,6 +13,10 @@ jobs:
     steps:
       - id: setup
         uses: sava-software/sava-build@main
+        with:
+          default-java-version: ${{ vars.JAVA_VERSION }}
+          jdk-src: ${{ vars.JDK_SRC }}
+          gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
 
       - name: Gradle Check
         run: ./gradlew --stacktrace -PjavaVersion=${{ steps.setup.outputs.java-version }} check

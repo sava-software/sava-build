@@ -1,8 +1,21 @@
 name: 'Setup Java and Gradle'
+
+inputs:
+  default-java-version:
+    description: 'Default Java version'
+    required: true
+  jdk-src:
+    description: 'JDK source URL'
+    required: true
+  gradle-java-version:
+    description: 'Gradle Java version'
+    required: true
+
 outputs:
   java-version:
     description: "Java version"
     value: ${{ steps.java-version.outputs.java-version }}
+
 runs:
   using: "composite"
   steps:
@@ -24,7 +37,7 @@ runs:
         
         # Fallback to default if no version found in branch name
         if [ -z "$JAVA_VERSION" ]; then
-          JAVA_VERSION="${{ vars.JAVA_VERSION }}"
+          JAVA_VERSION="${{ inputs.default-java-version }}"
           echo "No Java version found in branch name, using default: $JAVA_VERSION"
         else
           echo "Extracted Java version from branch: $JAVA_VERSION"
@@ -32,23 +45,23 @@ runs:
         echo "java-version=$JAVA_VERSION" >> $GITHUB_OUTPUT
 
     - uses: oracle-actions/setup-java@v1
-      if: ${{ vars.GRADLE_JAVA_VERSION != steps.java-version.outputs.java-version }}
+      if: ${{ inputs.gradle-java-version != steps.java-version.outputs.java-version }}
       with:
-        website: ${{ vars.JDK_SRC }}
-        release: ${{ vars.GRADLE_JAVA_VERSION }}
+        website: ${{ inputs.jdk-src }}
+        release: ${{ inputs.gradle-java-version }}
 
     - run: |
         printf "org.gradle.java.home=%s" "$JAVA_HOME" > gradle.properties
         java --version
-      if: ${{ vars.GRADLE_JAVA_VERSION != steps.java-version.outputs.java-version }}
+      if: ${{ inputs.gradle-java-version != steps.java-version.outputs.java-version }}
 
     - uses: oracle-actions/setup-java@v1
       with:
-        website: ${{ vars.JDK_SRC }}
+        website: ${{ inputs.jdk-src }}
         release: ${{ steps.java-version.outputs.java-version }}
 
     - run: printf "org.gradle.java.home=%s" "$JAVA_HOME" > gradle.properties
-      if: ${{ vars.GRADLE_JAVA_VERSION == steps.java-version.outputs.java-version }}
+      if: ${{ inputs.gradle-java-version == steps.java-version.outputs.java-version }}
 
     - name: Gradle Check
       run: |
