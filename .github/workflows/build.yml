@@ -11,10 +11,8 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
-
       - id: setup
-        uses: ./.github/workflows/setup.yml
+        uses: ./.github/actions/setup
 
       - name: Gradle Check
         run: ./gradlew --stacktrace -PjavaVersion=${{ steps.setup.outputs.java-version }} check
