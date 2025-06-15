@@ -2,6 +2,11 @@ name: Publish Release
 
 on:
   workflow_call:
+    inputs:
+      projects:
+        description: "Comma-delimited list of project names to publish"
+        required: true
+        type: string
 
 jobs:
   publish:
