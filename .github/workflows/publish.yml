@@ -37,7 +37,7 @@ jobs:
               # Trim whitespace
               project=$(echo "$project" | xargs)
               if [ -n "$project" ]; then
-                ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} ":$project:publish"
+                ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} ":$project:publish"
               fi
             done
           fi
