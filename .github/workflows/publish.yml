@@ -2,20 +2,14 @@ name: Publish Release
 
 on:
   workflow_call:
-    outputs:
-      java-version:
-        description: "Java version"
-        value: ${{ jobs.publish.outputs.java-version }}
 
 jobs:
   publish:
     runs-on: ubuntu-latest
 
-    outputs:
-      java-version: ${{ steps.publish.outputs.java-version }}
-
     permissions:
       contents: read
+      packages: write
 
     steps:
       - id: setup
@@ -28,8 +22,22 @@ jobs:
       - name: Publish Packages
         id: publish
         run: |
-          ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check publishAggregationToCentralPortal
-          echo "java-version=$JAVA_VERSION" >> $GITHUB_OUTPUT
+          PROJECTS="${{ inputs.projects }}"
+          PUBLISH_TASKS=""
+          
+          if [ -n "$PROJECTS" ]; then
+            # Convert comma-delimited string to array and format each project
+            IFS=',' read -ra PROJECT_ARRAY <<< "$PROJECTS"
+            for project in "${PROJECT_ARRAY[@]}"; do
+              # Trim whitespace
+              project=$(echo "$project" | xargs)
+              if [ -n "$project" ]; then
+                PUBLISH_TASKS="$PUBLISH_TASKS:$project:publish "
+              fi
+            done
+          fi
+          
+          ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check "$PUBLISH_TASKS" publishAggregationToCentralPortal
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
