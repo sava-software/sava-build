@@ -24,6 +24,7 @@ runs:
 
     - name: Extract Java version from branch
       id: java-version
+      shell: bash
       run: |
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           BRANCH_NAME="${{ github.head_ref }}"
@@ -53,6 +54,7 @@ runs:
     - run: |
         printf "org.gradle.java.home=%s" "$JAVA_HOME" > gradle.properties
         java --version
+      shell: bash
       if: ${{ inputs.gradle-java-version != steps.java-version.outputs.java-version }}
 
     - uses: oracle-actions/setup-java@v1
@@ -61,9 +63,11 @@ runs:
         release: ${{ steps.java-version.outputs.java-version }}
 
     - run: printf "org.gradle.java.home=%s" "$JAVA_HOME" > gradle.properties
+      shell: bash
       if: ${{ inputs.gradle-java-version == steps.java-version.outputs.java-version }}
 
     - name: Gradle Check
+      shell: bash
       run: |
         printf "\norg.gradle.java.installations.paths=%s" "$JAVA_HOME" >> gradle.properties
         java --version
