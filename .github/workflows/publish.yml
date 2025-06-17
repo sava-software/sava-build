@@ -2,11 +2,6 @@ name: Publish Release
 
 on:
   workflow_call:
-    inputs:
-      projects:
-        description: "Comma-delimited list of project names to publish"
-        required: true
-        type: string
 
 jobs:
   publish:
@@ -27,20 +22,7 @@ jobs:
       - name: Publish Packages
         id: publish
         run: |
-          ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check publishAggregationToCentralPortal
-
-          PROJECTS="${{ inputs.projects }}"
-          if [ -n "$PROJECTS" ]; then
-            # Convert comma-delimited string to array and format each project
-            IFS=',' read -ra PROJECT_ARRAY <<< "$PROJECTS"
-            for project in "${PROJECT_ARRAY[@]}"; do
-              # Trim whitespace
-              project=$(echo "$project" | xargs)
-              if [ -n "$project" ]; then
-                ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} ":$project:publish"
-              fi
-            done
-          fi
+          ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check :aggregation:publishToGitHubPackages :aggregation:publishAggregationToCentralPortal
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
