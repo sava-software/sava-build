@@ -19,7 +19,7 @@ jobs:
           release: ${{ vars.GRADLE_JAVA_VERSION }}
 
       - name: Publish Gradle Plugin
-        run: ./gradlew check publishPlugins -Psign=true
+        run: ./gradlew check publishPlugins -Pversion=${{ github.ref_name }} -Psign=true --no-configuration-cache --stacktrace
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
