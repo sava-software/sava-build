@@ -2,7 +2,6 @@ import org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
 
 plugins {
   id("java")
-  id("org.gradlex.java-module-dependencies")
   id("org.gradlex.java-module-testing")
 }
 
