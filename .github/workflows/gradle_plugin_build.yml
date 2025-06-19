@@ -1,0 +1,29 @@
+name: Check Gradle Plugin
+
+on:
+  push:
+    branches:
+      - main
+  pull_request_target:
+    types: [ opened, synchronize ]
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macOS-latest ]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: oracle-actions/setup-java@v1
+        with:
+          website: ${{ vars.JDK_SRC }}
+          release: ${{ vars.GRADLE_JAVA_VERSION }}
+
+      - name: Gradle Check
+        run: ./gradlew --stacktrace check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
