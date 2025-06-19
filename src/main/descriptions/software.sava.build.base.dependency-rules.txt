@@ -1,0 +1,1 @@
+Configures dependency resolution to use version form solana-version-catalog
