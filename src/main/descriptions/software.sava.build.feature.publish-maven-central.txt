@@ -1,1 +1,0 @@
-Conventions for 'com.gradleup.nmcp.aggregation' to publish all modules in an aggregated zip to the Maven Central Portal

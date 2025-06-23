@@ -1,7 +1,8 @@
 plugins {
   `kotlin-dsl`
+  id("maven-publish")
   id("signing")
-  id("com.gradle.plugin-publish") version "1.3.1"
+  id("com.gradleup.nmcp") version "0.1.5"
 }
 
 group = "software.sava"
@@ -18,17 +19,8 @@ dependencies {
   implementation("org.gradlex:jvm-dependency-conflict-resolution:2.4")
 }
 
-gradlePlugin {
-  website = "https://github.com/sava-software/sava-build"
-  vcsUrl = "https://github.com/sava-software/sava-build"
-  plugins.configureEach {
-    displayName = name
-    tags = listOf("sava", "conventions", "java")
-    // The Gradle Plugin portal requires a separate description for each plugin
-    val descriptionFile = layout.projectDirectory.file("src/main/descriptions/${id}.txt")
-    val notFoundError = provider { error("File not found ${descriptionFile.asFile.absolutePath}") }
-    description = providers.fileContents(descriptionFile).asText.orElse(notFoundError).get().trim()
-  }
+repositories {
+  gradlePluginPortal()
 }
 
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
@@ -37,6 +29,45 @@ val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNu
 signing { useInMemoryPgpKeys(signingKey, signingPassphrase) }
 tasks.withType<Sign>().configureEach { enabled = publishSigningEnabled }
 
-repositories {
-  gradlePluginPortal()
+tasks.named { it == "zipPluginMavenPublication" }.withType<Zip>().configureEach {
+  // Include the plugin marker for 'software.sava.build' so that it can be used via plugin ID
+  // https://docs.gradle.org/current/userguide/plugins.html#sec:plugin_markers
+  from(tasks.named<Zip>("zipSoftware.sava.buildPluginMarkerMavenPublication").map { zipTree(it.archiveFile) })
+}
+
+nmcp {
+  centralPortal {
+    username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
+    password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
+    publishingType = "USER_MANAGED" // "AUTOMATIC"
+  }
+}
+
+val vcs = "https://github.com/sava-software/sava-build"
+publishing.publications.withType<MavenPublication>().configureEach {
+  pom {
+    name = project.name
+    description = "Sava Gradle Conventions"
+    url = vcs
+    licenses {
+      license {
+        name = "Apache License"
+        url = "$vcs/blob/main/LICENSE"
+      }
+    }
+    developers {
+      developer {
+        name = "Jim"
+        id = "jpe7s"
+        email = "jpe7s.salt188@passfwd.com"
+        organization = "Sava Software"
+        organizationUrl = "https://github.com/sava-software"
+      }
+    }
+    scm {
+      connection = "scm:git:git@github.com:sava-software/sava-build.git"
+      developerConnection = "scm:git:ssh@github.com:sava-software/sava-build.git"
+      url = vcs
+    }
+  }
 }
