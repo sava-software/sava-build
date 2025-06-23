@@ -23,10 +23,18 @@ repositories {
   gradlePluginPortal()
 }
 
+java {
+  withJavadocJar()
+  withSourcesJar()
+}
+
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
-signing { useInMemoryPgpKeys(signingKey, signingPassphrase) }
+signing {
+  sign(publishing.publications)
+  useInMemoryPgpKeys(signingKey, signingPassphrase)
+}
 tasks.withType<Sign>().configureEach { enabled = publishSigningEnabled }
 
 tasks.named { it == "zipPluginMavenPublication" }.withType<Zip>().configureEach {
@@ -34,7 +42,6 @@ tasks.named { it == "zipPluginMavenPublication" }.withType<Zip>().configureEach 
   // https://docs.gradle.org/current/userguide/plugins.html#sec:plugin_markers
   from(tasks.named<Zip>("zipSoftware.sava.buildPluginMarkerMavenPublication").map { zipTree(it.archiveFile) })
 }
-
 nmcp {
   centralPortal {
     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
