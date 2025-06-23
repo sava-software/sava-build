@@ -7,8 +7,6 @@ plugins {
 
 @Suppress("UnstableApiUsage") val productName =
   isolated.rootProject.name
-@Suppress("UnstableApiUsage") val productDescription =
-  providers.fileContents(isolated.rootProject.projectDirectory.file("gradle/description.txt")).asText
 @Suppress("UnstableApiUsage") val licenseName =
   providers.fileContents(isolated.rootProject.projectDirectory.file("LICENSE")).asText.map { it.lines().first().trim() }
 val vcs =
@@ -49,7 +47,7 @@ publishing {
 
     pom {
       name = project.name
-      description = productDescription
+      description = productDescription()
       url = vcs
       licenses {
         license {
