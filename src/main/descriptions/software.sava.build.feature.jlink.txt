@@ -1,1 +1,0 @@
-Conventions for 'com.github.iherasymenko.jlink'

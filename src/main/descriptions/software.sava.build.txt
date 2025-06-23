@@ -1,1 +1,0 @@
-Entry point settings plugin that applies a basic set of 'software.sava.build' convention plugins to the build

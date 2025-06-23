@@ -1,1 +1,0 @@
-Convention plugin that applies the minimal of set 'software.sava.build' convention plugins necessary to build a Java module

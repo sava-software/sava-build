@@ -1,1 +1,0 @@
-Configures Java compilation, including the Java version
