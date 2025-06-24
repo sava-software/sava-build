@@ -7,6 +7,6 @@ nmcpAggregation {
   centralPortal {
     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
     password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
-    publishingType = "USER_MANAGED" // "AUTOMATIC"
+    publishingType = "AUTOMATIC" // "USER_MANAGED"
   }
 }
