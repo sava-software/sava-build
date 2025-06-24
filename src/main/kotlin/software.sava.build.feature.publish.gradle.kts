@@ -5,23 +5,23 @@ plugins {
   id("com.gradleup.nmcp")
 }
 
-@Suppress("UnstableApiUsage") val productName =
-  isolated.rootProject.name
-@Suppress("UnstableApiUsage") val licenseName =
-  providers.fileContents(isolated.rootProject.projectDirectory.file("LICENSE")).asText.map { it.lines().first().trim() }
-val vcs =
-  "https://github.com/sava-software/${productName}"
+@Suppress("UnstableApiUsage")
+val productName = isolated.rootProject.name
 
-val gprUser =
-  providers.gradleProperty("gpr.user.write").orElse(providers.environmentVariable("GITHUB_ACTOR")).orElse("")
-val gprToken =
-  providers.gradleProperty("gpr.token.write").orElse(providers.environmentVariable("GITHUB_TOKEN")).orElse("")
-val signingKey =
-  providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
-val signingPassphrase =
-  providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
-val publishSigningEnabled =
-  providers.gradleProperty("sign").getOrElse("false").toBoolean()
+@Suppress("UnstableApiUsage")
+val licenseName = providers.fileContents(isolated.rootProject.projectDirectory.file("LICENSE")).asText.map { it.lines().first().trim() }
+val vcs = "https://github.com/sava-software/${productName}"
+
+val gprUser = providers.environmentVariable("GITHUB_ACTOR")
+  .orElse(providers.gradleProperty("gpr.user.write"))
+  .orElse("")
+val gprToken = providers.environmentVariable("GITHUB_TOKEN")
+  .orElse(providers.gradleProperty("gpr.token.write"))
+  .orElse("")
+
+val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
+val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
+val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
 
 // publish module with sources and javadoc
 plugins.withId("java") {

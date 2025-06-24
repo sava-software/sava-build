@@ -30,11 +30,11 @@ java {
   withSourcesJar()
 }
 
-val gprUser = providers.gradleProperty("gpr.user.write")
-  .orElse(providers.environmentVariable("GITHUB_ACTOR"))
+val gprUser = providers.environmentVariable("GITHUB_ACTOR")
+  .orElse(providers.gradleProperty("gpr.user.write"))
   .orElse("")
-val gprToken = providers.gradleProperty("gpr.token.write")
-  .orElse(providers.environmentVariable("GITHUB_TOKEN"))
+val gprToken = providers.environmentVariable("GITHUB_TOKEN")
+  .orElse(providers.gradleProperty("gpr.token.write"))
   .orElse("")
 
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
@@ -55,7 +55,7 @@ nmcp {
   centralPortal {
     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
     password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
-    publishingType = "AUTOMATIC" // "USER_MANAGED"
+    publishingType = "USER_MANAGED"
   }
 }
 
