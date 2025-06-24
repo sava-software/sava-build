@@ -9,6 +9,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      packages: write
+
     steps:
       - uses: actions/checkout@v4
       - uses: gradle/actions/setup-gradle@v4
@@ -21,7 +25,6 @@ jobs:
       - name: Publish Gradle Plugin
         run: ./gradlew check publish publishPluginMavenPublicationToCentralPortal -Pversion=${{ github.ref_name }} -Psign=true --stacktrace
         env:
-          GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
           GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
