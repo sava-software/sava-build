@@ -1,5 +1,5 @@
 plugins {
-  id("java")
+  id("java-base")
   id("maven-publish")
   id("signing")
   id("com.gradleup.nmcp")
@@ -23,9 +23,26 @@ val signingPassphrase =
 val publishSigningEnabled =
   providers.gradleProperty("sign").getOrElse("false").toBoolean()
 
-java {
-  withJavadocJar()
-  withSourcesJar()
+// publish module with sources and javadoc
+plugins.withId("java") {
+  java {
+    withJavadocJar()
+    withSourcesJar()
+  }
+}
+
+// publish platform and catalog in one component
+plugins.withId("java-platform") {
+  plugins.withId("version-catalog") {
+    // All libraries defined in the BOM scope (api) are also included in the catalog
+    configurations.named("versionCatalog") { extendsFrom(configurations["api"]) }
+    // The catalog is added as an additional variant to the 'javaPlatform' component that is published
+    val javaPlatform = components["javaPlatform"] as AdhocComponentWithVariants
+    javaPlatform.addVariantsFromConfiguration(configurations["versionCatalogElements"]) { }
+    publishing.publications.withType<MavenPublication>().configureEach {
+      pom.packaging = "pom" // ensure this is pom, not toml, to conform to Maven BOM standards
+    }
+  }
 }
 
 signing {
@@ -42,32 +59,40 @@ publishing {
     }
   }
 
-  publications.register<MavenPublication>("mavenJava") {
-    from(components["java"])
-
-    pom {
-      name = project.name
-      description = productDescription()
-      url = vcs
-      licenses {
-        license {
-          name = licenseName
-          url = "$vcs/blob/main/LICENSE"
-        }
+  publications {
+    register<MavenPublication>("mavenJava") {
+      plugins.withId("java") {
+        from(components["java"])
       }
-      developers {
-        developer {
-          name = "Jim"
-          id = "jpe7s"
-          email = "jpe7s.salt188@passfwd.com"
-          organization = "Sava Software"
-          organizationUrl = "https://github.com/sava-software"
-        }
+      plugins.withId("java-platform") {
+        from(components["javaPlatform"])
       }
-      scm {
-        connection = "scm:git:git@github.com:sava-software/${productName}.git"
-        developerConnection = "scm:git:ssh@github.com:sava-software/${productName}.git"
+    }
+    withType<MavenPublication>().configureEach {
+      pom {
+        name = project.name
+        description = productDescription()
         url = vcs
+        licenses {
+          license {
+            name = licenseName
+            url = "$vcs/blob/main/LICENSE"
+          }
+        }
+        developers {
+          developer {
+            name = "Jim"
+            id = "jpe7s"
+            email = "jpe7s.salt188@passfwd.com"
+            organization = "Sava Software"
+            organizationUrl = "https://github.com/sava-software"
+          }
+        }
+        scm {
+          connection = "scm:git:git@github.com:sava-software/${productName}.git"
+          developerConnection = "scm:git:ssh@github.com:sava-software/${productName}.git"
+          url = vcs
+        }
       }
     }
   }
