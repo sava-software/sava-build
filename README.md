@@ -16,3 +16,17 @@ pluginManagement { includeBuild("../sava-build") }
 
 After inserting that line, reload the project in IntelliJ. `sava-build` will show up next to your project in the workspace.
 You can now make changes to the files in [src/main/kotlin](src/main/kotlin).
+
+## Build
+
+[Generate a classic token](https://github.com/settings/tokens) with the `read:packages` scope needed to access
+dependencies hosted on GitHub Package Repository.
+
+Add the following properties to `$HOME/.gradle/gradle.properties`.
+
+### gradle.properties
+
+```properties
+gpr.user=GITHUB_USERNAME
+gpr.token=GITHUB_TOKEN
+```
