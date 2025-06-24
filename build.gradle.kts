@@ -30,6 +30,13 @@ java {
   withSourcesJar()
 }
 
+val gprUser = providers.gradleProperty("gpr.user.write")
+  .orElse(providers.environmentVariable("GITHUB_ACTOR"))
+  .orElse("")
+val gprToken = providers.gradleProperty("gpr.token.write")
+  .orElse(providers.environmentVariable("GITHUB_TOKEN"))
+  .orElse("")
+
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
@@ -48,7 +55,20 @@ nmcp {
   centralPortal {
     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
     password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
-    publishingType = "USER_MANAGED" // "AUTOMATIC"
+    publishingType = "AUTOMATIC" // "USER_MANAGED"
+  }
+}
+
+publishing {
+  repositories {
+    maven {
+      name = "GithubPackages"
+      url = uri("https://maven.pkg.github.com/sava-software/sava-build")
+      credentials {
+        username = gprUser.get()
+        password = gprToken.get()
+      }
+    }
   }
 }
 
