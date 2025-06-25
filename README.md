@@ -24,9 +24,11 @@ dependencies hosted on GitHub Package Repository.
 
 Add the following properties to `$HOME/.gradle/gradle.properties`.
 
-### gradle.properties
+```gradle.properties
+savaGithubPackagesUsername=GITHUB_USERNAME
+savaGithubPackagesPassword=GITHUB_TOKEN
+```
 
-```properties
-gpr.user=GITHUB_USERNAME
-gpr.token=GITHUB_TOKEN
+```shell
+./gradlew check
 ```
