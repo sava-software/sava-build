@@ -47,8 +47,8 @@ tasks.named { it == "zipPluginMavenPublication" }.withType<Zip>().configureEach 
 tasks.register("publishToGitHubPackages") {
   group = "publishing"
   dependsOn(
-    "publishPluginMavenPublicationToGithubPackagesRepository",
-    "publishSoftware.sava.buildPluginMarkerMavenPublicationToGithubPackagesRepository"
+    "publishPluginMavenPublicationToSavaGithubPackagesRepository",
+    "publishSoftware.sava.buildPluginMarkerMavenPublicationToSavaGithubPackagesRepository"
   )
 }
 
