@@ -30,13 +30,6 @@ java {
   withSourcesJar()
 }
 
-val gprUser = providers.environmentVariable("GITHUB_ACTOR")
-  .orElse(providers.gradleProperty("gpr.user.write"))
-  .orElse("")
-val gprToken = providers.environmentVariable("GITHUB_TOKEN")
-  .orElse(providers.gradleProperty("gpr.token.write"))
-  .orElse("")
-
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
@@ -46,11 +39,19 @@ signing {
 }
 tasks.withType<Sign>().configureEach { enabled = publishSigningEnabled }
 
+// Publish the Jar and the plugin marker for 'software.sava.build' so that it can be used via plugin ID
+// https://docs.gradle.org/current/userguide/plugins.html#sec:plugin_markers
 tasks.named { it == "zipPluginMavenPublication" }.withType<Zip>().configureEach {
-  // Include the plugin marker for 'software.sava.build' so that it can be used via plugin ID
-  // https://docs.gradle.org/current/userguide/plugins.html#sec:plugin_markers
   from(tasks.named<Zip>("zipSoftware.sava.buildPluginMarkerMavenPublication").map { zipTree(it.archiveFile) })
 }
+tasks.register("publishToGitHubPackages") {
+  group = "publishing"
+  dependsOn(
+    "publishPluginMavenPublicationToGithubPackagesRepository",
+    "publishSoftware.sava.buildPluginMarkerMavenPublicationToGithubPackagesRepository"
+  )
+}
+
 nmcp {
   centralPortal {
     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
@@ -62,12 +63,9 @@ nmcp {
 publishing {
   repositories {
     maven {
-      name = "GithubPackages"
+      name = "githubPackages"
       url = uri("https://maven.pkg.github.com/sava-software/sava-build")
-      credentials {
-        username = gprUser.get()
-        password = gprToken.get()
-      }
+      credentials(PasswordCredentials::class)
     }
   }
 }

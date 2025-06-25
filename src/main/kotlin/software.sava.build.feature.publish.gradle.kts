@@ -12,13 +12,6 @@ val productName = isolated.rootProject.name
 val licenseName = providers.fileContents(isolated.rootProject.projectDirectory.file("LICENSE")).asText.map { it.lines().first().trim() }
 val vcs = "https://github.com/sava-software/${productName}"
 
-val gprUser = providers.environmentVariable("GITHUB_ACTOR")
-  .orElse(providers.gradleProperty("gpr.user.write"))
-  .orElse("")
-val gprToken = providers.environmentVariable("GITHUB_TOKEN")
-  .orElse(providers.gradleProperty("gpr.token.write"))
-  .orElse("")
-
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
@@ -99,12 +92,10 @@ publishing {
 
   repositories {
     maven {
-      name = "GithubPackages"
+      name = "githubPackages"
       url = uri("https://maven.pkg.github.com/sava-software/${productName}")
-      credentials {
-        username = gprUser.get()
-        password = gprToken.get()
-      }
+      // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
+      credentials(PasswordCredentials::class)
     }
   }
 }

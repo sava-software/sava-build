@@ -19,13 +19,27 @@ jobs:
           jdk-src: ${{ vars.JDK_SRC }}
           gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
 
-      - name: Publish Packages
+      - name: Check
         id: publish
         run: |
-          ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check :aggregation:publishToGitHubPackages :aggregation:publishAggregationToCentralPortal
+          ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check
+
+      - name: Maven Central
+        id: publish
+        run: |
+          ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} :aggregation:publishAggregationToCentralPortal
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
           GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
           MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
           MAVEN_CENTRAL_SECRET: ${{ secrets.MAVEN_CENTRAL_SECRET }}
+
+      - name: Github Packages
+        id: publish
+        run: |
+          ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} :aggregation:publishToGitHubPackages
+        env:
+          GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
+          GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
+          ORG_GRADLE_PROJECT_githubPackagesUsername: ${{ env.GITHUB_ACTOR }}
+          ORG_GRADLE_PROJECT_githubPackagesPassword: ${{ secrets.GITHUB_TOKEN }}
