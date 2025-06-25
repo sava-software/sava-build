@@ -65,6 +65,7 @@ publishing {
     maven {
       name = "githubPackages"
       url = uri("https://maven.pkg.github.com/sava-software/sava-build")
+      // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
       credentials(PasswordCredentials::class)
     }
   }
