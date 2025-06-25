@@ -63,7 +63,7 @@ nmcp {
 publishing {
   repositories {
     maven {
-      name = "githubPackages"
+      name = "savaGithubPackages"
       url = uri("https://maven.pkg.github.com/sava-software/sava-build")
       // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
       credentials(PasswordCredentials::class)
