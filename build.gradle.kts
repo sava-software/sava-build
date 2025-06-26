@@ -9,15 +9,22 @@ group = "software.sava"
 version = providers.gradleProperty("version").getOrElse("")
 
 dependencies {
-  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:2.18.0")
+  // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
+  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:2.19.0")
+  // https://github.com/iherasymenko/jlink-gradle-plugin
   implementation("com.github.iherasymenko.jlink:jlink-plugin:0.7")
+  // https://docs.gradle.com/develocity/gradle-plugin/current/
   implementation("com.gradle:develocity-gradle-plugin:4.0.2")
   // https://github.com/GradleUp/nmcp
   // https://central.sonatype.com/artifact/com.gradleup.nmcp/com.gradleup.nmcp.gradle.plugin
-  implementation("com.gradleup.nmcp:nmcp:0.2.1")
+  implementation("com.gradleup.nmcp:nmcp:0.1.5")
+  // https://github.com/gradle/foojay-toolchains
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
+  // https://github.com/gradlex-org/java-module-dependencies
   implementation("org.gradlex:java-module-dependencies:1.9.2")
+  // https://github.com/gradlex-org/java-module-testing
   implementation("org.gradlex:java-module-testing:1.7")
+  // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
   implementation("org.gradlex:jvm-dependency-conflict-resolution:2.4")
 }
 
