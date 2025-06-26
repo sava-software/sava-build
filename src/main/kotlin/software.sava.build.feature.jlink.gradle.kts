@@ -6,7 +6,5 @@ plugins {
 
 tasks.withType<JlinkImageTask>().configureEach {
   bindServices = true
-  noManPages = true
-  vm = "server"
   ignoreSigningInformation = true
 }

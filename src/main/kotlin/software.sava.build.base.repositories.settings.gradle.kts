@@ -65,5 +65,12 @@ dependencyResolutionManagement {
         password = gprToken.get()
       }
     }
+    maven {
+      url = uri("https://maven.pkg.github.com/glamsystems/ix-proxy")
+      credentials {
+        username = gprUser.get()
+        password = gprToken.get()
+      }
+    }
   }
 }

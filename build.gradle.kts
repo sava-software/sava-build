@@ -16,7 +16,6 @@ dependencies {
   // https://docs.gradle.com/develocity/gradle-plugin/current/
   implementation("com.gradle:develocity-gradle-plugin:4.0.2")
   // https://github.com/GradleUp/nmcp
-  // https://central.sonatype.com/artifact/com.gradleup.nmcp/com.gradleup.nmcp.gradle.plugin
   implementation("com.gradleup.nmcp:nmcp:0.1.5")
   // https://github.com/gradle/foojay-toolchains
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
