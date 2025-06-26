@@ -1,4 +1,4 @@
-import gradle.kotlin.dsl.accessors._50f2277622f984d2033e247386aa4fb0.nmcpAggregation
+import gradle.kotlin.dsl.accessors._652051af0f5582a25d9af066ad361fe7.nmcpAggregation
 
 plugins {
   id("maven-publish")

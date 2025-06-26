@@ -14,7 +14,7 @@ dependencies {
   implementation("com.gradle:develocity-gradle-plugin:4.0.2")
   // https://github.com/GradleUp/nmcp
   // https://central.sonatype.com/artifact/com.gradleup.nmcp/com.gradleup.nmcp.gradle.plugin
-  implementation("com.gradleup.nmcp:nmcp:0.1.5")
+  implementation("com.gradleup.nmcp:nmcp:0.2.1")
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   implementation("org.gradlex:java-module-dependencies:1.9.2")
   implementation("org.gradlex:java-module-testing:1.7")
@@ -63,7 +63,7 @@ nmcp {
 publishing {
   repositories {
     maven {
-      name = "savaGithubPackages"
+      name = "writeGithubPackages"
       url = uri("https://maven.pkg.github.com/sava-software/sava-build")
       // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
       credentials(PasswordCredentials::class)
