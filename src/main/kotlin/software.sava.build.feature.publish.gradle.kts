@@ -5,12 +5,19 @@ plugins {
   id("com.gradleup.nmcp")
 }
 
-@Suppress("UnstableApiUsage")
-val productName = isolated.rootProject.name
+val orgName = orgName("Sava Software")
+val orgPathSegment = orgPathSegment("sava-software")
 
 @Suppress("UnstableApiUsage")
-val licenseName = providers.fileContents(isolated.rootProject.projectDirectory.file("LICENSE")).asText.map { it.lines().first().trim() }
-val vcs = "https://github.com/sava-software/${productName}"
+val productName = isolated.rootProject.name
+val developerName = developerName("Jim")
+val developerId = developerId("jpe7s")
+val developerEmail = developerEmail("jpe7s.salt188@passfwd.com")
+
+@Suppress("UnstableApiUsage")
+val licenseName =
+  providers.fileContents(isolated.rootProject.projectDirectory.file("LICENSE")).asText.map { it.lines().first().trim() }
+val vcs = "https://github.com/${orgPathSegment}/${productName}"
 
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
@@ -74,16 +81,16 @@ publishing {
         }
         developers {
           developer {
-            name = "Jim"
-            id = "jpe7s"
-            email = "jpe7s.salt188@passfwd.com"
-            organization = "Sava Software"
-            organizationUrl = "https://github.com/sava-software"
+            name = developerName
+            id = developerId
+            email = developerEmail
+            organization = orgName
+            organizationUrl = "https://github.com/${orgPathSegment}"
           }
         }
         scm {
-          connection = "scm:git:git@github.com:sava-software/${productName}.git"
-          developerConnection = "scm:git:ssh@github.com:sava-software/${productName}.git"
+          connection = "scm:git:git@github.com:${orgPathSegment}/${productName}.git"
+          developerConnection = "scm:git:ssh@github.com:${orgPathSegment}/${productName}.git"
           url = vcs
         }
       }
@@ -93,7 +100,7 @@ publishing {
   repositories {
     maven {
       name = "savaGithubPackages"
-      url = uri("https://maven.pkg.github.com/sava-software/${productName}")
+      url = uri("https://maven.pkg.github.com/${orgPathSegment}/${productName}")
       // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
       credentials(PasswordCredentials::class)
     }
