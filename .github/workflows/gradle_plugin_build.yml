@@ -25,5 +25,3 @@ jobs:
 
       - name: Gradle Check
         run: ./gradlew --stacktrace check
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
