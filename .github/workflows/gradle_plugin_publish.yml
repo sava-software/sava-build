@@ -26,7 +26,7 @@ jobs:
         run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} check
 
       - name: Maven Central
-        run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishPluginMavenPublicationToCentralPortal
+        run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishAggregationToCentralPortal
         env:
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
           GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
