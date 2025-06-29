@@ -1,4 +1,4 @@
-# Sava Shard GitHub Actions and Gradle Conventions
+# Sava Shared GitHub Actions and Gradle Conventions
 
 ## Gradle Conventions
 
