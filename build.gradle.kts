@@ -2,6 +2,7 @@ plugins {
   `kotlin-dsl`
   id("maven-publish")
   id("signing")
+  id("com.gradleup.nmcp") version "0.2.1"
   id("com.gradleup.nmcp.aggregation") version "0.2.1"
 }
 
@@ -45,10 +46,9 @@ signing {
 }
 tasks.withType<Sign>().configureEach { enabled = publishSigningEnabled }
 
-// Publish the Jar and the plugin marker for 'software.sava.build' so that it can be used via plugin ID
-// https://docs.gradle.org/current/userguide/plugins.html#sec:plugin_markers
-tasks.named { it == "zipPluginMavenPublication" }.withType<Zip>().configureEach {
-  from(tasks.named<Zip>("zipSoftware.sava.buildPluginMarkerMavenPublication").map { zipTree(it.archiveFile) })
+tasks.named { it.startsWith("publishSoftware.sava.build.") }.configureEach {
+  // Do not publish marker for plugins that are not the main 'software.sava.build' plugin
+  enabled = false
 }
 tasks.register("publishToGitHubPackages") {
   group = "publishing"
@@ -64,6 +64,9 @@ nmcpAggregation {
     password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
     publishingType = "USER_MANAGED"
   }
+}
+dependencies {
+  nmcpAggregation(project(path))
 }
 
 publishing {
