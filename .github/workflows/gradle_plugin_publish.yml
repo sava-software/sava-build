@@ -25,13 +25,13 @@ jobs:
       - name: Check
         run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} check
 
-#      - name: Maven Central
-#        run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishAggregationToCentralPortal
-#        env:
-#          GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
-#          GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
-#          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
-#          MAVEN_CENTRAL_SECRET: ${{ secrets.MAVEN_CENTRAL_SECRET }}
+      - name: Maven Central
+        run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishAggregationToCentralPortal
+        env:
+          GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
+          GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+          MAVEN_CENTRAL_SECRET: ${{ secrets.MAVEN_CENTRAL_SECRET }}
 
       - name: Github Packages
         run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishToGitHubPackages
