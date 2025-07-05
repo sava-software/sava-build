@@ -2,8 +2,8 @@ plugins {
   `kotlin-dsl`
   id("maven-publish")
   id("signing")
-  id("com.gradleup.nmcp") version "0.2.1"
-  id("com.gradleup.nmcp.aggregation") version "0.2.1"
+  id("com.gradleup.nmcp") version "1.0.0"
+  id("com.gradleup.nmcp.aggregation") version "1.0.0"
 }
 
 group = "software.sava"
@@ -17,7 +17,7 @@ dependencies {
   // https://docs.gradle.com/develocity/gradle-plugin/current/
   implementation("com.gradle:develocity-gradle-plugin:4.0.2")
   // https://github.com/GradleUp/nmcp
-  implementation("com.gradleup.nmcp:nmcp:0.2.1")
+  implementation("com.gradleup.nmcp:nmcp:1.0.0")
   // https://github.com/gradle/foojay-toolchains
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   // https://github.com/gradlex-org/java-module-dependencies
@@ -26,6 +26,8 @@ dependencies {
   implementation("org.gradlex:java-module-testing:1.7")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
   implementation("org.gradlex:jvm-dependency-conflict-resolution:2.4")
+  // https://github.com/gradlex-org/extra-java-module-info
+  implementation("org.gradlex:extra-java-module-info:1.12")
 }
 
 repositories {
