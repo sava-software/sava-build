@@ -10,6 +10,7 @@ jvmDependencyConflicts {
 }
 
 extraJavaModuleInfo {
+  // https://mvnrepository.com/artifact/com.google.cloud/google-cloud-kms
   automaticModule("com.google.cloud:google-cloud-kms", "google.cloud.kms") {
     mergeJar("com.google.api.grpc:proto-google-cloud-kms-v1")
   }

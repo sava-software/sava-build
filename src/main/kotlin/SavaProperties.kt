@@ -16,22 +16,15 @@ fun Project.developerEmail(defaultValue: String) = savaProperty("developerEmail"
 private fun Project.savaProperty(name: String, defaultValue: String = ""): String {
   @Suppress("UnstableApiUsage")
   val savaPropertiesFile = isolated.rootProject.projectDirectory.file("gradle/sava.properties")
-  val properties = providers.fileContents(savaPropertiesFile)
-    .asText
-    .map { content ->
-      Properties().apply { load(content.reader()) }
-    }
+  val properties = providers.fileContents(savaPropertiesFile).asText
+    .map { content -> Properties().apply { load(content.reader()) } }
   return properties.map { it.getProperty(name, defaultValue) }.get()
 }
 
 private fun Settings.savaProperty(name: String, defaultValue: String = ""): String {
   @Suppress("UnstableApiUsage")
   val savaPropertiesFile = layout.settingsDirectory.file("gradle/sava.properties")
-  val properties = providers.fileContents(savaPropertiesFile)
-    .asText
-    .map { content ->
-      Properties().apply { load(content.reader()) }
-    }
+  val properties = providers.fileContents(savaPropertiesFile).asText
+    .map { content -> Properties().apply { load(content.reader()) } }
   return properties.map { it.getProperty(name, defaultValue) }.get()
-
 }
