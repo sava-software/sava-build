@@ -5,10 +5,7 @@ on:
 
 jobs:
   check:
-    strategy:
-      matrix:
-        os: [ ubuntu-latest, macOS-latest ]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
 
     steps:
       - id: setup

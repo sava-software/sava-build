@@ -42,6 +42,20 @@ runs:
           echo "No Java version found in branch name, using default: $JAVA_VERSION"
         else
           echo "Extracted Java version from branch: $JAVA_VERSION"
+        
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG_NAME="${{ github.ref_name }}"
+            TAG_LEADING_NUMBER=$(echo "$TAG_NAME" | grep -oE '^[0-9]+' || echo "")
+            if [ -n "$TAG_LEADING_NUMBER" ]; then
+              if [ "$TAG_LEADING_NUMBER" != "$JAVA_VERSION" ]; then
+                echo "❌ Error: Tag version mismatch!"
+                echo "Branch '$BRANCH_NAME' expects tags starting with '$JAVA_VERSION', but got tag '$TAG_NAME' starting with '$TAG_LEADING_NUMBER'"
+                exit 1
+              else
+                echo "✅ Tag version validation passed: Tag '$TAG_NAME' is valid for branch '$BRANCH_NAME'"
+              fi
+            fi
+          fi
         fi
         echo "java-version=$JAVA_VERSION" >> $GITHUB_OUTPUT
         echo "Downloading JDK's from ${{ inputs.jdk-src }}."
