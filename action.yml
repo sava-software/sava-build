@@ -27,9 +27,19 @@ runs:
       shell: bash
       run: |
         if [ "${{ github.ref_type }}" = "tag" ]; then
+          # For tags, find which branch contains this commit
+          echo "Debug: Looking for branches containing HEAD..."
+          git branch -r --contains HEAD
+          echo "Debug: After filtering..."
+          git branch -r --contains HEAD | grep -v HEAD
+          echo "Debug: After head -1 and sed..."
           BRANCH_NAME=$(git branch -r --contains HEAD | grep -v HEAD | head -1 | sed 's/.*origin\///')
+          echo "Debug: BRANCH_NAME result: '$BRANCH_NAME'"
+        
           if [ -z "$BRANCH_NAME" ]; then
             echo "❌ Error: Could not determine source branch for tag ${{ github.ref_name }}"
+            echo "Available remote branches:"
+            git branch -r
             exit 1
           fi
         elif [ "${{ github.event_name }}" = "pull_request" ]; then
