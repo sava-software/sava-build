@@ -27,28 +27,44 @@ runs:
       shell: bash
       run: |
         if [ "${{ github.ref_type }}" = "tag" ]; then
-          echo "Debug: Looking for branches containing HEAD..."
-          BRANCHES_WITH_HEAD=$(git branch -r --contains HEAD)
-          echo "Result: '$BRANCHES_WITH_HEAD'"
+          # For tags, try multiple approaches to find the source branch
+          echo "Debug: Trying to find source branch for tag..."
         
-          echo "Debug: After filtering out HEAD..."
-          FILTERED_BRANCHES=$(echo "$BRANCHES_WITH_HEAD" | grep -v HEAD || echo "")
-          echo "Result: '$FILTERED_BRANCHES'"
+          # Approach 0: Try local git branch --contains with the tag
+          BRANCH_NAME=$(git branch -a --contains "${{ github.ref_name }}" | grep -v HEAD | grep -v 'remotes/origin/' | head -1 || echo "")
+          echo "Approach 1 result: '$BRANCH_NAME'"
         
-          echo "Debug: Taking first line..."
-          FIRST_BRANCH=$(echo "$FILTERED_BRANCHES" | head -1)
-          echo "Result: '$FIRST_BRANCH'"
+          # Approach 1: Try remote git branch --contains with the tag
+          BRANCH_NAME=$(git branch -a --contains "${{ github.ref_name }}" | grep -v HEAD | grep 'remotes/origin/' | head -1 | sed 's|.*remotes/origin/||' || echo "")
+          echo "Approach 1 result: '$BRANCH_NAME'"
         
-          echo "Debug: After sed processing..."
-          BRANCH_NAME=$(echo "$FIRST_BRANCH" | sed 's/.*origin\///')
-          echo "Result: '$BRANCH_NAME'"
+          # Approach 2: If that fails, try looking at local branches
+          if [ -z "$BRANCH_NAME" ]; then
+            BRANCH_NAME=$(git branch -a --contains HEAD | grep -v HEAD | grep 'remotes/origin/' | head -1 | sed 's|.*remotes/origin/||' || echo "")
+            echo "Approach 2 result: '$BRANCH_NAME'"
+          fi
+        
+          # Approach 3: Try using git log to find merge commits
+          if [ -z "$BRANCH_NAME" ]; then
+            BRANCH_NAME=$(git log --oneline --decorate HEAD | grep -o 'origin/[^,)]*' | head -1 | sed 's/origin\///' || echo "")
+            echo "Approach 3 result: '$BRANCH_NAME'"
+          fi
+        
+          # Approach 4: Look for java-* pattern in all remote branches and pick one
+          if [ -z "$BRANCH_NAME" ]; then
+            BRANCH_NAME=$(git branch -r | grep 'origin/java-' | head -1 | sed 's|.*origin/||' || echo "")
+            echo "Approach 4 result: '$BRANCH_NAME'"
+          fi
         
           if [ -z "$BRANCH_NAME" ]; then
             echo "❌ Error: Could not determine source branch for tag ${{ github.ref_name }}"
             echo "Available remote branches:"
             git branch -r
+            echo "Available local branches:"
+            git branch -a
             exit 1
           fi
+
         elif [ "${{ github.event_name }}" = "pull_request" ]; then
           BRANCH_NAME="${{ github.head_ref }}"
         else
