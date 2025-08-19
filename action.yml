@@ -27,75 +27,32 @@ runs:
       shell: bash
       run: |
         if [ "${{ github.ref_type }}" = "tag" ]; then
-          # For tags, try multiple approaches to find the source branch
-          echo "Debug: Trying to find source branch for tag..."
+          TAG_NAME="${{ github.ref_name }}"
+          JAVA_VERSION=$(echo "$TAG_NAME" | grep -oE '^[0-9]+')
         
-          # Approach 0: Try local git branch --contains with the tag
-          BRANCH_NAME=$(git branch -a --contains "${{ github.ref_name }}" | grep -v HEAD | grep -v 'remotes/origin/' | head -1 || echo "")
-          echo "Approach 1 result: '$BRANCH_NAME'"
-        
-          # Approach 1: Try remote git branch --contains with the tag
-          BRANCH_NAME=$(git branch -a --contains "${{ github.ref_name }}" | grep -v HEAD | grep 'remotes/origin/' | head -1 | sed 's|.*remotes/origin/||' || echo "")
-          echo "Approach 1 result: '$BRANCH_NAME'"
-        
-          # Approach 2: If that fails, try looking at local branches
-          if [ -z "$BRANCH_NAME" ]; then
-            BRANCH_NAME=$(git branch -a --contains HEAD | grep -v HEAD | grep 'remotes/origin/' | head -1 | sed 's|.*remotes/origin/||' || echo "")
-            echo "Approach 2 result: '$BRANCH_NAME'"
-          fi
-        
-          # Approach 3: Try using git log to find merge commits
-          if [ -z "$BRANCH_NAME" ]; then
-            BRANCH_NAME=$(git log --oneline --decorate HEAD | grep -o 'origin/[^,)]*' | head -1 | sed 's/origin\///' || echo "")
-            echo "Approach 3 result: '$BRANCH_NAME'"
-          fi
-        
-          # Approach 4: Look for java-* pattern in all remote branches and pick one
-          if [ -z "$BRANCH_NAME" ]; then
-            BRANCH_NAME=$(git branch -r | grep 'origin/java-' | head -1 | sed 's|.*origin/||' || echo "")
-            echo "Approach 4 result: '$BRANCH_NAME'"
-          fi
-        
-          if [ -z "$BRANCH_NAME" ]; then
-            echo "❌ Error: Could not determine source branch for tag ${{ github.ref_name }}"
-            echo "Available remote branches:"
-            git branch -r
-            echo "Available local branches:"
-            git branch -a
+          if [ -z "$JAVA_VERSION" ]; then
+            echo "❌ Error: Could not extract Java version from tag '$TAG_NAME'"
+            echo "Tags should start with a number (e.g., 21.0.3, 25.1.0)"
             exit 1
           fi
-
-        elif [ "${{ github.event_name }}" = "pull_request" ]; then
-          BRANCH_NAME="${{ github.head_ref }}"
-        else
-          BRANCH_NAME="${{ github.ref_name }}"
-        fi
-        echo "Branch name: $BRANCH_NAME"
+        else 
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BRANCH_NAME="${{ github.head_ref }}"
+          else
+            BRANCH_NAME="${{ github.ref_name }}"
+          fi
+          echo "Branch name: $BRANCH_NAME"
+          
+          # Extract Java version from branch name (e.g., java-21, java-25)
+          JAVA_VERSION=$(echo "$BRANCH_NAME" | grep -oE 'java-([0-9]+)' | grep -oE '[0-9]+' || true)
         
-        # Extract Java version from branch name (e.g., java-21, java-17, java-11)
-        JAVA_VERSION=$(echo "$BRANCH_NAME" | grep -oE 'java-([0-9]+)' | grep -oE '[0-9]+' || true)
-        
-        # Fallback to default if no version found in branch name
-        if [ -z "$JAVA_VERSION" ]; then
-          JAVA_VERSION="${{ inputs.default-java-version }}"
-          echo "No Java version found in branch name, using default: $JAVA_VERSION"
-        else
-          echo "Extracted Java version from branch: $JAVA_VERSION"
-        
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            TAG_NAME="${{ github.ref_name }}"
-            TAG_LEADING_NUMBER=$(echo "$TAG_NAME" | grep -oE '^[0-9]+' || echo "")
-            if [ -n "$TAG_LEADING_NUMBER" ]; then
-              if [ "$TAG_LEADING_NUMBER" != "$JAVA_VERSION" ]; then
-                echo "❌ Error: Tag version mismatch!"
-                echo "Branch '$BRANCH_NAME' expects tags starting with '$JAVA_VERSION', but got tag '$TAG_NAME' starting with '$TAG_LEADING_NUMBER'"
-                exit 1
-              else
-                echo "✅ Tag version validation passed: Tag '$TAG_NAME' is valid for branch '$BRANCH_NAME'"
-              fi
-            fi
+          # Fallback to default if no version found in branch name
+          if [ -z "$JAVA_VERSION" ]; then
+            JAVA_VERSION="${{ inputs.default-java-version }}"
+            echo "No Java version found in branch name, using default: $JAVA_VERSION"
           fi
         fi
+        
         echo "java-version=$JAVA_VERSION" >> $GITHUB_OUTPUT
         echo "Downloading JDK's from ${{ inputs.jdk-src }}."
 
