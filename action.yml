@@ -27,14 +27,21 @@ runs:
       shell: bash
       run: |
         if [ "${{ github.ref_type }}" = "tag" ]; then
-          # For tags, find which branch contains this commit
           echo "Debug: Looking for branches containing HEAD..."
-          git branch -r --contains HEAD
-          echo "Debug: After filtering..."
-          git branch -r --contains HEAD | grep -v HEAD
-          echo "Debug: After head -1 and sed..."
-          BRANCH_NAME=$(git branch -r --contains HEAD | grep -v HEAD | head -1 | sed 's/.*origin\///')
-          echo "Debug: BRANCH_NAME result: '$BRANCH_NAME'"
+          BRANCHES_WITH_HEAD=$(git branch -r --contains HEAD)
+          echo "Result: '$BRANCHES_WITH_HEAD'"
+        
+          echo "Debug: After filtering out HEAD..."
+          FILTERED_BRANCHES=$(echo "$BRANCHES_WITH_HEAD" | grep -v HEAD || echo "")
+          echo "Result: '$FILTERED_BRANCHES'"
+        
+          echo "Debug: Taking first line..."
+          FIRST_BRANCH=$(echo "$FILTERED_BRANCHES" | head -1)
+          echo "Result: '$FIRST_BRANCH'"
+        
+          echo "Debug: After sed processing..."
+          BRANCH_NAME=$(echo "$FIRST_BRANCH" | sed 's/.*origin\///')
+          echo "Result: '$BRANCH_NAME'"
         
           if [ -z "$BRANCH_NAME" ]; then
             echo "❌ Error: Could not determine source branch for tag ${{ github.ref_name }}"
