@@ -28,4 +28,7 @@ extraJavaModuleInfo {
   automaticModule("io.grpc:grpc-context", "io.grpc.context")
   automaticModule("io.opencensus:opencensus-api", "io.opencensus.api")
   automaticModule("io.opencensus:opencensus-contrib-http-util", "io.opencensus.contrib_http_util")
+
+  automaticModule("com.google.android:annotations", "com.google.android.annotations")
+  automaticModule("com.google.re2j:re2j", "com.google.re2j")
 }
