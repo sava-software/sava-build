@@ -31,4 +31,6 @@ extraJavaModuleInfo {
 
   automaticModule("com.google.android:annotations", "com.google.android.annotations")
   automaticModule("com.google.re2j:re2j", "com.google.re2j")
+
+  automaticModule("com.google.guava:listenablefuture", "com.google.guava.listenablefuture")
 }
