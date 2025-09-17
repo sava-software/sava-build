@@ -11,17 +11,18 @@ version = providers.gradleProperty("version").getOrElse("")
 
 dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
-  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:2.19.0")
+  // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
+  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.0.4")
   // https://github.com/iherasymenko/jlink-gradle-plugin
   implementation("com.github.iherasymenko.jlink:jlink-plugin:0.7")
   // https://docs.gradle.com/develocity/gradle-plugin/current/
-  implementation("com.gradle:develocity-gradle-plugin:4.1.1")
+  implementation("com.gradle:develocity-gradle-plugin:4.2")
   // https://github.com/GradleUp/nmcp
   implementation("com.gradleup.nmcp:nmcp:1.1.0")
   // https://github.com/gradle/foojay-toolchains
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   // https://github.com/gradlex-org/java-module-dependencies
-  implementation("org.gradlex:java-module-dependencies:1.9.2")
+  implementation("org.gradlex:java-module-dependencies:1.10")
   // https://github.com/gradlex-org/java-module-testing
   implementation("org.gradlex:java-module-testing:1.7")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
