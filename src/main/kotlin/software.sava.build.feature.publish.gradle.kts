@@ -15,15 +15,15 @@ val developerId = developerId("jpe7s")
 val developerEmail = developerEmail("jpe7s.salt188@passfwd.com")
 
 @Suppress("UnstableApiUsage")
-val licenseName =
-  providers.fileContents(isolated.rootProject.projectDirectory.file("LICENSE")).asText.map { it.lines().first().trim() }
+val licenseName = providers.fileContents(isolated.rootProject.projectDirectory.file("LICENSE"))
+  .asText.map { it.lines().first().trim() }
 val vcs = "https://github.com/${orgPathSegment}/${productName}"
 
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
 
-// publish module with sources and javadoc
+// publish module with sources and Javadoc
 plugins.withId("java") {
   java {
     withJavadocJar()
@@ -40,7 +40,7 @@ plugins.withId("java-platform") {
     val javaPlatform = components["javaPlatform"] as AdhocComponentWithVariants
     javaPlatform.addVariantsFromConfiguration(configurations["versionCatalogElements"]) { }
     publishing.publications.withType<MavenPublication>().configureEach {
-      pom.packaging = "pom" // ensure this is pom, not toml, to conform to Maven BOM standards
+      pom.packaging = "pom" // Ensure this is the pom, not toml, to conform to Maven BOM standards
     }
   }
 }

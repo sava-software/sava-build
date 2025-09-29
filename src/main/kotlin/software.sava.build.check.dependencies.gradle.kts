@@ -1,6 +1,3 @@
-//import org.gradlex.javamodule.dependencies.tasks.ModuleDirectivesOrderingCheck
-//import org.gradlex.javamodule.dependencies.tasks.ModuleDirectivesScopeCheck
-//
 //plugins {
 //  id("java")
 //  id("com.autonomousapps.dependency-analysis")

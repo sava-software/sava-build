@@ -2,8 +2,8 @@ plugins {
   `kotlin-dsl`
   id("maven-publish")
   id("signing")
-  id("com.gradleup.nmcp") version "1.1.0"
-  id("com.gradleup.nmcp.aggregation") version "1.1.0"
+  id("com.gradleup.nmcp") version "1.2.0"
+  id("com.gradleup.nmcp.aggregation") version "1.2.0"
 }
 
 group = "software.sava"
@@ -12,13 +12,15 @@ version = providers.gradleProperty("version").getOrElse("")
 dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
   // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
-  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.0.4")
+  // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
+  // implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.0.4")
+
   // https://github.com/iherasymenko/jlink-gradle-plugin
   implementation("com.github.iherasymenko.jlink:jlink-plugin:0.7")
   // https://docs.gradle.com/develocity/gradle-plugin/current/
   implementation("com.gradle:develocity-gradle-plugin:4.2")
   // https://github.com/GradleUp/nmcp
-  implementation("com.gradleup.nmcp:nmcp:1.1.0")
+  implementation("com.gradleup.nmcp:nmcp:1.2.0")
   // https://github.com/gradle/foojay-toolchains
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   // https://github.com/gradlex-org/java-module-dependencies
