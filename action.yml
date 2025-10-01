@@ -20,7 +20,7 @@ runs:
   using: "composite"
   steps:
     - uses: actions/checkout@v5
-    - uses: gradle/actions/setup-gradle@v4
+    - uses: gradle/actions/setup-gradle@v5
 
     - name: Extract Java version from branch
       id: java-version
@@ -33,7 +33,7 @@ runs:
           JAVA_VERSION=$(echo "$TAG_NAME" | grep -oE '^[0-9]+')
         
           if [ -z "$JAVA_VERSION" ]; then
-            echo "❌ Error: Could not extract Java version from tag '$TAG_NAME'"
+            echo "Could not extract Java version from tag '$TAG_NAME'"
             echo "Tags should start with a number (e.g., 21.0.3, 25.1.0)"
             exit 1
           fi
