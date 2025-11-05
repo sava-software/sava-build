@@ -72,5 +72,12 @@ dependencyResolutionManagement {
         password = gprToken.get()
       }
     }
+    maven {
+      url = uri("https://maven.pkg.github.com/sava-software/idl-clients")
+      credentials {
+        username = gprUser.get()
+        password = gprToken.get()
+      }
+    }
   }
 }
