@@ -2,8 +2,8 @@ plugins {
   `kotlin-dsl`
   id("maven-publish")
   id("signing")
-  id("com.gradleup.nmcp") version "1.2.0"
-  id("com.gradleup.nmcp.aggregation") version "1.2.0"
+  id("com.gradleup.nmcp")
+  id("com.gradleup.nmcp.aggregation")
 }
 
 group = "software.sava"
@@ -13,20 +13,22 @@ dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
   // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
   // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
-  // implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.0.4")
+  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.4.1")
 
   // https://github.com/iherasymenko/jlink-gradle-plugin
   implementation("com.github.iherasymenko.jlink:jlink-plugin:0.7")
   // https://docs.gradle.com/develocity/gradle-plugin/current/
-  implementation("com.gradle:develocity-gradle-plugin:4.2")
+  implementation("com.gradle:develocity-gradle-plugin:4.2.2")
   // https://github.com/GradleUp/nmcp
-  implementation("com.gradleup.nmcp:nmcp:1.2.0")
+  val nmcpVersion = providers.gradleProperty("nmcpVersion").orNull
+    ?: error("Missing required Gradle property 'nmcpVersion'")
+  implementation("com.gradleup.nmcp:nmcp:$nmcpVersion")
   // https://github.com/gradle/foojay-toolchains
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   // https://github.com/gradlex-org/java-module-dependencies
-  implementation("org.gradlex:java-module-dependencies:1.10")
+  implementation("org.gradlex:java-module-dependencies:1.11")
   // https://github.com/gradlex-org/java-module-testing
-  implementation("org.gradlex:java-module-testing:1.7")
+  implementation("org.gradlex:java-module-testing:1.8")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
   implementation("org.gradlex:jvm-dependency-conflict-resolution:2.4")
   // https://github.com/gradlex-org/extra-java-module-info

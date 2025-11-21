@@ -14,7 +14,7 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: gradle/actions/setup-gradle@v5
 
       - uses: oracle-actions/setup-java@v1
