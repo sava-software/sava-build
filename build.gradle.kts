@@ -13,7 +13,7 @@ dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
   // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
   // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
-  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.4.1")
+  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.5.1")
 
   // https://github.com/iherasymenko/jlink-gradle-plugin
   implementation("com.github.iherasymenko.jlink:jlink-plugin:0.7")
@@ -30,7 +30,7 @@ dependencies {
   // https://github.com/gradlex-org/java-module-testing
   implementation("org.gradlex:java-module-testing:1.8")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
-  implementation("org.gradlex:jvm-dependency-conflict-resolution:2.4")
+  implementation("org.gradlex:jvm-dependency-conflict-resolution:2.5")
   // https://github.com/gradlex-org/extra-java-module-info
   implementation("org.gradlex:extra-java-module-info:1.13.1")
 }
