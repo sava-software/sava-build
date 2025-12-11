@@ -6,6 +6,19 @@ fun Project.javaVersion(defaultValue: String) = savaProperty("javaVersion", defa
 fun Project.solanaBOMVersion() = savaProperty("solanaBOMVersion")
 fun Settings.solanaBOMVersion() = savaProperty("solanaBOMVersion")
 
+// Shared GitHub Packages credentials resolution for settings scripts
+fun Settings.githubPackagesCredentials(): Pair<String?, String?> {
+  val gprUser = providers.gradleProperty("savaGithubPackagesUsername")
+    .orElse(providers.environmentVariable("ORG_GRADLE_PROJECT_savaGithubPackagesUsername"))
+    .orElse(providers.environmentVariable("GITHUB_ACTOR"))
+    .orNull
+  val gprToken = providers.gradleProperty("savaGithubPackagesPassword")
+    .orElse(providers.environmentVariable("ORG_GRADLE_PROJECT_savaGithubPackagesPassword"))
+    .orElse(providers.environmentVariable("GITHUB_TOKEN"))
+    .orNull
+  return gprUser to gprToken
+}
+
 fun Project.orgName(defaultValue: String) = savaProperty("orgName", defaultValue)
 fun Project.orgPathSegment(defaultValue: String) = savaProperty("orgPathSegment", defaultValue)
 fun Project.productDescription() = savaProperty("productDescription")
