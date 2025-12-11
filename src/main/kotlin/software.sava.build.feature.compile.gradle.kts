@@ -2,8 +2,10 @@ plugins {
   id("java")
 }
 
-val jlv = JavaLanguageVersion.of(javaVersion("25"))
+val languageVersion = JavaLanguageVersion.of(javaVersion("25"))!!
 
 java {
-  toolchain.languageVersion = jlv
+  toolchain.languageVersion = languageVersion
+  @Suppress("UnstableApiUsage")
+  toolchain.vendor = JvmVendorSpec.JETBRAINS
 }
