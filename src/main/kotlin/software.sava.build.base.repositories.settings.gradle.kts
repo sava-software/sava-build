@@ -4,7 +4,7 @@ dependencyResolutionManagement {
   @Suppress("UnstableApiUsage")
   repositories {
     mavenCentral()
-    if (gprUser != null && gprToken != null) {
+    if (!gprUser.isNullOrBlank() && !gprToken.isNullOrBlank()) {
       val githubPackageUrls = setOf(
         "https://maven.pkg.github.com/sava-software/solana-version-catalog",
         "https://maven.pkg.github.com/sava-software/json-iterator",

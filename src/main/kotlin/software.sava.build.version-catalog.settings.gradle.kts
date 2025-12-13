@@ -6,7 +6,7 @@ dependencyResolutionManagement {
   repositories {
     gradlePluginPortal()
     mavenCentral()
-    if (gprUser != null && gprToken != null) {
+    if (!gprUser.isNullOrBlank() && !gprToken.isNullOrBlank()) {
       maven {
         url = uri("https://maven.pkg.github.com/sava-software/solana-version-catalog")
         credentials {
