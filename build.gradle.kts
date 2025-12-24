@@ -72,6 +72,7 @@ nmcpAggregation {
     publishingType = "USER_MANAGED"
   }
 }
+
 dependencies {
   nmcpAggregation(project(path))
 }
