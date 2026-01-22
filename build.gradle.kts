@@ -26,7 +26,7 @@ dependencies {
   // https://github.com/gradle/foojay-toolchains
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   // https://github.com/gradlex-org/java-module-dependencies
-  implementation("org.gradlex:java-module-dependencies:1.11")
+  implementation("org.gradlex:java-module-dependencies:1.12")
   // https://github.com/gradlex-org/java-module-testing
   implementation("org.gradlex:java-module-testing:1.8")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
