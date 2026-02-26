@@ -17,7 +17,7 @@ extraJavaModuleInfo {
     requires("java.sql")
     // requires("java.transaction.xa")
 
-    provides("java.sql.Driver", "org.postgresql.Driver")
+    // provides("java.sql.Driver", "org.postgresql.Driver")
 
     exports("org.postgresql.ds")
     exports("org.postgresql.ds.common")
