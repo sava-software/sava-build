@@ -32,7 +32,7 @@ dependencies {
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
   implementation("org.gradlex:jvm-dependency-conflict-resolution:2.5")
   // https://github.com/gradlex-org/extra-java-module-info
-  implementation("org.gradlex:extra-java-module-info:1.13.1")
+  implementation("org.gradlex:extra-java-module-info:1.14")
 }
 
 repositories {

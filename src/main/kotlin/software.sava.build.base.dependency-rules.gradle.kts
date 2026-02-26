@@ -10,6 +10,19 @@ jvmDependencyConflicts {
 }
 
 extraJavaModuleInfo {
+  module("org.postgresql:postgresql", "org.postgresql.jdbc") {
+    requires("java.logging")
+    requires("java.management")
+    requires("java.naming")
+    requires("java.sql")
+    // requires("java.transaction.xa")
+
+    provides("java.sql.Driver", "org.postgresql.Driver")
+
+    exports("org.postgresql.ds")
+    exports("org.postgresql.ds.common")
+  }
+
   // https://mvnrepository.com/artifact/com.google.cloud/google-cloud-kms
   automaticModule("com.google.cloud:google-cloud-kms", "google.cloud.kms") {
     mergeJar("com.google.api.grpc:proto-google-cloud-kms-v1")
