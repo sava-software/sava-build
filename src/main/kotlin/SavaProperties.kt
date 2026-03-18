@@ -3,6 +3,7 @@ import org.gradle.api.initialization.Settings
 import java.util.*
 
 fun Project.javaVersion(defaultValue: String) = savaProperty("javaVersion", defaultValue)
+fun Project.javaVendor(defaultValue: String) = savaProperty("javaVendor", defaultValue)
 fun Project.solanaBOMVersion() = savaProperty("solanaBOMVersion")
 fun Settings.solanaBOMVersion() = savaProperty("solanaBOMVersion")
 
@@ -27,6 +28,10 @@ fun Project.developerId(defaultValue: String) = savaProperty("developerId", defa
 fun Project.developerEmail(defaultValue: String) = savaProperty("developerEmail", defaultValue)
 
 private fun Project.savaProperty(name: String, defaultValue: String = ""): String {
+  val gradleProperty = providers.gradleProperty(name)
+  if (gradleProperty.isPresent) {
+    return gradleProperty.get()
+  }
   @Suppress("UnstableApiUsage")
   val savaPropertiesFile = isolated.rootProject.projectDirectory.file("gradle/sava.properties")
   val properties = providers.fileContents(savaPropertiesFile).asText
