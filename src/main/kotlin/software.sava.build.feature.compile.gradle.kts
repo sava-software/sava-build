@@ -5,6 +5,8 @@ plugins {
 }
 
 val languageVersion = JavaLanguageVersion.of(javaVersion("25"))
+
+@Suppress("UnstableApiUsage")
 val vendor = JvmVendorSpec.of(javaVendor("ORACLE").uppercase(Locale.ENGLISH))
 
 java {

@@ -29,7 +29,7 @@ dependencies {
   // https://github.com/gradlex-org/java-module-dependencies
   implementation("org.gradlex:java-module-dependencies:1.12.1")
   // https://github.com/gradlex-org/java-module-testing
-  implementation("org.gradlex:java-module-testing:1.8")
+  implementation("org.gradlex:java-module-testing:1.8.1")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
   implementation("org.gradlex:jvm-dependency-conflict-resolution:2.5")
   // https://github.com/gradlex-org/extra-java-module-info
