@@ -13,12 +13,13 @@ dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
   // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
   // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
-  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.6.1")
+  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.12.0")
 
   // https://github.com/iherasymenko/jlink-gradle-plugin
-  implementation("com.github.iherasymenko.jlink:jlink-plugin:0.7")
+  // https://plugins.gradle.org/plugin/com.github.iherasymenko.jlink
+  implementation("com.github.iherasymenko.jlink:jlink-plugin:0.9")
   // https://docs.gradle.com/develocity/gradle-plugin/current/
-  implementation("com.gradle:develocity-gradle-plugin:4.2.2")
+  implementation("com.gradle:develocity-gradle-plugin:4.4.1")
   // https://github.com/GradleUp/nmcp
   val nmcpVersion = providers.gradleProperty("nmcpVersion").orNull
     ?: error("Missing required Gradle property 'nmcpVersion'")
