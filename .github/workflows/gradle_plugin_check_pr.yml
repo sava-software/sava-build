@@ -1,13 +1,12 @@
-name: Gradle Check
+name: Gradle Check PR
 
 on:
-  push:
-    branches:
-      - main
+  pull_request:
+    types: [ opened, synchronize, reopened ]
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: check-pr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -23,5 +22,5 @@ jobs:
         with:
           website: ${{ vars.JDK_SRC }}
           release: ${{ vars.GRADLE_JAVA_VERSION }}
-      - name: Gradle Check
+      - name: Gradle Check PR
         run: ./gradlew --stacktrace check
