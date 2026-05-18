@@ -4,6 +4,44 @@
   "include-v-in-tag": false,
   "include-component-in-tag": false,
   "versioning": "always-bump-patch",
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "build",
+      "section": "Build System"
+    },
+    {
+      "type": "chore",
+      "section": "Chores"
+    },
+    {
+      "type": "ci",
+      "section": "CI"
+    },
+    {
+      "type": "deps",
+      "section": "Dependencies"
+    },
+    {
+      "type": "docs",
+      "section": "Documentation"
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "refactor",
+      "section": "Refactors"
+    }
+  ],
   "packages": {
     ".": {
       "package-name": "sava-build"
