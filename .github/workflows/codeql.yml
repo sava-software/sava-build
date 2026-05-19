@@ -49,7 +49,7 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
           ram: 3072
 
-      - name: Gradle Assemble
+      - name: Compile Classes
         if: matrix.build-mode == 'manual'
         run: |
           ./gradlew --no-daemon \
