@@ -1,0 +1,37 @@
+name: 'Docker Multi-Arch Setup'
+description: 'Container registry login, QEMU, and Buildx setup shared across sava services.'
+
+inputs:
+  registry:
+    description: 'Container registry to log in to.'
+    required: false
+    default: 'ghcr.io'
+  username:
+    description: 'Registry username (defaults to github.actor).'
+    required: false
+    default: ${{ github.actor }}
+  password:
+    description: 'Registry password or token (e.g. secrets.GITHUB_TOKEN for ghcr.io, or the gcp-auth access_token output for Artifact Registry).'
+    required: true
+  qemu_platforms:
+    description: 'Comma-separated QEMU platforms to install emulation for. Empty = action default (all).'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Log in to Container Registry
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a
+      with:
+        platforms: ${{ inputs.qemu_platforms }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd

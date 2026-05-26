@@ -1,0 +1,39 @@
+name: 'GCP Workload Identity Auth'
+description: 'Authenticate to Google Cloud via Workload Identity Federation.'
+
+inputs:
+  workload_identity_provider:
+    description: 'GCP Workload Identity Provider resource name.'
+    required: true
+  service_account:
+    description: 'GCP service account email to impersonate.'
+    required: true
+  project_id:
+    description: 'GCP project ID to export as GOOGLE_CLOUD_PROJECT for subsequent steps.'
+    required: true
+    default: ''
+  access_token_lifetime:
+    description: 'Lifetime of the access token (e.g. 3600s). Defaults to the action default when empty.'
+    required: false
+    default: ''
+
+outputs:
+  access_token:
+    description: 'Short-lived GCP access token from google-github-actions/auth.'
+    value: ${{ steps.auth.outputs.access_token }}
+  project_id:
+    description: 'Resolved GCP project ID.'
+    value: ${{ steps.auth.outputs.project_id }}
+
+runs:
+  using: composite
+  steps:
+    - id: auth
+      name: Google Auth
+      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+      with:
+        token_format: 'access_token'
+        workload_identity_provider: ${{ inputs.workload_identity_provider }}
+        service_account: ${{ inputs.service_account }}
+        project_id: ${{ inputs.project_id }}
+        access_token_lifetime: ${{ inputs.access_token_lifetime }}

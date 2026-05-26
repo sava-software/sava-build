@@ -1,0 +1,104 @@
+name: 'Build & Push One Image'
+description: 'Thin wrapper around docker/metadata-action + docker/build-push-action for one image variant.'
+
+inputs:
+  image:
+    description: 'Fully qualified image name, e.g. ghcr.io/owner/repo.'
+    required: true
+  dockerfile:
+    description: 'Path to the Dockerfile to build.'
+    required: true
+  platforms:
+    description: 'Comma-separated target platforms.'
+    required: false
+    default: 'linux/amd64'
+  flavor:
+    description: 'docker/metadata-action flavor input (e.g. suffix=-debian-openjdk).'
+    required: false
+    default: ''
+  tags:
+    description: 'docker/metadata-action tags input (multi-line).'
+    required: false
+    default: ''
+  labels:
+    description: 'docker/metadata-action labels input (multi-line).'
+    required: false
+    default: ''
+  context:
+    description: 'Build context path.'
+    required: false
+    default: '.'
+  push:
+    description: 'Whether to push the image.'
+    required: false
+    default: 'true'
+  build-args:
+    description: 'Build args passed to docker/build-push-action (multi-line).'
+    required: false
+    default: ''
+  provenance:
+    description: 'docker/build-push-action provenance input.'
+    required: false
+    default: ''
+  cache-from:
+    description: 'docker/build-push-action cache-from input (multi-line).'
+    required: false
+    default: ''
+  cache-to:
+    description: 'docker/build-push-action cache-to input (multi-line).'
+    required: false
+    default: ''
+  secrets:
+    description: 'docker/build-push-action secrets input (multi-line, e.g. id=mysecret,src=./secret.txt).'
+    required: false
+    default: ''
+  secret-envs:
+    description: 'docker/build-push-action secret-envs input (multi-line, e.g. GIT_AUTH_TOKEN=GH_TOKEN).'
+    required: false
+    default: ''
+  secret-files:
+    description: 'docker/build-push-action secret-files input (multi-line, e.g. id=mysecret,src=./secret.txt).'
+    required: false
+    default: ''
+
+outputs:
+  tags:
+    description: 'Tags produced by docker/metadata-action.'
+    value: ${{ steps.meta.outputs.tags }}
+  labels:
+    description: 'Labels produced by docker/metadata-action.'
+    value: ${{ steps.meta.outputs.labels }}
+  digest:
+    description: 'Image digest produced by docker/build-push-action.'
+    value: ${{ steps.build.outputs.digest }}
+  image-id:
+    description: 'Image ID produced by docker/build-push-action.'
+    value: ${{ steps.build.outputs.imageid }}
+
+runs:
+  using: composite
+  steps:
+    - id: meta
+      uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf
+      with:
+        images: ${{ inputs.image }}
+        flavor: ${{ inputs.flavor }}
+        tags: ${{ inputs.tags }}
+        labels: ${{ inputs.labels }}
+
+    - id: build
+      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        platforms: ${{ inputs.platforms }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: ${{ inputs.build-args }}
+        provenance: ${{ inputs.provenance }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+        secrets: ${{ inputs.secrets }}
+        secret-envs: ${{ inputs.secret-envs }}
+        secret-files: ${{ inputs.secret-files }}
