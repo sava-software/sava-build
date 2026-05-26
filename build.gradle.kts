@@ -19,7 +19,7 @@ dependencies {
   // https://plugins.gradle.org/plugin/com.github.iherasymenko.jlink
   implementation("com.github.iherasymenko.jlink:jlink-plugin:0.9")
   // https://docs.gradle.com/develocity/gradle-plugin/current/
-  implementation("com.gradle:develocity-gradle-plugin:4.4.1")
+  implementation("com.gradle:develocity-gradle-plugin:4.4.2")
   // https://github.com/GradleUp/nmcp
   val nmcpVersion = providers.gradleProperty("nmcpVersion").orNull
     ?: error("Missing required Gradle property 'nmcpVersion'")
