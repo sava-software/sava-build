@@ -6,8 +6,8 @@ on:
       - main
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: build-${{ github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   check:
