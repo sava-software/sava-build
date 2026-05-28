@@ -1,0 +1,26 @@
+name: Gradle Check PR
+
+on:
+  workflow_call:
+
+jobs:
+  check:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.user.login != 'sava-release-please[bot]' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - id: setup
+        uses: sava-software/sava-build@main
+        with:
+          default-java-version: ${{ vars.JAVA_VERSION }}
+          jdk-src: ${{ vars.JDK_SRC }}
+          gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
+
+      - name: Gradle Check
+        run: ./gradlew --stacktrace -PjavaVersion=${{ steps.setup.outputs.java-version }} check
+        env:
+          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ env.GITHUB_ACTOR }}
+          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.GITHUB_TOKEN }}
