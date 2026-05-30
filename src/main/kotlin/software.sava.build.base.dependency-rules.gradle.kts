@@ -27,9 +27,7 @@ extraJavaModuleInfo {
   automaticModule("com.google.cloud:google-cloud-kms", "google.cloud.kms") {
     mergeJar("com.google.api.grpc:proto-google-cloud-kms-v1")
   }
-  automaticModule("com.google.code.findbugs:jsr305", "com.google.code.findbugs.jsr305") {
-    mergeJar("javax.annotation:javax.annotation-api")
-  }
+  automaticModule("com.google.code.findbugs:jsr305", "com.google.code.findbugs.jsr305")
   automaticModule("com.google.api:gax", "com.google.api.gax")
   automaticModule("com.google.api:gax-grpc", "com.google.api.gax_grpc") {
     mergeJar("com.google.api.grpc:proto-google-common-protos")
