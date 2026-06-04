@@ -21,13 +21,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Log in to Container Registry
-      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
-      with:
-        registry: ${{ inputs.registry }}
-        username: ${{ inputs.username }}
-        password: ${{ inputs.password }}
-
     - name: Set up QEMU
       uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3
       with:
@@ -35,3 +28,10 @@ runs:
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}

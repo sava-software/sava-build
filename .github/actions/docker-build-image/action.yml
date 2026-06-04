@@ -8,6 +8,10 @@ inputs:
   dockerfile:
     description: 'Path to the Dockerfile to build.'
     required: true
+  target:
+    description: 'Target build stage to build (docker/build-push-action target). Empty builds the last stage.'
+    required: false
+    default: ''
   platforms:
     description: 'Comma-separated target platforms.'
     required: false
@@ -91,6 +95,7 @@ runs:
       with:
         context: ${{ inputs.context }}
         file: ${{ inputs.dockerfile }}
+        target: ${{ inputs.target }}
         platforms: ${{ inputs.platforms }}
         push: ${{ inputs.push }}
         tags: ${{ steps.meta.outputs.tags }}
