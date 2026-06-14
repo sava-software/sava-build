@@ -1,5 +1,22 @@
 # Changelog
 
+## [21.3.16](https://github.com/sava-software/sava-build/compare/21.3.15...21.3.16) (2026-06-14)
+
+
+### Features
+
+* **workflows:** add support for Docker target build stage input ([2f22c7e](https://github.com/sava-software/sava-build/commit/2f22c7e93267c5a127543fed90ae06bc68cba427))
+
+
+### Bug Fixes
+
+* **workflows:** update Gradle publish task for GitHub Packages ([68ead6d](https://github.com/sava-software/sava-build/commit/68ead6d4e3890719a2467e3b7f5759851322a8ea))
+
+
+### CI
+
+* **dependabot:** switch update schedule to daily ([b55b9fc](https://github.com/sava-software/sava-build/commit/b55b9fc3eab73d70299fea0288e7413698961eb2))
+
 ## [21.3.15](https://github.com/sava-software/sava-build/compare/21.3.14...21.3.15) (2026-06-01)
 
 
