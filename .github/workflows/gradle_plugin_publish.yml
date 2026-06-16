@@ -31,15 +31,15 @@ jobs:
           ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
 
-      - name: Maven Central
-        run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishAggregationToCentralPortal
-        env:
-          GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
-          GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
-          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
-          MAVEN_CENTRAL_SECRET: ${{ secrets.MAVEN_CENTRAL_SECRET }}
-          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
-          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
+#      - name: Maven Central
+#        run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishAggregationToCentralPortal
+#        env:
+#          GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
+#          GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
+#          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+#          MAVEN_CENTRAL_SECRET: ${{ secrets.MAVEN_CENTRAL_SECRET }}
+#          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
+#          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
 
       - name: Github Packages
         run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishToGitHubPackages

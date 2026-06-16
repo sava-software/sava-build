@@ -1,0 +1,36 @@
+name: Publish Release GitHub Packages
+
+on:
+  workflow_call:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - id: setup
+        uses: sava-software/sava-build@main
+        with:
+          default-java-version: ${{ vars.JAVA_VERSION }}
+          jdk-src: ${{ vars.JDK_SRC }}
+          gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
+
+      - name: Check
+        run: ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check
+        env:
+          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
+
+      - name: Github Packages
+        run: ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} :aggregation:publishToGitHubPackages
+        env:
+          GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
+          GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
+          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
+          ORG_GRADLE_PROJECT_savaGithubPackagesPublishUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_savaGithubPackagesPublishPassword: ${{ secrets.GITHUB_TOKEN }}
