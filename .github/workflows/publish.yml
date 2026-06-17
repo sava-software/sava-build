@@ -2,6 +2,22 @@ name: Publish Release
 
 on:
   workflow_call:
+    secrets:
+      READ_SAVA_PACKAGES:
+        description: Token used to read sava GitHub Packages.
+        required: false
+      GPG_PUBLISH_SECRET:
+        description: GPG secret key used to sign published artifacts.
+        required: true
+      GPG_PUBLISH_PHRASE:
+        description: Passphrase for the GPG signing key.
+        required: true
+      MAVEN_CENTRAL_TOKEN:
+        description: Token used to publish to Maven Central.
+        required: true
+      MAVEN_CENTRAL_SECRET:
+        description: Secret used to publish to Maven Central.
+        required: true
 
 jobs:
   publish:

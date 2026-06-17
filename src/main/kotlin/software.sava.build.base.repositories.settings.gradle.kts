@@ -11,10 +11,10 @@ dependencyResolutionManagement {
         "https://maven.pkg.github.com/sava-software/sava",
         "https://maven.pkg.github.com/sava-software/solana-programs",
         "https://maven.pkg.github.com/sava-software/solana-web2",
-        "https://maven.pkg.github.com/sava-software/anchor-src-gen",
-        "https://maven.pkg.github.com/sava-software/anchor-programs",
         "https://maven.pkg.github.com/sava-software/ravina",
         "https://maven.pkg.github.com/sava-software/idl-clients",
+        "https://maven.pkg.github.com/sava-software/http-servers",
+        "https://maven.pkg.github.com/sava-software/incident-client",
         "https://maven.pkg.github.com/glamsystems/ix-proxy",
         "https://maven.pkg.github.com/glamsystems/glam-sdk-java"
       )

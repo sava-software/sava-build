@@ -2,6 +2,10 @@ name: Gradle Check
 
 on:
   workflow_call:
+    secrets:
+      READ_SAVA_PACKAGES:
+        description: Token used to read sava GitHub Packages.
+        required: false
 
 jobs:
   check:
