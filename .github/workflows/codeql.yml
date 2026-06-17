@@ -37,7 +37,7 @@ jobs:
         with:
           website: ${{ vars.JDK_SRC }}
           release: ${{ vars.GRADLE_JAVA_VERSION }}
-      - uses: gradle/actions/setup-gradle@5e2ebd065dc2488b7a6ad670704656cbbe1e8f60
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92
       - uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
         name: Initialize CodeQL
         with:
