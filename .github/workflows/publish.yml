@@ -2,6 +2,12 @@ name: Publish Release
 
 on:
   workflow_call:
+    inputs:
+      maven-central-exclude-checksums:
+        description: 'Comma-separated checksum types to exclude from the Maven Central bundle (e.g. "md5,sha1"). Leave empty to keep all.'
+        required: false
+        type: string
+        default: ''
     secrets:
       READ_SAVA_PACKAGES:
         description: Token used to read sava GitHub Packages.
@@ -42,7 +48,7 @@ jobs:
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
 
       - name: Maven Central
-        run: ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} :aggregation:publishAggregationToCentralPortal
+        run: ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} -PmavenCentralExcludeChecksums="${{ inputs.maven-central-exclude-checksums }}" :aggregation:publishAggregationToCentralPortal
         env:
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
           GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}

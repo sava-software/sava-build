@@ -9,6 +9,7 @@ plugins {
 group = "software.sava"
 version = providers.gradleProperty("version").getOrElse("")
 
+// ./gradlew --write-verification-metadata pgp,sha256 check
 dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
   // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
@@ -77,6 +78,20 @@ nmcpAggregation {
 
 dependencies {
   nmcpAggregation(project(path))
+}
+
+// Allow callers to drop selected checksum files (e.g. md5, sha1, sha256, sha512) from the
+// Maven Central deployment bundle via '-PmavenCentralExcludeChecksums=md5,sha1'.
+val mavenCentralExcludeChecksums = providers.gradleProperty("mavenCentralExcludeChecksums")
+  .map { value -> value.split(",").map(String::trim).filter(String::isNotEmpty) }
+  .getOrElse(emptyList())
+
+if (mavenCentralExcludeChecksums.isNotEmpty()) {
+  tasks.named<Zip>("nmcpZipAggregation") {
+    mavenCentralExcludeChecksums.forEach { extension ->
+      exclude("**/*.$extension")
+    }
+  }
 }
 
 publishing {
