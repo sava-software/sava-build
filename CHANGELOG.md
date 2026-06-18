@@ -1,5 +1,39 @@
 # Changelog
 
+## [21.4.0](https://github.com/sava-software/sava-build/compare/21.3.15...21.4.0) (2026-06-18)
+
+
+### Features
+
+* **build:** add dependency verification metadata and checksum exclusion ([aa0827e](https://github.com/sava-software/sava-build/commit/aa0827e9f8bc1a0940441b86a082cdeedaa5a6d4))
+* **workflows:** add publish workflow for GitHub Packages ([455066b](https://github.com/sava-software/sava-build/commit/455066b80cae77d618ecfceed10d5601e0986cb2))
+* **workflows:** add secrets for publishing and extend repository list ([9d11eba](https://github.com/sava-software/sava-build/commit/9d11eba2c4bf08bceb077c2ed731ee58ef0f95eb))
+* **workflows:** add support for Docker target build stage input ([2f22c7e](https://github.com/sava-software/sava-build/commit/2f22c7e93267c5a127543fed90ae06bc68cba427))
+
+
+### Bug Fixes
+
+* **workflows:** update Gradle publish task for GitHub Packages ([68ead6d](https://github.com/sava-software/sava-build/commit/68ead6d4e3890719a2467e3b7f5759851322a8ea))
+
+
+### Build System
+
+* **deps:** bump gradle/actions from 6.1.1 to 6.2.0 ([#28](https://github.com/sava-software/sava-build/issues/28)) ([68b2026](https://github.com/sava-software/sava-build/commit/68b2026c593d07650253168794095646c9771722))
+
+
+### Chores
+
+* **build:** update verification metadata for Gradle and new plugin ([00a33e2](https://github.com/sava-software/sava-build/commit/00a33e2cecfa5cd218c43927abd941aa06846326))
+* **build:** update verification metadata for new trusted keys and artifacts ([0719b24](https://github.com/sava-software/sava-build/commit/0719b24fdcdb7cd42232dc5fe4230b8e10a10a16))
+* release 21.4.0 ([e9fb27d](https://github.com/sava-software/sava-build/commit/e9fb27dcf7dc183d0b987e413b01859ddb40d2d0))
+* **workflows:** remove CodeQL workflow configuration ([0562d0a](https://github.com/sava-software/sava-build/commit/0562d0a72638912d807e6e8d4b6e3df5f97693d7))
+* **workflows:** update PR check to exclude dependabot user ([ae36de5](https://github.com/sava-software/sava-build/commit/ae36de53ad464cc1b394193d3177933a15e43534))
+
+
+### CI
+
+* **dependabot:** switch update schedule to daily ([b55b9fc](https://github.com/sava-software/sava-build/commit/b55b9fc3eab73d70299fea0288e7413698961eb2))
+
 ## [21.3.15](https://github.com/sava-software/sava-build/compare/21.3.14...21.3.15) (2026-06-01)
 
 
