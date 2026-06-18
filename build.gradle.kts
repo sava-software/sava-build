@@ -9,7 +9,7 @@ plugins {
 group = "software.sava"
 version = providers.gradleProperty("version").getOrElse("")
 
-// ./gradlew --write-verification-metadata pgp,sha256 check
+// ./gradlew --write-verification-metadata pgp,sha256 check generatePrecompiledScriptPluginAccessors
 dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
   // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
