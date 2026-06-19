@@ -32,6 +32,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
 
     steps:
       - id: setup
@@ -66,3 +68,8 @@ jobs:
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
           ORG_GRADLE_PROJECT_savaGithubPackagesPublishUsername: ${{ github.actor }}
           ORG_GRADLE_PROJECT_savaGithubPackagesPublishPassword: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: '**/build/libs/*.jar'
