@@ -2,6 +2,12 @@ name: Publish Release GitHub Packages
 
 on:
   workflow_call:
+    inputs:
+      attest-subject-path:
+        description: Path(s) or glob(s) of artifacts to attest build provenance for.
+        required: false
+        type: string
+        default: '**/build/libs/*.jar'
     secrets:
       READ_SAVA_PACKAGES:
         description: Token used to read sava GitHub Packages.
@@ -51,4 +57,4 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
         with:
-          subject-path: '**/build/libs/*.jar'
+          subject-path: ${{ inputs.attest-subject-path }}
