@@ -3,6 +3,9 @@
    <configuration>
       <verify-metadata>true</verify-metadata>
       <verify-signatures>true</verify-signatures>
+      <trusted-artifacts>
+         <trust file="^gradle-\d+[.]\d+(?:[.]\d+)?(?:-(?:rc|milestone)-\d+)?-src[.]zip$" regex="true" reason="Gradle source distribution is not signed"/>
+      </trusted-artifacts>
       <trusted-keys>
          <trusted-key id="05F1A5DA5701D415BEFC67FC6329ADE2B25B244B" group="io.github.pdvrieze.xmlutil"/>
          <trusted-key id="1BD97A6A154E7810EE0BC832E2F38302C8075E3D" group="^org[.]gradle($|([.].*))" regex="true"/>
