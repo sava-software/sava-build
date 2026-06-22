@@ -1,5 +1,30 @@
 # Changelog
 
+## [21.4.1](https://github.com/sava-software/sava-build/compare/21.4.0...21.4.1) (2026-06-22)
+
+
+### Features
+
+* **workflows:** add build provenance attestation to publish workflows ([4eb1b44](https://github.com/sava-software/sava-build/commit/4eb1b4404901fb014194e8f414295825f24cd875))
+* **workflows:** make attest subject path configurable in publish-gh workflow ([ba42494](https://github.com/sava-software/sava-build/commit/ba42494dd755f0a83533a2896705386819652489))
+
+
+### Build System
+
+* **deps:** bump actions/attest-build-provenance from 2.4.0 to 4.1.0 ([#31](https://github.com/sava-software/sava-build/issues/31)) ([9b8fda6](https://github.com/sava-software/sava-build/commit/9b8fda647d4736f62ee4196e07a527e1f6b778e5))
+* **deps:** bump actions/checkout from 6.0.3 to 7.0.0 ([#32](https://github.com/sava-software/sava-build/issues/32)) ([39ce6a5](https://github.com/sava-software/sava-build/commit/39ce6a5e123aed6fb9835c61a2c3e563c53e871b))
+* **deps:** bump com.gradle:develocity-gradle-plugin ([#29](https://github.com/sava-software/sava-build/issues/29)) ([6c90fd1](https://github.com/sava-software/sava-build/commit/6c90fd1ad48ed9bee0cdd5d48e55758a8f742e9f))
+* **deps:** bump org.gradlex:java-module-dependencies ([#34](https://github.com/sava-software/sava-build/issues/34)) ([8617f60](https://github.com/sava-software/sava-build/commit/8617f60adb6a6712c908c8c6fb053fbaf6594da6))
+
+
+### Chores
+
+* **build:** update Gradle wrapper to v9.6.0 and verification metadata ([4bd9b45](https://github.com/sava-software/sava-build/commit/4bd9b454615c6763cfdbf662e1851eba80aefae6))
+* **build:** update trusted key metadata in verification file ([06487cc](https://github.com/sava-software/sava-build/commit/06487cc1a6eff9545b1d8f6b8dcc355018d83b5e))
+* **workflows:** grant artifact-metadata permission and update attest action ([03ac143](https://github.com/sava-software/sava-build/commit/03ac143e6eb2909e08e84969b5d67ed1f965fa54))
+* **workflows:** pin attest-build-provenance action version ([a7bdcc4](https://github.com/sava-software/sava-build/commit/a7bdcc420fb82cc1a456f52d6197a908981801ca))
+* **workflows:** remove unused comment in attest-build-provenance steps ([ff579ad](https://github.com/sava-software/sava-build/commit/ff579ad8460c4e8e11564d7b9bf7e6a92fcdae14))
+
 ## [21.4.0](https://github.com/sava-software/sava-build/compare/21.3.15...21.4.0) (2026-06-18)
 
 
