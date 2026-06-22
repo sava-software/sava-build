@@ -1,5 +1,17 @@
 # Changelog
 
+## [21.4.2](https://github.com/sava-software/sava-build/compare/21.4.1...21.4.2) (2026-06-22)
+
+
+### Bug Fixes
+
+* **build:** add trusted artifact regex for Gradle source distribution ([d3f2ad9](https://github.com/sava-software/sava-build/commit/d3f2ad98c107b49df5539c24a275ad521ab5d03f))
+
+
+### Chores
+
+* **build:** update trusted keys and cleanup verification metadata ([74e37d6](https://github.com/sava-software/sava-build/commit/74e37d6f52ab42293235e7b4fcfae39f48cb4cdf))
+
 ## [21.4.1](https://github.com/sava-software/sava-build/compare/21.4.0...21.4.1) (2026-06-22)
 
 
