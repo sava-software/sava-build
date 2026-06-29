@@ -29,7 +29,7 @@ dependencies {
   // https://plugins.gradle.org/plugin/org.gradle.toolchains.foojay-resolver-convention
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   // https://github.com/gradlex-org/java-module-dependencies
-  implementation("org.gradlex:java-module-dependencies:1.12.2")
+  implementation("org.gradlex:java-module-dependencies:1.13")
   // https://github.com/gradlex-org/java-module-testing
   implementation("org.gradlex:java-module-testing:1.8.1")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
