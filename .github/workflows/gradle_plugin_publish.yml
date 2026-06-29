@@ -53,6 +53,6 @@ jobs:
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Attest build provenance
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
         with:
           subject-path: '**/build/libs/*.jar'
