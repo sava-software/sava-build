@@ -1,5 +1,18 @@
 # Changelog
 
+## [21.4.3](https://github.com/sava-software/sava-build/compare/21.4.2...21.4.3) (2026-06-30)
+
+
+### Build System
+
+* **deps:** bump com.autonomousapps:dependency-analysis-gradle-plugin ([#37](https://github.com/sava-software/sava-build/issues/37)) ([954aa9f](https://github.com/sava-software/sava-build/commit/954aa9fda5525b2e0801c7b95df22e9bd9e0efcf))
+* **deps:** bump org.gradlex:extra-java-module-info from 1.14 to 1.14.2 ([#36](https://github.com/sava-software/sava-build/issues/36)) ([d82a82e](https://github.com/sava-software/sava-build/commit/d82a82e4fc1a2a95724d722596f0ad9c90e0b845))
+
+
+### Chores
+
+* **build:** update Gradle wrapper to v9.6.1 ([22e252c](https://github.com/sava-software/sava-build/commit/22e252cd53c52c99bf4eeb802d203aa0a159c4e9))
+
 ## [21.4.2](https://github.com/sava-software/sava-build/compare/21.4.1...21.4.2) (2026-06-22)
 
 
