@@ -1,5 +1,41 @@
 # Changelog
 
+## [21.4.3](https://github.com/sava-software/sava-build/compare/21.4.2...21.4.3) (2026-07-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **jdk-provisioning:** Consumer projects must update to `software.sava.build.feature.jdk-provisioning`. The alias plugin is deprecated and will be removed in a future version.
+
+### Features
+
+* **jdk-provisioning:** add build plugins, tests, and deprecate alias ([70195e4](https://github.com/sava-software/sava-build/commit/70195e4fb70c0c0cbe1b1257a2d0bbb8087d4f2a))
+
+
+### Bug Fixes
+
+* **build:** simplify GitHub Packages credential resolution ([11ffbe1](https://github.com/sava-software/sava-build/commit/11ffbe1d54a38fccb49008a4b993b6ba3e109c99))
+
+
+### Build System
+
+* **deps:** bump actions/attest from 4.1.0 to 4.1.1 ([#38](https://github.com/sava-software/sava-build/issues/38)) ([4b383be](https://github.com/sava-software/sava-build/commit/4b383bef6fa403377d4a61909b216eee19e7cfd1))
+* **deps:** bump com.autonomousapps:dependency-analysis-gradle-plugin ([#37](https://github.com/sava-software/sava-build/issues/37)) ([954aa9f](https://github.com/sava-software/sava-build/commit/954aa9fda5525b2e0801c7b95df22e9bd9e0efcf))
+* **deps:** bump com.autonomousapps:dependency-analysis-gradle-plugin ([#48](https://github.com/sava-software/sava-build/issues/48)) ([2944c17](https://github.com/sava-software/sava-build/commit/2944c178a7bf6599633483a49a666b8410c66d9f))
+* **deps:** bump com.gradle:develocity-gradle-plugin ([#41](https://github.com/sava-software/sava-build/issues/41)) ([c2d9ec0](https://github.com/sava-software/sava-build/commit/c2d9ec05e4b27c1c3acacb8b76f63f76eaabdd8e))
+* **deps:** bump docker/build-push-action ([#45](https://github.com/sava-software/sava-build/issues/45)) ([6d7462b](https://github.com/sava-software/sava-build/commit/6d7462b3108e551b0e9e02abb2e94632ca266fee))
+* **deps:** bump docker/login-action in /.github/actions/docker-setup ([#47](https://github.com/sava-software/sava-build/issues/47)) ([8bf6f5f](https://github.com/sava-software/sava-build/commit/8bf6f5fdbd43c1486fc08a1bf9ab9f637578b705))
+* **deps:** bump docker/metadata-action ([#44](https://github.com/sava-software/sava-build/issues/44)) ([3e99b6e](https://github.com/sava-software/sava-build/commit/3e99b6e1563c76eb3ca1e7fa4d15841910f4da5d))
+* **deps:** bump docker/setup-buildx-action ([#46](https://github.com/sava-software/sava-build/issues/46)) ([c732b14](https://github.com/sava-software/sava-build/commit/c732b14ea78d79b570cd237e0ef017cb49b37bfc))
+* **deps:** bump docker/setup-qemu-action ([#49](https://github.com/sava-software/sava-build/issues/49)) ([92f2c3e](https://github.com/sava-software/sava-build/commit/92f2c3eee79b2500b39f81d59acb4c64026a6f3f))
+* **deps:** bump org.gradlex:extra-java-module-info from 1.14 to 1.14.2 ([#36](https://github.com/sava-software/sava-build/issues/36)) ([d82a82e](https://github.com/sava-software/sava-build/commit/d82a82e4fc1a2a95724d722596f0ad9c90e0b845))
+* **deps:** bump org.gradlex:java-module-dependencies ([#43](https://github.com/sava-software/sava-build/issues/43)) ([7cbcfa7](https://github.com/sava-software/sava-build/commit/7cbcfa70317661dc325b8d1384fade1bd530ad9d))
+
+
+### Chores
+
+* **build:** update Gradle wrapper to v9.6.1 ([22e252c](https://github.com/sava-software/sava-build/commit/22e252cd53c52c99bf4eeb802d203aa0a159c4e9))
+
 ## [21.4.2](https://github.com/sava-software/sava-build/compare/21.4.1...21.4.2) (2026-06-22)
 
 
