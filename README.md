@@ -56,7 +56,9 @@ pluginManagement {
 
 plugins {
   id("software.sava.build") version "<version>"
-  id("software.sava.build.feature.jdk-provisioning") // optional: auto-provision JDKs (foojay)
+  // Optional: auto-provision JDKs (foojay). The version is required — every settings
+  // plugin id resolves its own marker from the repositories.
+  id("software.sava.build.feature.jdk-provisioning") version "<version>"
 }
 
 javaModules {
