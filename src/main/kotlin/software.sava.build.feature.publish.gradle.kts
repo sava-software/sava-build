@@ -19,6 +19,8 @@ val licenseName = providers.fileContents(isolated.rootProject.projectDirectory.f
   .asText.map { it.lines().first().trim() }
 val vcs = "https://github.com/${orgPathSegment}/${productName}"
 
+// Keep the signing setup in sync with the root build.gradle.kts, which duplicates it
+// because it cannot apply the convention plugins it produces.
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()

@@ -1,3 +1,6 @@
+// Keep in sync with the nmcpAggregation and checksum-exclusion setup in the root
+// build.gradle.kts, which duplicates it because it cannot apply the convention
+// plugins it produces.
 plugins {
   id("maven-publish")
   id("com.gradleup.nmcp.aggregation")

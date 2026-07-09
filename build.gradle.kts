@@ -36,10 +36,37 @@ dependencies {
   implementation("org.gradlex:jvm-dependency-conflict-resolution:2.5")
   // https://github.com/gradlex-org/extra-java-module-info
   implementation("org.gradlex:extra-java-module-info:1.14.2")
+
+  testImplementation(gradleTestKit())
+  // https://github.com/junit-team/junit-framework
+  testImplementation("org.junit.jupiter:junit-jupiter:5.13.4")
+  testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+  useJUnitPlatform()
+  // The smoke tests run TestKit builds of fixture projects that consume this
+  // checkout via 'pluginManagement { includeBuild(...) }'.
+  systemProperty("savaBuild.root", layout.projectDirectory.asFile.absolutePath)
+  // TestKit builds the convention plugins outside this build's task graph, so
+  // declare their sources as inputs to re-run tests when they change.
+  inputs.dir("src/main/kotlin")
 }
 
 repositories {
   gradlePluginPortal()
+}
+
+gradlePlugin {
+  plugins {
+    // Named after the plugin id so the marker publication/task names match the
+    // 'publishSoftware.sava.build.*' pattern of the precompiled script plugins.
+    register("software.sava.build.feature-jdk-provisioning") {
+      id = name
+      displayName = "Deprecated alias for software.sava.build.feature.jdk-provisioning"
+      implementationClass = "SavaJdkProvisioningAliasPlugin"
+    }
+  }
 }
 
 java {
@@ -47,6 +74,9 @@ java {
   withSourcesJar()
 }
 
+// Keep in sync with the signing setup in
+// src/main/kotlin/software.sava.build.feature.publish.gradle.kts
+// (this build produces the convention plugins, so it cannot apply them to itself).
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
@@ -56,18 +86,32 @@ signing {
 }
 tasks.withType<Sign>().configureEach { enabled = publishSigningEnabled }
 
-tasks.named { it.startsWith("publishSoftware.sava.build.") }.configureEach {
-  // Do not publish marker for plugins that are not the main 'software.sava.build' plugin
+// Only publish markers for plugins that consumers request by id in a settings 'plugins {}'
+// block: 'software.sava.build' (its marker task has no trailing '.', so it never matches the
+// filter below), 'software.sava.build.feature.jdk-provisioning', and its deprecated alias.
+// All other convention plugins are applied through those, or are resolved from the settings
+// classpath, and need no marker.
+val publishedMarkerTaskPrefixes = setOf(
+  "publishSoftware.sava.build.feature.jdk-provisioningPluginMarker",
+  "publishSoftware.sava.build.feature-jdk-provisioningPluginMarker"
+)
+tasks.named { name ->
+  name.startsWith("publishSoftware.sava.build.") && publishedMarkerTaskPrefixes.none(name::startsWith)
+}.configureEach {
   enabled = false
 }
 tasks.register("publishToGitHubPackages") {
   group = "publishing"
   dependsOn(
     "publishPluginMavenPublicationToSavaGithubPackagesRepository",
-    "publishSoftware.sava.buildPluginMarkerMavenPublicationToSavaGithubPackagesRepository"
+    "publishSoftware.sava.buildPluginMarkerMavenPublicationToSavaGithubPackagesRepository",
+    "publishSoftware.sava.build.feature.jdk-provisioningPluginMarkerMavenPublicationToSavaGithubPackagesRepository",
+    "publishSoftware.sava.build.feature-jdk-provisioningPluginMarkerMavenPublicationToSavaGithubPackagesRepository"
   )
 }
 
+// Keep in sync with src/main/kotlin/software.sava.build.feature.publish-maven-central.gradle.kts
+// (this build produces the convention plugins, so it cannot apply them to itself).
 nmcpAggregation {
   centralPortal {
     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")

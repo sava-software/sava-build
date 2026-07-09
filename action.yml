@@ -65,7 +65,7 @@ runs:
         release: ${{ inputs.gradle-java-version }}
 
     - run: |
-        printf "org.gradle.java.home=%s" "$JAVA_HOME" > gradle.properties
+        printf "\norg.gradle.java.home=%s" "$JAVA_HOME" >> gradle.properties
         java --version
       shell: bash
       if: ${{ inputs.gradle-java-version != steps.java-version.outputs.java-version }}
@@ -75,7 +75,7 @@ runs:
         website: ${{ inputs.jdk-src }}
         release: ${{ steps.java-version.outputs.java-version }}
 
-    - run: printf "org.gradle.java.home=%s" "$JAVA_HOME" > gradle.properties
+    - run: printf "\norg.gradle.java.home=%s" "$JAVA_HOME" >> gradle.properties
       shell: bash
       if: ${{ inputs.gradle-java-version == steps.java-version.outputs.java-version }}
 

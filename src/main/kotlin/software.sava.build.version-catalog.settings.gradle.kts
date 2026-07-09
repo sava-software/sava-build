@@ -3,6 +3,8 @@ val (gprUser, gprToken) = githubPackagesCredentials()
 
 dependencyResolutionManagement {
   @Suppress("UnstableApiUsage")
+  repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
+  @Suppress("UnstableApiUsage")
   repositories {
     gradlePluginPortal()
     mavenCentral()
@@ -14,6 +16,12 @@ dependencyResolutionManagement {
           password = gprToken
         }
       }
+    } else {
+      logger.warn(
+        "GitHub Packages repository for the sava version catalog disabled: set the Gradle " +
+          "properties 'savaGithubPackagesUsername' and 'savaGithubPackagesPassword' " +
+          "(or the GITHUB_ACTOR and GITHUB_TOKEN environment variables) to enable it."
+      )
     }
   }
   versionCatalogs {

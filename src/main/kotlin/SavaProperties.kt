@@ -20,6 +20,16 @@ fun Settings.githubPackagesCredentials(): Pair<String?, String?> {
   return gprUser to gprToken
 }
 
+// Additional GitHub Packages repositories, from the 'extraGithubPackageRepos' property
+// (gradle/sava.properties or -P): comma-separated 'owner/repo' entries or full URLs.
+fun Settings.extraGithubPackageRepos(): Set<String> =
+  savaProperty("extraGithubPackageRepos")
+    .split(',')
+    .map(String::trim)
+    .filter(String::isNotEmpty)
+    .map { if (it.startsWith("https://")) it else "https://maven.pkg.github.com/$it" }
+    .toSet()
+
 fun Project.orgName(defaultValue: String) = savaProperty("orgName", defaultValue)
 fun Project.orgPathSegment(defaultValue: String) = savaProperty("orgPathSegment", defaultValue)
 fun Project.productDescription() = savaProperty("productDescription")
@@ -36,13 +46,17 @@ private fun Project.savaProperty(name: String, defaultValue: String = ""): Strin
   val savaPropertiesFile = isolated.rootProject.projectDirectory.file("gradle/sava.properties")
   val properties = providers.fileContents(savaPropertiesFile).asText
     .map { content -> Properties().apply { load(content.reader()) } }
-  return properties.map { it.getProperty(name, defaultValue) }.get()
+  return properties.map { it.getProperty(name, defaultValue) }.getOrElse(defaultValue)
 }
 
 private fun Settings.savaProperty(name: String, defaultValue: String = ""): String {
+  val gradleProperty = providers.gradleProperty(name)
+  if (gradleProperty.isPresent) {
+    return gradleProperty.get()
+  }
   @Suppress("UnstableApiUsage")
   val savaPropertiesFile = layout.settingsDirectory.file("gradle/sava.properties")
   val properties = providers.fileContents(savaPropertiesFile).asText
     .map { content -> Properties().apply { load(content.reader()) } }
-  return properties.map { it.getProperty(name, defaultValue) }.get()
+  return properties.map { it.getProperty(name, defaultValue) }.getOrElse(defaultValue)
 }
