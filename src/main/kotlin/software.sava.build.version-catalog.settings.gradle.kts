@@ -20,7 +20,7 @@ dependencyResolutionManagement {
       logger.warn(
         "GitHub Packages repository for the sava version catalog disabled: set the Gradle " +
           "properties 'savaGithubPackagesUsername' and 'savaGithubPackagesPassword' " +
-          "(or the GITHUB_ACTOR and GITHUB_TOKEN environment variables) to enable it."
+          "(or the ORG_GRADLE_PROJECT_savaGithubPackages* environment variables) to enable it."
       )
     }
   }

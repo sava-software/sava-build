@@ -7,16 +7,12 @@ fun Project.javaVendor(defaultValue: String) = savaProperty("javaVendor", defaul
 fun Project.solanaBOMVersion() = savaProperty("solanaBOMVersion")
 fun Settings.solanaBOMVersion() = savaProperty("solanaBOMVersion")
 
-// Shared GitHub Packages credentials resolution for settings scripts
+// Shared GitHub Packages credentials resolution for settings scripts.
+// gradleProperty also covers the ORG_GRADLE_PROJECT_savaGithubPackages* environment
+// variables set by the reusable workflows: Gradle maps them to properties automatically.
 fun Settings.githubPackagesCredentials(): Pair<String?, String?> {
-  val gprUser = providers.gradleProperty("savaGithubPackagesUsername")
-    .orElse(providers.environmentVariable("ORG_GRADLE_PROJECT_savaGithubPackagesUsername"))
-    .orElse(providers.environmentVariable("GITHUB_ACTOR"))
-    .orNull
-  val gprToken = providers.gradleProperty("savaGithubPackagesPassword")
-    .orElse(providers.environmentVariable("ORG_GRADLE_PROJECT_savaGithubPackagesPassword"))
-    .orElse(providers.environmentVariable("GITHUB_TOKEN"))
-    .orNull
+  val gprUser = providers.gradleProperty("savaGithubPackagesUsername").orNull
+  val gprToken = providers.gradleProperty("savaGithubPackagesPassword").orNull
   return gprUser to gprToken
 }
 

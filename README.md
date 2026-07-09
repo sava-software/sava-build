@@ -24,8 +24,8 @@ savaGithubPackagesUsername=GITHUB_USERNAME
 savaGithubPackagesPassword=GITHUB_TOKEN
 ```
 
-In CI these fall back to the `GITHUB_ACTOR` / `GITHUB_TOKEN` environment variables, or may be
-passed as `ORG_GRADLE_PROJECT_savaGithubPackagesUsername` / `..Password`. If no credentials are
+In CI these are passed as the `ORG_GRADLE_PROJECT_savaGithubPackagesUsername` / `..Password`
+environment variables, which Gradle maps to the properties automatically. If no credentials are
 found the GitHub Packages repositories are skipped with a warning.
 
 ### settings.gradle.kts

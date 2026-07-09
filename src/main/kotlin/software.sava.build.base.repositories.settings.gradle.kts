@@ -31,7 +31,7 @@ dependencyResolutionManagement {
       logger.warn(
         "GitHub Packages repositories disabled: set the Gradle properties " +
           "'savaGithubPackagesUsername' and 'savaGithubPackagesPassword' " +
-          "(or the GITHUB_ACTOR and GITHUB_TOKEN environment variables) to enable them. " +
+          "(or the ORG_GRADLE_PROJECT_savaGithubPackages* environment variables) to enable them. " +
           "Dependencies hosted on GitHub Packages will fail to resolve."
       )
     }
