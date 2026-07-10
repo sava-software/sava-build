@@ -24,6 +24,21 @@ abstract class SavaAttestationsExtension {
   /** Fail when a matching artifact has no attestation (default true). */
   abstract val requireAttestations: Property<Boolean>
 
+  /** Also verify the sources and javadoc jars of matching artifacts (default true). */
+  abstract val verifyDocumentation: Property<Boolean>
+
+  /**
+   * Also verify the sava-build plugin jar this build is running (default true). A
+   * locally built plugin (composite build) has no attestation and reports as missing.
+   */
+  abstract val verifyBuildPlugin: Property<Boolean>
+
+  /**
+   * Identity for the plugin jar's attestation; unlike libraries, sava-build is
+   * published (and attested) by its own 'gradle_plugin_publish.yml' workflow.
+   */
+  abstract val buildPluginIdentityRegexp: Property<String>
+
   /** cosign executable used to verify attestation bundles (default "cosign"). */
   abstract val cosignExecutable: Property<String>
 

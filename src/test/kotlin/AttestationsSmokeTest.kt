@@ -66,6 +66,9 @@ class AttestationsSmokeTest {
         savaAttestations {
           cosignExecutable = "${cosignStub.absolutePath}"
           githubToken = "test-token"
+          // Off by default so artifact counts stay focused on the fixture dependency;
+          // the plugin-jar test overrides it.
+          verifyBuildPlugin = false
           $extraConfig
         }
 
@@ -125,6 +128,31 @@ class AttestationsSmokeTest {
 
       assertTrue(result.output.contains("fake-lib-1.0.0.jar: NO ATTESTATION"), result.output)
       assertTrue(result.output.contains("Tolerated because"), result.output)
+    } finally {
+      server.stop(0)
+    }
+  }
+
+  @Test
+  fun `verifies the sava-build plugin jar it is running`() {
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext("/orgs/sava-software/attestations/") { exchange ->
+      exchange.requestBody.readAllBytes()
+      val body = """{"attestations":[{"bundle":{"mock":"sigstore-bundle"}}]}""".toByteArray()
+      exchange.sendResponseHeaders(200, body.size.toLong())
+      exchange.responseBody.use { it.write(body) }
+    }
+    server.start()
+    try {
+      writeFixture(server.address.port, extraConfig = "verifyBuildPlugin = true")
+      val result = GradleRunner.create()
+        .withProjectDir(fixtureDir)
+        .withArguments("--configuration-cache", "verifySavaAttestations")
+        .build()
+
+      assertTrue(result.output.contains("sava-build.jar: VERIFIED"), result.output)
+      assertTrue(result.output.contains("fake-lib-1.0.0.jar: VERIFIED"), result.output)
+      assertTrue(result.output.contains("verified=2 missing=0 failed=0"), result.output)
     } finally {
       server.stop(0)
     }

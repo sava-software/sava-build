@@ -130,7 +130,7 @@ no version required, they resolve from the settings classpath.
 | `software.sava.build.base.version` | Sets the project version from `-Pversion`. |
 | `software.sava.build.feature.compile` | Java toolchain from `javaVersion` / `javaVendor`. |
 | `software.sava.build.feature.test` | JUnit test logging and strict test-dependency analysis. |
-| `software.sava.build.check.attestations` | `verifySavaAttestations` task: verifies the GitHub build-provenance attestations of resolved sava dependencies (sha256 lookup in the org attestation store, cosign verification against the reusable publish workflow's identity). Missing attestations warn until `savaAttestations.requireAttestations = true`; failed verifications always fail. Configure via `savaAttestations {}`; needs a `cosign` executable or a Docker image passed as `-PsavaCosignImage=...`. Applied by `java-module`; not part of `check` (requires network). |
+| `software.sava.build.check.attestations` | `verifySavaAttestations` task: verifies the GitHub build-provenance attestations of resolved sava dependencies (sha256 lookup in the org attestation store, cosign verification against the reusable publish workflow's identity), plus their sources/javadoc jars and the sava-build plugin jar in use (attested by `gradle_plugin_publish.yml`). Missing attestations warn until `savaAttestations.requireAttestations = true`; failed verifications always fail. Configure via `savaAttestations {}`; needs a `cosign` executable or a Docker image passed as `-PsavaCosignImage=...`. Applied by `java-module`; not part of `check` (requires network). |
 | `software.sava.build.feature.javadoc` | Lenient javadoc (`Xdoclint:none`, HTML5). |
 | `software.sava.build.check.dependencies` | [Dependency analysis](https://github.com/autonomousapps/dependency-analysis-gradle-plugin) and module-directive scope checks wired into `check`. |
 
@@ -219,8 +219,47 @@ jobs:
 
 Secrets: `READ_SAVA_PACKAGES` (read token for dependencies), `GPG_PUBLISH_SECRET` /
 `GPG_PUBLISH_PHRASE` (signing), and `MAVEN_CENTRAL_TOKEN` / `MAVEN_CENTRAL_SECRET`
-(Central Portal). Published-package attestations can be verified with
-[scripts/verify-package-attestations.sh](scripts/verify-package-attestations.sh).
+(Central Portal). Published-package attestations can be verified with the
+`verifySavaAttestations` task ([check.attestations](#project-plugins)), which covers the
+resolved library jars, their sources/javadoc jars, and the sava-build plugin jar itself.
+
+## Verifying sava artifacts
+
+Two independent trust roots cover published sava artifacts; using both means an attacker
+has to compromise two separate systems:
+
+1. **Build provenance (GitHub / Sigstore)** — the `verifySavaAttestations` task
+   ([check.attestations](#project-plugins)) proves the exact bytes came out of the
+   expected GitHub workflow.
+2. **PGP signatures (sava release key)** — every artifact is signed with:
+
+   ```
+   pub  ed25519 2025-06-13  jpe7s <jpe7s.salt188@passfwd.com>
+        01870AD9C9DFBB1F3502D06FB89447F3AD5E2ABF
+   ```
+
+Signature checking is deliberately **not** a convention plugin: Gradle's built-in
+[dependency verification](https://docs.gradle.org/current/userguide/dependency_verification.html)
+enforces signatures at resolution time — before any resolved code (including settings
+plugins like sava-build itself) can run — and it is configured by a file Gradle reads
+directly, on purpose outside the reach of plugins. To adopt it in a consumer repository:
+
+```bash
+./gradlew --write-verification-metadata pgp,sha256 build
+```
+
+then review the generated `gradle/verification-metadata.xml` and trust the sava key for
+sava artifacts, e.g.:
+
+```xml
+<trusted-key id="01870AD9C9DFBB1F3502D06FB89447F3AD5E2ABF" group="^software[.]sava($|([.].*))" regex="true"/>
+```
+
+The build classpath of a consumer repository resolves roughly the same third-party
+plugins as sava-build itself, so this repository's
+[gradle/verification-metadata.xml](gradle/verification-metadata.xml) `<trusted-keys>`
+section is a reviewed starting point for those entries. Keep the generated sha256 entries
+for unsigned artifacts, and regenerate with the same command after dependency bumps.
 
 ## Developing sava-build
 

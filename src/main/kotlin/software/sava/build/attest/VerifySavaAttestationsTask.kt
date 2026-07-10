@@ -39,6 +39,24 @@ abstract class VerifySavaAttestationsTask : DefaultTask() {
   @get:Internal
   abstract val artifactGroups: MapProperty<String, String>
 
+  /** Resolved sources/javadoc artifact absolute path to its Maven group id. Only
+   *  queried (and therefore only resolved) when [verifyDocumentation] is set. */
+  @get:Internal
+  abstract val documentationArtifacts: MapProperty<String, String>
+
+  @get:Input
+  abstract val verifyDocumentation: Property<Boolean>
+
+  /** The sava-build plugin jar this build is running, when it could be located. */
+  @get:Internal
+  abstract val buildPluginJar: org.gradle.api.file.RegularFileProperty
+
+  @get:Input
+  abstract val verifyBuildPlugin: Property<Boolean>
+
+  @get:Input
+  abstract val buildPluginIdentityRegexp: Property<String>
+
   /** Maven group ids to verify; other artifacts are ignored. */
   @get:Input
   abstract val groups: SetProperty<String>
@@ -83,16 +101,32 @@ abstract class VerifySavaAttestationsTask : DefaultTask() {
     apiBaseUrl.convention("https://api.github.com")
     cosignExecutable.convention("cosign")
     requireAttestations.convention(false)
+    verifyDocumentation.convention(true)
+    verifyBuildPlugin.convention(true)
+    buildPluginIdentityRegexp.convention(
+      "^https://github\\.com/sava-software/sava-build/\\.github/workflows/gradle_plugin_publish\\.yml@refs/"
+    )
   }
 
   @TaskAction
   fun verify() {
     val groupSet = groups.get()
-    val jars = artifactGroups.get()
+    fun matching(artifacts: Map<String, String>): List<File> = artifacts
       .filterValues { it in groupSet }
       .keys.map(::File)
       .filter { it.isFile && it.name.endsWith(".jar") }
       .sortedBy { it.name }
+
+    val libraryIdentity = certificateIdentityRegexp.get()
+    // File to the certificate identity its attestation must carry.
+    val jars = linkedMapOf<File, String>()
+    if (verifyBuildPlugin.get()) {
+      buildPluginJar.orNull?.asFile?.let { jars[it] = buildPluginIdentityRegexp.get() }
+    }
+    matching(artifactGroups.get()).forEach { jars[it] = libraryIdentity }
+    if (verifyDocumentation.get()) {
+      matching(documentationArtifacts.get()).forEach { jars[it] = libraryIdentity }
+    }
     if (jars.isEmpty()) {
       logger.lifecycle("No resolved dependencies match groups {}; nothing to verify.", groupSet)
       return
@@ -111,9 +145,11 @@ abstract class VerifySavaAttestationsTask : DefaultTask() {
     val failed = mutableListOf<String>()
 
     val cache = verificationCache.get()
-    for (jar in jars) {
+    for ((jar, identityRegexp) in jars) {
       val digest = sha256(jar)
-      val (outcome, fromCache) = cache.memoize(digest) { verifyJar(client, workDir, jar, digest) }
+      val (outcome, fromCache) = cache.memoize("$digest:$identityRegexp") {
+        verifyJar(client, workDir, jar, digest, identityRegexp)
+      }
       val suffix = if (fromCache) " (already verified in this build)" else ""
       when (outcome) {
         AttestationOutcome.VERIFIED -> {
@@ -150,7 +186,13 @@ abstract class VerifySavaAttestationsTask : DefaultTask() {
     }
   }
 
-  private fun verifyJar(client: HttpClient, workDir: File, jar: File, digest: String): AttestationOutcome {
+  private fun verifyJar(
+    client: HttpClient,
+    workDir: File,
+    jar: File,
+    digest: String,
+    identityRegexp: String
+  ): AttestationOutcome {
     val bundles = fetchAttestationBundles(client, digest)
     if (bundles.isEmpty()) {
       return AttestationOutcome.MISSING
@@ -162,7 +204,7 @@ abstract class VerifySavaAttestationsTask : DefaultTask() {
     val ok = bundles.withIndex().any { (index, bundle) ->
       val bundleFile = File(workDir, "${jar.name}.bundle.$index.sigstore.json")
       bundleFile.writeText(bundle)
-      cosignVerify(workDir, jarCopy.name, bundleFile.name)
+      cosignVerify(workDir, jarCopy.name, bundleFile.name, identityRegexp)
     }
     return if (ok) AttestationOutcome.VERIFIED else AttestationOutcome.FAILED
   }
@@ -217,12 +259,12 @@ abstract class VerifySavaAttestationsTask : DefaultTask() {
     }
   }
 
-  private fun cosignVerify(workDir: File, jarName: String, bundleName: String): Boolean {
+  private fun cosignVerify(workDir: File, jarName: String, bundleName: String, identityRegexp: String): Boolean {
     val cosignArgs = listOf(
       "verify-blob-attestation",
       "--new-bundle-format",
       "--bundle", bundleName,
-      "--certificate-identity-regexp", certificateIdentityRegexp.get(),
+      "--certificate-identity-regexp", identityRegexp,
       "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
       "--type", "slsaprovenance1",
       jarName
