@@ -2,9 +2,6 @@ plugins {
   id("java-base")
   id("maven-publish")
   id("signing")
-  // nmcp is superseded by the in-house Central Portal staging below; uncomment to fall
-  // back to it (see software.sava.build.feature.publish-maven-central.gradle.kts).
-  // id("com.gradleup.nmcp")
 }
 
 val orgName = orgName("Sava Software")
@@ -117,8 +114,7 @@ publishing {
   }
 }
 
-// --- In-house Central Portal staging, mirroring nmcp's 'nmcpProducer' variant. Runs in
-// parallel with nmcp until the replacement is confirmed; consumed by the
+// --- Central Portal staging, consumed by the
 // 'software.sava.build.feature.publish-maven-central' aggregation. ---
 
 // The staging repository accumulates whatever was published before, so wipe it first to

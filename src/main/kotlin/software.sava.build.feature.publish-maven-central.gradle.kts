@@ -1,25 +1,11 @@
 import software.sava.build.publish.CentralPortalReleaseTask
 import software.sava.build.publish.CentralPortalUploadTask
 
-// Keep in sync with the nmcpAggregation and checksum-exclusion setup in the root
-// build.gradle.kts, which duplicates it because it cannot apply the convention
-// plugins it produces.
+// Keep in sync with the Central Portal deployment setup in the root build.gradle.kts,
+// which duplicates it because it cannot apply the convention plugins it produces.
 plugins {
   id("maven-publish")
-  // nmcp is superseded by the in-house Central Portal pipeline below, which keeps the
-  // 'nmcpAggregation' dependency scope and 'publishAggregationToCentralPortal' task names
-  // working. To fall back to nmcp, uncomment this (and in feature.publish) and remove the
-  // in-house declarations that reuse those names.
-  // id("com.gradleup.nmcp.aggregation")
 }
-
-// nmcpAggregation {
-//   centralPortal {
-//     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
-//     password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
-//     publishingType = "USER_MANAGED"
-//   }
-// }
 
 // Allow callers to drop selected checksum files (e.g. md5, sha1, sha256, sha512) from the
 // Maven Central deployment bundle via '-PmavenCentralExcludeChecksums=md5,sha1'.
@@ -27,16 +13,8 @@ val mavenCentralExcludeChecksums = providers.gradleProperty("mavenCentralExclude
   .map { value -> value.split(",").map(String::trim).filter(String::isNotEmpty) }
   .getOrElse(emptyList())
 
-// if (mavenCentralExcludeChecksums.isNotEmpty()) {
-//   tasks.named<Zip>("nmcpZipAggregation") {
-//     mavenCentralExcludeChecksums.forEach { extension ->
-//       exclude("**/*.$extension")
-//     }
-//   }
-// }
-
-// --- In-house Central Portal deployment. Aggregated projects expose their staged
-// publications through the 'savaCentralStagingElements' variant wired in
+// --- Central Portal deployment. Aggregated projects expose their staged publications
+// through the 'savaCentralStagingElements' variant wired in
 // 'software.sava.build.feature.publish'. 'nmcpAggregation' is kept as a deprecated alias
 // of 'centralPortalAggregation' so existing consumer build files keep working. ---
 

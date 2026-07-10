@@ -13,10 +13,6 @@ plugins {
   `kotlin-dsl`
   id("maven-publish")
   id("signing")
-  // nmcp is superseded by the in-house Central Portal pipeline below; uncomment (along
-  // with the nmcp blocks further down) to fall back to it.
-  // id("com.gradleup.nmcp")
-  // id("com.gradleup.nmcp.aggregation")
 }
 
 group = "software.sava"
@@ -29,10 +25,6 @@ dependencies {
   // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
   implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.16.1")
 
-  // https://github.com/GradleUp/nmcp
-  val nmcpVersion = providers.gradleProperty("nmcpVersion").orNull
-    ?: error("Missing required Gradle property 'nmcpVersion'")
-  implementation("com.gradleup.nmcp:nmcp:$nmcpVersion")
   // https://github.com/gradle/foojay-toolchains
   // https://plugins.gradle.org/plugin/org.gradle.toolchains.foojay-resolver-convention
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
@@ -118,33 +110,11 @@ tasks.register("publishToGitHubPackages") {
   )
 }
 
-// Keep in sync with src/main/kotlin/software.sava.build.feature.publish-maven-central.gradle.kts
-// (this build produces the convention plugins, so it cannot apply them to itself).
-// nmcpAggregation {
-//   centralPortal {
-//     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
-//     password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
-//     publishingType = "USER_MANAGED"
-//   }
-// }
-//
-// dependencies {
-//   nmcpAggregation(project(path))
-// }
-
 // Allow callers to drop selected checksum files (e.g. md5, sha1, sha256, sha512) from the
 // Maven Central deployment bundle via '-PmavenCentralExcludeChecksums=md5,sha1'.
 val mavenCentralExcludeChecksums = providers.gradleProperty("mavenCentralExcludeChecksums")
   .map { value -> value.split(",").map(String::trim).filter(String::isNotEmpty) }
   .getOrElse(emptyList())
-
-// if (mavenCentralExcludeChecksums.isNotEmpty()) {
-//   tasks.named<Zip>("nmcpZipAggregation") {
-//     mavenCentralExcludeChecksums.forEach { extension ->
-//       exclude("**/*.$extension")
-//     }
-//   }
-// }
 
 val centralStagingDir = layout.buildDirectory.dir("central-portal-staging")
 
@@ -163,9 +133,10 @@ publishing {
   }
 }
 
-// --- In-house Central Portal deployment, running in parallel with nmcp until confirmed.
-// Keep in sync with src/main/kotlin/software.sava.build.feature.publish.gradle.kts and
-// software.sava.build.feature.publish-maven-central.gradle.kts. ---
+// --- In-house Central Portal deployment. Keep in sync with
+// src/main/kotlin/software.sava.build.feature.publish.gradle.kts and
+// software.sava.build.feature.publish-maven-central.gradle.kts
+// (this build produces the convention plugins, so it cannot apply them to itself). ---
 
 val cleanSavaCentralStaging = tasks.register<Delete>("cleanSavaCentralStaging") {
   delete(centralStagingDir)
