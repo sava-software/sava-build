@@ -130,6 +130,7 @@ no version required, they resolve from the settings classpath.
 | `software.sava.build.base.version` | Sets the project version from `-Pversion`. |
 | `software.sava.build.feature.compile` | Java toolchain from `javaVersion` / `javaVendor`. |
 | `software.sava.build.feature.test` | JUnit test logging and strict test-dependency analysis. |
+| `software.sava.build.check.attestations` | `verifySavaAttestations` task: verifies the GitHub build-provenance attestations of resolved sava dependencies (sha256 lookup in the org attestation store, cosign verification against the reusable publish workflow's identity). Missing attestations warn until `savaAttestations.requireAttestations = true`; failed verifications always fail. Configure via `savaAttestations {}`; needs a `cosign` executable or a Docker image passed as `-PsavaCosignImage=...`. Applied by `java-module`; not part of `check` (requires network). |
 | `software.sava.build.feature.javadoc` | Lenient javadoc (`Xdoclint:none`, HTML5). |
 | `software.sava.build.check.dependencies` | [Dependency analysis](https://github.com/autonomousapps/dependency-analysis-gradle-plugin) and module-directive scope checks wired into `check`. |
 

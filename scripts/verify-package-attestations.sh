@@ -33,6 +33,13 @@
 #   GROUP                 Maven groupId             (default: software.sava)
 #   ARTIFACT              Maven artifactId          (default: sava-build)
 #   WORKFLOW              Workflow file name        (default: gradle_plugin_publish.yml)
+#   WORKFLOW_REPO         Repository that DEFINES the attesting workflow
+#                         (default: REPO). Artifacts published through the
+#                         reusable publish.yml run in the consumer repository
+#                         (REPO, which stores the jars and attestations), but
+#                         the signing certificate's identity references the
+#                         called workflow, i.e. sava-build's publish.yml — so
+#                         pass WORKFLOW_REPO=sava-build for consumer artifacts.
 #   CLASSIFIERS           Space-separated jar classifiers to verify. Use the
 #                         literal "MAIN" for the classifier-less main jar.
 #                         (default: "MAIN sources javadoc")
@@ -48,14 +55,16 @@ REPO="${REPO:-sava-build}"
 GROUP="${GROUP:-software.sava}"
 ARTIFACT="${ARTIFACT:-sava-build}"
 WORKFLOW="${WORKFLOW:-gradle_plugin_publish.yml}"
+WORKFLOW_REPO="${WORKFLOW_REPO:-${REPO}}"
 OIDC_ISSUER="https://token.actions.githubusercontent.com"
 
-# The Fulcio certificate SAN that `actions/attest` is issued, for a tag-push run
-# of the workflow, looks like:
+# The Fulcio certificate SAN that `actions/attest` is issued is built from the
+# OIDC token's job_workflow_ref, e.g. for a tag-push run of the workflow:
 #   https://github.com/<owner>/<repo>/.github/workflows/<workflow>@refs/tags/<tag>
-# We match it (any git ref) with a regexp so the same script keeps working
-# across releases.
-CERT_IDENTITY_REGEXP="^https://github.com/${OWNER}/${REPO}/\.github/workflows/${WORKFLOW}@refs/"
+# For a job defined by a REUSABLE workflow, job_workflow_ref points at the
+# called workflow (WORKFLOW_REPO), not the calling repository (REPO). We match
+# any git ref with a regexp so the same script keeps working across releases.
+CERT_IDENTITY_REGEXP="^https://github.com/${OWNER}/${WORKFLOW_REPO}/\.github/workflows/${WORKFLOW}@refs/"
 
 # Default to the main jar plus the sources/javadoc jars that the attest step
 # also covers via `**/build/libs/*.jar`. A leading empty element ("") means the

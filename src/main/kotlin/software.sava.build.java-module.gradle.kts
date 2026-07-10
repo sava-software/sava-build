@@ -7,4 +7,5 @@ plugins {
   id("software.sava.build.feature.javadoc")
   id("software.sava.build.feature.publish")
   id("software.sava.build.check.dependencies")
+  id("software.sava.build.check.attestations")
 }
