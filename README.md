@@ -122,7 +122,7 @@ no version required, they resolve from the settings classpath.
 | Plugin | Description |
 |---|---|
 | `software.sava.build.java-module` | Java library with modules: dependency rules, versioning, compilation, testing, javadoc, publishing, and dependency checks. |
-| `software.sava.build.feature.jlink` | [jlink images](https://github.com/iherasymenko/jlink-gradle-plugin) with service binding and unsigned-jar tolerance. Adds `image`, `imageRun`, `imageModules`, ... tasks. |
+| `software.sava.build.feature.jlink` | jlink images built by invoking the toolchain JDK's `jlink` directly, with service binding and unsigned-jar tolerance. Configured via `jlinkApplication {}`; adds `image`, `imageRun`, and `imageModules` tasks with output under `build/images/<applicationName>`. |
 | `software.sava.build.feature.publish` | Maven publishing with sources/javadoc jars, POM metadata from [sava.properties](#gradlesavaproperties), optional GPG signing, and the `savaGithubPackagesPublish` repository. Applied by `java-module`. |
 | `software.sava.build.feature.publish-maven-central` | Maven Central bundling via [nmcp](https://github.com/GradleUp/nmcp) for the `:aggregation` project. |
 | `software.sava.build.modules.postgresql` | Opt-in [extra-java-module-info](https://github.com/gradlex-org/extra-java-module-info) patch converting the PostgreSQL JDBC driver into an explicit module (required for jlink). |

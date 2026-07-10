@@ -16,9 +16,6 @@ dependencies {
   // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
   implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.16.1")
 
-  // https://github.com/iherasymenko/jlink-gradle-plugin
-  // https://plugins.gradle.org/plugin/com.github.iherasymenko.jlink
-  implementation("com.github.iherasymenko.jlink:jlink-plugin:0.9")
   // https://docs.gradle.com/develocity/gradle-plugin/current/
   implementation("com.gradle:develocity-gradle-plugin:4.5.0")
   // https://github.com/GradleUp/nmcp
