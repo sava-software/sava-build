@@ -1,5 +1,33 @@
 # Changelog
 
+## [21.5.0](https://github.com/sava-software/sava-build/compare/21.4.3...21.5.0) (2026-07-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **build:** The `com.gradleup.nmcp` plugin has been replaced by a custom implementation. Consumer projects must update to `publishCentralPortalDeployment` and `releaseCentralPortalDeployment` tasks.
+* **jlink:** The `com.github.iherasymenko.jlink` plugin has been removed. Consumer projects must migrate to the new `software.sava.build.feature.jlink`. No build script changes are required if using the `jlinkApplication` block.
+
+### Features
+
+* **build:** replace nmcp pipeline with custom Central Portal deployment ([ff5abd0](https://github.com/sava-software/sava-build/commit/ff5abd0ff53b051bded7bc399ec42df220d5a826))
+* **jlink:** replace deprecated plugin with in-house implementation ([289b614](https://github.com/sava-software/sava-build/commit/289b614efeaa40e31f79d511db2e6b7bc1b6e258))
+
+
+### Build System
+
+* **deps:** bump org.junit.jupiter:junit-jupiter from 5.13.4 to 6.1.1 ([#51](https://github.com/sava-software/sava-build/issues/51)) ([2e13e79](https://github.com/sava-software/sava-build/commit/2e13e794640697ba9ec2078345d1de6126cd5fa3))
+
+
+### Chores
+
+* release 21.5.0 ([a5d932c](https://github.com/sava-software/sava-build/commit/a5d932c60604e0ca84a3145174e3327e83e2ff9c))
+
+
+### Documentation
+
+* **build:** clarify requirements for JDK provisioning plugin ([21a3a22](https://github.com/sava-software/sava-build/commit/21a3a22c5c902427fd754b1e904cc827c8dcf700))
+
 ## [21.4.3](https://github.com/sava-software/sava-build/compare/21.4.2...21.4.3) (2026-07-09)
 
 
