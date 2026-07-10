@@ -50,6 +50,12 @@ jobs:
           ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
 
+      # 'publishAggregationToCentralPortal' is the deprecated alias of
+      # 'publishCentralPortalDeployment'. Consumers use this workflow @main while their
+      # builds pin older sava-build plugin versions, and the alias is the only task name
+      # that exists in both generations. Switch to the new name once every consumer
+      # repository using this workflow is on a plugin version that provides
+      # 'publishCentralPortalDeployment'.
       - name: Maven Central
         run: ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} -PmavenCentralExcludeChecksums="${{ inputs.maven-central-exclude-checksums }}" :aggregation:publishAggregationToCentralPortal
         env:

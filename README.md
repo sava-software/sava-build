@@ -105,12 +105,11 @@ org.postgresql.jdbc=org.postgresql:postgresql
 
 | Plugin | Description |
 |---|---|
-| `software.sava.build` | Entry point. Applies Develocity build scans, centralized repositories, and module discovery (`javaModules {}`). Includes the `:aggregation` project when `gradle/aggregation/build.gradle.kts` exists ([Publishing](#publishing)). |
+| `software.sava.build` | Entry point. Applies centralized repositories and module discovery (`javaModules {}`). Includes the `:aggregation` project when `gradle/aggregation/build.gradle.kts` exists ([Publishing](#publishing)). |
 | `software.sava.build.feature.jdk-provisioning` | Auto-provisions JDK toolchains via the [foojay resolver](https://github.com/gradle/foojay-toolchains). Separate from the entry point so provisioning (and its network access) stays opt-in. |
 | `software.sava.build.feature-jdk-provisioning` | **Deprecated** alias for the above. |
 | `software.sava.build.version-catalog` | Standalone: exposes the solana version catalog as `savaCatalog` without the rest of the conventions. |
 | `software.sava.build.base.repositories` | Centralized dependency repositories: Maven Central plus sava GitHub Packages (and `extraGithubPackageRepos`). Project-level `repositories {}` blocks are rejected (`FAIL_ON_PROJECT_REPOS`). Applied by `software.sava.build`. |
-| `software.sava.build.report.develocity` | Build scan configuration; local builds publish only with `--scan`. Applied by `software.sava.build`. |
 
 ### Project plugins
 
@@ -124,7 +123,7 @@ no version required, they resolve from the settings classpath.
 | `software.sava.build.java-module` | Java library with modules: dependency rules, versioning, compilation, testing, javadoc, publishing, and dependency checks. |
 | `software.sava.build.feature.jlink` | jlink images built by invoking the toolchain JDK's `jlink` directly, with service binding and unsigned-jar tolerance. Configured via `jlinkApplication {}`; adds `image`, `imageRun`, and `imageModules` tasks with output under `build/images/<applicationName>`. |
 | `software.sava.build.feature.publish` | Maven publishing with sources/javadoc jars, POM metadata from [sava.properties](#gradlesavaproperties), optional GPG signing, and the `savaGithubPackagesPublish` repository. Applied by `java-module`. |
-| `software.sava.build.feature.publish-maven-central` | Maven Central bundling via [nmcp](https://github.com/GradleUp/nmcp) for the `:aggregation` project. |
+| `software.sava.build.feature.publish-maven-central` | Maven Central publishing for the `:aggregation` project: stages, bundles (`zipCentralPortalDeployment`), and uploads (`publishCentralPortalDeployment`) deployments straight to the [Central Portal API](https://central.sonatype.org/publish/publish-portal-api/). The `nmcpAggregation` configuration and `publishAggregationToCentralPortal` task from the retired [nmcp](https://github.com/GradleUp/nmcp) plugin remain as deprecated aliases. |
 | `software.sava.build.modules.postgresql` | Opt-in [extra-java-module-info](https://github.com/gradlex-org/extra-java-module-info) patch converting the PostgreSQL JDBC driver into an explicit module (required for jlink). |
 | `software.sava.build.modules.gcp-kms` | Opt-in module patches for the Google Cloud KMS client and its non-modular transitive dependencies. |
 | `software.sava.build.base.dependency-rules` | Consistent resolution against the solana version catalog BOM. |
@@ -163,7 +162,8 @@ plugins {
 }
 
 dependencies {
-  nmcpAggregation(project(":my-module"))
+  // 'nmcpAggregation(...)' still works as a deprecated alias.
+  centralPortalAggregation(project(":my-module"))
 }
 
 tasks.register("publishToGitHubPackages") {
@@ -172,7 +172,8 @@ tasks.register("publishToGitHubPackages") {
 }
 ```
 
-- `./gradlew :aggregation:publishAggregationToCentralPortal` — bundle and upload to Maven Central.
+- `./gradlew :aggregation:publishCentralPortalDeployment` — bundle and upload to Maven Central
+  (`publishAggregationToCentralPortal` is a deprecated alias).
 - `./gradlew :aggregation:publishToGitHubPackages` — publish to GitHub Packages.
 
 Repositories that publish nothing (services) simply omit the aggregation build file.

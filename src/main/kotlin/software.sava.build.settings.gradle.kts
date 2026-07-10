@@ -1,5 +1,4 @@
 plugins {
-  id("software.sava.build.report.develocity")
   id("software.sava.build.base.repositories")
   id("org.gradlex.java-module-dependencies")
 }

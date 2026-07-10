@@ -1,9 +1,22 @@
+import groovy.json.JsonSlurper
+import java.io.IOException
+import java.net.URI
+import java.net.URLEncoder
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.time.Duration
+import java.util.Base64
+import java.util.UUID
+
 plugins {
   `kotlin-dsl`
   id("maven-publish")
   id("signing")
-  id("com.gradleup.nmcp")
-  id("com.gradleup.nmcp.aggregation")
+  // nmcp is superseded by the in-house Central Portal pipeline below; uncomment (along
+  // with the nmcp blocks further down) to fall back to it.
+  // id("com.gradleup.nmcp")
+  // id("com.gradleup.nmcp.aggregation")
 }
 
 group = "software.sava"
@@ -16,8 +29,6 @@ dependencies {
   // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
   implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.16.1")
 
-  // https://docs.gradle.com/develocity/gradle-plugin/current/
-  implementation("com.gradle:develocity-gradle-plugin:4.5.0")
   // https://github.com/GradleUp/nmcp
   val nmcpVersion = providers.gradleProperty("nmcpVersion").orNull
     ?: error("Missing required Gradle property 'nmcpVersion'")
@@ -109,17 +120,17 @@ tasks.register("publishToGitHubPackages") {
 
 // Keep in sync with src/main/kotlin/software.sava.build.feature.publish-maven-central.gradle.kts
 // (this build produces the convention plugins, so it cannot apply them to itself).
-nmcpAggregation {
-  centralPortal {
-    username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
-    password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
-    publishingType = "USER_MANAGED"
-  }
-}
-
-dependencies {
-  nmcpAggregation(project(path))
-}
+// nmcpAggregation {
+//   centralPortal {
+//     username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
+//     password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
+//     publishingType = "USER_MANAGED"
+//   }
+// }
+//
+// dependencies {
+//   nmcpAggregation(project(path))
+// }
 
 // Allow callers to drop selected checksum files (e.g. md5, sha1, sha256, sha512) from the
 // Maven Central deployment bundle via '-PmavenCentralExcludeChecksums=md5,sha1'.
@@ -127,13 +138,15 @@ val mavenCentralExcludeChecksums = providers.gradleProperty("mavenCentralExclude
   .map { value -> value.split(",").map(String::trim).filter(String::isNotEmpty) }
   .getOrElse(emptyList())
 
-if (mavenCentralExcludeChecksums.isNotEmpty()) {
-  tasks.named<Zip>("nmcpZipAggregation") {
-    mavenCentralExcludeChecksums.forEach { extension ->
-      exclude("**/*.$extension")
-    }
-  }
-}
+// if (mavenCentralExcludeChecksums.isNotEmpty()) {
+//   tasks.named<Zip>("nmcpZipAggregation") {
+//     mavenCentralExcludeChecksums.forEach { extension ->
+//       exclude("**/*.$extension")
+//     }
+//   }
+// }
+
+val centralStagingDir = layout.buildDirectory.dir("central-portal-staging")
 
 publishing {
   repositories {
@@ -143,6 +156,293 @@ publishing {
       // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
       credentials(PasswordCredentials::class)
     }
+    maven {
+      name = "savaCentralStaging"
+      url = uri(centralStagingDir.get().asFile)
+    }
+  }
+}
+
+// --- In-house Central Portal deployment, running in parallel with nmcp until confirmed.
+// Keep in sync with src/main/kotlin/software.sava.build.feature.publish.gradle.kts and
+// software.sava.build.feature.publish-maven-central.gradle.kts. ---
+
+val cleanSavaCentralStaging = tasks.register<Delete>("cleanSavaCentralStaging") {
+  delete(centralStagingDir)
+}
+tasks.withType<PublishToMavenRepository>().configureEach {
+  if (name.endsWith("ToSavaCentralStagingRepository")) {
+    dependsOn(cleanSavaCentralStaging)
+  }
+}
+
+val zipCentralPortalDeployment = tasks.register<Zip>("zipCentralPortalDeployment") {
+  group = "publishing"
+  description = "Zips the staged publications into a Central Portal deployment bundle"
+  dependsOn("publishAllPublicationsToSavaCentralStagingRepository")
+  from(centralStagingDir)
+  exclude("**/maven-metadata.xml*")
+  mavenCentralExcludeChecksums.forEach { extension ->
+    exclude("**/*.$extension")
+  }
+  destinationDirectory = layout.buildDirectory.dir("central-portal")
+  archiveFileName = "deployment.zip"
+}
+
+// Resolved eagerly: computing this with provider 'map' lambdas can capture the script
+// instance in the task state, which the configuration cache cannot serialize.
+val centralDeploymentVersion = providers.gradleProperty("version").getOrElse("")
+val centralDeploymentName = if (centralDeploymentVersion.isEmpty()) "sava-build" else "sava-build $centralDeploymentVersion"
+
+val publishCentralPortalDeployment = tasks.register<CentralPortalUpload>("publishCentralPortalDeployment") {
+  group = "publishing"
+  description = "Uploads the Central Portal deployment bundle (USER_MANAGED: review and release in the portal UI)"
+  bundle = zipCentralPortalDeployment.flatMap { it.archiveFile }
+  username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
+  password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
+  deploymentName = centralDeploymentName
+}
+
+// Releases a validated USER_MANAGED deployment without the portal UI:
+//   ./gradlew releaseCentralPortalDeployment -PcentralPortalDeploymentId=<id>
+tasks.register<CentralPortalRelease>("releaseCentralPortalDeployment") {
+  group = "publishing"
+  description = "Publishes a validated Central Portal deployment ('-PcentralPortalDeploymentId=...')"
+  deploymentId = providers.gradleProperty("centralPortalDeploymentId")
+  username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
+  password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
+}
+
+// Deprecated alias, named after the task the nmcp plugin used to provide, so existing
+// workflows keep working; invoke 'publishCentralPortalDeployment' instead.
+tasks.register("publishAggregationToCentralPortal") {
+  group = "publishing"
+  description = "Deprecated alias for publishCentralPortalDeployment"
+  dependsOn(publishCentralPortalDeployment)
+}
+
+// Inline duplicate of software.sava.build.publish.CentralPortalUploadTask: this build
+// compiles that class, so it cannot use it in its own build script.
+// https://central.sonatype.org/publish/publish-portal-api/
+abstract class CentralPortalUpload : DefaultTask() {
+
+  @get:InputFile
+  @get:PathSensitive(PathSensitivity.NONE)
+  abstract val bundle: RegularFileProperty
+
+  @get:Internal
+  abstract val username: Property<String>
+
+  @get:Internal
+  abstract val password: Property<String>
+
+  @get:Input
+  abstract val publishingType: Property<String>
+
+  @get:Input
+  abstract val deploymentName: Property<String>
+
+  @get:Input
+  abstract val baseUrl: Property<String>
+
+  @get:Input
+  abstract val awaitValidation: Property<Boolean>
+
+  @get:Input
+  abstract val validationTimeoutSeconds: Property<Long>
+
+  init {
+    publishingType.convention("USER_MANAGED")
+    baseUrl.convention("https://central.sonatype.com/api/v1/publisher")
+    awaitValidation.convention(true)
+    validationTimeoutSeconds.convention(600L)
+  }
+
+  @TaskAction
+  fun upload() {
+    val user = username.orNull
+      ?: error("Central Portal username is missing; set the MAVEN_CENTRAL_TOKEN environment variable.")
+    val pass = password.orNull
+      ?: error("Central Portal password is missing; set the MAVEN_CENTRAL_SECRET environment variable.")
+    val type = publishingType.get()
+    check(type == "USER_MANAGED" || type == "AUTOMATIC") {
+      "Invalid publishingType '$type'. Must be USER_MANAGED or AUTOMATIC."
+    }
+
+    val bundleFile = bundle.get().asFile
+    val boundary = "sava-${UUID.randomUUID()}"
+    val head = ("--$boundary\r\n"
+      + "Content-Disposition: form-data; name=\"bundle\"; filename=\"${bundleFile.name}\"\r\n"
+      + "Content-Type: application/octet-stream\r\n\r\n").toByteArray(Charsets.UTF_8)
+    val tail = "\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8)
+
+    val name = URLEncoder.encode(deploymentName.get(), Charsets.UTF_8)
+    val uri = URI("${baseUrl.get()}/upload?publishingType=$type&name=$name")
+    val token = Base64.getEncoder().encodeToString("$user:$pass".toByteArray(Charsets.UTF_8))
+    val request = HttpRequest.newBuilder(uri)
+      .header("Authorization", "Bearer $token")
+      .header("Content-Type", "multipart/form-data; boundary=$boundary")
+      .timeout(Duration.ofMinutes(10))
+      .POST(HttpRequest.BodyPublishers.ofByteArrays(listOf(head, bundleFile.readBytes(), tail)))
+      .build()
+
+    val client = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(10))
+      .build()
+    // The upload is the flakiest step of a release; retry transient failures. The portal
+    // is also known to intermittently return 401 'Invalid token', so 401 is retryable.
+    var response = client.send(request, HttpResponse.BodyHandlers.ofString())
+    var attempt = 1
+    while (response.statusCode() !in 200..299 && response.statusCode() != 404 && attempt < 3) {
+      logger.warn(
+        "Central Portal upload attempt {} failed with HTTP {}; retrying...",
+        attempt, response.statusCode()
+      )
+      Thread.sleep(1_000L * attempt)
+      response = client.send(request, HttpResponse.BodyHandlers.ofString())
+      attempt++
+    }
+    check(response.statusCode() in 200..299) {
+      "Central Portal upload failed with HTTP ${response.statusCode()}: ${response.body()}"
+    }
+    val deploymentId = response.body().trim().removeSurrounding("\"")
+    logger.lifecycle("Created Central Portal deployment {} ({}).", deploymentId, type)
+
+    if (awaitValidation.get()) {
+      awaitValidation(client, token, deploymentId, type)
+    } else {
+      logger.lifecycle("Validation not awaited; check $PORTAL_UI")
+    }
+  }
+
+  private fun awaitValidation(client: HttpClient, token: String, deploymentId: String, type: String) {
+    val statusUri = URI("${baseUrl.get()}/status?id=$deploymentId")
+    val request = HttpRequest.newBuilder(statusUri)
+      .header("Authorization", "Bearer $token")
+      .timeout(Duration.ofSeconds(30))
+      .POST(HttpRequest.BodyPublishers.noBody())
+      .build()
+
+    val deadline = System.nanoTime() + Duration.ofSeconds(validationTimeoutSeconds.get()).toNanos()
+    var delayMillis = 2_000L
+    var consecutiveAuthFailures = 0
+    while (true) {
+      val (state, detail) = fetchState(client, request)
+      // The portal intermittently returns 401 'Invalid token' for valid credentials, so
+      // only repeated auth failures are treated as real.
+      if (state == "AUTH_FAILED") {
+        check(++consecutiveAuthFailures < 3) {
+          "Central Portal rejected the credentials 3 times in a row: $detail"
+        }
+      } else {
+        consecutiveAuthFailures = 0
+      }
+      when (state) {
+        "FAILED" ->
+          error("Central Portal deployment $deploymentId failed validation: $detail\nDrop it at $PORTAL_UI")
+
+        "VALIDATED" if type == "USER_MANAGED" -> {
+          logger.lifecycle("Deployment {} passed validation; review and publish it at $PORTAL_UI", deploymentId)
+          return
+        }
+
+        "PUBLISHING", "PUBLISHED" -> {
+          logger.lifecycle("Deployment {} passed validation and is {}.", deploymentId, state.lowercase())
+          return
+        }
+      }
+      val remainingNanos = deadline - System.nanoTime()
+      if (remainingNanos < delayMillis * 1_000_000L) {
+        error(
+          "Central Portal deployment $deploymentId was still '$state' after " +
+            "${validationTimeoutSeconds.get()}s; check $PORTAL_UI " +
+            "(raise 'validationTimeoutSeconds' on this task if validation is just slow)."
+        )
+      }
+      logger.lifecycle(
+        "Deployment {} is '{}', checking again in {}s ({}s left)...",
+        deploymentId, state, delayMillis / 1000, remainingNanos / 1_000_000_000L
+      )
+      Thread.sleep(delayMillis)
+      delayMillis = (delayMillis * 3 / 2).coerceAtMost(20_000L)
+    }
+  }
+
+  private fun fetchState(client: HttpClient, request: HttpRequest): Pair<String, String> {
+    val response = try {
+      client.send(request, HttpResponse.BodyHandlers.ofString())
+    } catch (e: IOException) {
+      logger.warn("Central Portal status check failed ({}); retrying...", e.message)
+      return "UNAVAILABLE" to ""
+    }
+    val code = response.statusCode()
+    check(code != 404) {
+      "Central Portal does not know the deployment (HTTP 404): ${response.body()}"
+    }
+    if (code == 401 || code == 403) {
+      logger.warn("Central Portal status check returned HTTP {}; retrying...", code)
+      return "AUTH_FAILED" to response.body()
+    }
+    if (code !in 200..299) {
+      logger.warn("Central Portal status check returned HTTP {}; retrying...", code)
+      return "UNAVAILABLE" to ""
+    }
+    val body = response.body()
+    val fields = JsonSlurper().parseText(body) as Map<*, *>
+    return (fields["deploymentState"] as? String ?: "UNKNOWN") to body
+  }
+
+  companion object {
+    const val PORTAL_UI = "https://central.sonatype.com/publishing/deployments"
+  }
+}
+
+// Inline duplicate of software.sava.build.publish.CentralPortalReleaseTask (see above).
+abstract class CentralPortalRelease : DefaultTask() {
+
+  @get:Input
+  abstract val deploymentId: Property<String>
+
+  @get:Internal
+  abstract val username: Property<String>
+
+  @get:Internal
+  abstract val password: Property<String>
+
+  @get:Input
+  abstract val baseUrl: Property<String>
+
+  init {
+    baseUrl.convention("https://central.sonatype.com/api/v1/publisher")
+  }
+
+  @TaskAction
+  fun release() {
+    val id = deploymentId.orNull
+      ?: error("Missing deployment id; pass '-PcentralPortalDeploymentId=<id>'.")
+    val user = username.orNull
+      ?: error("Central Portal username is missing; set the MAVEN_CENTRAL_TOKEN environment variable.")
+    val pass = password.orNull
+      ?: error("Central Portal password is missing; set the MAVEN_CENTRAL_SECRET environment variable.")
+
+    val token = Base64.getEncoder().encodeToString("$user:$pass".toByteArray(Charsets.UTF_8))
+    val request = HttpRequest.newBuilder(URI("${baseUrl.get()}/deployment/$id"))
+      .header("Authorization", "Bearer $token")
+      .timeout(Duration.ofSeconds(30))
+      .POST(HttpRequest.BodyPublishers.noBody())
+      .build()
+    val client = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(10))
+      .build()
+
+    val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+    check(response.statusCode() in 200..299) {
+      "Central Portal deployment publish failed with HTTP ${response.statusCode()}: ${response.body()}"
+    }
+    logger.lifecycle(
+      "Deployment {} is publishing; progress at https://central.sonatype.com/publishing/deployments",
+      id
+    )
   }
 }
 

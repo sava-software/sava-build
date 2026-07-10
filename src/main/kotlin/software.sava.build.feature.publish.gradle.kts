@@ -2,7 +2,9 @@ plugins {
   id("java-base")
   id("maven-publish")
   id("signing")
-  id("com.gradleup.nmcp")
+  // nmcp is superseded by the in-house Central Portal staging below; uncomment to fall
+  // back to it (see software.sava.build.feature.publish-maven-central.gradle.kts).
+  // id("com.gradleup.nmcp")
 }
 
 val orgName = orgName("Sava Software")
@@ -24,6 +26,8 @@ val vcs = "https://github.com/${orgPathSegment}/${productName}"
 val signingKey = providers.environmentVariable("GPG_PUBLISH_SECRET").orNull
 val signingPassphrase = providers.environmentVariable("GPG_PUBLISH_PHRASE").orNull
 val publishSigningEnabled = providers.gradleProperty("sign").getOrElse("false").toBoolean()
+
+val centralStagingDir = layout.buildDirectory.dir("central-portal-staging")
 
 // publish module with sources and Javadoc
 plugins.withId("java") {
@@ -106,5 +110,35 @@ publishing {
       // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
       credentials(PasswordCredentials::class)
     }
+    maven {
+      name = "savaCentralStaging"
+      url = uri(centralStagingDir.get().asFile)
+    }
+  }
+}
+
+// --- In-house Central Portal staging, mirroring nmcp's 'nmcpProducer' variant. Runs in
+// parallel with nmcp until the replacement is confirmed; consumed by the
+// 'software.sava.build.feature.publish-maven-central' aggregation. ---
+
+// The staging repository accumulates whatever was published before, so wipe it first to
+// keep the deployment bundle limited to the publications of this build invocation.
+val cleanSavaCentralStaging = tasks.register<Delete>("cleanSavaCentralStaging") {
+  delete(centralStagingDir)
+}
+tasks.withType<PublishToMavenRepository>().configureEach {
+  if (name.endsWith("ToSavaCentralStagingRepository")) {
+    dependsOn(cleanSavaCentralStaging)
+  }
+}
+
+val savaCentralStagingElements = configurations.consumable("savaCentralStagingElements") {
+  attributes {
+    attribute(Usage.USAGE_ATTRIBUTE, objects.named("sava-central-staging"))
+  }
+}
+artifacts {
+  add(savaCentralStagingElements.name, centralStagingDir) {
+    builtBy("publishAllPublicationsToSavaCentralStagingRepository")
   }
 }
