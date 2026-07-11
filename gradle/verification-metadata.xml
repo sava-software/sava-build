@@ -6,13 +6,20 @@
       <trusted-artifacts>
          <trust file="^gradle-\d+[.]\d+(?:[.]\d+)?(?:-(?:rc|milestone)-\d+)?-src[.]zip$" regex="true" reason="Gradle source distribution is not signed"/>
       </trusted-artifacts>
+      <!-- Curation notes (any metadata write strips XML comments; restore them):
+           * org.apache.groovy and org.jetbrains annotations 23.0.0 are only resolved by
+             IDE sync (Gradle API sources), invisible to CLI regeneration.
+           * org.jetbrains.kotlinx is group-wide on purpose: kotlin-gradle-plugin floats
+             to new patch releases, and cold caches fetch BOM/parent POMs that a
+             warm-cache regeneration narrows away.
+           * Signature keys are committed in verification-keyring.keys so verification
+             needs no keyserver access; after adding dependencies regenerate with the
+             export-keys flag and re-check this comment and the trusted-artifacts block. -->
       <trusted-keys>
          <trusted-key id="1BD97A6A154E7810EE0BC832E2F38302C8075E3D" group="^org[.]gradle($|([.].*))" regex="true"/>
          <trusted-key id="1D217F8475EEE9F19AB8DD6B793FD5751A0F0780" group="com.squareup.okio"/>
          <trusted-key id="2E3A1AFFE42B5F53AF19F780BCF4173966770193" group="org.jetbrains" name="annotations" version="13.0"/>
-         <!-- Only resolved by IDE sync (sources of the Gradle API from the Gradle Libs
-              repository), so CLI metadata regeneration cannot discover it; keep this
-              entry when regenerating from scratch. -->
+         <trusted-key id="33FD4BFD33554634053D73C0C2148900BCD3C2AF" group="org.jetbrains" name="annotations" version="23.0.0"/>
          <trusted-key id="34441E504A937F43EB0DAEF96A65176A0FB1CD0B" group="org.apache.groovy"/>
          <trusted-key id="41CD49B4EF5876F9E9F691DABAC30622339994C4" group="org.jspecify" name="jspecify" version="1.0.0"/>
          <trusted-key id="635EE627345F3C1DD422B2E207D3516820BCF6B1" group="com.github.ben-manes.caffeine" name="caffeine" version="3.2.3"/>
@@ -28,7 +35,7 @@
          <trusted-key id="CF4B3A3F53BEF9A2CE2CBFB895962C5E716C39AA" group="com.autonomousapps"/>
          <trusted-key id="D477D51812E692011DB11E66A6EA2E2BF22E0543" group="io.github.java-diff-utils"/>
          <trusted-key id="DBD744ACE7ADE6AA50DD591F66B50994442D2D40" group="^com[.]squareup($|([.].*))" regex="true"/>
-         <trusted-key id="E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB" group="org.jetbrains.kotlinx" name="kotlinx-coroutines-core-jvm" version="1.8.0"/>
+         <trusted-key id="E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB" group="org.jetbrains.kotlinx"/>
          <trusted-key id="EE0CA873074092F806F59B65D364ABAA39A47320" group="com.google.errorprone"/>
          <trusted-key id="FF6E2C001948C5F2F38B0CC385911F425EC61B51">
             <trusting group="org.apiguardian"/>
