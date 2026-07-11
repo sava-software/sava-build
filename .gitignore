@@ -1,5 +1,7 @@
 # Gradle files
 .gradle/
+# Binary twin of the committed verification-keyring.keys, recreated by export-keys runs
+gradle/verification-keyring.gpg
 .kotlin/
 build/
 !**/src/main/**/build/
