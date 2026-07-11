@@ -116,6 +116,13 @@ val mavenCentralExcludeChecksums = providers.gradleProperty("mavenCentralExclude
   .map { value -> value.split(",").map(String::trim).filter(String::isNotEmpty) }
   .getOrElse(emptyList())
 
+// Central Portal validation wants md5/sha1 and Gradle prefers sha512; sha256 files and
+// checksums of .asc signatures only inflate the deployment file count against Maven
+// Central's publishing limits. Restore them with '-PmavenCentralPublishAllChecksums=true'.
+val defaultChecksumExcludes =
+  if (providers.gradleProperty("mavenCentralPublishAllChecksums").getOrElse("false").toBoolean()) emptyList()
+  else listOf("**/*.sha256", "**/*.asc.md5", "**/*.asc.sha1", "**/*.asc.sha512")
+
 val centralStagingDir = layout.buildDirectory.dir("central-portal-staging")
 
 publishing {
@@ -153,6 +160,9 @@ val zipCentralPortalDeployment = tasks.register<Zip>("zipCentralPortalDeployment
   dependsOn("publishAllPublicationsToSavaCentralStagingRepository")
   from(centralStagingDir)
   exclude("**/maven-metadata.xml*")
+  defaultChecksumExcludes.forEach { pattern ->
+    exclude(pattern)
+  }
   mavenCentralExcludeChecksums.forEach { extension ->
     exclude("**/*.$extension")
   }
