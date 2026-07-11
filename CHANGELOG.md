@@ -1,5 +1,27 @@
 # Changelog
 
+## [21.5.1](https://github.com/sava-software/sava-build/compare/21.5.0...21.5.1) (2026-07-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **build:** The `com.gradleup.nmcp` plugin and its aggregation tasks are no longer supported. Consumers must migrate to the in-house Central Portal deployment pipeline tasks.
+* **attestations:** Consumers must adopt the extended `software.sava.build.check.attestations` plugin configuration for verifying sava-build plugin jars and documentation artifacts. Use the new `verifyBuildPlugin` and `verifyDocumentation` options to enable or customize behavior.
+* **build:** Projects using the `java-module` plugin will now include `software.sava.build.check.attestations` by default. Missing attestations warn unless explicitly required with `savaAttestations.requireAttestations = true`. Configure cosign using Gradle properties or Docker image.
+
+### Features
+
+* **attestations:** add support for plugin and documentation jar verification ([d8bfda0](https://github.com/sava-software/sava-build/commit/d8bfda00d141e4dbaf9bc2ebe0a3291b70439412))
+* **build:** add `verifySavaAttestations` task to validate artifact provenance ([562e916](https://github.com/sava-software/sava-build/commit/562e916bee5839bbe2ac4fc266078d8997e2452f))
+* **build:** add PGP keyring for artifact signature verification ([1f8e390](https://github.com/sava-software/sava-build/commit/1f8e39007e1c8f6a7cedfb5bffd9a576337950f8))
+* **build:** remove nmcp pipeline and references across build scripts ([0cbab81](https://github.com/sava-software/sava-build/commit/0cbab81cfed928bae3eff59fe87fef60ef343841))
+* **build:** trim checksum files to meet Central's publishing limits ([9945420](https://github.com/sava-software/sava-build/commit/9945420ab2357182c63ac53516c14e45ca8cb636))
+
+
+### Chores
+
+* add gradle/verification-keyring.gpg to gitignore ([17b5f16](https://github.com/sava-software/sava-build/commit/17b5f162972b5a9d87e56e17e7bfb7443aca3496))
+
 ## [21.5.0](https://github.com/sava-software/sava-build/compare/21.4.3...21.5.0) (2026-07-10)
 
 
