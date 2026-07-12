@@ -1,5 +1,17 @@
 # Changelog
 
+## [21.5.2](https://github.com/sava-software/sava-build/compare/21.5.1...21.5.2) (2026-07-12)
+
+
+### Features
+
+* **build:** add JMH benchmarking plugin and smoke tests ([900d730](https://github.com/sava-software/sava-build/commit/900d730e5e9f344cf625da45c43c16fb611817ef))
+
+
+### Chores
+
+* **build:** update verification metadata for jmh plugin sources jar ([2b7df49](https://github.com/sava-software/sava-build/commit/2b7df49ca5eb56b2cd39a81908a7678fd8ae02d6))
+
 ## [21.5.1](https://github.com/sava-software/sava-build/compare/21.5.0...21.5.1) (2026-07-11)
 
 
