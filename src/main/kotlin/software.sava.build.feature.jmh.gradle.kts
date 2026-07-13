@@ -33,8 +33,11 @@ tasks.named<me.champeau.jmh.JMHTask>("jmh") {
         val archives = (archiveDir.listFiles() ?: emptyArray())
             .filter { it.isFile && it.extension == "txt" }
             .sortedBy { it.name } // timestamped names: lexicographic == chronological
-        // token layout: name mode [cnt] score [± error] units — JMH omits
-        // Cnt for single-iteration runs and Error whenever cnt < 3.
+        // token layout: name [param...] mode [cnt] score [± error] units —
+        // JMH omits Cnt for single-iteration runs and Error whenever cnt < 3.
+        // Rows key on name plus parameter values so @Param variants do not
+        // overwrite each other.
+        val benchModes = setOf("avgt", "thrpt", "sample", "ss")
         val rows = sortedMapOf<String, List<String>>()
         for (file in archives) {
           for (line in file.readLines()) {
@@ -42,17 +45,19 @@ tasks.named<me.champeau.jmh.JMHTask>("jmh") {
               continue
             }
             val tokens = line.trim().split(Regex("\\s+"))
-            if (tokens.size < 4) {
+            val modeIdx = tokens.indexOfFirst { it in benchModes }
+            if (modeIdx < 1 || tokens.size < modeIdx + 3) {
               continue
             }
-            val mid = tokens.subList(2, tokens.size - 1)
+            val key = tokens.subList(0, modeIdx).joinToString("  ")
+            val mid = tokens.subList(modeIdx + 1, tokens.size - 1)
             val pm = mid.indexOf("±")
             val (cnt, score, error) = if (pm >= 0) {
               Triple(if (pm > 1) mid[0] else "", mid[pm - 1], "± ${mid[pm + 1]}")
             } else {
               Triple(if (mid.size > 1) mid[0] else "", mid.last(), "")
             }
-            rows[tokens[0]] = listOf(tokens[0], tokens[1], cnt, score, error, tokens.last())
+            rows[key] = listOf(key, tokens[modeIdx], cnt, score, error, tokens.last())
           }
         }
         if (rows.isNotEmpty()) {
