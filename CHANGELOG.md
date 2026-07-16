@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.4](https://github.com/sava-software/sava-build/compare/21.5.3...21.5.4) (2026-07-16)
+
+
+### Features
+
+* **build:** improve resource handling for PIT and Jazzer tasks ([146e54d](https://github.com/sava-software/sava-build/commit/146e54d033e1d1dcfe06e168b5c9099dee0180b8))
+
 ## [21.5.3](https://github.com/sava-software/sava-build/compare/21.5.2...21.5.3) (2026-07-16)
 
 
