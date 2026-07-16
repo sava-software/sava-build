@@ -117,20 +117,29 @@ hardening.fuzz.all {
     mainClass = "com.code_intelligence.jazzer.Jazzer"
     // Jazzer only instruments classes on the JVM classpath, not its '--cp' argument.
     classpath = jazzer + files(fuzzClassesDir)
+    // Jazzer loads its agent dynamically and its driver uses Unsafe and native
+    // libraries; pre-authorize them so runs are not buried in JDK warnings.
+    jvmArgs(
+        "-XX:+EnableDynamicAgentLoading",
+        "--enable-native-access=ALL-UNNAMED",
+        "--sun-misc-unsafe-memory-access=allow"
+    )
     val corpusDir = layout.buildDirectory.dir("fuzz/${target.name}-corpus").get().asFile
     doFirst {
       corpusDir.mkdirs()
     }
     val targetClassArg = target.targetClass.map { "--target_class=$it" }
-    // local so the lambda below does not capture the script instance, which the
+    // locals so the lambda below does not capture the script instance, which the
     // configuration cache cannot serialize
     val maxFuzzTimeArg = providers.gradleProperty("maxFuzzTime").orElse("60").map { "-max_total_time=$it" }
+    val maxLenArg = target.maxLen.map { "-max_len=$it" }
     argumentProviders.add {
-      listOf(
-          targetClassArg.get(),
-          maxFuzzTimeArg.get(),
-          corpusDir.absolutePath
-      )
+      buildList {
+        add(targetClassArg.get())
+        add(maxFuzzTimeArg.get())
+        maxLenArg.orNull?.let(::add)
+        add(corpusDir.absolutePath)
+      }
     }
   }
 }

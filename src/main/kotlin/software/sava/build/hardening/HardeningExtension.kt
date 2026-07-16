@@ -67,4 +67,10 @@ abstract class FuzzTarget @Inject constructor(private val name: String) : Named 
 
   /** Fully qualified name of the fuzz target class. */
   abstract val targetClass: Property<String>
+
+  /** Maximum libFuzzer input length in bytes ('-max_len'; unset leaves libFuzzer's
+   *  default). Cap it when per-execution cost grows super-linearly with input size and
+   *  large inputs reach no coverage small ones cannot — e.g. an O(n²) codec. Oversized
+   *  corpus entries from earlier runs are truncated on load, not lost. */
+  abstract val maxLen: Property<Int>
 }

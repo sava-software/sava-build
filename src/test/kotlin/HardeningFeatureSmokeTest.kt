@@ -50,6 +50,10 @@ class HardeningFeatureSmokeTest {
           }
           fuzz.register("codec") {
             targetClass = "com.example.CodecFuzz"
+            maxLen = 256
+          }
+          fuzz.register("plain") {
+            targetClass = "com.example.PlainFuzz"
           }
         }
 
@@ -59,6 +63,9 @@ class HardeningFeatureSmokeTest {
           val pitestArgs = tasks.named<JavaExec>("pitestEncoding")
             .map { task -> task.argumentProviders.flatMap { it.asArguments() } }
           val fuzzArgs = tasks.named<JavaExec>("fuzzCodec")
+            .map { task -> task.argumentProviders.flatMap { it.asArguments() } }
+          val fuzzJvmArgs = tasks.named<JavaExec>("fuzzCodec").map { it.jvmArgs ?: listOf() }
+          val plainFuzzArgs = tasks.named<JavaExec>("fuzzPlain")
             .map { task -> task.argumentProviders.flatMap { it.asArguments() } }
           doLast {
             check(mutationRelease.get() == $expectedMutationRelease) { "unexpected mutation release: " + mutationRelease.get() }
@@ -72,7 +79,13 @@ class HardeningFeatureSmokeTest {
             val fuzz = fuzzArgs.get()
             check(fuzz.any { it == "--target_class=com.example.CodecFuzz" }) { "target_class: " + fuzz }
             check(fuzz.any { it == "-max_total_time=60" }) { "max_total_time: " + fuzz }
-            check(fuzz.any { it.endsWith("codec-corpus") }) { "corpus: " + fuzz }
+            check(fuzz.any { it == "-max_len=256" }) { "max_len: " + fuzz }
+            // the corpus directory must stay the last (positional) argument
+            check(fuzz.last().endsWith("codec-corpus")) { "corpus: " + fuzz }
+            check(fuzzJvmArgs.get().contains("-XX:+EnableDynamicAgentLoading")) { "jvmArgs: " + fuzzJvmArgs.get() }
+            val plain = plainFuzzArgs.get()
+            check(plain.none { it.startsWith("-max_len=") }) { "unexpected max_len: " + plain }
+            check(plain.last().endsWith("plain-corpus")) { "corpus: " + plain }
           }
         }
       """.trimIndent() + "\n"
