@@ -1,0 +1,14 @@
+# Default tool versions baked into the convention plugins (see the
+# 'generateHardeningToolDefaults' task in build.gradle.kts). Declared here so
+# Dependabot can update them; the [libraries] entries exist only to tell
+# Dependabot which module each version belongs to.
+
+[versions]
+pitest = "1.25.7"
+pitest-junit5-plugin = "1.2.3"
+jazzer = "0.30.0"
+
+[libraries]
+pitest-command-line = { module = "org.pitest:pitest-command-line", version.ref = "pitest" }
+pitest-junit5-plugin = { module = "org.pitest:pitest-junit5-plugin", version.ref = "pitest-junit5-plugin" }
+jazzer = { module = "com.code-intelligence:jazzer", version.ref = "jazzer" }
