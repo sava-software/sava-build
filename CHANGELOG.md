@@ -1,5 +1,19 @@
 # Changelog
 
+## [21.5.3](https://github.com/sava-software/sava-build/compare/21.5.2...21.5.3) (2026-07-16)
+
+
+### Features
+
+* **build:** add hardening plugin for mutation testing and fuzzing ([e33fbf4](https://github.com/sava-software/sava-build/commit/e33fbf472058d3ff5d56a343412e4122cdae5233))
+* **build:** enhance fuzz testing with maxLen and JVM args support ([7f67935](https://github.com/sava-software/sava-build/commit/7f67935cb4cd8fb924dc6d1770b246f79df68589))
+* **build:** improve JMH result parsing to support @Param variants ([b3af996](https://github.com/sava-software/sava-build/commit/b3af996e7bfda4f7c4876c67d2c9af32043720d8))
+
+
+### Build System
+
+* **deps:** bump org.junit.jupiter:junit-jupiter from 6.1.1 to 6.1.2 ([#54](https://github.com/sava-software/sava-build/issues/54)) ([919b01a](https://github.com/sava-software/sava-build/commit/919b01a45138ed9e1725fd9581a5d49dd44db58d))
+
 ## [21.5.2](https://github.com/sava-software/sava-build/compare/21.5.1...21.5.2) (2026-07-12)
 
 
