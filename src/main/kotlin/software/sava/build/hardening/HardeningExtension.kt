@@ -2,6 +2,7 @@ package software.sava.build.hardening
 
 import org.gradle.api.Named
 import org.gradle.api.NamedDomainObjectContainer
+import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
@@ -73,4 +74,12 @@ abstract class FuzzTarget @Inject constructor(private val name: String) : Named 
    *  large inputs reach no coverage small ones cannot — e.g. an O(n²) codec. Oversized
    *  corpus entries from earlier runs are truncated on load, not lost. */
   abstract val maxLen: Property<Int>
+
+  /** Directory of committed seed inputs (one file per input) passed to libFuzzer as a
+   *  read-only extra corpus. Essential for structured formats a mutator cannot reach
+   *  from scratch (a transaction's header, offsets, and lengths must all agree before
+   *  any body-walking code runs); pointless for formats where every prefix is valid
+   *  (e.g. a raw codec). Unset leaves the run seedless. Seeds are never mutated in
+   *  place — libFuzzer copies newly interesting inputs into the writable corpus. */
+  abstract val seedCorpus: DirectoryProperty
 }

@@ -49,9 +49,11 @@ fun registerRecompile(taskName: String, tool: String, destination: Provider<Dire
     source(sourceSets.main.get().java, sourceSets.test.get().java)
     exclude("**/module-info.java")
     modularity.inferModulePath = false
-    // external jars only: the project's own outputs are recompiled from source instead
+    // dependency jars only — including other projects' — while this project's own
+    // outputs are recompiled from source instead
+    val ownBuildDir = layout.buildDirectory.get().asFile.absolutePath + File.separator
     classpath = files(tasks.named<JavaCompile>("compileTestJava").map { task ->
-      task.classpath.filter { !it.absolutePath.contains("${File.separator}build${File.separator}") }
+      task.classpath.filter { !it.absolutePath.startsWith(ownBuildDir) }
     })
     destinationDirectory = destination
     options.release = release
@@ -72,16 +74,30 @@ hardening.mutation.all {
     dependsOn(compileForPitest)
     mainClass = "org.pitest.mutationtest.commandline.MutationCoverageReport"
     classpath = pitest
+    // the module test plumbing patches resources into the module instead of exposing
+    // them on testRuntimeClasspath, so the tools get the processed resource dirs
+    // explicitly
+    dependsOn(tasks.named("processResources"), tasks.named("processTestResources"))
     val buildDirPath = layout.buildDirectory.get().asFile.absolutePath
     val mutationClassesPath = mutationClassesDir.get().asFile.absolutePath
+    val resourceDirs = files(
+      sourceSets.main.get().output.resourcesDir!!,
+      sourceSets.test.get().output.resourcesDir!!
+    )
     val classPathArg = files(
       mutationClassesDir,
+      resourceDirs,
       configurations["testRuntimeClasspath"]
     ).elements.map { locations ->
       "--classPath=" + locations
           .map { it.asFile.absolutePath }
-          // keep the recompiled classes and external jars; drop this project's other outputs
-          .filter { it == mutationClassesPath || !it.startsWith(buildDirPath) }
+          // keep the recompiled classes, resource dirs, and dependency jars; drop this
+          // project's class outputs, which the recompiled root replaces
+          .filter { path ->
+            path == mutationClassesPath
+                || resourceDirs.any { it.absolutePath == path }
+                || !path.startsWith(buildDirPath)
+          }
           .joinToString(",")
     }
     val targetClassesArg = suite.targetClasses.map { "--targetClasses=" + it.joinToString(",") }
@@ -116,7 +132,17 @@ hardening.fuzz.all {
     dependsOn(compileForFuzz)
     mainClass = "com.code_intelligence.jazzer.Jazzer"
     // Jazzer only instruments classes on the JVM classpath, not its '--cp' argument.
-    classpath = jazzer + files(fuzzClassesDir)
+    // The recompiled root stands in for this project's class outputs; dependency jars
+    // and the processed resource dirs (patched into the module rather than exposed on
+    // testRuntimeClasspath) ride along so the target's collaborators resolve at run
+    // time.
+    dependsOn(tasks.named("processResources"), tasks.named("processTestResources"))
+    val ownBuildDir = layout.buildDirectory.get().asFile.absolutePath + File.separator
+    classpath = jazzer + files(fuzzClassesDir) +
+        files(sourceSets.main.get().output.resourcesDir!!, sourceSets.test.get().output.resourcesDir!!) +
+        configurations["testRuntimeClasspath"].filter {
+          !it.absolutePath.startsWith(ownBuildDir)
+        }
     // Jazzer loads its agent dynamically and its driver uses Unsafe and native
     // libraries; pre-authorize them so runs are not buried in JDK warnings.
     jvmArgs(
@@ -133,12 +159,16 @@ hardening.fuzz.all {
     // configuration cache cannot serialize
     val maxFuzzTimeArg = providers.gradleProperty("maxFuzzTime").orElse("60").map { "-max_total_time=$it" }
     val maxLenArg = target.maxLen.map { "-max_len=$it" }
+    // committed seeds are passed as a trailing read-only corpus: libFuzzer replays every
+    // input from every listed dir but only writes newly interesting ones to the first
+    val seedCorpusDir = target.seedCorpus.map { it.asFile.absolutePath }
     argumentProviders.add {
       buildList {
         add(targetClassArg.get())
         add(maxFuzzTimeArg.get())
         maxLenArg.orNull?.let(::add)
         add(corpusDir.absolutePath)
+        seedCorpusDir.orNull?.let(::add)
       }
     }
   }
