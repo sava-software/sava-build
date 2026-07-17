@@ -50,6 +50,12 @@ abstract class MutationSuite @Inject constructor(private val name: String) : Nam
   /** Fully qualified class names (or PIT globs) to mutate. */
   abstract val targetClasses: ListProperty<String>
 
+  /** Fully qualified class names (or PIT globs) excluded from mutation — e.g. test
+   *  classes living inside a targeted package glob, which would otherwise be mutated
+   *  themselves (assertion-removal mutants in tests survive and corrupt the score).
+   *  Empty by default. */
+  abstract val excludedClasses: ListProperty<String>
+
   /** PIT glob matching the test classes to run, e.g. "com.example.codec.*Test*". */
   abstract val targetTests: Property<String>
 

@@ -68,6 +68,7 @@ hardening.mutation.all {
   val suite = this
   suite.mutators.convention("STRONGER")
   suite.threads.convention(4)
+  suite.excludedClasses.convention(emptyList())
   tasks.register<JavaExec>("pitest" + suite.name.replaceFirstChar(Char::uppercase)) {
     group = "verification"
     description = "PIT mutation testing of the '${suite.name}' classes against their tests."
@@ -101,23 +102,28 @@ hardening.mutation.all {
           .joinToString(",")
     }
     val targetClassesArg = suite.targetClasses.map { "--targetClasses=" + it.joinToString(",") }
+    // a map lambda returning null leaves the provider absent, dropping the argument
+    val excludedClassesArg = suite.excludedClasses.map { excluded ->
+      if (excluded.isEmpty()) null else "--excludedClasses=" + excluded.joinToString(",")
+    }
     val targetTestsArg = suite.targetTests.map { "--targetTests=$it" }
     val mutatorsArg = suite.mutators.map { "--mutators=$it" }
     val threadsArg = suite.threads.map { "--threads=$it" }
     val sourceDirsArg = "--sourceDirs=" + layout.projectDirectory.dir("src/main/java").asFile.absolutePath
     val reportDirArg = "--reportDir=" + layout.buildDirectory.dir("reports/pitest/${suite.name}").get().asFile.absolutePath
     argumentProviders.add {
-      listOf(
-          classPathArg.get(),
-          targetClassesArg.get(),
-          targetTestsArg.get(),
-          sourceDirsArg,
-          reportDirArg,
-          mutatorsArg.get(),
-          "--outputFormats=HTML,CSV",
-          "--timestampedReports=false",
-          threadsArg.get()
-      )
+      buildList {
+        add(classPathArg.get())
+        add(targetClassesArg.get())
+        excludedClassesArg.orNull?.let(::add)
+        add(targetTestsArg.get())
+        add(sourceDirsArg)
+        add(reportDirArg)
+        add(mutatorsArg.get())
+        add("--outputFormats=HTML,CSV")
+        add("--timestampedReports=false")
+        add(threadsArg.get())
+      }
     }
   }
 }
