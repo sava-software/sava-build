@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.5](https://github.com/sava-software/sava-build/compare/21.5.4...21.5.5) (2026-07-17)
+
+
+### Features
+
+* **build:** add support for excluded classes in PIT mutation testing ([e89b69f](https://github.com/sava-software/sava-build/commit/e89b69fd8edaac90d2155fb9c72fbf51a950da44))
+
 ## [21.5.4](https://github.com/sava-software/sava-build/compare/21.5.3...21.5.4) (2026-07-16)
 
 
