@@ -1,5 +1,18 @@
 # Changelog
 
+## [21.5.6](https://github.com/sava-software/sava-build/compare/21.5.5...21.5.6) (2026-07-18)
+
+
+### Features
+
+* **build:** add qualityGate task and mutation-baseline ratchet ([a0a3927](https://github.com/sava-software/sava-build/commit/a0a39276a7526062400048ff7d73b691223729b9))
+
+
+### Build System
+
+* **deps:** bump actions/attest from 4.1.1 to 4.2.0 ([#58](https://github.com/sava-software/sava-build/issues/58)) ([f983cf7](https://github.com/sava-software/sava-build/commit/f983cf74be710d150cdf3761879eb5991706698c))
+* **deps:** bump com.autonomousapps:dependency-analysis-gradle-plugin ([#56](https://github.com/sava-software/sava-build/issues/56)) ([ca13a2f](https://github.com/sava-software/sava-build/commit/ca13a2f0fe08371ae8a6ccf7cf058b35b08a3ac2))
+
 ## [21.5.5](https://github.com/sava-software/sava-build/compare/21.5.4...21.5.5) (2026-07-17)
 
 
