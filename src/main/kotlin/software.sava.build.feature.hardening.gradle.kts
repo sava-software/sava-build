@@ -64,12 +64,86 @@ val compileForPitest = registerRecompile(
 val compileForFuzz = registerRecompile(
     "compileForFuzz", "Jazzer", fuzzClassesDir, hardening.bytecodeRelease)
 
+// The 'is this change safe' gate: 'test' plus every registered mutation suite,
+// each finalized by its baseline verification (see the ratchet below).
+val qualityGate = tasks.register("qualityGate") {
+  group = "verification"
+  description = "Unit tests plus every PIT suite with mutation-baseline verification."
+  dependsOn(tasks.named("test"))
+}
+
+// Serialize the PIT suites: each already runs its own worker pool, and
+// concurrent suites contend for the same cores without finishing sooner.
+var previousPitestTask: String? = null
+
 hardening.mutation.all {
   val suite = this
   suite.mutators.convention("STRONGER")
   suite.threads.convention(4)
   suite.excludedClasses.convention(emptyList())
-  tasks.register<JavaExec>("pitest" + suite.name.replaceFirstChar(Char::uppercase)) {
+
+  // Mutation ratchet: after each 'pitest<Name>' run, diff the unkilled mutants
+  // (SURVIVED and NO_COVERAGE) against the checked-in baseline at
+  // 'config/pitest/<name>-accepted.csv' and fail on anything new. A fresh
+  // mutant must be killed with a test or knowingly accepted by re-running with
+  // '-PupdateMutationBaseline' and documenting the reason (see HARDENING.md).
+  val pitestTaskName = "pitest" + suite.name.replaceFirstChar(Char::uppercase)
+  val suiteName = suite.name
+  val verify = tasks.register("${pitestTaskName}Verify") {
+    group = "verification"
+    description = "Fails when the '$suiteName' PIT run left unkilled mutants missing from config/pitest/$suiteName-accepted.csv."
+    val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
+    val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
+    val update = providers.gradleProperty("updateMutationBaseline").isPresent
+    doLast {
+      val csv = csvProvider.get().asFile
+      if (!csv.exists()) {
+        throw GradleException("no PIT report at $csv — run $pitestTaskName first")
+      }
+      val gated = setOf("SURVIVED", "NO_COVERAGE")
+      val current = csv.readLines().mapNotNull { line ->
+        val parts = line.split(',')
+        if (parts.size < 6 || parts[5] !in gated) {
+          null
+        } else {
+          // class,method,line,mutator,status — line numbers churn on refactors;
+          // refresh the baseline when they do
+          "${parts[1]},${parts[3]},${parts[4]},${parts[2].substringAfterLast('.')},${parts[5]}"
+        }
+      }.toSortedSet()
+      if (update) {
+        baselineFile.parentFile.mkdirs()
+        baselineFile.writeText(current.joinToString("\n", postfix = "\n"))
+        logger.lifecycle("pitest baseline '$suiteName': wrote ${current.size} accepted entries")
+        return@doLast
+      }
+      val accepted = if (baselineFile.exists()) {
+        baselineFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }.toSet()
+      } else {
+        emptySet()
+      }
+      val fresh = current - accepted
+      val stale = accepted - current
+      if (stale.isNotEmpty()) {
+        logger.lifecycle("pitest baseline '$suiteName': ${stale.size} stale entries (since killed or moved) — refresh with -PupdateMutationBaseline")
+      }
+      if (fresh.isNotEmpty()) {
+        throw GradleException(
+            "pitest '$suiteName': ${fresh.size} unkilled mutant(s) not in the accepted baseline:\n" +
+                fresh.joinToString("\n") +
+                "\nKill them with tests, or accept knowingly by re-running with -PupdateMutationBaseline " +
+                "and documenting the reason (see HARDENING.md). If this suite has never been seeded, " +
+                "-PupdateMutationBaseline creates config/pitest/$suiteName-accepted.csv."
+        )
+      }
+    }
+  }
+  qualityGate.configure { dependsOn(pitestTaskName) }
+  val runAfter = previousPitestTask
+  previousPitestTask = pitestTaskName
+  tasks.register<JavaExec>(pitestTaskName) {
+    finalizedBy(verify)
+    runAfter?.let { mustRunAfter(it) }
     group = "verification"
     description = "PIT mutation testing of the '${suite.name}' classes against their tests."
     dependsOn(compileForPitest)

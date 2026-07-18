@@ -102,8 +102,20 @@ class HardeningFeatureSmokeTest {
       .build()
 
     assertTrue(result.output.contains("pitestEncoding"), "pitestEncoding task missing:\n" + result.output)
+    assertTrue(result.output.contains("pitestEncodingVerify"), "pitestEncodingVerify task missing:\n" + result.output)
+    assertTrue(result.output.contains("qualityGate"), "qualityGate task missing:\n" + result.output)
     assertTrue(result.output.contains("fuzzCodec"), "fuzzCodec task missing:\n" + result.output)
     assertFalse(result.output.contains("FAILED"), result.output)
+
+    // the ratchet without a PIT report fails fast with a pointer to the run task
+    val verifyWithoutReport = GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withArguments("pitestEncodingVerify", "--stacktrace")
+      .buildAndFail()
+    assertTrue(
+      verifyWithoutReport.output.contains("no PIT report"),
+      "expected missing-report failure:\n" + verifyWithoutReport.output
+    )
 
     val override = GradleRunner.create()
       .withProjectDir(fixtureDir)

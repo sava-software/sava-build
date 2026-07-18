@@ -10,8 +10,11 @@ import javax.inject.Inject
 
 /**
  * Configuration for the 'software.sava.build.feature.hardening' convention plugin: PIT
- * mutation testing and Jazzer coverage-guided fuzzing for hand-picked classes whose
- * correctness is critical (encoders, wire formats, anything that moves money).
+ * mutation testing and Jazzer coverage-guided fuzzing for the classes whose correctness
+ * is critical (encoders, wire formats, anything that moves money). Target suites by
+ * package wildcard with explicit exclusions rather than allowlist, so new classes are
+ * mutated by default — see HARDENING.md for the policy and the mutation-baseline
+ * ratchet that every 'pitest<Name>' task is verified against.
  *
  * Each [mutation] suite adds a 'pitest<Name>' task; each [fuzz] target adds a
  * 'fuzz<Name>' task. Both consume classes recompiled at [bytecodeRelease] by the shared
