@@ -23,7 +23,7 @@ dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
   // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
   // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
-  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.16.1")
+  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.17.0")
 
   // https://github.com/gradle/foojay-toolchains
   // https://plugins.gradle.org/plugin/org.gradle.toolchains.foojay-resolver-convention
