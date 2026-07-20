@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.7](https://github.com/sava-software/sava-build/compare/21.5.6...21.5.7) (2026-07-20)
+
+
+### Bug Fixes
+
+* **hardening:** Update pitest version to 1.25.8 ([b5eb31e](https://github.com/sava-software/sava-build/commit/b5eb31ecc15b245155a56ca14dc2141234795280))
+
 ## [21.5.6](https://github.com/sava-software/sava-build/compare/21.5.5...21.5.6) (2026-07-18)
 
 
