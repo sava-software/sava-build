@@ -4,7 +4,7 @@
 # Dependabot which module each version belongs to.
 
 [versions]
-pitest = "1.25.7"
+pitest = "1.25.8"
 pitest-junit5-plugin = "1.2.3"
 jazzer = "0.30.0"
 
