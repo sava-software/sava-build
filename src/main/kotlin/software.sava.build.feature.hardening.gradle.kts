@@ -22,12 +22,28 @@ hardening.mutationBytecodeRelease.convention(hardening.bytecodeRelease)
 hardening.pitestVersion.convention(HardeningToolDefaults.PITEST)
 hardening.pitestJunit5PluginVersion.convention(HardeningToolDefaults.PITEST_JUNIT5_PLUGIN)
 hardening.jazzerVersion.convention(HardeningToolDefaults.JAZZER)
+hardening.arcmutateBaseVersion.convention(HardeningToolDefaults.ARCMUTATE_BASE)
+
+// Arcmutate incremental analysis ("history"): reuses per-mutant results across runs
+// when neither the mutated class nor its covering tests changed. Open-source PIT
+// accepts the history flags but cannot honour them — its only registered history
+// factory throws — so everything below keys off the licence certificate: without an
+// 'arcmutate-licence.txt' at the project or root-project directory, no dependency is
+// added and no flags are passed, and PIT runs exactly as open source.
+// '-PnoMutationHistory' forces a from-scratch run with the licence present; the
+// pre-release quality gate is expected to use it (see HARDENING.md).
+val mutationHistory = (layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile ||
+    rootProject.layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile) &&
+    !providers.gradleProperty("noMutationHistory").isPresent
 
 val pitest = configurations.create("pitest") {
   isCanBeConsumed = false
   defaultDependencies {
     add(project.dependencies.create("org.pitest:pitest-command-line:${hardening.pitestVersion.get()}"))
     add(project.dependencies.create("org.pitest:pitest-junit5-plugin:${hardening.pitestJunit5PluginVersion.get()}"))
+    if (mutationHistory) {
+      add(project.dependencies.create("com.arcmutate:base:${hardening.arcmutateBaseVersion.get()}"))
+    }
   }
 }
 val jazzer = configurations.create("jazzer") {
@@ -95,13 +111,23 @@ hardening.mutation.all {
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val update = providers.gradleProperty("updateMutationBaseline").isPresent
+    // captured locally so the doLast lambda does not hold the script instance
+    val historyAssisted = mutationHistory
     // Resolved at configuration time so the scaffolding check below can ask whether a
     // mutated class is one of this project's own test sources.
     val testSourceDirs = sourceSets.test.get().java.srcDirs
     doLast {
       val csv = csvProvider.get().asFile
       if (!csv.exists()) {
-        throw GradleException("no PIT report at $csv — run $pitestTaskName first")
+        // As a finalizer this also fires when the pitest task itself just failed,
+        // in which case the missing report is a symptom — don't let this message
+        // bury the real error printed above it. A PIT MINION_DIED / coverage
+        // socket-timeout failure is a known transient: re-run the suite.
+        throw GradleException(
+            "no PIT report at $csv — either $pitestTaskName has not run, or it just " +
+                "failed before writing one (its error is above this; MINION_DIED " +
+                "coverage failures are transient — re-run the suite)"
+        )
       }
       val gated = setOf("SURVIVED", "NO_COVERAGE")
       // Status is field 5 (0-based); the trailing killing-test field can itself contain
@@ -125,10 +151,20 @@ hardening.mutation.all {
       val split = buildList {
         gated.forEach { s -> byStatus[s]?.let { add("$it ${s.lowercase()}") } }
         if (timedOut > 0) add("$timedOut timed out (load-dependent)")
+        // Anything else (RUN_ERROR, MEMORY_ERROR, ...) is neither detected nor
+        // gated here — usually a load-dependent flake, but it lowers the detected
+        // count, so the summary must account for it or the number reads as a
+        // regression with no visible cause.
+        (byStatus.keys - gated - setOf("KILLED", "TIMED_OUT")).sorted().forEach { s ->
+          add("${byStatus.getValue(s)} ${s.lowercase()} (not counted as detected)")
+        }
       }
       logger.lifecycle(
           "pitest '$suiteName': $detected/$total detected ($percent%)" +
-              if (split.isEmpty()) "" else " — ${split.joinToString(", ")}"
+              (if (split.isEmpty()) "" else " — ${split.joinToString(", ")}") +
+              // With incremental analysis some of these statuses were reused, not
+              // re-earned this run — the marker keeps the two kinds of number distinct.
+              (if (historyAssisted) " [history]" else "")
       )
 
       // A suite whose exclusions miss a test-source class mutates its own scaffolding:
@@ -250,6 +286,21 @@ hardening.mutation.all {
     val threadsArg = suite.threads.map { "--threads=$it" }
     val sourceDirsArg = "--sourceDirs=" + layout.projectDirectory.dir("src/main/java").asFile.absolutePath
     val reportDirArg = "--reportDir=" + layout.buildDirectory.dir("reports/pitest/${suite.name}").get().asFile.absolutePath
+    // Incremental analysis: one rolling history file per suite, deliberately outside
+    // build/ so 'clean' does not erase the accumulated results, and git-ignored
+    // because it is machine-local state. Input and output are the same file; on the
+    // first run the input does not exist yet and PIT starts fresh. The lifecycle line
+    // keeps reuse honest — with history active a fast run is expected, so the log
+    // must say why, and the pre-release gate re-earns its numbers with
+    // '-PnoMutationHistory'.
+    val historyActive = mutationHistory
+    val historyFile = layout.projectDirectory.file(".pitest-history/${suite.name}.hist").asFile
+    if (historyActive) {
+      doFirst {
+        historyFile.parentFile.mkdirs()
+        logger.lifecycle("pitest '$suiteName': arcmutate history active — $historyFile")
+      }
+    }
     argumentProviders.add {
       buildList {
         add(classPathArg.get())
@@ -262,6 +313,13 @@ hardening.mutation.all {
         add("--outputFormats=HTML,CSV")
         add("--timestampedReports=false")
         add(threadsArg.get())
+        if (historyActive) {
+          if (historyFile.isFile) {
+            add("--historyInputLocation=" + historyFile.absolutePath)
+          }
+          add("--historyOutputLocation=" + historyFile.absolutePath)
+          add("--features=+arcmutate_history")
+        }
       }
     }
   }

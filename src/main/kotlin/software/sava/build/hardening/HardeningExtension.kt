@@ -38,6 +38,12 @@ abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
   abstract val pitestJunit5PluginVersion: Property<String>
   abstract val jazzerVersion: Property<String>
 
+  /** Version of arcmutate's base plugin ('com.arcmutate:base'), which provides PIT
+   *  incremental analysis. Only resolved when an 'arcmutate-licence.txt' is present at
+   *  the project or root-project directory — without one the dependency is never added
+   *  and PIT runs exactly as open source. */
+  abstract val arcmutateBaseVersion: Property<String>
+
   /** Each suite adds a 'pitest<Name>' task reporting to 'build/reports/pitest/<name>'. */
   val mutation: NamedDomainObjectContainer<MutationSuite> = objects.domainObjectContainer(MutationSuite::class.java)
 

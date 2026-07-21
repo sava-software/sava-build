@@ -7,8 +7,10 @@
 pitest = "1.25.8"
 pitest-junit5-plugin = "1.2.3"
 jazzer = "0.30.0"
+arcmutate-base = "1.7.1"
 
 [libraries]
 pitest-command-line = { module = "org.pitest:pitest-command-line", version.ref = "pitest" }
 pitest-junit5-plugin = { module = "org.pitest:pitest-junit5-plugin", version.ref = "pitest-junit5-plugin" }
 jazzer = { module = "com.code-intelligence:jazzer", version.ref = "jazzer" }
+arcmutate-base = { module = "com.arcmutate:base", version.ref = "arcmutate-base" }

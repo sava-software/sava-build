@@ -54,7 +54,8 @@ val libsCatalog = the<VersionCatalogsExtension>().named("libs")
 val hardeningToolVersions = listOf(
   "PITEST" to "pitest",
   "PITEST_JUNIT5_PLUGIN" to "pitest-junit5-plugin",
-  "JAZZER" to "jazzer"
+  "JAZZER" to "jazzer",
+  "ARCMUTATE_BASE" to "arcmutate-base"
 ).associate { (constant, alias) ->
   constant to libsCatalog.findVersion(alias)
     .orElseThrow { IllegalStateException("Version '$alias' is missing from gradle/libs.versions.toml") }
