@@ -7,16 +7,48 @@ this document covers only the decisions the tooling cannot make for you.
 
 ## Lifecycle
 
+Verification is tiered by cost, and the tier is chosen by what the change can
+affect — not by habit in either direction:
+
 | When | Command | What it proves |
 |---|---|---|
-| Every change | `./gradlew qualityGate` | Unit tests pass and no new unkilled mutants exist in any suite. |
-| Before a release | long fuzz runs (`fuzz<Target> -PmaxFuzzTime=<seconds>`), jmh A/B vs the previous release | No parser crashes at depth; no performance regression. |
+| Inner loop | the module's `test` (or `--tests` for the touched classes) | The change works. |
+| Before handing off a change | the `pitest<Suite>`(s) whose mutated code the change can reach | No new unkilled mutants where the change lives. |
+| Before a release | `qualityGate` on every module, long fuzz runs (`fuzz<Target> -PmaxFuzzTime=<seconds>`), jmh A/B vs the previous release | Nothing regressed anywhere; no parser crashes at depth; no performance regression. |
 
 `qualityGate` = `test` + every registered `pitest<Suite>`, serialized, each
-finalized by its baseline verification. It is the definition of "this change
-is safe to merge". While iterating, run just the `pitest<Suite>` that owns
-the code you touched — `qualityGate` is the before-commit command, not the
-inner-loop one.
+finalized by its baseline verification. Its cost scales with the repo's total
+mutant population, not with the size of the diff — so as suites accumulate it
+drifts from "a minute" to "many", and running it per change spends that time
+re-learning results the change could not have moved. A suite produces new
+information only when the change can alter code it mutates or tests that
+cover that code; every other suite's outcome is known before the run starts.
+
+Choosing the owning suites is a **reachability** question, not a file-path
+one:
+
+- the suite covering the edited files, plus any suite — including in a
+  dependent module — whose mutated code calls the changed API. (Editing a
+  widening helper in a core encoding class also owes the rpc suite whose
+  response types call it.)
+- test-only edits still owe the suite those tests kill mutants in: a
+  weakened or deleted test shows up as a new survivor, which is precisely
+  what the ratchet is for. They owe nothing beyond it.
+- doc, build-script, and comment changes owe no suite at all.
+
+Both failure modes have been observed and both waste something real. Running
+the full gate after a test-strengthening tweak or a file deletion spends
+minutes per iteration confirming numbers that could not have changed — across
+a session that is the difference between an inner loop and a queue. Never
+running it lets cross-suite effects hide: `TIMED_OUT` flips under full-gate
+load, and cross-module callers of a changed API, surface only there. The full
+gate runs before anything is published — that is the requirement; where it
+runs is a cost decision. CI wiring buys per-change coverage without per-change
+local cost, but serialized PIT suites on hosted runners (fewer cores, and PIT
+scales with them) can take long enough to be impractical there. In that case
+the release checklist owns the run: the full gate is executed locally before
+deciding to release, and CI stays on `check`. Choosing that deliberately is
+fine; the failure mode is only a repo where nobody owns the pre-release run.
 
 ## The mutation ratchet
 
@@ -171,6 +203,50 @@ min-over-N-runs allocation bound kills them and locks the zero-allocation
 design goal as an enforced invariant. If allocation, ordering, or laziness is
 the point of the code, assert it.
 
+**"The point of the code" is the whole gate, and it is easy to read past.**
+Before reaching for this, answer: is the property a design goal you would
+defend in review — a documented zero-allocation contract, a laziness guarantee
+callers rely on — or is it an incidental micro-optimisation that happens to be
+the only observable difference? Only the first earns the machinery. The second
+is a mutant to accept with a written reason, and the reason is already the
+answer: "this branch is allocation routing only."
+
+The costs are real and were all paid on a suite where the answer was "no":
+
+- **PIT re-runs the covering tests once per mutant.** The determinism section
+  below says this about sleeps; it applies identically to a warmup-and-rounds
+  measurement harness. ~150k iterations per assertion took a 22-mutant suite
+  from ~10s to ~38s.
+- **Measuring a discarded value measures nothing** — and does so
+  *nondeterministically*. A result that is immediately dead can be
+  scalar-replaced by escape analysis, erasing the very allocation under test,
+  but only on runs that reach the right JIT tier. The first version of one such
+  test passed six times standalone and failed under the ratchet. Assign every
+  result to a `static volatile Object` sink.
+- **Bounds are per-method and the margins can be thin.** Two methods sharing a
+  branch shape had different allocation floors, so a budget loose enough for one
+  let the other's mutant through at 88 bytes against a 90-byte bound. Elsewhere
+  the gap between fast path and mutant was 64 against 88 — visible, but too
+  narrow to assert without flapping.
+
+A thin-margin allocation bound is a flaky harness with extra steps, and the
+determinism section is unambiguous about which of those is worse than recorded
+debt.
+
+### A suite's percentage is not a target
+
+An accepted mutant with a written reason is a **finished outcome**, not debt
+waiting to be cleared. A suite sitting at 81% because four of its mutants are
+documented equivalents is reporting an accurate number, and driving it to 100%
+buys nothing — the four were already closed by the second-to-last paragraph of
+the ratchet's three legal outcomes.
+
+Read a low percentage as a question, not a defect: *which* mutants, and are they
+`SURVIVED` or `NO_COVERAGE`? Uncovered lines are real work. Documented
+equivalents are already done. The suites worth attention are the ones whose
+baseline is growing, or whose entries say "hard to test" rather than why the
+mutant cannot change behaviour.
+
 ## Targeting policy
 
 Target mutation suites by **package wildcard with explicit exclusions**, never
@@ -277,16 +353,23 @@ the interleaving deterministic, record the mutant and say why.
    suite, commit `config/pitest/`.
 4. Add a `config/pitest/README.md` from an existing repo's copy: triaged
    equivalents (initially empty) and the untriaged-debt note.
-5. Add the agent-instructions block below to the repo's `AGENTS.md`, and wire
-   `qualityGate` into CI.
+5. Add the agent-instructions block below to the repo's `AGENTS.md`, and
+   decide who owns the pre-release `qualityGate` run: wire it into CI if the
+   runners can afford it, otherwise record it as a release-checklist item run
+   locally (see the lifecycle section) — and say which in `AGENTS.md`.
 
 ## Agent instructions template
 
 Copy into the repo's `AGENTS.md` (adjust file names):
 
-> - **Run `./gradlew qualityGate` after changing main sources** — unit tests
->   plus every PIT suite, each diffed against its accepted baseline in
->   `config/pitest/`. It is the definition of "safe to commit".
+> - **Scale verification to the change.** Iterate with the module's `test`
+>   task; before handing off, run only the `pitest<Suite>`(s) whose mutated
+>   code the change can reach — including suites in dependent modules that
+>   call a changed API, and the owning suite for test-only edits (a weakened
+>   test is exactly what the ratchet catches). The full `qualityGate` — every
+>   suite, serialized, diffed against `config/pitest/` — is the pre-release
+>   check, owned by CI or by the release checklist (this repo records which);
+>   it is not the inner loop.
 > - A new unkilled mutant has exactly three legal outcomes: **kill it** with a
 >   test (prefer asserting the property it breaks over restating the
 >   implementation), **refactor** it out of existence, or **accept it** with a
@@ -306,6 +389,14 @@ Copy into the repo's `AGENTS.md` (adjust file names):
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
 >   boundary cannot be made deterministic, accept the mutant with a written
 >   reason rather than chasing it with sleeps or spin-waits.
+> - **A suite's percentage is not a target.** An accepted mutant with a written
+>   reason is finished work, not debt. Before trying to raise a number, check
+>   whether the remainder is `NO_COVERAGE` (real work) or documented
+>   equivalents (already closed).
+> - **Allocation and timing harnesses are a last resort**, reserved for
+>   properties that are a stated design goal. They re-run once per mutant, need
+>   a `volatile` sink so escape analysis cannot delete what they measure, and
+>   flap when the margin is thin.
 > - When a test you believe in will not go green, **suspect the code before you
 >   soften the assertion** — that is where this process finds real bugs.
 > - `SURVIVED` and `NO_COVERAGE` are different problems: the first is a
