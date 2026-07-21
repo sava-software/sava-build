@@ -5,6 +5,10 @@ what the tooling enforces, what requires judgment, and the conventions that
 make both portable across codebases. The enforceable parts live in the plugin —
 this document covers only the decisions the tooling cannot make for you.
 
+Every rule here was earned from an observed incident; the incidents live in
+`HARDENING_CASEBOOK.md`, cited as *(casebook: entry)*. Read an entry before
+arguing with its rule — the counter-argument has usually been tried.
+
 ## Lifecycle
 
 Verification is tiered by cost, and the tier is chosen by what the change can
@@ -14,114 +18,78 @@ affect — not by habit in either direction:
 |---|---|---|
 | Inner loop | the module's `test` (or `--tests` for the touched classes) | The change works. |
 | Before handing off a change | the `pitest<Suite>`(s) whose mutated code the change can reach | No new unkilled mutants where the change lives. |
-| Before a release | `qualityGate` on every module, long fuzz runs (`fuzz<Target> -PmaxFuzzTime=<seconds>`), jmh A/B vs the previous release | Nothing regressed anywhere; no parser crashes at depth; no performance regression. |
+| Before a release | `qualityGate` on every module (`-PnoMutationHistory` if arcmutate history is active), long fuzz runs (`fuzz<Target> -PmaxFuzzTime=<seconds>`), jmh A/B vs the previous release | Nothing regressed anywhere; no parser crashes at depth; no performance regression. |
 
 `qualityGate` = `test` + every registered `pitest<Suite>`, serialized, each
 finalized by its baseline verification. Its cost scales with the repo's total
-mutant population, not with the size of the diff — so as suites accumulate it
-drifts from "a minute" to "many", and running it per change spends that time
-re-learning results the change could not have moved. A suite produces new
-information only when the change can alter code it mutates or tests that
-cover that code; every other suite's outcome is known before the run starts.
+mutant population, not with the size of the diff — so running it per change
+spends minutes re-learning results the change could not have moved. A suite
+produces new information only when the change can alter code it mutates or
+tests that cover that code.
 
 Choosing the owning suites is a **reachability** question, not a file-path
 one:
 
 - the suite covering the edited files, plus any suite — including in a
-  dependent module — whose mutated code calls the changed API. (Editing a
-  widening helper in a core encoding class also owes the rpc suite whose
-  response types call it.)
+  dependent module — whose mutated code calls the changed API.
 - test-only edits still owe the suite those tests kill mutants in: a
   weakened or deleted test shows up as a new survivor, which is precisely
   what the ratchet is for. They owe nothing beyond it.
 - doc, build-script, and comment changes owe no suite at all.
 
-Both failure modes have been observed and both waste something real. Running
-the full gate after a test-strengthening tweak or a file deletion spends
-minutes per iteration confirming numbers that could not have changed — across
-a session that is the difference between an inner loop and a queue. Never
-running it lets cross-suite effects hide: `TIMED_OUT` flips under full-gate
-load, and cross-module callers of a changed API, surface only there. The full
-gate runs before anything is published — that is the requirement; where it
-runs is a cost decision. CI wiring buys per-change coverage without per-change
-local cost, but serialized PIT suites on hosted runners (fewer cores, and PIT
-scales with them) can take long enough to be impractical there. In that case
-the release checklist owns the run: the full gate is executed locally before
-deciding to release, and CI stays on `check`. Choosing that deliberately is
-fine; the failure mode is only a repo where nobody owns the pre-release run.
+Both failure modes waste something real: per-change full gates turn an inner
+loop into a queue, and never running the gate hides what only surfaces there
+(`TIMED_OUT` flips under load, cross-module callers). The full gate runs
+before anything is published — that is the requirement; *where* is a cost
+decision. Wire it into CI if the runners can afford serialized PIT; otherwise
+the release checklist owns a local run and CI stays on `check`. Either is
+fine deliberately chosen; the failure mode is a repo where nobody owns it.
 
 ## Making the loop faster
 
-The lifecycle section says to run fewer suites. The other half is making the
-suites you do run cheaper, and the cost model is simple enough to optimise
-directly:
+The lifecycle says run fewer suites; the other half is making the suites you
+run cheaper. The cost model is directly optimisable:
 
 > **cost ≈ mutants × time to run the tests covering them**
 
-Both factors are yours to set, and the levers are worth knowing before you
-reach for the one that does not work.
+- **Split an expensive class into its own suite** — one split took a suite
+  46.7s → 20.9s, and the new seconds-long suite is all most edits owe.
+- **Narrow `targetTests`** to the classes that actually cover the target —
+  one suite went 10.6s → 6.1s.
+- **Threads are not the lever they look like** — 8 threads bought ~10%, 10
+  were slower than 8. Measure before spending here.
 
-- **Split an expensive class into its own suite.** A single slow-to-cover
-  class taxes every mutant in the suite it shares. Moving one service class
-  out of a catch-all suite (and excluding it there) took that suite from
-  **46.7s to 20.9s**, while the new single-class suite runs in seconds and is
-  the only one most edits to that class owe.
-- **Narrow `targetTests`.** A suite that runs the module's whole test class
-  set per mutant pays for tests that cover none of it. Restricting one suite
-  to the single test class that covers its target: **10.6s → 6.1s**.
-- **Threads are not the lever they look like.** PIT's `threads` option is the
-  first thing you reach for and it disappoints: on an 8-performance-core
-  laptop, 8 threads bought ~10% and 10 threads was *slower* than 8. PIT's
-  per-mutant work is already JVM-bound and oversubscription costs more than
-  the parallelism returns. Measure before spending time here.
+*(casebook: loop-speed measurements)*
 
-### PIT incremental analysis needs arcmutate — free for open source, pre-wired here
+### Incremental analysis needs arcmutate — free for open source, pre-wired
 
-This looks like the big win, and in open-source PIT it is not available —
-though arcmutate licences are free for open-source projects, and the plugin
-has the wiring ready (below). First, the trap. `pitest-entry` ships an
-`org.pitest.mutationtest.incremental` package and the CLI accepts
-`--historyInputLocation` / `--historyOutputLocation`, so the feature reads as
-a wiring job. It is not: at 1.25.8 the only history factory registered in
-open-source PIT is `ErroringHistoryFactory`, whose implementation is a throw —
-
-> History has been enabled but no history plugin has been installed/activated.
-> If you are using https://www.arcmutate.com remember to activate the history
-> plugin with +arcmutate_history
-
-The flags are accepted and the run then dies in `EntryPoint.pickHistoryStore`.
-Real history needs arcmutate's commercial plugin. Do not re-attempt this on
-the strength of the CLI options existing; that reasoning has already produced
-one wrong "the docs are out of date" correction.
-
-**How the failed prototype presented is the transferable part.** The second
-run finished in 2.2s against 24.5s — an apparent 11× speedup. It was PIT
-throwing immediately and doing no work, while the *previous* run's report sat
-in `build/reports/pitest/`, so the verify step read it and printed a full,
-plausible `58/94 detected (61%)`. Only the exit code was honest. A mutation
-run that gets faster without getting narrower deserves suspicion before
-celebration, and stale reports are the mechanism (see the convergence method
-below).
+Open-source PIT accepts `--historyInputLocation`/`--historyOutputLocation`
+but its only registered history factory throws — do not re-attempt on the
+strength of the CLI flags existing, and note the failed run leaves the
+previous report in place for the verify step to read *(casebook: the 11×
+"speedup" that did no work)*.
 
 **With a licence, activation is dropping one file.** The plugin keys
 everything off `arcmutate-licence.txt` at the project or root-project
 directory: when present, `com.arcmutate:base` (version pinned in the plugin,
 overridable via `hardening.arcmutateBaseVersion`) joins PIT's classpath and
-every suite runs with `+arcmutate_history` against a rolling per-suite file at
+every suite runs `+arcmutate_history` against a rolling per-suite file at
 `<module>/.pitest-history/<suite>.hist` — outside `build/` so `clean` cannot
-erase the accumulated results, and git-ignored as machine-local state. Without
-the file, no dependency is added and no flags are passed: PIT runs exactly as
-open source, so repos and CI machines without a licence are unaffected.
+erase it, git-ignored as machine-local state. Without the file, no dependency
+and no flags: PIT runs exactly as open source, so unlicenced machines and CI
+are unaffected.
 
-Two honesty rules come with it. Each history-assisted run announces itself —
-a lifecycle line at start and a `[history]` marker on the verify summary — so
-a reused number is never mistaken for a re-earned one; with history active,
-*fast is the expected state*, and the stale-report suspicion above transfers
-to the exit code and the marker. And the **pre-release gate runs
-`-PnoMutationHistory`**: the release decision re-earns every status from
-scratch rather than trusting accumulated invalidation, which also keeps the
-convergence method meaningful. Delete the `.pitest-history` directory to reset
-a machine's history wholesale.
+Two honesty rules come with it. Each assisted run announces itself — a
+lifecycle line at start and a `[history]` marker on the verify summary — so a
+reused number is never mistaken for a re-earned one; with history active
+*fast is the expected state*, and suspicion transfers to the exit code and
+the marker. And **anything that writes or certifies the record runs
+`-PnoMutationHistory`**: the pre-release gate (the release decision re-earns
+every status from scratch), baseline refreshes with
+`-PupdateMutationBaseline` (the accepted CSV is the gate's authority and must
+come from observed runs), and the convergence method's runs (two assisted
+runs agree by construction). Delete `.pitest-history/` to reset a machine's
+history wholesale.
 
 ## The mutation ratchet
 
@@ -148,32 +116,24 @@ acceptance; label it as such in `config/pitest/README.md`.
 ### `SURVIVED` and `NO_COVERAGE` are different problems
 
 The ratchet treats both as unkilled, which is correct, but they call for
-opposite responses and conflating them wastes effort:
+opposite responses:
 
-- **`SURVIVED`** — a test *did* execute the mutated line and could not tell the
-  difference. Either the assertion is too weak, or the mutant is equivalent.
-  This is a judgment call, and the outcome is a strengthened assertion or a
-  written acceptance.
-- **`NO_COVERAGE`** — no test reached the line at all. There is nothing to
-  judge; it is mechanical work. Never accept one as "equivalent" — you have not
-  observed its behaviour, so you cannot know that it is.
+- **`SURVIVED`** — a test executed the mutated line and could not tell the
+  difference. Judgment call: strengthen the assertion or write an acceptance.
+- **`NO_COVERAGE`** — no test reached the line. Nothing to judge; mechanical
+  work. Never accept one as "equivalent" — you have not observed its
+  behaviour, so you cannot know that it is.
 
-Read the split before planning a pass. A suite sitting at "89% killed, 56 to
-triage" may really be 27 judgment calls and 29 untested methods, and those are
-very different afternoons. When accepting `NO_COVERAGE` is genuinely right —
-a path the harness cannot reach without new scaffolding — say *that* in the
-acceptance note, not "equivalent".
+Read the split before planning a pass: "89% killed, 56 to triage" may be 27
+judgment calls and 29 untested methods — very different afternoons. When
+accepting `NO_COVERAGE` is genuinely right (a path the harness cannot reach
+without new scaffolding), say *that* in the note, not "equivalent".
 
-`SURVIVED` has the same third category, and it deserves the same honesty: a
-mutant that is distinguishable *in principle* but unreachable through any
-deterministic harness. Observed: the `< 200` half of an HTTP status-range
-guard — the JDK client treats 1xx as interim responses and never surfaces one
-as a final status, so a mock server replying 199 kills the connection before
-the guard runs. The guard is not dead code (a real 199 would distinguish the
-mutant) so "equivalent" would be false; accept it as **unreachable
-in-harness** and name what would reach it (here, a raw-socket stub speaking
-HTTP/1.1 by hand). That named escape hatch is what tells a later reader
-whether the acceptance is still the right trade.
+`SURVIVED` has the same third category: a mutant distinguishable *in
+principle* but unreachable through any deterministic harness. Accept it as
+**unreachable in-harness** and name what would reach it — the named escape
+hatch is what tells a later reader whether the acceptance still holds
+*(casebook: the HTTP 199 guard)*.
 
 Every `pitest<Suite>` run prints the split without being asked:
 
@@ -182,14 +142,14 @@ pitest 'client': 441/498 detected (88%) — 27 survived, 30 no_coverage
 pitest 'vanity': 113/113 detected (100%) — 1 timed out (load-dependent)
 ```
 
-and a ratchet failure groups the new rows under the same two headings, so the
-first thing you see is which kind of work you are looking at.
-
-`TIMED_OUT` is counted as detected, matching PIT, but is called out separately
-because that detection can flip (see below) — a suite reporting timed-out rows
-is one whose number is not stable across invocations. The percentage is rounded
-**down**, so it never reads better than it is; PIT's own line rounds, so the two
-can differ by a point while the counts agree.
+and a ratchet failure groups new rows under the same two headings. `TIMED_OUT`
+counts as detected, matching PIT, but is named separately because that
+detection can flip (below). The percentage is rounded **down**, so it never
+reads better than it is; PIT's own line rounds, so the two can differ by a
+point while the counts agree. Error statuses (`RUN_ERROR`, `MEMORY_ERROR`)
+are *not* counted as detected — there PIT is more generous and the counts
+genuinely diverge; the split names them so the dip is explainable (see the
+transient-failures section).
 
 Baseline keys include line numbers, which churn when a mutated file is
 edited: the verify task then reports stale entries alongside "new" ones.
@@ -199,247 +159,165 @@ Confirm the new rows are the shifted old ones, then refresh with
 ### `TIMED_OUT` is detected, and detection is load-dependent
 
 A mutant that makes a loop non-terminating is caught by PIT's timeout and
-reported `TIMED_OUT`, which counts as **detected** — so it is not written to
-the baseline. That is fine until the timing shifts: the same mutant can report
-`SURVIVED` when its suite runs alone and `TIMED_OUT` in a multi-suite
-invocation. The build then fails or passes depending on *how you invoked it*,
-and the failure looks exactly like a real regression.
-
-Observed, not theorized. Consequences worth internalising:
+counts as **detected** — so it is not written to the baseline. But the same
+mutant can report `SURVIVED` when its suite runs alone and `TIMED_OUT` in a
+multi-suite invocation, so the build fails or passes depending on *how you
+invoked it*, and the failure looks exactly like a real regression.
 
 - **Verify in both modes** before trusting a baseline — the suite alone, and
-  under `qualityGate`. A row that differs between them belongs in the baseline;
-  stale rows are reported as a warning and never fail the build, so a superset
-  is safe in this one direction.
-- **Union only rows you have observed to flip.** Bulk-adding every `TIMED_OUT`
-  row "to be safe" accepts mutants that are reliably detected today and
-  silently stops the ratchet noticing if a later edit makes them genuinely
-  survive. That is a real regression in coverage bought for an imagined one.
-- Prefer removing the cause: if a fake collaborator can turn a would-be
+  under `qualityGate`. A row that differs between them belongs in the
+  baseline; stale rows only warn, so a superset is safe in this direction.
+- **Union only rows you have observed to flip.** Bulk-adding every
+  `TIMED_OUT` row "to be safe" accepts mutants that are reliably detected
+  today and silently stops the ratchet noticing if a later edit makes them
+  genuinely survive.
+- Prefer removing the cause: a fake collaborator that turns a would-be
   infinite loop into a deterministic assertion failure — a call budget, a
-  bounded queue — do that instead of leaning on the timeout.
+  bounded queue — beats leaning on the timeout.
 
 ### Two baseline-format traps
 
-Both cost a debugging cycle the first time:
-
-- **Rows can duplicate.** PIT emits multiple mutants that share a
-  `class,method,line,mutator,status` key; the baseline holds unique rows. So a
-  run's raw row count legitimately exceeds the baseline's. Compare *unique*
-  rows, or a converged baseline will look like it is diverging.
+- **Rows can duplicate.** PIT emits multiple mutants sharing a
+  `class,method,line,mutator,status` key; the baseline holds unique rows, so
+  a run's raw row count legitimately exceeds the baseline's. Compare *unique*
+  rows.
 - **Hand-edited rows can silently never match.** The canonical mutator name
-  strips both the `org.pitest.…gregor.mutators.` package and the `returns.`
-  sub-package. A row spelled `returns.NullReturnValsMutator` sits in the file
-  and matches nothing, so its mutant is reported new on every run. Prefer
-  `-PupdateMutationBaseline`, which writes the canonical form; hand-edit only
-  to union in a known flip, and match that form exactly.
+  strips the `org.pitest.…gregor.mutators.` package *and* the `returns.`
+  sub-package; a row spelled `returns.NullReturnValsMutator` matches nothing
+  and reports new forever. Prefer `-PupdateMutationBaseline`, which writes
+  the canonical form; hand-edit only to union a known flip.
 
 ### The recurring equivalence families
 
-Most accepted mutants fall into a handful of shapes. Naming them makes triage
-faster and acceptance notes consistent across repos — group the baseline by
+Most accepted mutants fall into a handful of shapes; group the baseline by
 family rather than listing rows:
 
-- **Allocation-size only** — the mutant changes how much is reserved, never
-  what is computed. Sizing formulas whose contract is "never under-allocate"
-  live here.
-- **Fast-path / alternate-path routing** — both branches reach the same result;
-  the mutant only changes which one runs. A guard subsumed by a later branch is
-  the common case: `if (a.feePayer()) return a;` is unkillable when the
-  `signer()` branch below it returns the same object for every fee payer.
-- **Equal but not identical** — the mutant builds a fresh instance instead of
-  returning the argument. Killable only by asserting reference identity, which
-  the API usually does not promise.
-- **Identity short-circuits** — `this == o ||` at the top of `equals`. Removing
-  it falls through to the field comparison, which returns the same answer for
-  every input.
-- **Defensive code unreachable in context** — a guard no live caller can
-  trigger. Worth a note on *why* it is unreachable, since that is the claim
-  which can rot.
+- **Allocation-size only** — changes how much is reserved, never what is
+  computed.
+- **Fast-path / alternate-path routing** — both branches reach the same
+  result; a guard subsumed by a later branch is the common case
+  (`if (a.feePayer()) return a;` above a `signer()` branch returning the same
+  object).
+- **Equal but not identical** — a fresh instance instead of the argument;
+  killable only by asserting reference identity the API does not promise.
+- **Identity short-circuits** — `this == o ||` atop `equals`; removal falls
+  through to a field comparison with the same answer.
+- **Defensive code unreachable in context** — note *why* it is unreachable;
+  that claim is the part that rots.
 
-A cluster that does not fit any of these is worth a second look before
-accepting.
+A cluster fitting none of these deserves a second look before accepting.
 
 ### When equivalence is cheap to verify, verify it
 
 An acceptance note is an argument, and arguments rot with the code around
 them. When the claimed equivalence spans a sweepable domain, reimplement both
-variants outside the codebase and diff them. Observed: a mutant of a
-Newton's-method integer square root (initial guess `v/2` → `2v`) was accepted
-only after both versions agreed on every input below 200,000 plus `2^e ± 3`
-for `e` in 60..129 — zero differences across 200,490 values, and the note
-records the range. "Verified equivalent over ⟨inputs⟩" survives refactors
-that would silently invalidate a prose argument, and the sweep is usually
-minutes of work. When one is not feasible, the note should say what argument
-stands in for it — that is the part a later reader must re-check.
+variants outside the codebase, diff them over the range, and record the range
+in the note — "verified equivalent over ⟨inputs⟩" survives refactors that
+silently invalidate prose, and the sweep is usually minutes *(casebook: the
+Newton's-method sqrt sweep)*. When a sweep is not feasible, the note says
+what argument stands in for it — that is what a later reader must re-check.
 
 ### When a cluster of unkillable mutants means the design is wrong
 
-Several unkillable mutants in one place is a signal, not a nuisance. If they
-all sit on logging or output calls, the side effect is usually in the wrong
-layer rather than the mutants being equivalent.
+Several unkillable mutants in one place is a signal. If they sit on logging
+or output calls, the side effect is usually in the wrong layer: extract the
+*construction* (a pure, assertable function — the table as a string, the log
+message as a `static String`) from the *emission*, and the cluster becomes
+ordinary testable code, usually leaving one genuinely equivalent
+`VoidMethodCallMutator` *(casebook: System.out in a library factory; logEpoch)*.
 
-Observed: a library factory method printed a table to `System.out` while
-building its result. Nine mutants — the `print` calls and the loop driving
-them — were unkillable, because nothing asserts stdout and capturing it would
-pin output that is not part of the contract. The fix was not a test. Returning
-the table as a string and letting the CLI print it made the function pure, the
-mutants died, and a library stopped writing to stdout. The baseline went from
-nine accepted entries to none.
-
-A second instance, different in shape: a service loop's `logEpoch(previous,
-latest)` method held 12 accepted entries, only *one* of which was a logging
-removal — the other eleven were branch selection and arithmetic (a delta, a
-percentage, a three-way sign word) that were unkillable purely because their
-sole consumer was a string. Extracting the *message construction* from
-the *emission* — `static String epochLogMessage(previous, latest, now)`, with
-the caller doing `logger.log(INFO, epochLogMessage(..))` — made the branch
-logic a pure function with an assertable return, and the cluster became
-ordinary unit-testable code. The emission that remains is one
-`VoidMethodCallMutator`, which is a genuine equivalent.
-
-**Watch for a fake justification here.** The first pass at that method kept it
-as-is, arguing it "isn't purely an output method, because it returns the
-sample the loop consumes". It returned *its own argument*. A method that hands
-back what it was given is a `void` method with a convenience return, and the
-argument for keeping the side effect where it was evaporated once that was
-noticed. Check whether the useful-looking return value is actually derived
-from the work.
-
-Ask what the mutants have in common before accepting them as a group.
+Watch for a fake justification: a method that returns *its own argument* is a
+`void` method with a convenience return, not "not purely an output method".
+Check whether the useful-looking return value is derived from the work. Ask
+what the mutants have in common before accepting them as a group.
 
 ### Turning "equivalent" mutants into killable ones
 
-A mutant that survives because tests cannot observe the difference is a hint
-that a *property you care about* is unasserted. The canonical example:
-grow-always / trim-always mutants in sized array readers are invisible to
-result assertions but visible to
-`com.sun.management.ThreadMXBean#getCurrentThreadAllocatedBytes` — a
-min-over-N-runs allocation bound kills them and locks the zero-allocation
-design goal as an enforced invariant. If allocation, ordering, or laziness is
-the point of the code, assert it.
+A mutant that survives because tests cannot observe the difference hints that
+a *property you care about* is unasserted — grow/trim mutants in sized array
+readers are invisible to result assertions but visible to
+`com.sun.management.ThreadMXBean#getCurrentThreadAllocatedBytes`. If
+allocation, ordering, or laziness is the point of the code, assert it.
 
 **"The point of the code" is the whole gate, and it is easy to read past.**
-Before reaching for this, answer: is the property a design goal you would
-defend in review — a documented zero-allocation contract, a laziness guarantee
-callers rely on — or is it an incidental micro-optimisation that happens to be
-the only observable difference? Only the first earns the machinery. The second
-is a mutant to accept with a written reason, and the reason is already the
-answer: "this branch is allocation routing only."
+Is the property a design goal you would defend in review — a documented
+zero-allocation contract, a laziness guarantee callers rely on — or an
+incidental micro-optimisation that happens to be the only observable
+difference? Only the first earns the machinery; the second is an acceptance
+whose reason is already written ("this branch is allocation routing only").
 
-The costs are real and were all paid on a suite where the answer was "no":
+The costs are real *(casebook: the allocation harness that flapped)*:
 
-- **PIT re-runs the covering tests once per mutant.** The determinism section
-  below says this about sleeps; it applies identically to a warmup-and-rounds
-  measurement harness. ~150k iterations per assertion took a 22-mutant suite
-  from ~10s to ~38s.
-- **Measuring a discarded value measures nothing** — and does so
-  *nondeterministically*. A result that is immediately dead can be
-  scalar-replaced by escape analysis, erasing the very allocation under test,
-  but only on runs that reach the right JIT tier. The first version of one such
-  test passed six times standalone and failed under the ratchet. Assign every
-  result to a `static volatile Object` sink.
-- **Bounds are per-method and the margins can be thin.** Two methods sharing a
-  branch shape had different allocation floors, so a budget loose enough for one
-  let the other's mutant through at 88 bytes against a 90-byte bound. Elsewhere
-  the gap between fast path and mutant was 64 against 88 — visible, but too
-  narrow to assert without flapping.
-
-A thin-margin allocation bound is a flaky harness with extra steps, and the
-determinism section is unambiguous about which of those is worse than recorded
-debt.
+- PIT re-runs covering tests once per mutant, so a measurement harness
+  multiplies like a sleep does.
+- A discarded result can be scalar-replaced by escape analysis, erasing the
+  allocation under test nondeterministically — every result needs a
+  `static volatile Object` sink.
+- Bounds are per-method and margins can be single-digit bytes. A thin-margin
+  allocation bound is a flaky harness with extra steps, and the determinism
+  section is unambiguous about which of those is worse than recorded debt.
 
 ### A suite's percentage is not a target
 
-An accepted mutant with a written reason is a **finished outcome**, not debt
-waiting to be cleared. A suite sitting at 81% because four of its mutants are
-documented equivalents is reporting an accurate number, and driving it to 100%
-buys nothing — the four were already closed by the second-to-last paragraph of
-the ratchet's three legal outcomes.
-
-Read a low percentage as a question, not a defect: *which* mutants, and are they
-`SURVIVED` or `NO_COVERAGE`? Uncovered lines are real work. Documented
-equivalents are already done. The suites worth attention are the ones whose
-baseline is growing, or whose entries say "hard to test" rather than why the
-mutant cannot change behaviour.
+An accepted mutant with a written reason is a **finished outcome**, not debt.
+A suite at 81% because four mutants are documented equivalents is reporting
+an accurate number; driving it to 100% buys nothing — the four were closed by
+outcome 3. Read a low percentage as a question: *which* mutants, `SURVIVED`
+or `NO_COVERAGE`? Uncovered lines are real work; documented equivalents are
+done. The suites worth attention are those whose baseline is growing, or
+whose entries say "hard to test" instead of why the mutant cannot change
+behaviour *(casebook: the allocation harness that flapped)*.
 
 ## Targeting policy
 
-Target mutation suites by **package wildcard with explicit exclusions**, never
-by allowlist. An allowlist silently exempts every class added after it was
-written; a wildcard makes a new class mutated by default and forgetting an
+Target mutation suites by **package wildcard with explicit exclusions**,
+never by allowlist. An allowlist silently exempts every class added after it
+was written; a wildcard mutates a new class by default, and a forgotten
 exclusion costs a slower run, not a blind spot. Exclude: test/fuzz/fixture
 sources sharing the recompiled root, classes owned by another suite, and
-deliberate opt-outs (constant tables) — each with a comment saying why.
+deliberate opt-outs — each with a comment saying why.
 
-**Give those exclusions a trailing wildcard**: `*Tests*`, not `*Tests`. A test
-or fuzz class routinely holds nested helpers — a recording fake, a stub clock,
-a harness's private `Parser` — and `*Tests` does not match
-`FooTests$StubService`. Without the trailing wildcard PIT mutates that scaffolding
-as if it were production code, and you triage mutants in your own fakes.
-
-**Then stop trusting the naming convention.** The trailing wildcard only helps
-for helpers *nested inside* a test class. Top-level test-source classes are
-routinely named for their role rather than their kind — `RecordingWebSocket`,
-`StubHttpResponse`, `LiveMainNetDriftCheck` — and match no `*Test*` pattern at
-all. Extracting a shared fake out of a test class is exactly the refactor that
+**Give exclusions a trailing wildcard** (`*Tests*`, not `*Tests`): test
+classes hold nested helpers, and `*Tests` does not match
+`FooTests$StubService`. **Then stop trusting the naming convention**:
+top-level test-source classes are routinely named for their role —
+`RecordingWebSocket`, `StubHttpResponse` — and match no `*Test*` pattern;
+extracting a shared fake out of a test class is exactly the refactor that
 silently adds it to the mutated population.
 
 Exclusions must cover the **test source set**, not a naming convention. The
-plugin checks this for you: `pitest<Suite>Verify` cross-references every mutated
-class against the project's test source directories and warns when a suite is
-mutating its own scaffolding, naming the classes to exclude.
-
-It warns rather than fails, because a repo upgrading the plugin will already
-have those mutants sitting in an accepted baseline — the warning tells you the
-baseline is inflated, not that the build is broken. Fix the exclusions and
-re-seed; the baseline should shrink.
-
-Two of the suites in one adoption pass had this defect, one of them introduced
-by the same person who had just documented the trap. That is why it is a check
-and not a paragraph.
+plugin checks: `pitest<Suite>Verify` cross-references mutated classes against
+test source directories and warns, naming the classes to exclude. It warns
+rather than fails because an upgrading repo already has those mutants in an
+accepted baseline — fix the exclusions and re-seed; the baseline should
+shrink. It is a check and not a paragraph because the trap caught its own
+documenter *(casebook: scaffolding mutated by its documenter)*.
 
 Converting an existing allowlist to a wildcard is worth doing, but size it
-first: it surfaces every class the allowlist had been exempting, which can be
-an order of magnitude more unkilled mutants than the suite currently reports.
-That is pre-existing debt becoming visible, not new debt — seed it, label it as
-untriaged in `config/pitest/README.md`, and work it down. A cheap way to check
-an allowlist is lying to you: list the module's main classes, subtract the ones
-any suite's patterns match, and read what is left.
+first: it surfaces every class the allowlist exempted, which can be an order
+of magnitude more unkilled mutants — pre-existing debt becoming visible, not
+new debt. Seed it, label it untriaged, work it down. Cheap lie-detector for
+an allowlist: list the module's main classes, subtract what any suite's
+patterns match, read what is left.
 
 ## The mutator set bounds what the ratchet can see
 
 Targeting chooses which classes are mutated; the mutator set chooses which
-*defects are expressible*. A kill percentage is only meaningful relative to
-that set, and the standard groups have a blind spot that lands exactly on
-money-handling code: `MathMutator` rewrites primitive bytecode arithmetic —
-`IADD`, `LMUL` and friends — while `BigInteger`/`BigDecimal` arithmetic is
-method calls, which those opcodes never touch. A fixed-point conversion or
-fee computation written on `BigInteger` is invisible to `STRONGER`, so a
-suite can report a healthy percentage while mutating only the conditionals
-*around* the math it exists to protect. No ratchet failure ever surfaces
-this; the suite is blind by construction, not undertested.
+*defects are expressible*. The standard groups have a blind spot landing
+exactly on money-handling code: `MathMutator` rewrites primitive bytecode
+arithmetic, while `BigInteger`/`BigDecimal` arithmetic is method calls those
+opcodes never touch. A fee computation on `BigInteger` is invisible to
+`STRONGER` — the suite is blind by construction, not undertested, and no
+ratchet failure will ever say so.
 
-The remedy is `EXPERIMENTAL_BIG_INTEGER` / `EXPERIMENTAL_BIG_DECIMAL`, which
-belong to no standard group and must be named per suite. Before enabling:
-
-- **pitest ≥ 1.25.8 is required on current JDKs** — the mutators misbehaved
-  on Java 25 before that release.
-- **Trial each suite and read the counts** — enable what fires, not the
-  matching pair. Measured on one adoption: a fixed-point-heavy suite grew
-  541 → 655 mutants; a second grew by 50; a third — the most
-  `BigDecimal`-heavy code in the repo — grew by zero, and
-  `EXPERIMENTAL_BIG_DECIMAL` fired zero times across all three. Enabling a
-  mutator that cannot fire costs baseline churn and buys nothing.
-- **Record the trial numbers with the override** in `config/pitest/README.md`,
-  so the next reader knows the omitted mutator was measured, not forgotten.
-
-One measurement from that trial is worth internalising: the existing tests —
-written under `STRONGER`, never against these operators — already killed
-96–98% of the new mutants, because they asserted properties (round trips,
-monotonicity, exact boundary values) rather than restating implementations.
-Property assertions generalise to mutation classes that did not exist when
-they were written; implementation-restating ones do not.
+The remedy is `EXPERIMENTAL_BIG_INTEGER` / `EXPERIMENTAL_BIG_DECIMAL`, named
+per suite (they belong to no group). Before enabling: pitest ≥ 1.25.8 on
+current JDKs; **trial each suite and enable only what fires** — a mutator
+that cannot fire costs baseline churn and buys nothing; **record the trial
+numbers with the override** in `config/pitest/README.md` so the omission
+reads as measured, not forgotten. Property-asserting tests already kill
+96–98% of newly expressible mutants; implementation-restating ones do not
+*(casebook: EXPERIMENTAL_BIG_INTEGER trials)*.
 
 ## Test conventions for new or changed API
 
@@ -452,37 +330,28 @@ they were written; implementation-restating ones do not.
   matching (upper-vs-lower and lower-vs-upper are different code paths;
   `ǅ`-class titlecase chars break naive folds).
 - **Parameterize across input sources** (byte- and char-backed iterators):
-  behavior can legitimately diverge per source, and the test should either
-  pin both or document why it accepts either.
+  behavior can legitimately diverge per source; pin both or document why
+  either is accepted.
 - **Allocation bounds** where zero-alloc is the contract (see above).
 - **Assert the guard's own message when its fallback throws the same type.**
-  A bare `assertThrows(ArithmeticException.class, ..)` cannot tell an explicit
-  overflow guard from its absence when the unguarded path ends in
-  `longValueExact()` — the mutant removes the guard and the test still passes,
-  on the wrong throw site. Pin the guard's message (or give it its own type).
+  A bare `assertThrows(ArithmeticException.class, ..)` cannot tell an
+  explicit overflow guard from its absence when the unguarded path ends in
+  `longValueExact()` — pin the message or give the guard its own type.
 - **Drive both branches of every sentinel substitution.** For
-  `x == null ? sentinel : x` wiring, the absent case alone passes even if the
-  method ignores its argument entirely, and the present case alone misses a
-  dropped substitution. Assert both directions — and that the *other*
-  positions did not move, which is what catches an off-by-one in the slot.
+  `x == null ? sentinel : x`, the absent case alone passes even if the method
+  ignores its argument; the present case alone misses a dropped substitution.
+  Assert both — and that the *other* positions did not move.
 - **Records with array components compare by identity.** `assertEquals` on
-  such a record (or on a `byte[]` directly) is an identity check dressed as a
-  value assertion — it passes against the same instance and fails against an
-  equal one. Compare the scalar fields and `assertArrayEquals` the arrays.
-- **Reach for package-private, not reflection, when a test needs an internal.**
-  An exported package still hides its non-public members, so widening a field
-  or method to package-private exposes it to same-package tests without
-  widening the module's public surface at all. Unlike `setAccessible`, a later
-  rename then fails at *compile* time instead of at runtime — and reflective
-  access is exactly the kind of indirection that makes a mutant's effect
-  unobservable. Whitebox test-module patching makes this the cheaper default.
+  such a record is an identity check dressed as a value assertion. Compare
+  scalar fields and `assertArrayEquals` the arrays.
+- **Reach for package-private, not reflection, when a test needs an
+  internal.** Same-package tests see it, a rename fails at compile time
+  instead of runtime, and reflective indirection is exactly what makes a
+  mutant's effect unobservable.
 - **When a test you believe in will not go green, suspect the code before you
-  soften the assertion.** This is where the practice pays. In one repo's
-  hardening pass, six real bugs — four of them silent-wrong-answer defects —
-  were found this way, and *none* of them by a mutant kill: each surfaced
-  because someone writing coverage hit an assertion that could not hold and
-  reported it instead of weakening the test to pass. Mutation testing gets you
-  to write the test; the test finds the bug.
+  soften the assertion.** This is where the practice pays: real bugs surface
+  as assertions that cannot hold, not as mutant kills *(casebook: six bugs
+  from unsoftened assertions)*.
 
 ## Fuzzing
 
@@ -491,154 +360,117 @@ runs via `-PmaxFuzzTime`. Every finding becomes two artifacts: a minimized
 input committed to the seed corpus, and a named regression unit test. A crash
 fixed without both is a crash that can return.
 
-**Replay the corpus inside `check`.** A committed seed corpus that only runs
-when someone remembers to fuzz is a directory of files, not a regression
-suite. A small per-module test that feeds every committed seed through its
-harness and asserts no crash costs milliseconds, runs on every build, and
-means the corpus cannot silently rot as the parser changes.
+**Replay the corpus inside `check`.** A committed corpus that only runs when
+someone remembers to fuzz is a directory of files, not a regression suite;
+feeding every seed through the harness costs milliseconds per build.
 
-**When one thing has two representations, fuzz the differential.** The
-highest-value harness in one adoption was not a crash-finder. A config layer
-parsed the same logical object two ways — JSON and `java.util.Properties` —
-from two independently maintained field lists, with nothing but review keeping
-them in step. A harness that renders a random config both ways and requires
-the two parses to *agree* (or both to reject) turns a renamed property key or
-a shifted field-matcher ordinal into a concrete counter-example instead of a
-silent divergence that surfaces in production. The same shape applies to any
-encode/decode round trip, any fast-path/reference-path pair, and any
-"optimised and obvious" implementation kept side by side. Crash-only fuzzing
-cannot see a wrong answer; a differential can.
+**When one thing has two representations, fuzz the differential** — two
+parsers for one config, an encode/decode round trip, a fast path beside a
+reference path: require the two to *agree* (or both to reject). Crash-only
+fuzzing cannot see a wrong answer *(casebook: the config differential
+harness)*.
 
 ## Determinism requirement
 
-The ratchet compares runs, so kills must be deterministic. Randomized tests
-must use **fixed seeds** — an unseeded random test kills a different fringe of
-mutants each run and makes the baseline flap (this was observed, not
-theorized: unseeded float round-trip tests shifted `DoubleParser` survivors
-between consecutive runs). Per-run exploration is the fuzz targets' job, not
-the unit suite's.
+The ratchet compares runs, so kills must be deterministic. **Fixed seeds
+always** — an unseeded random test kills a different fringe of mutants each
+run and flaps the baseline. **No real waits** — PIT re-runs covering tests
+per mutant, so one sleep is multiplied by the mutant count, and waits are
+also what makes kills non-reproducible; if `qualityGate` gets slower, look
+for a reintroduced wait first *(casebook: unseeded floats and real waits)*.
 
-**No real waits in tests, and the reason is not only determinism.** PIT re-runs
-the covering tests once per mutant, so a single one-second sleep is multiplied
-by the mutant count: removing two real backoff waits from one class took it
-from 2.055s to 0.085s and its suite's PIT run from ~80s to ~21s. Sleeps,
-timing tolerances and busy-waits are also precisely what makes a kill
-non-reproducible. If `qualityGate` starts getting slower, look for a
-reintroduced wait before anything else.
+**Prefer a clock seam to a prohibition.** A `NanoClock`-style interface with
+`nanoTime()` and `sleep(millis)`, injected through every factory (clockless
+overload defaulting to the system clock), lets a test clock advance time
+*only when the code under test sleeps* — pacing and backoff become an exact
+function of the delays requested, and timing assertions become equalities.
+Two mutation-specific details:
 
-**Prefer a clock seam to a prohibition.** "No sleeps" is easier to hold when
-the code takes a clock rather than reading one. A `NanoClock`-style interface
-with a `nanoTime()` and a `sleep(millis)`, injected through every factory (the
-clockless overload defaulting to the system clock), lets a test clock advance
-time *only when the code under test sleeps* — so pacing and backoff become an
-exact function of the delays requested, with no wall-clock time passing at
-all. That is what turns timing assertions from tolerance windows into
-equalities, and equalities are what kill mutants.
+- **Give test clocks a non-zero origin.** A clock starting at 0 makes every
+  "start timestamp mutated to 0" mutant equivalent by accident of the
+  fixture. One literal fixes it.
+- **Carry both readings.** If the interface derives wall-clock millis from
+  monotonic nanos by default (system implementation overriding with the real
+  epoch clock), a test clock implementing `nanoTime()` alone advances both
+  coherently, and no mutant hides in a mixed-source comparison.
 
-Two details that are specifically about mutation testing:
-
-- **Give test clocks a non-zero origin.** A clock starting at 0 cannot
-  distinguish a mutant that sets a start timestamp to `0` from the real
-  reading, so an entire family of timestamp mutants is equivalent *by
-  accident of the fixture*. A clock starting at 3_141_592_653 makes them
-  visibly wrong. This costs one literal.
-- **Carry both readings.** Code needs monotonic nanos for pacing and
-  wall-clock millis for age comparisons. If the interface derives the second
-  from the first by default, and only the system implementation overrides it
-  with the real epoch clock, a test clock that implements `nanoTime()` alone
-  still advances both coherently — and no mutant can hide in a mixed-source
-  comparison.
-
-**A flaky harness is worse than recorded debt.** Facing mutants blocked on
-concurrency or timing, the temptation is to write a sleep-ordered or
-spin-waiting test that kills them most of the time. Do not: accepted debt with
-a written reason is stable and honest, while a harness that flaps puts the
-ratchet back into the state this document exists to prevent. If you cannot make
-the interleaving deterministic, record the mutant and say why.
+**A flaky harness is worse than recorded debt.** A sleep-ordered or
+spin-waiting test that kills a mutant *most of the time* puts the ratchet
+back into the state this document exists to prevent. If the interleaving
+cannot be made deterministic, record the mutant and say why.
 
 ### A wandering kill count is a defect to chase, not re-ratchet past
 
 An unkilled count that differs between invocations with no code change is
-broken somewhere, and refreshing the baseline hides it at the worst moment:
-the baseline records whichever run wrote it, so a lucky run bakes in a row
-that later runs fail on. `TIMED_OUT` flips (above) are one mechanism. Two
-more, both observed and both generic to JUnit-under-PIT:
+broken somewhere, and refreshing the baseline bakes in whichever run wrote
+it. `TIMED_OUT` flips (above) are one mechanism; two more:
 
-- **`@Execution` and `@TestInstance` on an abstract base may not reach its
-  concrete subclasses — check the resolved JUnit before assuming either
-  way.** Where this was observed, the annotations did not apply to the
-  subclasses, which then interleaved over the base's shared state (a mock
-  server, an expectation queue) and made kills order-dependent; annotating
-  the concrete classes fixed it. But the mechanism is version-dependent: at
-  JUnit 6.0.3 and 6.1.2 both annotations carry `@Inherited` (verified in the
-  jars' bytecode), so on a current JUnit an annotated base is fine and a
-  wandering count needs a different explanation. `@Execution` is also moot
-  entirely unless parallel execution is enabled. One `javap`/bytecode check
-  of the annotation class settles it; do that before restructuring tests.
+- **`@Execution`/`@TestInstance` on an abstract base not reaching concrete
+  subclasses** — version-dependent: JUnit 6 marks both `@Inherited`, older
+  lines did not, and `@Execution` is moot without parallel execution. One
+  `javap` of the resolved jar settles it before any test restructuring
+  *(casebook: @Inherited is version-dependent)*.
 - **Coverage attributed to a field or static initializer is unstable.** A
-  factory reached only through a `static final` field's initializer flaps
-  between killed and survived. Call it from inside a `@Test` — which
-  usually yields a real assertion for free, since the object the factory
-  builds has observable configuration.
+  factory reached only through a `static final` initializer flaps between
+  killed and survived. Call it from inside a `@Test` — which usually yields
+  a real assertion for free.
 
-Convergence is checkable, and worth scripting rather than eyeballing:
+Convergence is checkable, and worth scripting. With an arcmutate licence
+active, every run below takes `-PnoMutationHistory` — assisted runs agree by
+construction:
 
-1. Run every `pitest<Suite>` and copy each
+1. Run every `pitest<Suite>`, copy each
    `build/reports/pitest/<suite>/mutations.csv` aside.
-2. **Delete the report directories**, then run again. This step is not
-   optional — Gradle serves an up-to-date `pitest<Suite>` without re-running
-   PIT, so a second run without the delete compares a file to itself and
-   "converges" trivially.
-3. Key each row on `(class, method, line, mutator)` and diff the status.
-   Compare **per-mutant status**, not just per-mutator sub-totals — it is
-   strictly stronger, no harder to script, and tells you *which* mutant moved.
-   Flag any flip crossing the `SURVIVED`/`NO_COVERAGE` boundary; only those
-   can move the ratchet.
-4. Repeat against `qualityGate`. That is the comparison that matters: the
-   `TIMED_OUT` flapping above appears between solo and multi-suite runs, never
-   between two solo runs, so two solo runs agreeing proves the weaker thing.
+2. **Delete the report directories**, then run again — not optional: Gradle
+   serves an up-to-date `pitest<Suite>` without re-running PIT, and a second
+   run without the delete compares a file to itself.
+3. Key rows on `(class, method, line, mutator)` and diff **per-mutant
+   status** — strictly stronger than sub-totals and it names which mutant
+   moved. Flag flips crossing the `SURVIVED`/`NO_COVERAGE` boundary; only
+   those can move the ratchet.
+4. Repeat against `qualityGate` — `TIMED_OUT` flapping appears between solo
+   and multi-suite runs, never between two solo runs, so two solo runs
+   agreeing proves the weaker thing.
 
-Two runs can match in total while disagreeing about which mutants died, which
-is why the headline number is not the check.
+Two runs can match in total while disagreeing about which mutants died; the
+headline number is not the check.
 
-**Sweep for accepted rows that match nothing** while you have the data. The
-verify task fails only on *new* unkilled mutants, so an accepted row matching
-no real mutant is silently tolerated — safe for the build, but it widens the
-gate and nobody finds out. Diffing each `<suite>-accepted.csv` against the
-unkilled set from the runs above turns that into a number.
-
-And **revisit rows you unioned for a flip once you remove the cause.** Rows
-added for `TIMED_OUT` flapping are insurance against a specific mechanism; if
-a later change removes the real waits that caused it — a clock seam, a suite
-split — the insurance may now be covering nothing. It is not stale (it still
-matches a real mutant) so no warning fires. Re-measure before assuming the
-suite is still timing-sensitive. Observed: 17 suites and 2297 mutants
-converged with **zero** status flips across all three comparisons, on a repo
-whose baselines had four rows unioned for flips that were no longer
-reproducible.
+**Sweep for accepted rows that match nothing in any mode** while you have the
+data: per-run stale warnings get dismissed as solo-vs-gate mode noise, so
+diff each `<suite>-accepted.csv` against the union of unkilled sets across
+all runs — rows matching in *no* mode are widening the gate for nothing.
+And **revisit rows unioned for a flip once you remove the cause** (a clock
+seam, a suite split): they still match real mutants, so no warning will ever
+fire on them; only re-measuring tells you the insurance now covers nothing
+*(casebook: flip insurance that outlived its cause)*.
 
 ### Transient infrastructure failures are not mutation results
 
-Two recurring failure signatures have nothing to do with mutants, and both
-have already cost a "mystery failure" write-up before being root-caused:
+Three recurring signatures have nothing to do with mutants *(casebook:
+MINION_DIED, worker EOF, and the daemon log)*:
 
-- **PIT `MINION_DIED` during coverage generation** — the coverage minion JVM
-  starts, waits ~10s on a localhost socket for the controller's handshake,
-  hits `SocketTimeoutException`, and dies. Upstream and intermittent, with no
-  exposed knob (`--timeoutConst` is per-mutant test time, unrelated). It fails
-  *before any report is written*, so it can fail a build but never poison a
-  result — the remedy is to re-run the suite. An automatic retry in the
-  plugin was considered and declined: at one occurrence per ~100 suite runs
-  it would mostly mask environment sickness. Reconsider if the rate rises.
+- **PIT `MINION_DIED` during coverage generation** — the coverage minion's
+  ~10s socket handshake timed out; upstream, intermittent, no exposed knob
+  (`--timeoutConst` is per-mutant test time, unrelated). It fails *before any
+  report is written*, so it can fail a build but never poison a result:
+  re-run the suite. An automatic plugin retry was considered and declined at
+  ~1 per 100 suite runs — it would mostly mask environment sickness;
+  reconsider if the rate rises.
 - **`java.io.EOFException` from a test task** — the forked worker JVM died
-  abruptly and Gradle hit EOF on its connection. No `hs_err` file means the
-  JVM did not crash from within; something killed it. One-shot; re-run.
+  abruptly; no `hs_err` file means killed from outside, not crashed.
+  One-shot; re-run.
+- **`RUN_ERROR` on individual mutants** — the same shape per-mutant, observed
+  only under multi-suite load. The summary names these as `run_error (not
+  counted as detected)` — deliberately stricter than PIT — so the dip in
+  detected has a visible cause. Not gated, cannot fail the build; a
+  `RUN_ERROR` that *persists* on one mutant across quiet re-runs is not load
+  and deserves a look at the mutated bytecode.
 
 **The evidence usually survives you discarding it.** The Gradle daemon keeps
-complete build output — including PIT's minion stack traces — at
+complete build output — including PIT minion stack traces — at
 `~/.gradle/daemon/<version>/daemon-<pid>.out.log`, even when the invoking
-shell piped everything to `/dev/null`. Both signatures above were recovered
-from it after the fact. Read it before recording any failure as unexplained.
+shell piped everything to `/dev/null`. Read it before recording any failure
+as unexplained.
 
 ## Adopting in a new repo
 
@@ -653,6 +485,12 @@ from it after the fact. Read it before recording any failure as unexplained.
    decide who owns the pre-release `qualityGate` run: wire it into CI if the
    runners can afford it, otherwise record it as a release-checklist item run
    locally (see the lifecycle section) — and say which in `AGENTS.md`.
+6. If the repo will use arcmutate incremental analysis (free licences for
+   open source): add `.pitest-history/` to `.gitignore` — the plugin writes
+   there but cannot ignore it for you — and decide whether the licence
+   certificate is committed (usual for an OSS licence, so every clone gets
+   history) or kept machine-local. Drop `arcmutate-licence.txt` at the repo
+   root; nothing else changes.
 
 ## Agent instructions template
 
@@ -729,7 +567,9 @@ Copy into the repo's `AGENTS.md` (adjust file names):
 >   to re-earn every status from scratch.
 > - **Transient infra failures are not results.** PIT `MINION_DIED` fails
 >   before writing a report, so it cannot corrupt one — re-run the suite; a
->   Gradle-worker `EOFException` death is the same shape. The daemon log
+>   Gradle-worker `EOFException` death is the same shape, and a per-mutant
+>   `RUN_ERROR` under load is the same shape smaller (the summary names it,
+>   and it is not counted as detected). The daemon log
 >   (`~/.gradle/daemon/<version>/daemon-<pid>.out.log`) keeps a failed build's
 >   full output even when the shell discarded it — read it before calling a
 >   failure unexplained.
