@@ -40,6 +40,41 @@ requires a written reason. Repos may seed their first baseline with the full
 pre-existing survivor population — that is triage debt made explicit, not
 acceptance; label it as such in `config/pitest/README.md`.
 
+### `SURVIVED` and `NO_COVERAGE` are different problems
+
+The ratchet treats both as unkilled, which is correct, but they call for
+opposite responses and conflating them wastes effort:
+
+- **`SURVIVED`** — a test *did* execute the mutated line and could not tell the
+  difference. Either the assertion is too weak, or the mutant is equivalent.
+  This is a judgment call, and the outcome is a strengthened assertion or a
+  written acceptance.
+- **`NO_COVERAGE`** — no test reached the line at all. There is nothing to
+  judge; it is mechanical work. Never accept one as "equivalent" — you have not
+  observed its behaviour, so you cannot know that it is.
+
+Read the split before planning a pass. A suite sitting at "89% killed, 56 to
+triage" may really be 27 judgment calls and 29 untested methods, and those are
+very different afternoons. When accepting `NO_COVERAGE` is genuinely right —
+a path the harness cannot reach without new scaffolding — say *that* in the
+acceptance note, not "equivalent".
+
+Every `pitest<Suite>` run prints the split without being asked:
+
+```
+pitest 'client': 441/498 detected (88%) — 27 survived, 30 no_coverage
+pitest 'vanity': 113/113 detected (100%) — 1 timed out (load-dependent)
+```
+
+and a ratchet failure groups the new rows under the same two headings, so the
+first thing you see is which kind of work you are looking at.
+
+`TIMED_OUT` is counted as detected, matching PIT, but is called out separately
+because that detection can flip (see below) — a suite reporting timed-out rows
+is one whose number is not stable across invocations. The percentage is rounded
+**down**, so it never reads better than it is; PIT's own line rounds, so the two
+can differ by a point while the counts agree.
+
 Baseline keys include line numbers, which churn when a mutated file is
 edited: the verify task then reports stale entries alongside "new" ones.
 Confirm the new rows are the shifted old ones, then refresh with
@@ -83,6 +118,48 @@ Both cost a debugging cycle the first time:
   `-PupdateMutationBaseline`, which writes the canonical form; hand-edit only
   to union in a known flip, and match that form exactly.
 
+### The recurring equivalence families
+
+Most accepted mutants fall into a handful of shapes. Naming them makes triage
+faster and acceptance notes consistent across repos — group the baseline by
+family rather than listing rows:
+
+- **Allocation-size only** — the mutant changes how much is reserved, never
+  what is computed. Sizing formulas whose contract is "never under-allocate"
+  live here.
+- **Fast-path / alternate-path routing** — both branches reach the same result;
+  the mutant only changes which one runs. A guard subsumed by a later branch is
+  the common case: `if (a.feePayer()) return a;` is unkillable when the
+  `signer()` branch below it returns the same object for every fee payer.
+- **Equal but not identical** — the mutant builds a fresh instance instead of
+  returning the argument. Killable only by asserting reference identity, which
+  the API usually does not promise.
+- **Identity short-circuits** — `this == o ||` at the top of `equals`. Removing
+  it falls through to the field comparison, which returns the same answer for
+  every input.
+- **Defensive code unreachable in context** — a guard no live caller can
+  trigger. Worth a note on *why* it is unreachable, since that is the claim
+  which can rot.
+
+A cluster that does not fit any of these is worth a second look before
+accepting.
+
+### When a cluster of unkillable mutants means the design is wrong
+
+Several unkillable mutants in one place is a signal, not a nuisance. If they
+all sit on logging or output calls, the side effect is usually in the wrong
+layer rather than the mutants being equivalent.
+
+Observed: a library factory method printed a table to `System.out` while
+building its result. Nine mutants — the `print` calls and the loop driving
+them — were unkillable, because nothing asserts stdout and capturing it would
+pin output that is not part of the contract. The fix was not a test. Returning
+the table as a string and letting the CLI print it made the function pure, the
+mutants died, and a library stopped writing to stdout. The baseline went from
+nine accepted entries to none.
+
+Ask what the mutants have in common before accepting them as a group.
+
 ### Turning "equivalent" mutants into killable ones
 
 A mutant that survives because tests cannot observe the difference is a hint
@@ -108,6 +185,27 @@ or fuzz class routinely holds nested helpers — a recording fake, a stub clock,
 a harness's private `Parser` — and `*Tests` does not match
 `FooTests$StubService`. Without the trailing wildcard PIT mutates that scaffolding
 as if it were production code, and you triage mutants in your own fakes.
+
+**Then stop trusting the naming convention.** The trailing wildcard only helps
+for helpers *nested inside* a test class. Top-level test-source classes are
+routinely named for their role rather than their kind — `RecordingWebSocket`,
+`StubHttpResponse`, `LiveMainNetDriftCheck` — and match no `*Test*` pattern at
+all. Extracting a shared fake out of a test class is exactly the refactor that
+silently adds it to the mutated population.
+
+Exclusions must cover the **test source set**, not a naming convention. The
+plugin checks this for you: `pitest<Suite>Verify` cross-references every mutated
+class against the project's test source directories and warns when a suite is
+mutating its own scaffolding, naming the classes to exclude.
+
+It warns rather than fails, because a repo upgrading the plugin will already
+have those mutants sitting in an accepted baseline — the warning tells you the
+baseline is inflated, not that the build is broken. Fix the exclusions and
+re-seed; the baseline should shrink.
+
+Two of the suites in one adoption pass had this defect, one of them introduced
+by the same person who had just documented the trap. That is why it is a check
+and not a paragraph.
 
 Converting an existing allowlist to a wildcard is worth doing, but size it
 first: it surfaces every class the allowlist had been exempting, which can be
@@ -210,5 +308,17 @@ Copy into the repo's `AGENTS.md` (adjust file names):
 >   reason rather than chasing it with sleeps or spin-waits.
 > - When a test you believe in will not go green, **suspect the code before you
 >   soften the assertion** — that is where this process finds real bugs.
+> - `SURVIVED` and `NO_COVERAGE` are different problems: the first is a
+>   judgment call about equivalence, the second is an untested line and is
+>   mechanical. Never accept a `NO_COVERAGE` mutant as "equivalent" — you have
+>   not observed its behaviour.
+> - Exclusions must cover the **test source set**, not a naming convention:
+>   shared fakes are named `RecordingFoo` / `StubFoo` and match no `*Test*`
+>   pattern. After registering or widening a suite, list the mutated classes and
+>   confirm none live under `src/test`.
+> - **Verify by the absence of failures, not the presence of passes.** Counting
+>   `PASSED` lines hides a failure sitting next to them, and a green
+>   `clean build` can mean the build cache short-circuited rather than that
+>   tests ran. Check the failure count and confirm the task actually executed.
 > - Fuzz findings become a committed seed input **and** a named regression
 >   test, never just a fix.

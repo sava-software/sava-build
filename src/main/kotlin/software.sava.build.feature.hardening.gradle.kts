@@ -95,15 +95,65 @@ hardening.mutation.all {
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val update = providers.gradleProperty("updateMutationBaseline").isPresent
+    // Resolved at configuration time so the scaffolding check below can ask whether a
+    // mutated class is one of this project's own test sources.
+    val testSourceDirs = sourceSets.test.get().java.srcDirs
     doLast {
       val csv = csvProvider.get().asFile
       if (!csv.exists()) {
         throw GradleException("no PIT report at $csv — run $pitestTaskName first")
       }
       val gated = setOf("SURVIVED", "NO_COVERAGE")
-      val current = csv.readLines().mapNotNull { line ->
+      // Status is field 5 (0-based); the trailing killing-test field can itself contain
+      // commas, so counting back from the end is not safe.
+      val rows = csv.readLines().mapNotNull { line ->
         val parts = line.split(',')
-        if (parts.size < 6 || parts[5] !in gated) {
+        if (parts.size < 6) null else parts
+      }
+
+      val byStatus = rows.groupingBy { it[5] }.eachCount()
+      val total = rows.size
+      // TIMED_OUT counts as detected, the same as PIT's own summary — a mutant that
+      // hangs the suite was caught. Reported separately because that detection is
+      // load-dependent: the same row can read SURVIVED when the suite runs alone.
+      val timedOut = byStatus["TIMED_OUT"] ?: 0
+      val detected = (byStatus["KILLED"] ?: 0) + timedOut
+      // Rounded down deliberately: a coverage figure should never read better than it
+      // is, so 441/498 is 88% here and not 89%. PIT's own summary line rounds, so this
+      // can sit one point below it — the counts either side of the slash are the same.
+      val percent = if (total == 0) 0 else detected * 100 / total
+      val split = buildList {
+        gated.forEach { s -> byStatus[s]?.let { add("$it ${s.lowercase()}") } }
+        if (timedOut > 0) add("$timedOut timed out (load-dependent)")
+      }
+      logger.lifecycle(
+          "pitest '$suiteName': $detected/$total detected ($percent%)" +
+              if (split.isEmpty()) "" else " — ${split.joinToString(", ")}"
+      )
+
+      // A suite whose exclusions miss a test-source class mutates its own scaffolding:
+      // the population inflates and the survivors are triaged as if they were production
+      // code. Shared fakes are named for their role (RecordingFoo, StubFoo, FooDriftCheck)
+      // so a '*Test*' exclusion does not match them. Warned rather than failed: an
+      // existing repo upgrading the plugin has these accepted in its baseline already.
+      val scaffolding = rows.asSequence()
+          .map { it[1] }
+          .distinct()
+          .filter { fqcn ->
+            val relative = fqcn.substringBefore('$').replace('.', '/') + ".java"
+            testSourceDirs.any { dir -> dir.resolve(relative).isFile }
+          }
+          .sorted()
+          .toList()
+      if (scaffolding.isNotEmpty()) {
+        logger.warn(
+            "pitest '$suiteName': mutating ${scaffolding.size} test-source class(es) — " +
+                "add to excludedClasses:\n" + scaffolding.joinToString("\n") { "  $it" }
+        )
+      }
+
+      val current = rows.mapNotNull { parts ->
+        if (parts[5] !in gated) {
           null
         } else {
           // class,method,line,mutator,status — line numbers churn on refactors;
@@ -128,9 +178,24 @@ hardening.mutation.all {
         logger.lifecycle("pitest baseline '$suiteName': ${stale.size} stale entries (since killed or moved) — refresh with -PupdateMutationBaseline")
       }
       if (fresh.isNotEmpty()) {
+        // Split the report: the two statuses need opposite responses, and saying so
+        // here saves re-deriving it from the raw rows.
+        val freshByStatus = fresh.groupBy { it.substringAfterLast(',') }
+        val detail = buildString {
+          freshByStatus["NO_COVERAGE"]?.let {
+            append("\n  ${it.size} NO_COVERAGE — no test reaches these; mechanical work, ")
+            append("and never acceptable as \"equivalent\" since the behaviour was never observed:\n")
+            append(it.joinToString("\n") { row -> "    $row" })
+          }
+          freshByStatus["SURVIVED"]?.let {
+            append("\n  ${it.size} SURVIVED — a test ran these and could not tell the difference; ")
+            append("strengthen the assertion or triage for equivalence:\n")
+            append(it.joinToString("\n") { row -> "    $row" })
+          }
+        }
         throw GradleException(
-            "pitest '$suiteName': ${fresh.size} unkilled mutant(s) not in the accepted baseline:\n" +
-                fresh.joinToString("\n") +
+            "pitest '$suiteName': ${fresh.size} unkilled mutant(s) not in the accepted baseline:" +
+                detail +
                 "\nKill them with tests, or accept knowingly by re-running with -PupdateMutationBaseline " +
                 "and documenting the reason (see HARDENING.md). If this suite has never been seeded, " +
                 "-PupdateMutationBaseline creates config/pitest/$suiteName-accepted.csv."
