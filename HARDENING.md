@@ -214,7 +214,12 @@ them. When the claimed equivalence spans a sweepable domain, reimplement both
 variants outside the codebase, diff them over the range, and record the range
 in the note — "verified equivalent over ⟨inputs⟩" survives refactors that
 silently invalidate prose, and the sweep is usually minutes *(casebook: the
-Newton's-method sqrt sweep)*. When a sweep is not feasible, the note says
+Newton's-method sqrt sweep)*. The sweep's other outcome is the stronger
+argument: on one adoption it falsified an accepted family outright and led to
+two real bugs, including a constructor hang — and showed that a fuzz harness
+asserting the right properties over too small an input domain protects
+nothing outside that domain *(casebook: the sweep that falsified an
+acceptance)*. When a sweep is not feasible, the note says
 what argument stands in for it — that is what a later reader must re-check.
 
 ### When a cluster of unkillable mutants means the design is wrong

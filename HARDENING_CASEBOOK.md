@@ -103,6 +103,36 @@ reimplemented outside the codebase and diffed: every input below 200,000 plus
 recorded in the acceptance note. "Verified equivalent over ⟨inputs⟩" survives
 refactors that silently rot a prose argument, and the sweep took minutes.
 
+## The sweep that falsified an acceptance
+
+The Newton's-method entry above shows a sweep *confirming* an acceptance.
+This one is the other outcome, and the better argument for the rule. A family
+of backoff saturation-guard mutants sat accepted as "the delay at that index
+is already clamped, so every error count yields the identical delay". A
+differential sweep — both variants reimplemented with exact 64-bit wrapping
+semantics, ~2 800 configs × error counts through every saturation point plus
+the unsigned extremes — refuted it twice over:
+
+- One accepted mutant was **killable at ordinary configs**, and chasing why
+  exposed a real bug: the guard read `(max / initial) + initialDelay` where it
+  meant `+ 1`, so nano-scale configs overflowed `errorCount * initialDelay`
+  before the clamp and `delay()` returned a *negative* number.
+- The overflow domain also hid a second bug in a neighbouring strategy: the
+  fibonacci constructor walked its sequence in raw longs past F(92), the
+  largest fibonacci that fits — a cap just above it produced sequences with
+  negative entries, and `Long.MAX_VALUE` as the cap (the natural "no ceiling"
+  spelling) **hung the constructor**, live-reproduced and killed after 10s.
+
+The fuzz harness had asserted exactly the violated properties all along —
+delay within `[0, max]`, non-decreasing — but capped configs at 16 bits and
+error counts at 128, so the overflow domain was unreachable: **a harness's
+input domain bounds what its properties can protect**, the same way the
+mutator set bounds what the ratchet can see. The harness now reaches the full
+positive long range and probes the saturation boundaries; the fixes' own new
+guard mutants were then swept the same way (four equivalents confirmed, zero
+differences) rather than accepted on the argument that had just failed.
+
+---
 ## The HTTP 199 guard
 
 The `< 200` half of an HTTP status-range guard survived, and "equivalent"
