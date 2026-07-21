@@ -91,6 +91,17 @@ very different afternoons. When accepting `NO_COVERAGE` is genuinely right —
 a path the harness cannot reach without new scaffolding — say *that* in the
 acceptance note, not "equivalent".
 
+`SURVIVED` has the same third category, and it deserves the same honesty: a
+mutant that is distinguishable *in principle* but unreachable through any
+deterministic harness. Observed: the `< 200` half of an HTTP status-range
+guard — the JDK client treats 1xx as interim responses and never surfaces one
+as a final status, so a mock server replying 199 kills the connection before
+the guard runs. The guard is not dead code (a real 199 would distinguish the
+mutant) so "equivalent" would be false; accept it as **unreachable
+in-harness** and name what would reach it (here, a raw-socket stub speaking
+HTTP/1.1 by hand). That named escape hatch is what tells a later reader
+whether the acceptance is still the right trade.
+
 Every `pitest<Suite>` run prints the split without being asked:
 
 ```
@@ -175,6 +186,19 @@ family rather than listing rows:
 
 A cluster that does not fit any of these is worth a second look before
 accepting.
+
+### When equivalence is cheap to verify, verify it
+
+An acceptance note is an argument, and arguments rot with the code around
+them. When the claimed equivalence spans a sweepable domain, reimplement both
+variants outside the codebase and diff them. Observed: a mutant of a
+Newton's-method integer square root (initial guess `v/2` → `2v`) was accepted
+only after both versions agreed on every input below 200,000 plus `2^e ± 3`
+for `e` in 60..129 — zero differences across 200,490 values, and the note
+records the range. "Verified equivalent over ⟨inputs⟩" survives refactors
+that would silently invalidate a prose argument, and the sweep is usually
+minutes of work. When one is not feasible, the note should say what argument
+stands in for it — that is the part a later reader must re-check.
 
 ### When a cluster of unkillable mutants means the design is wrong
 
@@ -291,6 +315,40 @@ untriaged in `config/pitest/README.md`, and work it down. A cheap way to check
 an allowlist is lying to you: list the module's main classes, subtract the ones
 any suite's patterns match, and read what is left.
 
+## The mutator set bounds what the ratchet can see
+
+Targeting chooses which classes are mutated; the mutator set chooses which
+*defects are expressible*. A kill percentage is only meaningful relative to
+that set, and the standard groups have a blind spot that lands exactly on
+money-handling code: `MathMutator` rewrites primitive bytecode arithmetic —
+`IADD`, `LMUL` and friends — while `BigInteger`/`BigDecimal` arithmetic is
+method calls, which those opcodes never touch. A fixed-point conversion or
+fee computation written on `BigInteger` is invisible to `STRONGER`, so a
+suite can report a healthy percentage while mutating only the conditionals
+*around* the math it exists to protect. No ratchet failure ever surfaces
+this; the suite is blind by construction, not undertested.
+
+The remedy is `EXPERIMENTAL_BIG_INTEGER` / `EXPERIMENTAL_BIG_DECIMAL`, which
+belong to no standard group and must be named per suite. Before enabling:
+
+- **pitest ≥ 1.25.8 is required on current JDKs** — the mutators misbehaved
+  on Java 25 before that release.
+- **Trial each suite and read the counts** — enable what fires, not the
+  matching pair. Measured on one adoption: a fixed-point-heavy suite grew
+  541 → 655 mutants; a second grew by 50; a third — the most
+  `BigDecimal`-heavy code in the repo — grew by zero, and
+  `EXPERIMENTAL_BIG_DECIMAL` fired zero times across all three. Enabling a
+  mutator that cannot fire costs baseline churn and buys nothing.
+- **Record the trial numbers with the override** in `config/pitest/README.md`,
+  so the next reader knows the omitted mutator was measured, not forgotten.
+
+One measurement from that trial is worth internalising: the existing tests —
+written under `STRONGER`, never against these operators — already killed
+96–98% of the new mutants, because they asserted properties (round trips,
+monotonicity, exact boundary values) rather than restating implementations.
+Property assertions generalise to mutation classes that did not exist when
+they were written; implementation-restating ones do not.
+
 ## Test conventions for new or changed API
 
 - **Value, null/empty, and wrong-type cases** for every reader; type-guarded
@@ -305,6 +363,20 @@ any suite's patterns match, and read what is left.
   behavior can legitimately diverge per source, and the test should either
   pin both or document why it accepts either.
 - **Allocation bounds** where zero-alloc is the contract (see above).
+- **Assert the guard's own message when its fallback throws the same type.**
+  A bare `assertThrows(ArithmeticException.class, ..)` cannot tell an explicit
+  overflow guard from its absence when the unguarded path ends in
+  `longValueExact()` — the mutant removes the guard and the test still passes,
+  on the wrong throw site. Pin the guard's message (or give it its own type).
+- **Drive both branches of every sentinel substitution.** For
+  `x == null ? sentinel : x` wiring, the absent case alone passes even if the
+  method ignores its argument entirely, and the present case alone misses a
+  dropped substitution. Assert both directions — and that the *other*
+  positions did not move, which is what catches an off-by-one in the slot.
+- **Records with array components compare by identity.** `assertEquals` on
+  such a record (or on a `byte[]` directly) is an identity check dressed as a
+  value assertion — it passes against the same instance and fails against an
+  equal one. Compare the scalar fields and `assertArrayEquals` the arrays.
 - **When a test you believe in will not go green, suspect the code before you
   soften the assertion.** This is where the practice pays. In one repo's
   hardening pass, six real bugs — four of them silent-wrong-answer defects —
@@ -343,6 +415,29 @@ spin-waiting test that kills them most of the time. Do not: accepted debt with
 a written reason is stable and honest, while a harness that flaps puts the
 ratchet back into the state this document exists to prevent. If you cannot make
 the interleaving deterministic, record the mutant and say why.
+
+### A wandering kill count is a defect to chase, not re-ratchet past
+
+An unkilled count that differs between invocations with no code change is
+broken somewhere, and refreshing the baseline hides it at the worst moment:
+the baseline records whichever run wrote it, so a lucky run bakes in a row
+that later runs fail on. `TIMED_OUT` flips (above) are one mechanism. Two
+more, both observed and both generic to JUnit-under-PIT:
+
+- **`@Execution` and `@TestInstance` are not `@Inherited`.** Placed on an
+  abstract test base, they do nothing for its concrete subclasses — which
+  then interleave over the base's shared state (a mock server, an
+  expectation queue) and make kills order-dependent. Annotate the concrete
+  classes, not the base.
+- **Coverage attributed to a field or static initializer is unstable.** A
+  factory reached only through a `static final` field's initializer flaps
+  between killed and survived. Call it from inside a `@Test` — which
+  usually yields a real assertion for free, since the object the factory
+  builds has observable configuration.
+
+Convergence is checkable: rerun until consecutive runs agree on the
+per-mutator sub-totals, not just the headline number — two runs can match in
+total while disagreeing about which mutants died.
 
 ## Adopting in a new repo
 
@@ -399,6 +494,15 @@ Copy into the repo's `AGENTS.md` (adjust file names):
 >   flap when the margin is thin.
 > - When a test you believe in will not go green, **suspect the code before you
 >   soften the assertion** — that is where this process finds real bugs.
+> - **A wandering unkilled count is a defect, not noise** — chase it before
+>   refreshing any baseline. Known causes: real waits, `TIMED_OUT` load flips,
+>   `@Execution`/`@TestInstance` missing from concrete test classes (neither is
+>   `@Inherited`), and coverage attributed to field initializers — exercise
+>   factories from inside a `@Test`.
+> - **Kill rates are bounded by the mutator set.** `BigInteger`/`BigDecimal`
+>   arithmetic is method calls, invisible to the default arithmetic mutators —
+>   fixed-point and fee math needs `EXPERIMENTAL_BIG_INTEGER` (pitest ≥
+>   1.25.8). Trial per suite, enable only what fires, and record the numbers.
 > - `SURVIVED` and `NO_COVERAGE` are different problems: the first is a
 >   judgment call about equivalence, the second is an untested line and is
 >   mechanical. Never accept a `NO_COVERAGE` mutant as "equivalent" — you have
