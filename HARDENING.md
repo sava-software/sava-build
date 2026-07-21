@@ -481,10 +481,12 @@ as unexplained.
    suite, commit `config/pitest/`.
 4. Add a `config/pitest/README.md` from an existing repo's copy: triaged
    equivalents (initially empty) and the untriaged-debt note.
-5. Add the agent-instructions block below to the repo's `AGENTS.md`, and
-   decide who owns the pre-release `qualityGate` run: wire it into CI if the
-   runners can afford it, otherwise record it as a release-checklist item run
-   locally (see the lifecycle section) — and say which in `AGENTS.md`.
+5. Add the agent-instructions block below to the repo's `AGENTS.md` with the
+   `hardening-template` marker (run `agentsTemplateInSync` — its message
+   prints the current digest), and decide who owns the pre-release
+   `qualityGate` run: wire it into CI if the runners can afford it, otherwise
+   record it as a release-checklist item run locally (see the lifecycle
+   section) — and say which in `AGENTS.md`.
 6. If the repo will use arcmutate incremental analysis (free licences for
    open source): add `.pitest-history/` to `.gitignore` — the plugin writes
    there but cannot ignore it for you — and decide whether the licence
@@ -494,7 +496,21 @@ as unexplained.
 
 ## Agent instructions template
 
-Copy into the repo's `AGENTS.md` (adjust file names):
+Copy into the repo's `AGENTS.md` (adjust file names). The copies drift: a
+downstream block is an adapted snapshot, and no tooling can diff cross-repo
+prose semantically. The plugin makes the drift **visible** instead of trying:
+it carries a digest of this template's blockquote lines, and every consuming
+module's `agentsTemplateInSync` task (wired into `check`) fails until the
+repo's `AGENTS.md` contains `<!-- hardening-template sha256:<digest> -->`
+acknowledging the current template — so editing the template below breaks
+every downstream `check` on its next plugin refresh, which is the point, and
+no list of downstream repos needs maintaining anywhere. The marker is an
+acknowledgment, not a checksum of the local block: update it only after
+re-diffing the block against the template and syncing or **acting on** each
+changed bullet — a new requirement may mean new code, not just new prose;
+that is how sava's corpus-replay gap went unnoticed until an unrelated
+repo's agent tripped over it. The failure message prints the digest to
+paste.
 
 > - **Scale verification to the change.** Iterate with the module's `test`
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated

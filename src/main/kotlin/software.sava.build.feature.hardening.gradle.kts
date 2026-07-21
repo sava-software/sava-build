@@ -1,4 +1,5 @@
 import software.sava.build.hardening.HardeningExtension
+import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
 
 plugins {
@@ -87,6 +88,54 @@ val qualityGate = tasks.register("qualityGate") {
   description = "Unit tests plus every PIT suite with mutation-baseline verification."
   dependsOn(tasks.named("test"))
 }
+
+// The agent-instructions template in HARDENING.md is copied (adapted) into each
+// consuming repo's AGENTS.md, and prose copies drift silently — a template change is
+// invisible from inside the repos it obligates. The plugin carries a digest of the
+// current template block; this check fails until the repo's AGENTS.md contains a
+// marker acknowledging that digest. The marker is an acknowledgment, not a checksum
+// of the local block: update it only after re-diffing the block against the template
+// — a changed bullet may mean new code, not just new prose. A repo without an
+// AGENTS.md is warned, not failed: the adoption checklist owns creating the file;
+// this task owns keeping it current.
+val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
+  group = "verification"
+  description = "Fails when AGENTS.md has not acknowledged the current agent-instructions template in HARDENING.md."
+  val agentsDoc = rootProject.layout.projectDirectory.file("AGENTS.md").asFile
+  val expected = HardeningTemplateDigest.SHA256_12
+  inputs.files(agentsDoc)
+  inputs.property("templateDigest", expected)
+  doLast {
+    if (!agentsDoc.isFile) {
+      logger.warn(
+          "agentsTemplateInSync: no AGENTS.md at $agentsDoc — copy the agent-instructions " +
+              "template from sava-build's HARDENING.md ('Adopting in a new repo') and add:\n" +
+              "  <!-- hardening-template sha256:$expected -->"
+      )
+      return@doLast
+    }
+    val doc = agentsDoc.readText()
+    if (doc.contains("hardening-template sha256:$expected")) {
+      return@doLast
+    }
+    val stale = Regex("hardening-template sha256:([0-9a-f]+)").find(doc)
+    throw GradleException(
+        if (stale == null) {
+          "AGENTS.md has no 'hardening-template' marker. Diff its hardening block against the " +
+              "agent-instructions template in sava-build's HARDENING.md, sync or act on what " +
+              "differs, then add:\n  <!-- hardening-template sha256:$expected -->"
+        } else {
+          "The shared agent-instructions template changed since this repo's AGENTS.md last " +
+              "acknowledged it (marker ${stale.groupValues[1]}, current $expected). Re-diff the " +
+              "AGENTS.md hardening block against the template in sava-build's HARDENING.md — a " +
+              "changed bullet may need code, not just prose — then update the marker to:\n" +
+              "  <!-- hardening-template sha256:$expected -->"
+        }
+    )
+  }
+}
+tasks.named("check") { dependsOn(agentsTemplateInSync) }
+qualityGate.configure { dependsOn(agentsTemplateInSync) }
 
 // Serialize the PIT suites: each already runs its own worker pool, and
 // concurrent suites contend for the same cores without finishing sooner.
