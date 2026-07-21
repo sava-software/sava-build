@@ -1,5 +1,21 @@
 # Changelog
 
+## [21.5.8](https://github.com/sava-software/sava-build/compare/21.5.7...21.5.8) (2026-07-21)
+
+
+### Build System
+
+* **hardening:** Fail downstream builds if an agent does not sync AGENTS.md template with HARDENING.md updates. ([bb108bc](https://github.com/sava-software/sava-build/commit/bb108bca90646971b8303437d267efdf1794a268))
+
+
+### Documentation
+
+* **hardening:** Clarify when to run the full quality gate. ([9427b44](https://github.com/sava-software/sava-build/commit/9427b442a10723b6fcb8773d6d29409ec7f42e94))
+* **hardening:** General improvements to the process. ([504369a](https://github.com/sava-software/sava-build/commit/504369ad582ebe27078cb4d8f6d44d5ef86d3b7e))
+* **hardening:** Prepare for arcmutate incremental analysis, unlocked with OSS license. ([bf41545](https://github.com/sava-software/sava-build/commit/bf41545199ea26b7e7c0a27b1a96f56ab9ec89f0))
+* **hardening:** record traps found in a full adoption pass ([d487796](https://github.com/sava-software/sava-build/commit/d4877963ae7927a25d9cfea40e92c39ab82faf6c))
+* **hardening:** Separate the rules from the cases that lead to them to keep the HARDENING.md context lean. ([e0b15b2](https://github.com/sava-software/sava-build/commit/e0b15b2f4b53e025c008a1a73c7d55fd79d83f51))
+
 ## [21.5.7](https://github.com/sava-software/sava-build/compare/21.5.6...21.5.7) (2026-07-20)
 
 
