@@ -207,6 +207,9 @@ invoked it*, and the failure looks exactly like a real regression.
 - **Verify in both modes** before trusting a baseline — the suite alone, and
   under `qualityGate`. A row that differs between them belongs in the
   baseline; stale rows only warn, so a superset is safe in this direction.
+  The comparison is scripted: `pitestModeSnapshot`/`pitestModeCompare` (see
+  the wandering-kill-count section) diff the two modes per mutant and write
+  the observed-flip unions with `-PunionModeFlips`.
 - **Union only rows you have observed to flip** — with
   `-PunionMutationBaseline`, which adds the run's unkilled rows in canonical
   form without dropping baseline rows that happened to be detected this run
@@ -565,30 +568,38 @@ unkilled boundary. With an arcmutate licence active it refuses to run without
 `-PnoMutationHistory` — assisted runs agree by construction. Know what a
 green converge proves: both rounds run in the same serialized mode, so zero
 flips demonstrates run-to-run determinism only — solo-vs-`qualityGate` load
-flips are exactly what it cannot see, and step 4 of the manual method still
-owns those. The manual method, for comparing modes the task does not cover
-(solo vs `qualityGate`):
+flips are exactly what it cannot see. `TIMED_OUT` flapping appears between a
+quiet run and a loaded one, never between two quiet runs, so two quiet runs
+agreeing proves the weaker thing.
 
-1. Run every `pitest<Suite>`, copy each
-   `build/reports/pitest/<suite>/mutations.csv` aside.
-2. **Delete the report directories**, then run again — not optional: Gradle
-   serves an up-to-date `pitest<Suite>` without re-running PIT, and a second
-   run without the delete compares a file to itself.
-3. Key rows on `(class, method, line, mutator)` and diff **per-mutant
-   status** — strictly stronger than sub-totals and it names which mutant
-   moved. Flag flips crossing the `SURVIVED`/`NO_COVERAGE` boundary; only
-   those can move the ratchet.
-4. Repeat against `qualityGate` — `TIMED_OUT` flapping appears between solo
-   and multi-suite runs, never between two solo runs, so two solo runs
-   agreeing proves the weaker thing.
+The mode comparison is scripted too. `pitestModeSnapshot -PpitestMode=<label>`
+stashes the current reports under a label and **clears them** — not
+optional: Gradle serves an up-to-date `pitest<Suite>` without re-running
+PIT, so an uncleared second run compares a file to itself. It refuses a
+partial report set (a suite would be diffed against its absence) and a
+history-assisted report (a reused status is not an observation of the
+mode). `pitestModeCompare` then diffs **per-mutant status** across every
+stashed label, keyed on `(class, method, line, mutator)` — strictly
+stronger than sub-totals, and it names which mutant moved:
 
-Two runs can match in total while disagreeing about which mutants died; the
-headline number is not the check.
+    ./gradlew <every pitest suite> pitestModeSnapshot -PpitestMode=solo -PnoMutationHistory
+    ./gradlew qualityGate pitestModeSnapshot -PpitestMode=gate -PnoMutationHistory
+    ./gradlew pitestModeCompare
+
+Benign flips (`KILLED` <-> `TIMED_OUT`) are counted and tolerated. A flip
+crossing the unkilled boundary is exactly the row the `TIMED_OUT` section
+says belongs in the baseline: the compare fails naming each one unless it is
+already insured there, and `-PunionModeFlips` writes the union — append-only,
+each row annotated `# flip insurance (<per-mode statuses>)` so the note
+carries its own evidence and a later reader can re-measure it. Two runs can
+match in total while disagreeing about which mutants died; the headline
+number is not the check.
 
 **Sweep for accepted rows that match nothing in any mode** while you have the
 data: per-run stale warnings get dismissed as solo-vs-gate mode noise, so
 diff each `<suite>-accepted.csv` against the union of unkilled sets across
-all runs — rows matching in *no* mode are widening the gate for nothing.
+all runs — rows matching in *no* mode are widening the gate for nothing;
+`pitestModeCompare` prints this sweep over its snapshots automatically.
 And **revisit rows unioned for a flip once you remove the cause** (a clock
 seam, a suite split): they still match real mutants, so no warning will ever
 fire on them; only re-measuring tells you the insurance now covers nothing

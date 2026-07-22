@@ -180,6 +180,77 @@ class HardeningRatchetSmokeTest {
   }
 
   @Test
+  fun `mode compare finds load flips, unions them once, and sweeps dead rows`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    // a row no snapshotted mode reports as unkilled — the dead-row sweep must name it
+    baselineFile().writeText("com.example.Codec,decode,50,MathMutator,SURVIVED # stale insurance\n")
+
+    // mode 'solo': the mutant is killed
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,com.example.CodecTest"),
+      ""
+    )
+    val solo = runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    assertTrue(solo.output.contains("stashed as 'solo'"), solo.output)
+    assertTrue(File(fixtureDir, "build/pitest-modes/solo/encoding.csv").isFile, "solo snapshot missing")
+    assertFalse(File(fixtureDir, "build/reports/pitest/encoding").exists(), "reports must be cleared")
+
+    // mode 'gate': the same mutant survives — an unkilled-boundary flip
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none"),
+      ""
+    )
+    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+
+    val compare = runner("pitestModeCompare").buildAndFail()
+    assertTrue(compare.output.contains("1 uninsured boundary flip(s)"), compare.output)
+    assertTrue(compare.output.contains("gate=SURVIVED, solo=KILLED"), compare.output)
+    assertTrue(compare.output.contains("-PunionModeFlips"), compare.output)
+
+    val union = runner("pitestModeCompare", "-PunionModeFlips").build()
+    assertTrue(union.output.contains("flip insurance written"), union.output)
+    assertEquals(
+      listOf(
+        "com.example.Codec,decode,50,MathMutator,SURVIVED # stale insurance",
+        "com.example.Codec,encode,12,MathMutator,SURVIVED # flip insurance (gate=SURVIVED, solo=KILLED)"
+      ),
+      baselineFile().readLines(),
+      "union must append the flip row with its evidence note and keep existing rows"
+    )
+
+    val insured = runner("pitestModeCompare").build()
+    assertTrue(insured.output.contains("already insured in the baseline"), insured.output)
+    assertTrue(insured.output.contains("0 uninsured boundary flip(s)"), insured.output)
+    assertTrue(
+      insured.output.contains("com.example.Codec,decode,50,MathMutator,SURVIVED # stale insurance"),
+      "dead-row sweep missing:\n" + insured.output
+    )
+  }
+
+  @Test
+  fun `mode snapshot refuses partial, unlabeled, or history-assisted reports`() {
+    writeFixture()
+    val unlabeled = runner("pitestModeSnapshot").buildAndFail()
+    assertTrue(unlabeled.output.contains("needs -PpitestMode="), unlabeled.output)
+
+    val missing = runner("pitestModeSnapshot", "-PpitestMode=solo").buildAndFail()
+    assertTrue(missing.output.contains("no report for 'encoding'"), missing.output)
+
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,com.example.CodecTest"),
+      ""
+    )
+    File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").writeText("")
+    val assisted = runner("pitestModeSnapshot", "-PpitestMode=solo").buildAndFail()
+    assertTrue(assisted.output.contains("history-assisted"), assisted.output)
+    assertTrue(assisted.output.contains("-PnoMutationHistory"), assisted.output)
+
+    val single = runner("pitestModeCompare").buildAndFail()
+    assertTrue(single.output.contains("at least two labeled snapshots"), single.output)
+  }
+
+  @Test
   fun `replay tests resolve resource corpora on the classpath and guard against rot`() {
     writeFixture()
     File(fixtureDir, "src/test/resources/fuzz/codec").mkdirs()

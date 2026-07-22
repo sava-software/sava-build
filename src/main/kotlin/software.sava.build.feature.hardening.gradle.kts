@@ -217,7 +217,10 @@ val pitestConverge = tasks.register("pitestConverge") {
       }
     }
     if (boundaryFlips == 0 && benignFlips == 0) {
-      logger.lifecycle("pitestConverge: ${names.size} suite(s) converged — zero per-mutant status flips")
+      logger.lifecycle(
+          "pitestConverge: ${names.size} suite(s) converged — zero per-mutant status flips " +
+              "(run-to-run only; solo-vs-gate load flips need pitestModeSnapshot/pitestModeCompare)"
+      )
     } else if (boundaryFlips == 0) {
       logger.lifecycle(
           "pitestConverge: $benignFlips flip(s), none crossing the unkilled boundary " +
@@ -277,6 +280,195 @@ val pitestMutatorTrial = tasks.register("pitestMutatorTrial") {
             "\nEnable only what fires: add the mutator to those suites' 'mutators' and record the " +
             "numbers in config/pitest/README.md (HARDENING.md 'The mutator set bounds what the ratchet can see')."
     )
+  }
+}
+
+// Solo-vs-gate comparison (HARDENING.md "A wandering kill count"): pitestConverge's two
+// rounds share one quiet invocation, so a zero-flip converge proves run-to-run
+// determinism only — the load-dependent TIMED_OUT flips appear between a quiet run and
+// a 'qualityGate' run, and that comparison was the last hand-run step. These two tasks
+// script it: stash each mode's reports under a label, then diff per-mutant statuses
+// across the labels.
+//
+//   ./gradlew <every pitest suite> pitestModeSnapshot -PpitestMode=solo -PnoMutationHistory
+//   ./gradlew qualityGate pitestModeSnapshot -PpitestMode=gate -PnoMutationHistory
+//   ./gradlew pitestModeCompare              # -PunionModeFlips writes the flip insurance
+val pitestModesRoot = layout.buildDirectory.dir("pitest-modes")
+val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
+  group = "verification"
+  description = "Stashes the current PIT reports as -PpitestMode=<label> for pitestModeCompare, then clears them."
+  val reportsRoot = layout.buildDirectory.dir("reports/pitest")
+  val snapshotRoot = pitestModesRoot
+  val names = convergeSuiteNames
+  val mode = providers.gradleProperty("pitestMode")
+  doLast {
+    val label = mode.orNull ?: throw GradleException(
+        "pitestModeSnapshot needs -PpitestMode=<label> naming how the suites just ran (e.g. solo, gate)"
+    )
+    if (!label.matches(Regex("[A-Za-z0-9._-]+"))) {
+      throw GradleException("pitestModeSnapshot: '-PpitestMode=$label' — use letters, digits, '.', '_' or '-'")
+    }
+    val dest = snapshotRoot.get().asFile.resolve(label)
+    dest.deleteRecursively()
+    dest.mkdirs()
+    names.forEach { suiteName ->
+      val reportDir = reportsRoot.get().asFile.resolve(suiteName)
+      val csv = reportDir.resolve("mutations.csv")
+      if (!csv.isFile) {
+        throw GradleException(
+            "pitestModeSnapshot: no report for '$suiteName' at $csv — run every suite in the mode " +
+                "being labeled first; a partial snapshot would diff a suite against its absence"
+        )
+      }
+      if (reportDir.resolve(".history-assisted").isFile) {
+        throw GradleException(
+            "pitestModeSnapshot: the '$suiteName' report is arcmutate-history-assisted — a reused " +
+                "status is not an observation of this mode. Re-run the suites with -PnoMutationHistory."
+        )
+      }
+      csv.copyTo(dest.resolve("$suiteName.csv"))
+      reportDir.deleteRecursively()
+    }
+    logger.lifecycle(
+        "pitestModeSnapshot: ${names.size} report(s) stashed as '$label'; reports cleared so the " +
+            "next mode's run cannot be served from these"
+    )
+  }
+}
+val pitestModeCompare = tasks.register("pitestModeCompare") {
+  group = "verification"
+  description = "Diffs per-mutant statuses across pitestModeSnapshot labels; fails on uninsured unkilled-boundary flips (-PunionModeFlips writes the insurance) and sweeps for accepted rows unkilled in no mode."
+  mustRunAfter(pitestModeSnapshot)
+  val snapshotRoot = pitestModesRoot
+  val names = convergeSuiteNames
+  val unionFlips = providers.gradleProperty("unionModeFlips").isPresent
+  val baselineDir = layout.projectDirectory.dir("config/pitest")
+  doLast {
+    val gated = setOf("SURVIVED", "NO_COVERAGE")
+    val modes = snapshotRoot.get().asFile.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sorted()
+        ?: emptyList()
+    if (modes.size < 2) {
+      throw GradleException(
+          "pitestModeCompare needs at least two labeled snapshots under ${snapshotRoot.get().asFile} " +
+              "(found: ${if (modes.isEmpty()) "none" else modes.joinToString()}). Run the suites and " +
+              "'pitestModeSnapshot -PpitestMode=<label>' once per mode — e.g. quiet suites as 'solo', " +
+              "then under qualityGate as 'gate'."
+      )
+    }
+    fun statuses(csv: File): Map<String, List<String>> = csv.readLines()
+        .mapNotNull { line ->
+          val parts = line.split(',')
+          if (parts.size < 6) null
+          else listOf(parts[1], parts[3], parts[4], parts[2].substringAfterLast('.')).joinToString(",") to parts[5]
+        }
+        .groupBy({ it.first }, { it.second })
+        .mapValues { (_, statusList) -> statusList.sorted() }
+    var benignFlips = 0
+    var insuredFlips = 0
+    val uninsured = mutableListOf<String>()
+    val unionedNow = mutableListOf<String>()
+    val deadRows = mutableListOf<String>()
+    names.forEach { suiteName ->
+      val perMode = modes.associateWith { label ->
+        val csv = snapshotRoot.get().asFile.resolve("$label/$suiteName.csv")
+        if (!csv.isFile) {
+          throw GradleException(
+              "pitestModeCompare: snapshot '$label' has no '$suiteName' report — the suite set " +
+                  "changed since it was taken; re-run that mode and re-snapshot"
+          )
+        }
+        statuses(csv)
+      }
+      // Baseline rows + notes: insurance checks, union writes, and the dead-row sweep
+      // all preserve the trailing '# note' convention.
+      val baselineFile = baselineDir.file("$suiteName-accepted.csv").asFile
+      val annotations = mutableMapOf<String, String>()
+      val accepted = if (baselineFile.isFile) {
+        baselineFile.readLines()
+            .filter { it.isNotBlank() && !it.startsWith("#") }
+            .map { line ->
+              val hash = line.indexOf('#')
+              if (hash < 0) line.trim()
+              else {
+                val row = line.substring(0, hash).trim()
+                annotations[row] = line.substring(hash).trim()
+                row
+              }
+            }
+            .toMutableSet()
+      } else {
+        mutableSetOf()
+      }
+      var unionedHere = false
+      val keys = perMode.values.flatMap { it.keys }.toSortedSet()
+      keys.forEach { key ->
+        val byMode = perMode.mapValues { (_, m) -> m[key] ?: emptyList() }
+        if (byMode.values.distinct().size > 1) {
+          val crossed = byMode.values.map { statusList -> statusList.any { it in gated } }.distinct().size > 1
+          val detail = modes.joinToString(", ") { label ->
+            "$label=${byMode.getValue(label).ifEmpty { listOf("absent") }.joinToString("/")}"
+          }
+          if (!crossed) {
+            benignFlips++
+            logger.lifecycle("pitestModeCompare '$suiteName': $key — $detail (benign — cannot move the ratchet)")
+          } else {
+            // one canonical baseline row per gated status this key was observed with
+            val gatedRows = byMode.values.flatten().filter { it in gated }.distinct().sorted()
+                .map { status -> "$key,$status" }
+            when {
+              gatedRows.all { it in accepted } -> {
+                insuredFlips++
+                logger.lifecycle("pitestModeCompare '$suiteName': $key — $detail (already insured in the baseline)")
+              }
+              unionFlips -> {
+                gatedRows.filter { it !in accepted }.forEach { row ->
+                  accepted.add(row)
+                  annotations[row] = "# flip insurance ($detail)"
+                  unionedNow.add("$suiteName: $row")
+                }
+                unionedHere = true
+                logger.lifecycle("pitestModeCompare '$suiteName': $key — $detail (flip insurance written)")
+              }
+              else -> uninsured.add("$suiteName: $key — $detail")
+            }
+          }
+        }
+      }
+      if (unionedHere) {
+        baselineFile.parentFile.mkdirs()
+        baselineFile.writeText(accepted.toSortedSet().joinToString("\n", postfix = "\n") { row ->
+          annotations[row]?.let { "$row $it" } ?: row
+        })
+      }
+      // HARDENING.md's sweep: accepted rows unkilled in *no* snapshotted mode are
+      // widening the gate for nothing. Report only — removal is a judgment call, and
+      // insurance that outlived its cause has a casebook entry of its own.
+      val unkilledAnywhere = perMode.values.flatMap { modeStatuses ->
+        modeStatuses.flatMap { (key, statusList) -> statusList.filter { it in gated }.map { "$key,$it" } }
+      }.toSet()
+      (accepted - unkilledAnywhere).sorted().forEach { row ->
+        deadRows.add("$suiteName: $row${annotations[row]?.let { " $it" } ?: ""}")
+      }
+    }
+    if (deadRows.isNotEmpty()) {
+      logger.lifecycle(
+          "pitestModeCompare: ${deadRows.size} accepted row(s) unkilled in no snapshotted mode — " +
+              "widening the gate for nothing; re-measure before removing:\n" +
+              deadRows.joinToString("\n") { "  $it" }
+      )
+    }
+    val summary = "pitestModeCompare (${modes.joinToString(" vs ")}): " +
+        "${uninsured.size} uninsured boundary flip(s), ${unionedNow.size} unioned now, " +
+        "$insuredFlips already insured, $benignFlips benign (e.g. KILLED<->TIMED_OUT)"
+    if (uninsured.isNotEmpty()) {
+      throw GradleException(
+          summary + ":\n" + uninsured.joinToString("\n") { "  $it" } +
+              "\nA row that differs between modes belongs in the baseline (HARDENING.md " +
+              "'TIMED_OUT is detected...'): re-run with -PunionModeFlips to write the union with " +
+              "a '# flip insurance' note, or union by hand."
+      )
+    }
+    logger.lifecycle(summary)
   }
 }
 
@@ -576,6 +768,9 @@ hardening.mutation.all {
   qualityGate.configure { dependsOn(pitestTaskName) }
   convergeSuiteNames.add(suiteName)
   pitestConvergeSnapshot.configure { dependsOn(pitestTaskName) }
+  // ordered, not depended on: a combined '<suites> pitestModeSnapshot' invocation must
+  // not stash before the runs finish — or clear a report the verify finalizer still reads
+  pitestModeSnapshot.configure { mustRunAfter(pitestTaskName, "${pitestTaskName}Verify") }
 
   // Shared JavaExec configuration for the ratchet run, the converge second round, and
   // the mutator trial (which redirects the report and swaps the mutator set).
@@ -636,6 +831,12 @@ hardening.mutation.all {
       doFirst {
         historyFile.parentFile.mkdirs()
         logger.lifecycle("pitest '$suiteName': arcmutate history active — $historyFile")
+      }
+      // A history-assisted report is reuse, not observation; the marker lets
+      // pitestModeSnapshot refuse to stash one as a mode's evidence.
+      val markerDir = layout.buildDirectory.dir("reports/pitest/$reportSubdir")
+      doLast {
+        markerDir.get().asFile.resolve(".history-assisted").writeText("")
       }
     }
     argumentProviders.add {
@@ -879,8 +1080,10 @@ tasks.register("hardeningInit") {
           |Never refresh with `-PupdateMutationBaseline` just to make the build pass:
           |kill the mutant, refactor it out of existence, or record its equivalence
           |reason below. Line numbers are part of the baseline key, so edits to a
-          |mutated file shift entries — the verify task labels likely shifts; confirm
-          |them before refreshing.
+          |mutated file shift entries — the verify task classifies each new row
+          |(`shifted` vs `newly covered` vs unexplained) and prints a churn tally;
+          |refresh only when nothing is newly covered and nothing is unexplained,
+          |and confirm the pairings first. A newly covered row is triage, not churn.
           |
           |A baseline row may carry a trailing `# note` — `# untriaged` is the
           |conventional label for seeded debt. Notes are preserved across
