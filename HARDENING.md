@@ -179,7 +179,13 @@ non-zero *unexplained* count is the real thing: neither moved nor newly
 reached. Pairing is greedy, so a method holding several mutants of one
 mutator can leave a small residue unpaired even when the whole set is churn —
 read a handful of unexplained rows against a heavily edited file as "check
-these", not as proof of a regression.
+these", not as proof of a regression. An extract-method refactor also lands
+in *unexplained* deliberately: pairing keys on the method, so a mutant that
+moved into a new method is not a shift — it needs re-triage at its new home,
+where the covering tests may differ, not a refresh *(casebook: the
+check-loop seam that deleted its flip insurance — its one unexplained row
+was the relocated `unlock()`, and it became the family's one written
+acceptance)*.
 Two flags help triage without re-running: `-PlistUnkilled` prints every
 unkilled row annotated with PIT's mutation description (which sub-condition
 of a line, which direction a conditional was forced — the CSV omits it, the
@@ -217,17 +223,38 @@ invoked it*, and the failure looks exactly like a real regression.
   starts refresh ping-pong). Bulk-adding every `TIMED_OUT` row "to be safe"
   accepts mutants that are reliably detected today and silently stops the
   ratchet noticing if a later edit makes them genuinely survive.
-- Prefer removing the cause: a fake collaborator that turns a would-be
+- **Prefer removing the cause**: a fake collaborator that turns a would-be
   infinite loop into a deterministic assertion failure — a call budget, a
-  bounded queue — beats leaning on the timeout.
-- **Some flip families never settle.** Mutants equivalent on the wire but
-  timing-dependent in detection (socket suites are the breeding ground) reach
-  a steady state where the baseline is deliberately the union of observed
-  survivals and quiet runs emit *permanent* stale-entry warnings. That is
-  correct, not cleanup debt: refreshing from any single run bakes in that
-  run's coin-flips and starts ping-pong. Union each newly observed flip by
-  hand, in canonical form, and stop *(casebook: the handled-flag family that
-  never settles)*.
+  bounded queue — beats leaning on the timeout. A background wait-loop whose
+  interior only racing threads can reach has the loop itself as the cause:
+  extract the body into a package-private **single-cycle seam**
+  (`checkCycle(long awaitNanos)`, where `awaitNanos <= 0` never parks) and
+  drive one cycle inline — zero threads, zero waits, and the interior's
+  mutants become ordinary assertion kills instead of a flip family. The one
+  mutant no seam converts is the loop condition forced always-true:
+  nontermination is PIT-timeout territory by construction, so it stays
+  `TIMED_OUT` — detected, stable once the interior coverage is
+  deterministic, and not a missing baseline row to hunt for *(casebook: the
+  check-loop seam that deleted its flip insurance)*.
+- **Flip families do not settle while their cause remains — and "the cause
+  remains" is a claim to re-measure, not a fact to record once.** Mutants
+  equivalent on the wire but timing-dependent in detection (socket suites
+  are the breeding ground) can hold a steady state where the baseline is
+  deliberately the union of observed survivals and quiet runs emit
+  *permanent* stale-entry warnings. While the cause is live that is correct,
+  not cleanup debt: refreshing from any single run bakes in that run's
+  coin-flips and starts ping-pong *(casebook: the handled-flag family that
+  never settles)*. But the steady state is a holding pattern, not a
+  destination, and the trade is asymmetric: a wrongly-removed union costs
+  one red build and one `-PunionModeFlips` to restore, evidence note
+  included, while a wrongly-kept union **blinds the ratchet at that key** —
+  a row accepted in both statuses can never fail again, so a later edit that
+  makes the mutant genuinely survive passes silently. Write each union's
+  removal criterion when the union is written (N quiet `pitestModeCompare`
+  cycles, or the cause removed) — and prefer removing the cause outright,
+  which deletes the insurance *for* something instead of waiting it out
+  *(casebook: flip insurance that outlived its cause; the check-loop seam
+  that deleted its flip insurance)*.
 
 ### Two baseline-format traps
 
@@ -459,7 +486,11 @@ own descriptor).
   into an assertion; three such acceptances became kills that way. For
   trivial log emissions, capturing the log stream (a JUL handler) is the
   cheap alternative to the extract-construction refactor and pins a real
-  contract: failures are never silent.
+  contract: failures are never silent. In a modular repo the unlock is one
+  line — `testModuleInfo { requires("java.logging") }` — and it applies to
+  `System.Logger` emissions too, whose default backend is JUL: attach a
+  handler to `java.util.logging.Logger.getLogger(<same name>)` and assert
+  the record (its `getThrown()` pins *which* failure was reported).
 - **Reach for package-private, not reflection, when a test needs an
   internal.** Same-package tests see it, a rename fails at compile time
   instead of runtime, and reflective indirection is exactly what makes a
@@ -668,8 +699,11 @@ regenerated every build.
   way a handler would, because services log `{0}` patterns whose interesting
   values live in the record's *parameters*; asserting against `getMessage()`
   alone silently never matches them. `logged(fragment)` is the predicate form.
-  Needs `java.logging` readable from the test module. In a repo whose test module
-  cannot read it, omit the class instead of forgoing the rest:
+  Needs `java.logging` readable from the test module — in a modular repo that
+  is `testModuleInfo { requires("java.logging") }`, which also unlocks
+  capturing `System.Logger` output through its JUL backend (see the test
+  conventions). In a repo that will not add the requires, omit the class
+  instead of forgoing the rest:
   `hardening.testSupportExcludes = listOf("JulRecorder")` (any helper can be
   excluded by simple name).
 

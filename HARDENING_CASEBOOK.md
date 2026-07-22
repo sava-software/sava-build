@@ -343,3 +343,45 @@ code, same payer/payload fields — not arguable. Two of these were verified
 by tests that pin the funnel output; the acceptance notes name the funnel.
 Rule: *accept a guard's removal only after observing the funnel produce the
 identical response, and write down which funnel*.
+
+## The check-loop seam that deleted its flip insurance
+
+A websocket client's check loop held the policy's canonical "never settles"
+steady state: five keys unioned in both `SURVIVED` and `NO_COVERAGE` as flip
+insurance, each observed flipping across identical runs, with permanent
+stale warnings accepted as the cost. The loop interior was reachable only by
+builder-path tests whose websockets ran real executors — threads racing the
+test scheduler — while the deterministic inline tests covered only the
+interrupt- and closed-exit paths.
+
+The first scripted `pitestModeCompare` run (solo vs `qualityGate`) named all
+six quiet insurance halves as "unkilled in no snapshotted mode" in 700ms —
+the question a hand-diff had never been cheap enough to ask. Cross-checking
+the snapshots showed the keys still matched real mutants; the quiet halves
+were insurance on a race that had produced two identical observations. Two
+data points cannot distinguish "settled" from "1-in-10 flapper quiet twice",
+so instead of waiting out a re-measure criterion, the cause was removed the
+same day: the loop body became a package-private single-cycle seam
+(`checkCycle(long awaitNanos)`, `awaitNanos <= 0` never parks), and three
+inline tests drove the interior deterministically — the retry-window resend,
+the socketless no-op, and the unhandled-exception funnel, its `ERROR` record
+asserted through `System.Logger`'s JUL backend so the funnel cannot go
+silent.
+
+The numbers: the refactor shifted every line below the loop, and the churn
+classifier read the 124-row failure as `123 shifted, 0 newly covered,
+1 unexplained` — the one unexplained was the `unlock()` removal, which had
+moved *methods* and correctly refused to pair; it became the family's one
+written acceptance (cross-thread-only observable; a timing harness one call
+does not earn). Baseline 140 → 130: six insurance halves deleted for cause,
+four live halves killed outright, one relocated. The follow-up mode compare:
+zero flips of any kind, zero dead rows, and the suite's permanent stale
+warning gone. The loop-condition-forced-true mutant stayed `TIMED_OUT` in
+both modes — nontermination is PIT-timeout territory by construction, and
+with deterministic interior coverage that detection is stable.
+
+Rules: *a background loop interior only racing threads can reach is a
+single-cycle seam waiting to be extracted*; *flip families do not settle
+while their cause remains — remove the cause and the insurance is deleted
+for something*; *an extract-method refactor reports its moved mutants as
+unexplained, deliberately*.

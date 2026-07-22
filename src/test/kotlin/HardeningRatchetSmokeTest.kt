@@ -145,6 +145,32 @@ class HardeningRatchetSmokeTest {
   }
 
   @Test
+  fun `a mutant that moved methods is unexplained, not a shift`() {
+    // An extract-method refactor changes the pairing key: the stale row's mutant now
+    // lives in a different method, so it must land in the unexplained tally for
+    // re-triage at its new home — pairing it as a shift would advise a refresh that
+    // skips the re-triage.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,10,MathMutator,SURVIVED\n")
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encodeChecked,12,SURVIVED,none"),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(
+      output.contains("churn: 0 shifted, 0 newly covered, 1 unexplained"),
+      "moved-method row must be unexplained:\n$output"
+    )
+    assertFalse(output.contains("shifted from line 10"), "must not pair across methods:\n$output")
+    assertFalse(
+      output.contains("every new row is a shifted counterpart"),
+      "must not advise a refresh:\n$output"
+    )
+  }
+
+  @Test
   fun `union appends without dropping, idempotently, and update names what it drops`() {
     writeFixture()
     baselineFile().parentFile.mkdirs()
