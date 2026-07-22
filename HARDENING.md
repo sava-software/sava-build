@@ -158,9 +158,15 @@ genuinely diverge; the split names them so the dip is explainable (see the
 transient-failures section).
 
 Baseline keys include line numbers, which churn when a mutated file is
-edited: the verify task then reports stale entries alongside "new" ones.
-Confirm the new rows are the shifted old ones, then refresh with
-`-PupdateMutationBaseline`.
+edited: the verify task then reports stale entries alongside "new" ones,
+pairing them mechanically — a new row with the same class, method and mutator
+as a stale row is labeled *likely shifted*, and a failure whose rows all pair
+says so. Confirm the pairings, then refresh with `-PupdateMutationBaseline`.
+Two flags help triage without re-running: `-PlistUnkilled` prints every
+unkilled row annotated with PIT's mutation description (which sub-condition
+of a line, which direction a conditional was forced — the CSV omits it, the
+XML report carries it), and the ratchet-failure listing carries the same
+annotations.
 
 ### `TIMED_OUT` is detected, and detection is load-dependent
 
@@ -173,10 +179,13 @@ invoked it*, and the failure looks exactly like a real regression.
 - **Verify in both modes** before trusting a baseline — the suite alone, and
   under `qualityGate`. A row that differs between them belongs in the
   baseline; stale rows only warn, so a superset is safe in this direction.
-- **Union only rows you have observed to flip.** Bulk-adding every
-  `TIMED_OUT` row "to be safe" accepts mutants that are reliably detected
-  today and silently stops the ratchet noticing if a later edit makes them
-  genuinely survive.
+- **Union only rows you have observed to flip** — with
+  `-PunionMutationBaseline`, which adds the run's unkilled rows in canonical
+  form without dropping baseline rows that happened to be detected this run
+  (a full `-PupdateMutationBaseline` there bakes in the run's coin-flips and
+  starts refresh ping-pong). Bulk-adding every `TIMED_OUT` row "to be safe"
+  accepts mutants that are reliably detected today and silently stops the
+  ratchet noticing if a later edit makes them genuinely survive.
 - Prefer removing the cause: a fake collaborator that turns a would-be
   infinite loop into a deterministic assertion failure — a call budget, a
   bounded queue — beats leaning on the timeout.
@@ -423,7 +432,11 @@ fixed without both is a crash that can return.
 
 **Replay the corpus inside `check`.** A committed corpus that only runs when
 someone remembers to fuzz is a directory of files, not a regression suite;
-feeding every seed through the harness costs milliseconds per build.
+feeding every seed through the harness costs milliseconds per build. The
+plugin generates the replay: every fuzz target with a `seedCorpus` gets a
+`<Harness>SeedReplayTest` in the test source set, so the corpus runs inside
+`test` — and under PIT, where the replay participates as a killer. Repos
+carrying hand-written replay classes can delete them.
 
 **When a reference implementation would re-derive the same bugs, generate
 the oracle instead.** For a parser whose natural differential partner is
@@ -493,9 +506,13 @@ it. `TIMED_OUT` flips (above) are one mechanism; two more:
   killed and survived. Call it from inside a `@Test` — which usually yields
   a real assertion for free.
 
-Convergence is checkable, and worth scripting. With an arcmutate licence
-active, every run below takes `-PnoMutationHistory` — assisted runs agree by
-construction:
+Convergence is checkable, and the plugin scripts it: `pitestConverge` runs
+every suite twice in one invocation — snapshotting and clearing the reports
+between rounds, since Gradle would otherwise serve the second run from the
+first — and diffs per-mutant statuses, failing on flips that cross the
+unkilled boundary. With an arcmutate licence active it refuses to run without
+`-PnoMutationHistory` — assisted runs agree by construction. The manual
+method, for comparing modes the task does not cover (solo vs `qualityGate`):
 
 1. Run every `pitest<Suite>`, copy each
    `build/reports/pitest/<suite>/mutations.csv` aside.
@@ -553,7 +570,10 @@ as unexplained.
 ## Adopting in a new repo
 
 1. Apply `software.sava.build.feature.hardening` and register mutation suites
-   (wildcard targets + exclusions) and fuzz targets.
+   (wildcard targets + exclusions) and fuzz targets. `hardeningInit` scaffolds
+   the transcription: the `config/pitest/README.md` skeleton, the
+   `.pitest-history/` git-ignore, and the adoption checklist with the current
+   template digest.
 2. Pin any unseeded randomness in the test suite (see above).
 3. Seed the baselines: `./gradlew pitest<Suite> -PupdateMutationBaseline` per
    suite, commit `config/pitest/`.

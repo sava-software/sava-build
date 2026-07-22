@@ -140,6 +140,97 @@ qualityGate.configure { dependsOn(agentsTemplateInSync) }
 // Serialize the PIT suites: each already runs its own worker pool, and
 // concurrent suites contend for the same cores without finishing sooner.
 var previousPitestTask: String? = null
+var previousRound2Task: String? = null
+
+// Convergence support (HARDENING.md "A wandering kill count"): 'pitestConverge' runs
+// every suite twice in one invocation — snapshotting and clearing the reports between
+// rounds, since Gradle would otherwise serve the second run from the first — and diffs
+// per-mutant statuses. Two runs can match in total while disagreeing about which
+// mutants died; only the per-mutant diff names what moved.
+val convergeSuiteNames = mutableListOf<String>()
+val convergeSnapshotDir = layout.buildDirectory.dir("pitest-converge/round1")
+val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
+  description = "Internal to pitestConverge: snapshots round-one PIT reports and clears them."
+  val reportsRoot = layout.buildDirectory.dir("reports/pitest")
+  val snapshotRoot = convergeSnapshotDir
+  val historyAssisted = mutationHistory
+  val names = convergeSuiteNames
+  doLast {
+    if (historyAssisted) {
+      throw GradleException(
+          "pitestConverge proves nothing with arcmutate history active — two assisted runs " +
+              "agree by construction. Re-run with -PnoMutationHistory."
+      )
+    }
+    val snapshot = snapshotRoot.get().asFile
+    snapshot.deleteRecursively()
+    snapshot.mkdirs()
+    names.forEach { suiteName ->
+      val csv = reportsRoot.get().asFile.resolve("$suiteName/mutations.csv")
+      if (!csv.isFile) {
+        throw GradleException("pitestConverge: no round-one report for '$suiteName' at $csv")
+      }
+      csv.copyTo(snapshot.resolve("$suiteName.csv"))
+      reportsRoot.get().asFile.resolve(suiteName).deleteRecursively()
+    }
+    logger.lifecycle("pitestConverge: snapshotted ${names.size} round-one report(s), reports cleared for round two")
+  }
+}
+val pitestConverge = tasks.register("pitestConverge") {
+  group = "verification"
+  description = "Runs every PIT suite twice and diffs per-mutant statuses; a wandering kill count is a defect to chase, not re-ratchet past."
+  dependsOn(pitestConvergeSnapshot)
+  val reportsRoot = layout.buildDirectory.dir("reports/pitest")
+  val snapshotRoot = convergeSnapshotDir
+  val names = convergeSuiteNames
+  doLast {
+    val gated = setOf("SURVIVED", "NO_COVERAGE")
+    // Rows can share a (class,method,line,mutator) key, so statuses are compared as
+    // sorted multisets per key rather than single values.
+    fun statuses(csv: File): Map<String, List<String>> = csv.readLines()
+        .mapNotNull { line ->
+          val parts = line.split(',')
+          if (parts.size < 6) null
+          else listOf(parts[1], parts[3], parts[4], parts[2].substringAfterLast('.')).joinToString(",") to parts[5]
+        }
+        .groupBy({ it.first }, { it.second })
+        .mapValues { (_, statusList) -> statusList.sorted() }
+    var boundaryFlips = 0
+    var benignFlips = 0
+    names.forEach { suiteName ->
+      val round1 = statuses(snapshotRoot.get().asFile.resolve("$suiteName.csv"))
+      val round2 = statuses(reportsRoot.get().asFile.resolve("$suiteName/mutations.csv"))
+      (round1.keys + round2.keys).sorted().forEach { key ->
+        val before = round1[key] ?: emptyList()
+        val after = round2[key] ?: emptyList()
+        if (before != after) {
+          // only flips crossing the unkilled boundary can move the ratchet
+          val crossed = before.any { it in gated } != after.any { it in gated }
+          if (crossed) boundaryFlips++ else benignFlips++
+          logger.lifecycle(
+              "pitestConverge '$suiteName': $key — ${before.joinToString("/")} -> ${after.joinToString("/")}" +
+                  (if (crossed) "  ** crosses the unkilled boundary **" else "")
+          )
+        }
+      }
+    }
+    if (boundaryFlips == 0 && benignFlips == 0) {
+      logger.lifecycle("pitestConverge: ${names.size} suite(s) converged — zero per-mutant status flips")
+    } else if (boundaryFlips == 0) {
+      logger.lifecycle(
+          "pitestConverge: $benignFlips flip(s), none crossing the unkilled boundary " +
+              "(e.g. KILLED<->TIMED_OUT under load) — the ratchet cannot move"
+      )
+    } else {
+      throw GradleException(
+          "pitestConverge: $boundaryFlips flip(s) cross the unkilled boundary — a wandering " +
+              "kill count is a defect to chase before refreshing any baseline. Known causes " +
+              "and the diagnosis order are in HARDENING.md ('A wandering kill count'); union " +
+              "a row with -PunionMutationBaseline only once observed to flip in both directions."
+      )
+    }
+  }
+}
 
 hardening.mutation.all {
   val suite = this
@@ -158,8 +249,11 @@ hardening.mutation.all {
     group = "verification"
     description = "Fails when the '$suiteName' PIT run left unkilled mutants missing from config/pitest/$suiteName-accepted.csv."
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
+    val xmlProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.xml")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val update = providers.gradleProperty("updateMutationBaseline").isPresent
+    val union = providers.gradleProperty("unionMutationBaseline").isPresent
+    val listUnkilled = providers.gradleProperty("listUnkilled").isPresent
     // captured locally so the doLast lambda does not hold the script instance
     val historyAssisted = mutationHistory
     // Resolved at configuration time so the scaffolding check below can ask whether a
@@ -237,6 +331,29 @@ hardening.mutation.all {
         )
       }
 
+      // PIT's CSV omits the mutation description — which sub-condition of a line was hit,
+      // which direction a conditional was forced — and triaging an unkilled row keeps
+      // needing exactly that. The XML report carries it; keyed like the baseline rows.
+      val descriptions: Map<String, String> by lazy {
+        val xml = xmlProvider.get().asFile
+        if (!xml.isFile) return@lazy emptyMap()
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+            .newDocumentBuilder().parse(xml)
+        val mutations = doc.getElementsByTagName("mutation")
+        val collected = mutableMapOf<String, MutableList<String>>()
+        for (i in 0 until mutations.length) {
+          val mutation = mutations.item(i) as org.w3c.dom.Element
+          fun text(tag: String) = mutation.getElementsByTagName(tag).item(0)?.textContent ?: ""
+          val key = listOf(
+              text("mutatedClass"), text("mutatedMethod"), text("lineNumber"),
+              text("mutator").substringAfterLast('.'), mutation.getAttribute("status")
+          ).joinToString(",")
+          collected.getOrPut(key) { mutableListOf() }.add(text("description"))
+        }
+        collected.mapValues { (_, all) -> all.distinct().joinToString(" | ") }
+      }
+      fun describe(row: String) = descriptions[row]?.let { " — $it" } ?: ""
+
       val current = rows.mapNotNull { parts ->
         if (parts[5] !in gated) {
           null
@@ -246,6 +363,12 @@ hardening.mutation.all {
           "${parts[1]},${parts[3]},${parts[4]},${parts[2].substringAfterLast('.')},${parts[5]}"
         }
       }.toSortedSet()
+      if (listUnkilled && current.isNotEmpty()) {
+        logger.lifecycle(
+            "pitest '$suiteName' unkilled:\n" +
+                current.joinToString("\n") { row -> "  $row${describe(row)}" }
+        )
+      }
       if (update) {
         baselineFile.parentFile.mkdirs()
         baselineFile.writeText(current.joinToString("\n", postfix = "\n"))
@@ -257,8 +380,41 @@ hardening.mutation.all {
       } else {
         emptySet()
       }
+      if (union) {
+        // Append-only refresh for flip families (HARDENING.md: union only rows observed
+        // to flip). Adds this run's unkilled rows in canonical form without dropping
+        // baseline rows that happened to be detected this run — a full
+        // '-PupdateMutationBaseline' there would bake in this run's coin-flips and start
+        // refresh ping-pong.
+        val added = current - accepted
+        if (added.isEmpty()) {
+          logger.lifecycle("pitest baseline '$suiteName': union added nothing new")
+        } else {
+          val merged = (accepted + current).toSortedSet()
+          baselineFile.parentFile.mkdirs()
+          baselineFile.writeText(merged.joinToString("\n", postfix = "\n"))
+          logger.lifecycle(
+              "pitest baseline '$suiteName': union added ${added.size} entries (baseline now ${merged.size}):\n" +
+                  added.joinToString("\n") { row -> "  $row${describe(row)}" }
+          )
+        }
+        return@doLast
+      }
       val fresh = current - accepted
       val stale = accepted - current
+      // Line numbers are part of the baseline key, so editing a mutated file shows up as
+      // paired stale + "new" rows. Pair them mechanically: same class, method and mutator
+      // with only the line differing is almost always the old row shifted, not a new
+      // mutant — but confirm before refreshing.
+      fun shiftHint(row: String): String {
+        val parts = row.split(',')
+        val match = stale.firstOrNull { staleRow ->
+          val staleParts = staleRow.split(',')
+          staleParts[0] == parts[0] && staleParts[1] == parts[1] &&
+              staleParts[3] == parts[3] && staleParts[2] != parts[2]
+        }
+        return match?.let { " (likely shifted from line ${it.split(',')[2]})" } ?: ""
+      }
       if (stale.isNotEmpty()) {
         logger.lifecycle("pitest baseline '$suiteName': ${stale.size} stale entries (since killed or moved) — refresh with -PupdateMutationBaseline")
       }
@@ -270,12 +426,16 @@ hardening.mutation.all {
           freshByStatus["NO_COVERAGE"]?.let {
             append("\n  ${it.size} NO_COVERAGE — no test reaches these; mechanical work, ")
             append("and never acceptable as \"equivalent\" since the behaviour was never observed:\n")
-            append(it.joinToString("\n") { row -> "    $row" })
+            append(it.joinToString("\n") { row -> "    $row${shiftHint(row)}${describe(row)}" })
           }
           freshByStatus["SURVIVED"]?.let {
             append("\n  ${it.size} SURVIVED — a test ran these and could not tell the difference; ")
             append("strengthen the assertion or triage for equivalence:\n")
-            append(it.joinToString("\n") { row -> "    $row" })
+            append(it.joinToString("\n") { row -> "    $row${shiftHint(row)}${describe(row)}" })
+          }
+          if (fresh.all { shiftHint(it).isNotEmpty() }) {
+            append("\n  every new row pairs with a stale one — likely refactor line churn; ")
+            append("confirm the pairings above, then refresh with -PupdateMutationBaseline")
           }
         }
         throw GradleException(
@@ -289,13 +449,11 @@ hardening.mutation.all {
     }
   }
   qualityGate.configure { dependsOn(pitestTaskName) }
-  val runAfter = previousPitestTask
-  previousPitestTask = pitestTaskName
-  tasks.register<JavaExec>(pitestTaskName) {
-    finalizedBy(verify)
-    runAfter?.let { mustRunAfter(it) }
-    group = "verification"
-    description = "PIT mutation testing of the '${suite.name}' classes against their tests."
+  convergeSuiteNames.add(suiteName)
+  pitestConvergeSnapshot.configure { dependsOn(pitestTaskName) }
+
+  // Shared JavaExec configuration for the ratchet run and the converge second round.
+  val configurePitestExec: JavaExec.() -> Unit = {
     dependsOn(compileForPitest)
     mainClass = "org.pitest.mutationtest.commandline.MutationCoverageReport"
     classpath = pitest
@@ -359,7 +517,7 @@ hardening.mutation.all {
         add(sourceDirsArg)
         add(reportDirArg)
         add(mutatorsArg.get())
-        add("--outputFormats=HTML,CSV")
+        add("--outputFormats=HTML,XML,CSV")
         add("--timestampedReports=false")
         add(threadsArg.get())
         if (historyActive) {
@@ -372,6 +530,29 @@ hardening.mutation.all {
       }
     }
   }
+
+  val runAfter = previousPitestTask
+  previousPitestTask = pitestTaskName
+  tasks.register<JavaExec>(pitestTaskName) {
+    finalizedBy(verify)
+    runAfter?.let { mustRunAfter(it) }
+    group = "verification"
+    description = "PIT mutation testing of the '${suite.name}' classes against their tests."
+    configurePitestExec()
+  }
+
+  // The converge second round: same run, no ratchet finalizer, ordered after the
+  // snapshot cleared round one's reports.
+  val round2Name = "${pitestTaskName}ConvergeRound2"
+  val round2After = previousRound2Task
+  previousRound2Task = round2Name
+  tasks.register<JavaExec>(round2Name) {
+    description = "Internal to pitestConverge: second '${suite.name}' PIT run for the per-mutant diff."
+    mustRunAfter(pitestConvergeSnapshot)
+    round2After?.let { mustRunAfter(it) }
+    configurePitestExec()
+  }
+  pitestConverge.configure { dependsOn(round2Name) }
 }
 
 hardening.fuzz.all {
@@ -423,5 +604,135 @@ hardening.fuzz.all {
         seedCorpusDir.orNull?.let(::add)
       }
     }
+  }
+}
+
+// A committed corpus that only runs when someone remembers to fuzz is a directory of
+// files, not a regression suite. For every fuzz target with a seedCorpus, a replay test
+// is generated into the test source set: each seed runs through the harness inside
+// 'test' (and therefore 'check'), on the module path like any other test — and under
+// PIT the replay participates as a killer. No hand-written replay class per harness,
+// and no way to forget one.
+val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
+  description = "Generates seed-corpus replay tests for fuzz targets that declare a seedCorpus."
+  val outputDir = layout.buildDirectory.dir("generated-sources/fuzz-replay/java")
+  outputs.dir(outputDir)
+  // configuration-time snapshot of plain values, so the configuration cache can serialize
+  val targets = hardening.fuzz.mapNotNull { target ->
+    val corpus = target.seedCorpus.orNull?.asFile ?: return@mapNotNull null
+    Triple(target.name, target.targetClass.get(), corpus.absolutePath)
+  }
+  inputs.property("targets", targets.map { (name, fqcn, corpus) -> "$name|$fqcn|$corpus" })
+  doLast {
+    val dir = outputDir.get().asFile
+    dir.deleteRecursively()
+    dir.mkdirs()
+    targets.forEach { (name, fqcn, corpusPath) ->
+      val pkg = fqcn.substringBeforeLast('.')
+      val simple = fqcn.substringAfterLast('.')
+      val className = simple + "SeedReplayTest"
+      val source = dir.resolve(pkg.replace('.', '/')).resolve("$className.java")
+      source.parentFile.mkdirs()
+      source.writeText(
+          """
+          |package $pkg;
+          |
+          |import org.junit.jupiter.api.Test;
+          |
+          |/// Generated by the sava-build hardening plugin ('generateFuzzReplayTests'): replays
+          |/// the committed '$name' seed corpus through the harness inside 'check', so the
+          |/// corpus cannot rot between fuzz runs. Regenerated every build; do not edit.
+          |final class $className {
+          |
+          |  @Test
+          |  void replaysSeedCorpus() throws Exception {
+          |    final var corpus = java.nio.file.Path.of("${corpusPath.replace("\\", "\\\\")}");
+          |    org.junit.jupiter.api.Assertions.assertTrue(
+          |        java.nio.file.Files.isDirectory(corpus), "seed corpus missing: " + corpus);
+          |    try (final var files = java.nio.file.Files.list(corpus)) {
+          |      for (final var file : files.sorted().toList()) {
+          |        $simple.fuzzerTestOneInput(java.nio.file.Files.readAllBytes(file));
+          |      }
+          |    }
+          |  }
+          |}
+          |""".trimMargin()
+      )
+    }
+    if (targets.isNotEmpty()) {
+      logger.info("generateFuzzReplayTests: ${targets.size} replay test(s) generated")
+    }
+  }
+}
+sourceSets.test {
+  java.srcDir(generateFuzzReplayTests)
+}
+
+// One-shot adoption scaffolding (HARDENING.md 'Adopting in a new repo'): the pieces that
+// are pure transcription. Never overwrites anything that exists.
+tasks.register("hardeningInit") {
+  group = "verification"
+  description = "Scaffolds config/pitest/README.md, git-ignores .pitest-history/, and prints the adoption checklist."
+  val readme = layout.projectDirectory.file("config/pitest/README.md").asFile
+  val gitignore = rootProject.layout.projectDirectory.file(".gitignore").asFile
+  val digest = HardeningTemplateDigest.SHA256_12
+  doLast {
+    if (readme.isFile) {
+      logger.lifecycle("hardeningInit: $readme exists — left untouched")
+    } else {
+      readme.parentFile.mkdirs()
+      readme.writeText(
+          """
+          |# Mutation-testing baseline & triage policy
+          |
+          |Each `pitest<Suite>` run is finalized by `pitest<Suite>Verify`, which diffs the
+          |run's unkilled mutants (`SURVIVED` and `NO_COVERAGE`) against the accepted
+          |baseline in `<suite>-accepted.csv` and **fails on anything new**. Baseline row
+          |format: `class,method,line,mutator,status`. Full policy — the three legal
+          |outcomes for a new survivor, determinism requirements, targeting rules —
+          |lives in sava-build's `HARDENING.md`.
+          |
+          |Never refresh with `-PupdateMutationBaseline` just to make the build pass:
+          |kill the mutant, refactor it out of existence, or record its equivalence
+          |reason below. Line numbers are part of the baseline key, so edits to a
+          |mutated file shift entries — the verify task labels likely shifts; confirm
+          |them before refreshing.
+          |
+          |## Untriaged debt
+          |
+          |A first baseline seeded from the pre-existing survivor population is triage
+          |debt made explicit, not acceptance. List it here until each key is killed,
+          |refactored away, or moved below with a reason.
+          |
+          |## Triaged equivalent mutants (accepted with reasons)
+          |
+          |Group by the principle that makes them equivalent (see the recurring families
+          |in HARDENING.md); the baseline CSVs carry the exact keys.
+          |
+          |Shrinking a baseline is always an improvement; growing one requires a reason
+          |here.
+          |""".trimMargin()
+      )
+      logger.lifecycle("hardeningInit: wrote $readme")
+    }
+    val ignoreLine = ".pitest-history/"
+    if (gitignore.isFile && gitignore.readText().contains(ignoreLine)) {
+      logger.lifecycle("hardeningInit: .gitignore already covers $ignoreLine")
+    } else {
+      gitignore.appendText((if (gitignore.isFile && !gitignore.readText().endsWith("\n")) "\n" else "") +
+          "\n# arcmutate incremental-analysis history (machine-local, written by the hardening plugin)\n$ignoreLine\n")
+      logger.lifecycle("hardeningInit: appended $ignoreLine to $gitignore")
+    }
+    logger.lifecycle(
+        """
+        |hardeningInit: remaining adoption steps (HARDENING.md 'Adopting in a new repo'):
+        |  1. register mutation suites (wildcard targets + exclusions) and fuzz targets
+        |  2. pin any unseeded randomness in the test suite
+        |  3. seed each baseline: ./gradlew pitest<Suite> -PupdateMutationBaseline
+        |  4. copy the agent-instructions template from HARDENING.md into AGENTS.md with:
+        |       <!-- hardening-template sha256:$digest -->
+        |  5. decide who owns the pre-release qualityGate run, and record it in AGENTS.md
+        |""".trimMargin()
+    )
   }
 }
