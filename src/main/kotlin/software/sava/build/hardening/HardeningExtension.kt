@@ -44,6 +44,21 @@ abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
    *  and PIT runs exactly as open source. */
   abstract val arcmutateBaseVersion: Property<String>
 
+  /** Generate the shared test-support sources — Ports.freePort, LoopbackHttpServer (a
+   *  scripted raw-socket HTTP server for transport paths and status-boundary guards),
+   *  ManualScheduledExecutor (a deterministic clock-advance scheduler), RecordingExecutor,
+   *  and JulRecorder — into the test source set, package 'software.sava.hardening.support'
+   *  (the package is fixed; it names the plugin, not the consuming repo). Off by default;
+   *  JulRecorder needs 'java.logging' readable from the test module. Generated rather than
+   *  published so the helpers compile inside the consuming repo's own test module —
+   *  visible on the module path and PIT's class path alike, with no dependency wiring.
+   *  See HARDENING.md 'Shared test scaffolding (generated)'. */
+  abstract val generateTestSupport: Property<Boolean>
+
+  /** Simple class names to omit from [generateTestSupport] — e.g. "JulRecorder" in a
+   *  repo whose test module cannot read 'java.logging'. Empty by default. */
+  abstract val testSupportExcludes: ListProperty<String>
+
   /** Each suite adds a 'pitest<Name>' task reporting to 'build/reports/pitest/<name>'. */
   val mutation: NamedDomainObjectContainer<MutationSuite> = objects.domainObjectContainer(MutationSuite::class.java)
 

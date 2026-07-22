@@ -158,15 +158,43 @@ genuinely diverge; the split names them so the dip is explainable (see the
 transient-failures section).
 
 Baseline keys include line numbers, which churn when a mutated file is
-edited: the verify task then reports stale entries alongside "new" ones,
-pairing them mechanically — a new row with the same class, method and mutator
-as a stale row is labeled *likely shifted*, and a failure whose rows all pair
-says so. Confirm the pairings, then refresh with `-PupdateMutationBaseline`.
+edited: the verify task then reports stale entries alongside "new" ones and
+classifies each pairing, because two situations produce paired rows and call
+for **opposite** responses:
+
+- `(shifted from line N)` — same status, different line. The mutant moved;
+  confirm the pairings, then refresh with `-PupdateMutationBaseline`.
+- `(newly covered — was NO_COVERAGE at this line; triage, not a refresh)` —
+  same line, different status. A test now *reaches* the mutant, which is a
+  triage item: kill it, or accept it with a written reason. Refreshing here
+  launders a fresh survivor into the baseline, which is precisely what the
+  ratchet exists to prevent.
+
+A stale row is consumed once it pairs, so several new rows cannot all claim
+the same counterpart and report churn that did not happen. The failure closes
+with the whole-set accounting the per-row hints cannot give — `churn: 3
+shifted, 1 newly covered, 0 unexplained (of 4 new; 5 stale)` — and only calls
+it line churn when nothing was newly covered and nothing is unexplained. A
+non-zero *unexplained* count is the real thing: neither moved nor newly
+reached. Pairing is greedy, so a method holding several mutants of one
+mutator can leave a small residue unpaired even when the whole set is churn —
+read a handful of unexplained rows against a heavily edited file as "check
+these", not as proof of a regression.
 Two flags help triage without re-running: `-PlistUnkilled` prints every
 unkilled row annotated with PIT's mutation description (which sub-condition
 of a line, which direction a conditional was forced — the CSV omits it, the
 XML report carries it), and the ratchet-failure listing carries the same
 annotations.
+
+Refreshes are kept honest in both directions. `-PupdateMutationBaseline`
+names every row it drops — a dropped flip-insurance union (below) must be
+re-added with `-PunionMutationBaseline` once observed to flip again; before
+this the drop was silent and the re-append relied on someone remembering the
+README warning. And a baseline row may carry a trailing `# note` —
+`# untriaged` is the conventional label for seeded debt — which both refresh
+flags preserve and the verify summary counts (`140 rows, 70 marked
+'# untriaged'`), so triage debt is a number the build prints rather than
+prose that drifts from the CSV it describes.
 
 ### `TIMED_OUT` is detected, and detection is load-dependent
 
@@ -353,6 +381,21 @@ reads as measured, not forgotten. Property-asserting tests already kill
 96–98% of newly expressible mutants; implementation-restating ones do not
 *(casebook: EXPERIMENTAL_BIG_INTEGER trials)*.
 
+The plugin scripts the trial: `pitestMutatorTrial
+-PtrialMutators=<CANDIDATE[,...]>` runs every suite with **only** the
+candidate mutators — no ratchet, no history, reports kept apart under
+`build/reports/pitest/<suite>-trial` so the real reports and baselines are
+untouched — and tabulates generated / killed-by-existing-tests / unkilled
+per suite, closing with "fired in N of M suites". A suite where the
+candidates cannot fire exits PIT with an error by design; the trial reads
+that as zero fired rather than failing the invocation. What was a hand-run
+campaign per new PIT release (a run per suite, counts diffed by hand) is one
+invocation; recording the numbers in `config/pitest/README.md` is still
+yours. The "fired in N of M suites" tally is per **module**, so a multi-module
+repo reads one line per module: `0 of 1` from a module with no such arithmetic
+beside `1 of 1` from the module that has it is the expected shape, not a
+miscount.
+
 The same blindness has a structural sibling: **fluent APIs**. A call whose
 return type is its receiver type is an expression, so `VoidMethodCallMutator`
 never fires on it — a builder-style header write, a `StringBuilder.append`
@@ -435,8 +478,16 @@ someone remembers to fuzz is a directory of files, not a regression suite;
 feeding every seed through the harness costs milliseconds per build. The
 plugin generates the replay: every fuzz target with a `seedCorpus` gets a
 `<Harness>SeedReplayTest` in the test source set, so the corpus runs inside
-`test` — and under PIT, where the replay participates as a killer. Repos
-carrying hand-written replay classes can delete them.
+`test` — and under PIT, where the replay participates as a killer. The
+generated test resolves a corpus under the test resources as a classpath
+resource (hermetic under any working directory; anything else falls back to
+its configured path), replays only regular files, and **fails on an empty
+corpus** — deleting every seed is exactly the rot the replay exists to
+catch, so it cannot pass silently. Repos carrying hand-written replay
+classes can delete them once nothing in them exceeds that; seed provenance
+prose (what each input pins) moves to a README **next to** the corpus
+directory — never inside it, where the file would itself be fed to the
+harness as a seed.
 
 **When a reference implementation would re-derive the same bugs, generate
 the oracle instead.** For a parser whose natural differential partner is
@@ -511,8 +562,12 @@ every suite twice in one invocation — snapshotting and clearing the reports
 between rounds, since Gradle would otherwise serve the second run from the
 first — and diffs per-mutant statuses, failing on flips that cross the
 unkilled boundary. With an arcmutate licence active it refuses to run without
-`-PnoMutationHistory` — assisted runs agree by construction. The manual
-method, for comparing modes the task does not cover (solo vs `qualityGate`):
+`-PnoMutationHistory` — assisted runs agree by construction. Know what a
+green converge proves: both rounds run in the same serialized mode, so zero
+flips demonstrates run-to-run determinism only — solo-vs-`qualityGate` load
+flips are exactly what it cannot see, and step 4 of the manual method still
+owns those. The manual method, for comparing modes the task does not cover
+(solo vs `qualityGate`):
 
 1. Run every `pitest<Suite>`, copy each
    `build/reports/pitest/<suite>/mutations.csv` aside.
@@ -565,7 +620,47 @@ MINION_DIED, worker EOF, and the daemon log)*:
 complete build output — including PIT minion stack traces — at
 `~/.gradle/daemon/<version>/daemon-<pid>.out.log`, even when the invoking
 shell piped everything to `/dev/null`. Read it before recording any failure
-as unexplained.
+as unexplained. The ratchet's missing-report failure prints this pointer, so
+the recipe no longer has to be rediscovered per repo.
+
+## Shared test scaffolding (generated)
+
+`hardening.generateTestSupport = true` generates five small classes into the
+test source set (package `software.sava.hardening.support` — fixed; it names
+the plugin, not the consuming repo), compiled inside the consuming module so
+the module path and PIT's class path both just work: no published artifact,
+no version skew across repos, always plugin-synced. Off by default;
+regenerated every build.
+
+- **`Ports.freePort()`** — ephemeral-port probe. Connect to `127.0.0.1`,
+  never `localhost` (see the socket determinism rules).
+- **`LoopbackHttpServer`** — a scripted raw-socket HTTP server: enqueue the
+  exact response bytes — a 199 status, a truncated header block, things a
+  well-behaved server library refuses to produce — and assert the recorded
+  requests. This is the standing scaffolding for transport paths and
+  status-boundary guards otherwise accepted as *unreachable in-harness*; if
+  an acceptance note names "a raw socket speaking HTTP/1.1 by hand" as its
+  escape hatch, this is that escape hatch.
+- **`ManualScheduledExecutor`** — a deterministic, single-threaded
+  `ScheduledExecutorService`: tasks run only when the test advances the fake
+  clock (non-zero origin, per the clock rules), so pacing, backoff and
+  reconnect choreography become exact functions of the delays requested.
+  Blocking multi-submit (`invokeAll`/`invokeAny`) deliberately throws — it
+  has no deterministic single-threaded meaning.
+- **`RecordingExecutor`** — delegates and counts dispatches, for
+  "wire-invisible" executor configuration (see test conventions).
+- **`JulRecorder`** — captures a logger's records while attached, forcing the
+  logger to `ALL` with parent handlers detached and restoring both on close:
+  attaching to a logger the repo silenced in test setup — the very pattern this
+  replaces — would otherwise capture nothing at all, and anything it did
+  publish would still reach the console. `messages()` renders each record the
+  way a handler would, because services log `{0}` patterns whose interesting
+  values live in the record's *parameters*; asserting against `getMessage()`
+  alone silently never matches them. `logged(fragment)` is the predicate form.
+  Needs `java.logging` readable from the test module. In a repo whose test module
+  cannot read it, omit the class instead of forgoing the rest:
+  `hardening.testSupportExcludes = listOf("JulRecorder")` (any helper can be
+  excluded by simple name).
 
 ## Adopting in a new repo
 

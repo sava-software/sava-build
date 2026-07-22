@@ -24,6 +24,8 @@ hardening.pitestVersion.convention(HardeningToolDefaults.PITEST)
 hardening.pitestJunit5PluginVersion.convention(HardeningToolDefaults.PITEST_JUNIT5_PLUGIN)
 hardening.jazzerVersion.convention(HardeningToolDefaults.JAZZER)
 hardening.arcmutateBaseVersion.convention(HardeningToolDefaults.ARCMUTATE_BASE)
+hardening.generateTestSupport.convention(false)
+hardening.testSupportExcludes.convention(emptyList())
 
 // Arcmutate incremental analysis ("history"): reuses per-mutant results across runs
 // when neither the mutated class nor its covering tests changed. Open-source PIT
@@ -232,6 +234,52 @@ val pitestConverge = tasks.register("pitestConverge") {
   }
 }
 
+// Mutator trial (HARDENING.md "The mutator set bounds what the ratchet can see"):
+// 'pitestMutatorTrial -PtrialMutators=EXPERIMENTAL_X[,...]' runs every suite with only
+// the candidate mutators and tabulates what fired, so "enable only what fires" is one
+// invocation instead of a hand-kept table of per-suite runs and count diffs.
+val trialMutatorsProperty = providers.gradleProperty("trialMutators")
+var previousTrialTask: String? = null
+val pitestMutatorTrial = tasks.register("pitestMutatorTrial") {
+  group = "verification"
+  description = "Runs every PIT suite with only the -PtrialMutators candidates and tabulates what fired; enable per suite only what fires, and record the numbers."
+  val reportsRoot = layout.buildDirectory.dir("reports/pitest")
+  val names = convergeSuiteNames
+  val trial = trialMutatorsProperty
+  doLast {
+    val candidates = trial.orNull ?: throw GradleException(
+        "pitestMutatorTrial needs -PtrialMutators=<MUTATOR[,...]> — candidates only, not the suites' existing sets"
+    )
+    var fired = 0
+    val width = names.maxOf { it.length } + 2
+    val lines = names.sorted().map { name ->
+      val csv = reportsRoot.get().asFile.resolve("$name-trial/mutations.csv")
+      val rows = if (csv.isFile) csv.readLines().mapNotNull { line ->
+        val parts = line.split(',')
+        if (parts.size < 6) null else parts
+      } else emptyList()
+      if (rows.isEmpty()) {
+        "  ${name.padEnd(width)}0 generated" +
+            (if (csv.isFile) "" else " (no report — cannot fire here, or the run failed above)")
+      } else {
+        fired++
+        val byStatus = rows.groupingBy { it[5] }.eachCount()
+        val detected = (byStatus["KILLED"] ?: 0) + (byStatus["TIMED_OUT"] ?: 0)
+        val unkilled = (byStatus["SURVIVED"] ?: 0) + (byStatus["NO_COVERAGE"] ?: 0)
+        val perMutator = rows.groupingBy { it[2].substringAfterLast('.') }.eachCount()
+            .entries.sortedBy { it.key }.joinToString(", ") { "${it.key} x${it.value}" }
+        "  ${name.padEnd(width)}${rows.size} generated — $detected killed by existing tests, $unkilled unkilled ($perMutator)"
+      }
+    }
+    logger.lifecycle(
+        "pitestMutatorTrial '$candidates': fired in $fired of ${names.size} suite(s)\n" +
+            lines.joinToString("\n") +
+            "\nEnable only what fires: add the mutator to those suites' 'mutators' and record the " +
+            "numbers in config/pitest/README.md (HARDENING.md 'The mutator set bounds what the ratchet can see')."
+    )
+  }
+}
+
 hardening.mutation.all {
   val suite = this
   suite.mutators.convention("STRONGER")
@@ -269,7 +317,9 @@ hardening.mutation.all {
         throw GradleException(
             "no PIT report at $csv — either $pitestTaskName has not run, or it just " +
                 "failed before writing one (its error is above this; MINION_DIED " +
-                "coverage failures are transient — re-run the suite)"
+                "coverage failures are transient — re-run the suite). If the output " +
+                "above lacks the cause, the daemon log keeps the minion's stack trace: " +
+                "~/.gradle/daemon/<version>/daemon-<pid>.out.log"
         )
       }
       val gated = setOf("SURVIVED", "NO_COVERAGE")
@@ -346,13 +396,18 @@ hardening.mutation.all {
           fun text(tag: String) = mutation.getElementsByTagName(tag).item(0)?.textContent ?: ""
           val key = listOf(
               text("mutatedClass"), text("mutatedMethod"), text("lineNumber"),
-              text("mutator").substringAfterLast('.'), mutation.getAttribute("status")
+              text("mutator").substringAfterLast('.')
           ).joinToString(",")
-          collected.getOrPut(key) { mutableListOf() }.add(text("description"))
+          val description = text("description")
+          // keyed both with and without status, so a row still annotates when its
+          // status differs from the XML the descriptions came from
+          collected.getOrPut("$key,${mutation.getAttribute("status")}") { mutableListOf() }.add(description)
+          collected.getOrPut(key) { mutableListOf() }.add(description)
         }
         collected.mapValues { (_, all) -> all.distinct().joinToString(" | ") }
       }
-      fun describe(row: String) = descriptions[row]?.let { " — $it" } ?: ""
+      fun describe(row: String) =
+          (descriptions[row] ?: descriptions[row.substringBeforeLast(',')])?.let { " — $it" } ?: ""
 
       val current = rows.mapNotNull { parts ->
         if (parts[5] !in gated) {
@@ -369,16 +424,49 @@ hardening.mutation.all {
                 current.joinToString("\n") { row -> "  $row${describe(row)}" }
         )
       }
-      if (update) {
-        baselineFile.parentFile.mkdirs()
-        baselineFile.writeText(current.joinToString("\n", postfix = "\n"))
-        logger.lifecycle("pitest baseline '$suiteName': wrote ${current.size} accepted entries")
-        return@doLast
-      }
-      val accepted = if (baselineFile.exists()) {
-        baselineFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }.toSet()
+      // A baseline row may carry a trailing '# note' ('# untriaged' is the conventional
+      // label for seeded debt). Notes are stripped for comparison, preserved across both
+      // refresh flags, and the untriaged count is printed — so triage state lives on the
+      // row it describes and stays a number the build reports, not prose that drifts.
+      val annotations = mutableMapOf<String, String>()
+      val accepted: Set<String> = if (baselineFile.exists()) {
+        baselineFile.readLines()
+            .filter { it.isNotBlank() && !it.startsWith("#") }
+            .map { line ->
+              val hash = line.indexOf('#')
+              if (hash < 0) line.trim()
+              else {
+                val row = line.substring(0, hash).trim()
+                annotations[row] = line.substring(hash).trim()
+                row
+              }
+            }
+            .toSet()
       } else {
         emptySet()
+      }
+      fun baselineLine(row: String) = annotations[row]?.let { "$row $it" } ?: row
+      val untriaged = accepted.count { annotations[it]?.contains("untriaged", ignoreCase = true) == true }
+      if (untriaged > 0) {
+        logger.lifecycle("pitest baseline '$suiteName': ${accepted.size} rows, $untriaged marked '# untriaged'")
+      }
+      if (update) {
+        val dropped = accepted - current
+        baselineFile.parentFile.mkdirs()
+        baselineFile.writeText(current.joinToString("\n", postfix = "\n") { baselineLine(it) })
+        logger.lifecycle("pitest baseline '$suiteName': wrote ${current.size} accepted entries")
+        if (dropped.isNotEmpty()) {
+          // The silent half of the refresh footgun: a full update rewrites from this one
+          // run, so a flip-insurance union (detected today, survived under other load)
+          // vanishes without a trace unless it is named here.
+          logger.lifecycle(
+              "pitest baseline '$suiteName': dropped ${dropped.size} row(s) not unkilled this run:\n" +
+                  dropped.joinToString("\n") { row -> "  ${baselineLine(row)}${describe(row)}" } +
+                  "\n  a dropped flip-insurance union (see config/pitest/README.md) must be " +
+                  "re-added with -PunionMutationBaseline once observed to flip again"
+          )
+        }
+        return@doLast
       }
       if (union) {
         // Append-only refresh for flip families (HARDENING.md: union only rows observed
@@ -392,7 +480,7 @@ hardening.mutation.all {
         } else {
           val merged = (accepted + current).toSortedSet()
           baselineFile.parentFile.mkdirs()
-          baselineFile.writeText(merged.joinToString("\n", postfix = "\n"))
+          baselineFile.writeText(merged.joinToString("\n", postfix = "\n") { baselineLine(it) })
           logger.lifecycle(
               "pitest baseline '$suiteName': union added ${added.size} entries (baseline now ${merged.size}):\n" +
                   added.joinToString("\n") { row -> "  $row${describe(row)}" }
@@ -402,18 +490,47 @@ hardening.mutation.all {
       }
       val fresh = current - accepted
       val stale = accepted - current
-      // Line numbers are part of the baseline key, so editing a mutated file shows up as
-      // paired stale + "new" rows. Pair them mechanically: same class, method and mutator
-      // with only the line differing is almost always the old row shifted, not a new
-      // mutant — but confirm before refreshing.
-      fun shiftHint(row: String): String {
-        val parts = row.split(',')
-        val match = stale.firstOrNull { staleRow ->
-          val staleParts = staleRow.split(',')
-          staleParts[0] == parts[0] && staleParts[1] == parts[1] &&
-              staleParts[3] == parts[3] && staleParts[2] != parts[2]
+      // Two situations produce paired stale + "new" rows and look alike in a raw diff,
+      // but call for opposite responses, so they are classified rather than lumped:
+      //
+      //   shifted        — same status, different line: editing a mutated file moved it.
+      //                    Confirm the pairings and refresh.
+      //   newly covered  — same line, different status (typically NO_COVERAGE ->
+      //                    SURVIVED): a test newly reached the mutant. That is a triage
+      //                    item — kill it or accept it with a reason — never a refresh.
+      //
+      // A stale row is consumed once it pairs, so several new rows cannot all claim the
+      // same counterpart and report a churn that did not happen.
+      fun rowKey(row: String) = row.split(',').let { Triple(it[0], it[1], it[3]) }
+      fun rowLine(row: String) = row.split(',')[2]
+      fun rowStatus(row: String) = row.substringAfterLast(',')
+
+      val unpairedStale = stale.toMutableSet()
+      val shiftedFrom = mutableMapOf<String, String>()
+      val newlyCoveredFrom = mutableMapOf<String, String>()
+      for (row in fresh.sorted()) {
+        val sameLine = unpairedStale.firstOrNull {
+          rowKey(it) == rowKey(row) && rowLine(it) == rowLine(row) && rowStatus(it) != rowStatus(row)
         }
-        return match?.let { " (likely shifted from line ${it.split(',')[2]})" } ?: ""
+        if (sameLine != null) {
+          unpairedStale.remove(sameLine)
+          newlyCoveredFrom[row] = sameLine
+          continue
+        }
+        val moved = unpairedStale.firstOrNull {
+          rowKey(it) == rowKey(row) && rowLine(it) != rowLine(row) && rowStatus(it) == rowStatus(row)
+        }
+        if (moved != null) {
+          unpairedStale.remove(moved)
+          shiftedFrom[row] = moved
+        }
+      }
+      val unexplained = fresh.size - shiftedFrom.size - newlyCoveredFrom.size
+      fun shiftHint(row: String): String = when {
+        shiftedFrom.containsKey(row) -> " (shifted from line ${rowLine(shiftedFrom.getValue(row))})"
+        newlyCoveredFrom.containsKey(row) ->
+          " (newly covered — was ${rowStatus(newlyCoveredFrom.getValue(row))} at this line; triage, not a refresh)"
+        else -> ""
       }
       if (stale.isNotEmpty()) {
         logger.lifecycle("pitest baseline '$suiteName': ${stale.size} stale entries (since killed or moved) — refresh with -PupdateMutationBaseline")
@@ -433,9 +550,17 @@ hardening.mutation.all {
             append("strengthen the assertion or triage for equivalence:\n")
             append(it.joinToString("\n") { row -> "    $row${shiftHint(row)}${describe(row)}" })
           }
-          if (fresh.all { shiftHint(it).isNotEmpty() }) {
-            append("\n  every new row pairs with a stale one — likely refactor line churn; ")
+          // The churn tally answers the question the per-row hints cannot: is the whole
+          // set accounted for? Refreshing is only safe when nothing is unexplained and
+          // nothing was newly covered.
+          append("\n  churn: ${shiftedFrom.size} shifted, ${newlyCoveredFrom.size} newly covered, ")
+          append("$unexplained unexplained (of ${fresh.size} new; ${stale.size} stale)")
+          if (unexplained == 0 && newlyCoveredFrom.isEmpty() && shiftedFrom.isNotEmpty()) {
+            append("\n  every new row is a shifted counterpart and nothing is unexplained — line churn; ")
             append("confirm the pairings above, then refresh with -PupdateMutationBaseline")
+          } else if (newlyCoveredFrom.isNotEmpty()) {
+            append("\n  ${newlyCoveredFrom.size} row(s) are newly covered rather than moved: a test now reaches ")
+            append("them, so they are triage (kill or accept with a reason), not a refresh")
           }
         }
         throw GradleException(
@@ -452,8 +577,13 @@ hardening.mutation.all {
   convergeSuiteNames.add(suiteName)
   pitestConvergeSnapshot.configure { dependsOn(pitestTaskName) }
 
-  // Shared JavaExec configuration for the ratchet run and the converge second round.
-  val configurePitestExec: JavaExec.() -> Unit = {
+  // Shared JavaExec configuration for the ratchet run, the converge second round, and
+  // the mutator trial (which redirects the report and swaps the mutator set).
+  fun pitestExec(
+      reportSubdir: String,
+      mutatorsSource: Provider<String>,
+      withHistory: Boolean
+  ): JavaExec.() -> Unit = {
     dependsOn(compileForPitest)
     mainClass = "org.pitest.mutationtest.commandline.MutationCoverageReport"
     classpath = pitest
@@ -489,10 +619,10 @@ hardening.mutation.all {
       if (excluded.isEmpty()) null else "--excludedClasses=" + excluded.joinToString(",")
     }
     val targetTestsArg = suite.targetTests.map { "--targetTests=$it" }
-    val mutatorsArg = suite.mutators.map { "--mutators=$it" }
+    val mutatorsArg = mutatorsSource.map { "--mutators=$it" }
     val threadsArg = suite.threads.map { "--threads=$it" }
     val sourceDirsArg = "--sourceDirs=" + layout.projectDirectory.dir("src/main/java").asFile.absolutePath
-    val reportDirArg = "--reportDir=" + layout.buildDirectory.dir("reports/pitest/${suite.name}").get().asFile.absolutePath
+    val reportDirArg = "--reportDir=" + layout.buildDirectory.dir("reports/pitest/$reportSubdir").get().asFile.absolutePath
     // Incremental analysis: one rolling history file per suite, deliberately outside
     // build/ so 'clean' does not erase the accumulated results, and git-ignored
     // because it is machine-local state. Input and output are the same file; on the
@@ -500,7 +630,7 @@ hardening.mutation.all {
     // keeps reuse honest — with history active a fast run is expected, so the log
     // must say why, and the pre-release gate re-earns its numbers with
     // '-PnoMutationHistory'.
-    val historyActive = mutationHistory
+    val historyActive = withHistory && mutationHistory
     val historyFile = layout.projectDirectory.file(".pitest-history/${suite.name}.hist").asFile
     if (historyActive) {
       doFirst {
@@ -531,6 +661,8 @@ hardening.mutation.all {
     }
   }
 
+  val configurePitestExec = pitestExec(suiteName, suite.mutators, withHistory = true)
+
   val runAfter = previousPitestTask
   previousPitestTask = pitestTaskName
   tasks.register<JavaExec>(pitestTaskName) {
@@ -553,6 +685,35 @@ hardening.mutation.all {
     configurePitestExec()
   }
   pitestConverge.configure { dependsOn(round2Name) }
+
+  // The mutator-trial run: only the candidate mutators, no ratchet, no history, and a
+  // report directory of its own so the suite's real report and baseline are untouched.
+  val trialTaskName = "${pitestTaskName}MutatorTrial"
+  val trialAfter = previousTrialTask
+  previousTrialTask = trialTaskName
+  tasks.register<JavaExec>(trialTaskName) {
+    description = "Internal to pitestMutatorTrial: '${suite.name}' with only the -PtrialMutators candidates."
+    trialAfter?.let { mustRunAfter(it) }
+    // A zero-fire trial is a result, not a failure: PIT exits non-zero when the mutator
+    // set generates nothing, and the aggregate reads a missing report as zero fired.
+    isIgnoreExitValue = true
+    val trialReportDir = layout.buildDirectory.dir("reports/pitest/$suiteName-trial")
+    // captured locally so the doFirst lambda does not hold the script instance
+    val trialMutators = trialMutatorsProperty
+    doFirst {
+      if (!trialMutators.isPresent) {
+        throw GradleException(
+            "pitestMutatorTrial needs -PtrialMutators=<MUTATOR[,...]> — candidates only " +
+                "(e.g. EXPERIMENTAL_NAKED_RECEIVER), not the suite's existing set"
+        )
+      }
+      // A failed run writes no report; without this delete it would read as the
+      // previous trial's numbers.
+      trialReportDir.get().asFile.deleteRecursively()
+    }
+    pitestExec("$suiteName-trial", trialMutatorsProperty, withHistory = false).invoke(this)
+  }
+  pitestMutatorTrial.configure { dependsOn(trialTaskName) }
 }
 
 hardening.fuzz.all {
@@ -618,21 +779,42 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
   val outputDir = layout.buildDirectory.dir("generated-sources/fuzz-replay/java")
   outputs.dir(outputDir)
   // configuration-time snapshot of plain values, so the configuration cache can serialize
+  val testResourceDirs = sourceSets.test.get().resources.srcDirs.toList()
   val targets = hardening.fuzz.mapNotNull { target ->
     val corpus = target.seedCorpus.orNull?.asFile ?: return@mapNotNull null
-    Triple(target.name, target.targetClass.get(), corpus.absolutePath)
+    // A corpus under the test resources is resolved as a classpath resource — hermetic
+    // under any working directory or test-distribution scheme. Anything else falls back
+    // to its absolute path, which is regenerated every build so it stays machine-correct.
+    val resourcePath = testResourceDirs.firstNotNullOfOrNull { dir ->
+      val relative = corpus.relativeToOrNull(dir)
+      if (relative == null || relative.path.startsWith("..")) null else relative.invariantSeparatorsPath
+    }
+    listOf(target.name, target.targetClass.get(), corpus.absolutePath, resourcePath ?: "")
   }
-  inputs.property("targets", targets.map { (name, fqcn, corpus) -> "$name|$fqcn|$corpus" })
+  inputs.property("targets", targets.map { it.joinToString("|") })
   doLast {
     val dir = outputDir.get().asFile
     dir.deleteRecursively()
     dir.mkdirs()
-    targets.forEach { (name, fqcn, corpusPath) ->
+    targets.forEach { (name, fqcn, corpusPath, resourcePath) ->
       val pkg = fqcn.substringBeforeLast('.')
       val simple = fqcn.substringAfterLast('.')
       val className = simple + "SeedReplayTest"
       val source = dir.resolve(pkg.replace('.', '/')).resolve("$className.java")
       source.parentFile.mkdirs()
+      val resolveCorpus = if (resourcePath.isNotEmpty()) {
+        """
+        |    final var url = $className.class.getResource("/$resourcePath");
+        |    org.junit.jupiter.api.Assertions.assertNotNull(url, "seed corpus missing from test resources: /$resourcePath");
+        |    final var corpus = java.nio.file.Path.of(url.toURI());
+        """.trimMargin()
+      } else {
+        """
+        |    final var corpus = java.nio.file.Path.of("${corpusPath.replace("\\", "\\\\")}");
+        |    org.junit.jupiter.api.Assertions.assertTrue(
+        |        java.nio.file.Files.isDirectory(corpus), "seed corpus missing: " + corpus);
+        """.trimMargin()
+      }
       source.writeText(
           """
           |package $pkg;
@@ -641,17 +823,19 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
           |
           |/// Generated by the sava-build hardening plugin ('generateFuzzReplayTests'): replays
           |/// the committed '$name' seed corpus through the harness inside 'check', so the
-          |/// corpus cannot rot between fuzz runs. Regenerated every build; do not edit.
+          |/// corpus cannot rot between fuzz runs — an emptied corpus fails, not passes.
+          |/// Regenerated every build; do not edit. Seed provenance belongs in a README next
+          |/// to (never inside) the corpus directory, where a file would itself become a seed.
           |final class $className {
           |
           |  @Test
           |  void replaysSeedCorpus() throws Exception {
-          |    final var corpus = java.nio.file.Path.of("${corpusPath.replace("\\", "\\\\")}");
-          |    org.junit.jupiter.api.Assertions.assertTrue(
-          |        java.nio.file.Files.isDirectory(corpus), "seed corpus missing: " + corpus);
+          |$resolveCorpus
           |    try (final var files = java.nio.file.Files.list(corpus)) {
-          |      for (final var file : files.sorted().toList()) {
-          |        $simple.fuzzerTestOneInput(java.nio.file.Files.readAllBytes(file));
+          |      final var seeds = files.filter(java.nio.file.Files::isRegularFile).sorted().toList();
+          |      org.junit.jupiter.api.Assertions.assertFalse(seeds.isEmpty(), "empty seed corpus: " + corpus);
+          |      for (final var seed : seeds) {
+          |        $simple.fuzzerTestOneInput(java.nio.file.Files.readAllBytes(seed));
           |      }
           |    }
           |  }
@@ -698,6 +882,12 @@ tasks.register("hardeningInit") {
           |mutated file shift entries — the verify task labels likely shifts; confirm
           |them before refreshing.
           |
+          |A baseline row may carry a trailing `# note` — `# untriaged` is the
+          |conventional label for seeded debt. Notes are preserved across
+          |`-PupdateMutationBaseline` / `-PunionMutationBaseline` rewrites, and the
+          |verify task counts rows marked `# untriaged` so the debt stays a printed
+          |number, not prose.
+          |
           |## Untriaged debt
           |
           |A first baseline seeded from the pre-existing survivor population is triage
@@ -732,7 +922,548 @@ tasks.register("hardeningInit") {
         |  4. copy the agent-instructions template from HARDENING.md into AGENTS.md with:
         |       <!-- hardening-template sha256:$digest -->
         |  5. decide who owns the pre-release qualityGate run, and record it in AGENTS.md
+        |  6. fuzz targets with a seedCorpus get a generated replay test automatically;
+        |       document seed provenance in a README next to (never inside) the corpus dir
+        |  7. optional: hardening.generateTestSupport = true generates shared socket/
+        |       scheduler/logging test helpers (HARDENING.md 'Shared test scaffolding')
         |""".trimMargin()
     )
   }
+}
+
+// Shared socket/concurrency/logging test helpers, generated on request
+// ('hardening.generateTestSupport = true') instead of published: a handful of small
+// classes is not worth a dependency in every consuming repo's test module, and generating
+// them means they compile inside that module — visible on the module path and PIT's class
+// path alike. See HARDENING.md 'Shared test scaffolding (generated)'.
+val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport") {
+  description = "Generates the shared test-support sources when hardening.generateTestSupport is true."
+  val outputDir = layout.buildDirectory.dir("generated-sources/hardening-support/java")
+  outputs.dir(outputDir)
+  val enabled = hardening.generateTestSupport
+  val excludes = hardening.testSupportExcludes
+  inputs.property("enabled", enabled)
+  inputs.property("excludes", excludes)
+  doLast {
+    val dir = outputDir.get().asFile
+    dir.deleteRecursively()
+    if (!enabled.get()) {
+      dir.mkdirs()
+      return@doLast
+    }
+    val excluded = excludes.get().toSet()
+    val pkgDir = dir.resolve("software/sava/hardening/support")
+    pkgDir.mkdirs()
+    // each helper is skippable by simple name — 'JulRecorder' cannot compile in a test
+    // module that does not read 'java.logging'
+    fun generate(className: String, source: () -> String) {
+      if (className !in excluded) {
+        pkgDir.resolve("$className.java").writeText(source())
+      }
+    }
+    generate("Ports") { """
+        |package software.sava.hardening.support;
+        |
+        |/// Generated by the sava-build hardening plugin; regenerated every build, do not edit.
+        |public final class Ports {
+        |
+        |  /// An ephemeral port that was free at probe time. Socket tests should bind it on
+        |  /// localhost and connect to 127.0.0.1 explicitly — never "localhost", whose ::1
+        |  /// resolution can reach another JVM's wildcard bind on the same port number.
+        |  public static int freePort() {
+        |    try (final var socket = new java.net.ServerSocket(0)) {
+        |      return socket.getLocalPort();
+        |    } catch (final java.io.IOException e) {
+        |      throw new java.io.UncheckedIOException(e);
+        |    }
+        |  }
+        |
+        |  private Ports() {
+        |  }
+        |}
+        |""".trimMargin() }
+    generate("RecordingExecutor") { """
+        |package software.sava.hardening.support;
+        |
+        |import java.util.concurrent.Executor;
+        |import java.util.concurrent.atomic.AtomicInteger;
+        |
+        |/// Generated by the sava-build hardening plugin; regenerated every build, do not edit.
+        |///
+        |/// Delegates while counting dispatches: turns "wire-invisible" executor configuration
+        |/// into an assertable property (see HARDENING.md's test conventions).
+        |public final class RecordingExecutor implements Executor {
+        |
+        |  private final Executor delegate;
+        |  private final AtomicInteger dispatches = new AtomicInteger();
+        |
+        |  public RecordingExecutor(final Executor delegate) {
+        |    this.delegate = delegate;
+        |  }
+        |
+        |  @Override
+        |  public void execute(final Runnable command) {
+        |    dispatches.incrementAndGet();
+        |    delegate.execute(command);
+        |  }
+        |
+        |  public int dispatches() {
+        |    return dispatches.get();
+        |  }
+        |}
+        |""".trimMargin() }
+    generate("JulRecorder") { """
+        |package software.sava.hardening.support;
+        |
+        |import java.text.MessageFormat;
+        |import java.util.ArrayList;
+        |import java.util.List;
+        |import java.util.logging.Handler;
+        |import java.util.logging.Level;
+        |import java.util.logging.LogRecord;
+        |import java.util.logging.Logger;
+        |
+        |/// Generated by the sava-build hardening plugin; regenerated every build, do not edit.
+        |///
+        |/// Captures records published to a JUL logger while attached; use try-with-resources so
+        |/// the handler always detaches. Needs 'java.logging' readable from the test module.
+        |///
+        |/// While attached the logger is forced to {@link Level#ALL} with parent handlers
+        |/// detached, and both are restored on close. Without that, attaching to a logger a repo
+        |/// silenced in test setup — a common pattern, and the one this replaces — would capture
+        |/// nothing at all, and anything the logger did publish would still reach the console.
+        |public final class JulRecorder implements AutoCloseable {
+        |
+        |  private final Logger logger;
+        |  private final Handler handler;
+        |  private final Level previousLevel;
+        |  private final boolean previousUseParentHandlers;
+        |  private final List<LogRecord> records = new ArrayList<>();
+        |
+        |  private JulRecorder(final Logger logger) {
+        |    this.logger = logger;
+        |    this.previousLevel = logger.getLevel();
+        |    this.previousUseParentHandlers = logger.getUseParentHandlers();
+        |    this.handler = new Handler() {
+        |      @Override
+        |      public void publish(final LogRecord record) {
+        |        synchronized (records) {
+        |          records.add(record);
+        |        }
+        |      }
+        |
+        |      @Override
+        |      public void flush() {
+        |      }
+        |
+        |      @Override
+        |      public void close() {
+        |      }
+        |    };
+        |    logger.setLevel(Level.ALL);
+        |    logger.setUseParentHandlers(false);
+        |    logger.addHandler(handler);
+        |  }
+        |
+        |  public static JulRecorder attach(final String loggerName) {
+        |    return new JulRecorder(Logger.getLogger(loggerName));
+        |  }
+        |
+        |  public static JulRecorder attach(final Class<?> loggerClass) {
+        |    return attach(loggerClass.getName());
+        |  }
+        |
+        |  /// @return a snapshot of the records captured so far.
+        |  public List<LogRecord> records() {
+        |    synchronized (records) {
+        |      return List.copyOf(records);
+        |    }
+        |  }
+        |
+        |  /// Each record as a handler would render it. Services commonly log '{0}' style
+        |  /// patterns, so the values worth asserting on live in the record's parameters rather
+        |  /// than in its raw message — asserting against {@link LogRecord#getMessage()} alone
+        |  /// silently never matches them.
+        |  public List<String> messages() {
+        |    final var formatted = new ArrayList<String>();
+        |    for (final var record : records()) {
+        |      formatted.add(format(record));
+        |    }
+        |    return List.copyOf(formatted);
+        |  }
+        |
+        |  /// @return whether any captured record contains {@code fragment} once formatted.
+        |  public boolean logged(final String fragment) {
+        |    for (final var message : messages()) {
+        |      if (message != null && message.contains(fragment)) {
+        |        return true;
+        |      }
+        |    }
+        |    return false;
+        |  }
+        |
+        |  private static String format(final LogRecord record) {
+        |    final var message = record.getMessage();
+        |    final var parameters = record.getParameters();
+        |    if (message == null || parameters == null || parameters.length == 0) {
+        |      return message;
+        |    }
+        |    try {
+        |      return MessageFormat.format(message, parameters);
+        |    } catch (final IllegalArgumentException e) {
+        |      return message;
+        |    }
+        |  }
+        |
+        |  @Override
+        |  public void close() {
+        |    logger.removeHandler(handler);
+        |    logger.setLevel(previousLevel);
+        |    logger.setUseParentHandlers(previousUseParentHandlers);
+        |  }
+        |}
+        |""".trimMargin() }
+    generate("LoopbackHttpServer") { """
+        |package software.sava.hardening.support;
+        |
+        |import java.io.ByteArrayOutputStream;
+        |import java.io.IOException;
+        |import java.io.InputStream;
+        |import java.io.UncheckedIOException;
+        |import java.net.InetAddress;
+        |import java.net.ServerSocket;
+        |import java.nio.charset.StandardCharsets;
+        |import java.util.concurrent.BlockingQueue;
+        |import java.util.concurrent.LinkedBlockingQueue;
+        |import java.util.concurrent.TimeUnit;
+        |
+        |/// Generated by the sava-build hardening plugin; regenerated every build, do not edit.
+        |///
+        |/// A scripted loopback HTTP server serving exactly the bytes you enqueue — including
+        |/// what a well-behaved server library refuses to produce (a 199 status, a truncated
+        |/// header block), which is the scaffolding for transport paths and status-boundary
+        |/// guards otherwise accepted as unreachable in-harness. One enqueued response serves
+        |/// one connection, then the connection closes; requests are recorded verbatim.
+        |/// Binds the loopback address explicitly — connect to "127.0.0.1", never "localhost",
+        |/// whose ::1 resolution can reach another JVM's wildcard bind on the same port.
+        |public final class LoopbackHttpServer implements AutoCloseable {
+        |
+        |  private final ServerSocket serverSocket;
+        |  private final Thread acceptor;
+        |  private final BlockingQueue<byte[]> responses = new LinkedBlockingQueue<>();
+        |  private final BlockingQueue<String> requests = new LinkedBlockingQueue<>();
+        |
+        |  private LoopbackHttpServer(final ServerSocket serverSocket) {
+        |    this.serverSocket = serverSocket;
+        |    this.acceptor = new Thread(this::serve, "loopback-http-" + serverSocket.getLocalPort());
+        |    this.acceptor.setDaemon(true);
+        |  }
+        |
+        |  public static LoopbackHttpServer start() {
+        |    try {
+        |      final var server = new LoopbackHttpServer(new ServerSocket(0, 16, InetAddress.getLoopbackAddress()));
+        |      server.acceptor.start();
+        |      return server;
+        |    } catch (final IOException e) {
+        |      throw new UncheckedIOException(e);
+        |    }
+        |  }
+        |
+        |  public int port() {
+        |    return serverSocket.getLocalPort();
+        |  }
+        |
+        |  public String baseUri() {
+        |    return "http://127.0.0.1:" + port();
+        |  }
+        |
+        |  /// Queues one raw response, served verbatim (ISO-8859-1 bytes) to the next connection.
+        |  public LoopbackHttpServer enqueue(final String rawResponse) {
+        |    responses.add(rawResponse.getBytes(StandardCharsets.ISO_8859_1));
+        |    return this;
+        |  }
+        |
+        |  /// Convenience: a minimal well-formed 'Connection: close' response.
+        |  public LoopbackHttpServer enqueue(final int status, final String body) {
+        |    final var bytes = body.getBytes(StandardCharsets.UTF_8);
+        |    return enqueue("HTTP/1.1 " + status + " Status\r\nContent-Length: " + bytes.length
+        |        + "\r\nConnection: close\r\n\r\n" + new String(bytes, StandardCharsets.ISO_8859_1));
+        |  }
+        |
+        |  /// The next recorded request — start line, headers, and any Content-Length body,
+        |  /// verbatim — or null if none arrives within the timeout.
+        |  public String takeRequest(final long timeout, final TimeUnit unit) throws InterruptedException {
+        |    return requests.poll(timeout, unit);
+        |  }
+        |
+        |  private void serve() {
+        |    while (!serverSocket.isClosed()) {
+        |      try (final var socket = serverSocket.accept()) {
+        |        requests.add(readRequest(socket.getInputStream()));
+        |        final var response = responses.poll(30, TimeUnit.SECONDS);
+        |        if (response == null) {
+        |          continue; // nothing scripted: the dropped connection is itself a test input
+        |        }
+        |        socket.getOutputStream().write(response);
+        |        socket.getOutputStream().flush();
+        |      } catch (final IOException | InterruptedException | RuntimeException e) {
+        |        return; // closed, or the harness is broken enough that hanging would hide it
+        |      }
+        |    }
+        |  }
+        |
+        |  private static String readRequest(final InputStream in) throws IOException {
+        |    final var head = new ByteArrayOutputStream();
+        |    int matched = 0;
+        |    for (int b; matched < 4 && (b = in.read()) >= 0; ) {
+        |      head.write(b);
+        |      matched = b == "\r\n\r\n".charAt(matched) ? matched + 1 : (b == '\r' ? 1 : 0);
+        |    }
+        |    var request = head.toString(StandardCharsets.ISO_8859_1);
+        |    final int contentLength = contentLength(request);
+        |    if (contentLength > 0) {
+        |      request += new String(in.readNBytes(contentLength), StandardCharsets.ISO_8859_1);
+        |    }
+        |    return request;
+        |  }
+        |
+        |  private static int contentLength(final String head) {
+        |    for (final var line : head.split("\r\n")) {
+        |      final int colon = line.indexOf(':');
+        |      if (colon > 0 && line.substring(0, colon).equalsIgnoreCase("Content-Length")) {
+        |        return Integer.parseInt(line.substring(colon + 1).trim());
+        |      }
+        |    }
+        |    return 0;
+        |  }
+        |
+        |  @Override
+        |  public void close() {
+        |    try {
+        |      serverSocket.close();
+        |    } catch (final IOException e) {
+        |      // closing anyway
+        |    }
+        |    acceptor.interrupt();
+        |  }
+        |}
+        |""".trimMargin() }
+    generate("ManualScheduledExecutor") { """
+        |package software.sava.hardening.support;
+        |
+        |import java.time.Duration;
+        |import java.util.ArrayList;
+        |import java.util.Collection;
+        |import java.util.List;
+        |import java.util.PriorityQueue;
+        |import java.util.concurrent.Callable;
+        |import java.util.concurrent.Delayed;
+        |import java.util.concurrent.Executors;
+        |import java.util.concurrent.Future;
+        |import java.util.concurrent.FutureTask;
+        |import java.util.concurrent.RejectedExecutionException;
+        |import java.util.concurrent.ScheduledExecutorService;
+        |import java.util.concurrent.ScheduledFuture;
+        |import java.util.concurrent.TimeUnit;
+        |
+        |/// Generated by the sava-build hardening plugin; regenerated every build, do not edit.
+        |///
+        |/// A deterministic, single-threaded ScheduledExecutorService for clock-seam tests:
+        |/// tasks run on the caller's thread only when the test advances the fake clock past
+        |/// their trigger, so pacing, backoff and reconnect choreography become exact
+        |/// functions of the delays requested — no real waits, nothing for PIT to multiply.
+        |/// The clock starts at a non-zero origin so "timestamp mutated to 0" mutants stay
+        |/// observable. Not thread-safe by design: determinism is the point.
+        |public final class ManualScheduledExecutor implements ScheduledExecutorService {
+        |
+        |  private static final long ORIGIN_NANOS = 1_000_000_000L;
+        |
+        |  private final PriorityQueue<ManualTask<?>> tasks = new PriorityQueue<>();
+        |  private long nowNanos = ORIGIN_NANOS;
+        |  private long sequence;
+        |  private boolean shutdown;
+        |
+        |  public long nowNanos() {
+        |    return nowNanos;
+        |  }
+        |
+        |  /// Runs every task due within the duration in trigger order, advancing the clock
+        |  /// to each task's trigger as it runs (periodic tasks re-fire as many times as
+        |  /// fit); ends with the clock at now + duration.
+        |  ///
+        |  /// @return the number of task executions
+        |  public int advance(final Duration duration) {
+        |    final long target = nowNanos + duration.toNanos();
+        |    int executed = 0;
+        |    for (var task = tasks.peek(); task != null && task.triggerNanos <= target; task = tasks.peek()) {
+        |      tasks.poll();
+        |      if (task.isCancelled()) {
+        |        continue;
+        |      }
+        |      nowNanos = Math.max(nowNanos, task.triggerNanos);
+        |      task.execute();
+        |      ++executed;
+        |    }
+        |    nowNanos = target;
+        |    return executed;
+        |  }
+        |
+        |  /// Runs tasks due at the current instant without advancing the clock.
+        |  public int runDue() {
+        |    return advance(Duration.ZERO);
+        |  }
+        |
+        |  /// @return scheduled tasks not yet run or cancelled.
+        |  public int pending() {
+        |    return (int) tasks.stream().filter(task -> !task.isCancelled()).count();
+        |  }
+        |
+        |  private <V> ManualTask<V> enqueue(final Callable<V> callable, final long delayNanos, final long periodNanos) {
+        |    if (shutdown) {
+        |      throw new RejectedExecutionException("ManualScheduledExecutor is shut down");
+        |    }
+        |    final var task = new ManualTask<V>(callable, nowNanos + Math.max(0L, delayNanos), periodNanos);
+        |    tasks.add(task);
+        |    return task;
+        |  }
+        |
+        |  @Override
+        |  public ScheduledFuture<?> schedule(final Runnable command, final long delay, final TimeUnit unit) {
+        |    return enqueue(Executors.callable(command), unit.toNanos(delay), 0L);
+        |  }
+        |
+        |  @Override
+        |  public <V> ScheduledFuture<V> schedule(final Callable<V> callable, final long delay, final TimeUnit unit) {
+        |    return enqueue(callable, unit.toNanos(delay), 0L);
+        |  }
+        |
+        |  @Override
+        |  public ScheduledFuture<?> scheduleAtFixedRate(final Runnable command, final long initialDelay, final long period, final TimeUnit unit) {
+        |    if (period <= 0) {
+        |      throw new IllegalArgumentException("period must be positive");
+        |    }
+        |    return enqueue(Executors.callable(command), unit.toNanos(initialDelay), unit.toNanos(period));
+        |  }
+        |
+        |  @Override
+        |  public ScheduledFuture<?> scheduleWithFixedDelay(final Runnable command, final long initialDelay, final long delay, final TimeUnit unit) {
+        |    if (delay <= 0) {
+        |      throw new IllegalArgumentException("delay must be positive");
+        |    }
+        |    return enqueue(Executors.callable(command), unit.toNanos(initialDelay), -unit.toNanos(delay));
+        |  }
+        |
+        |  @Override
+        |  public void execute(final Runnable command) {
+        |    enqueue(Executors.callable(command), 0L, 0L);
+        |  }
+        |
+        |  @Override
+        |  public Future<?> submit(final Runnable task) {
+        |    return enqueue(Executors.callable(task), 0L, 0L);
+        |  }
+        |
+        |  @Override
+        |  public <T> Future<T> submit(final Runnable task, final T result) {
+        |    return enqueue(Executors.callable(task, result), 0L, 0L);
+        |  }
+        |
+        |  @Override
+        |  public <T> Future<T> submit(final Callable<T> task) {
+        |    return enqueue(task, 0L, 0L);
+        |  }
+        |
+        |  @Override
+        |  public void shutdown() {
+        |    shutdown = true;
+        |  }
+        |
+        |  @Override
+        |  public List<Runnable> shutdownNow() {
+        |    shutdown = true;
+        |    final var drained = new ArrayList<Runnable>(tasks);
+        |    tasks.clear();
+        |    return drained;
+        |  }
+        |
+        |  @Override
+        |  public boolean isShutdown() {
+        |    return shutdown;
+        |  }
+        |
+        |  @Override
+        |  public boolean isTerminated() {
+        |    return shutdown && tasks.isEmpty();
+        |  }
+        |
+        |  @Override
+        |  public boolean awaitTermination(final long timeout, final TimeUnit unit) {
+        |    return isTerminated();
+        |  }
+        |
+        |  // Blocking multi-submit has no deterministic single-threaded semantics: the tasks
+        |  // could only run when the clock advances, which the blocked caller cannot do.
+        |
+        |  @Override
+        |  public <T> List<Future<T>> invokeAll(final Collection<? extends Callable<T>> tasks) {
+        |    throw new UnsupportedOperationException("blocking multi-submit cannot be deterministic here");
+        |  }
+        |
+        |  @Override
+        |  public <T> List<Future<T>> invokeAll(final Collection<? extends Callable<T>> tasks, final long timeout, final TimeUnit unit) {
+        |    throw new UnsupportedOperationException("blocking multi-submit cannot be deterministic here");
+        |  }
+        |
+        |  @Override
+        |  public <T> T invokeAny(final Collection<? extends Callable<T>> tasks) {
+        |    throw new UnsupportedOperationException("blocking multi-submit cannot be deterministic here");
+        |  }
+        |
+        |  @Override
+        |  public <T> T invokeAny(final Collection<? extends Callable<T>> tasks, final long timeout, final TimeUnit unit) {
+        |    throw new UnsupportedOperationException("blocking multi-submit cannot be deterministic here");
+        |  }
+        |
+        |  private final class ManualTask<V> extends FutureTask<V> implements ScheduledFuture<V> {
+        |
+        |    private final long periodNanos; // 0 one-shot, >0 fixed-rate, <0 fixed-delay
+        |    private final long seq;
+        |    private long triggerNanos;
+        |
+        |    private ManualTask(final Callable<V> callable, final long triggerNanos, final long periodNanos) {
+        |      super(callable);
+        |      this.triggerNanos = triggerNanos;
+        |      this.periodNanos = periodNanos;
+        |      this.seq = sequence++;
+        |    }
+        |
+        |    private void execute() {
+        |      if (periodNanos == 0L) {
+        |        run();
+        |      } else if (runAndReset()) {
+        |        triggerNanos = periodNanos > 0L ? triggerNanos + periodNanos : nowNanos - periodNanos;
+        |        tasks.add(this);
+        |      }
+        |    }
+        |
+        |    @Override
+        |    public long getDelay(final TimeUnit unit) {
+        |      return unit.convert(triggerNanos - nowNanos, TimeUnit.NANOSECONDS);
+        |    }
+        |
+        |    @Override
+        |    public int compareTo(final Delayed other) {
+        |      if (other instanceof ManualScheduledExecutor.ManualTask<?> task) {
+        |        final int byTrigger = Long.compare(triggerNanos, task.triggerNanos);
+        |        return byTrigger != 0 ? byTrigger : Long.compare(seq, task.seq);
+        |      }
+        |      return Long.compare(getDelay(TimeUnit.NANOSECONDS), other.getDelay(TimeUnit.NANOSECONDS));
+        |    }
+        |  }
+        |}
+        |""".trimMargin() }
+  }
+}
+sourceSets.test {
+  java.srcDir(generateHardeningTestSupport)
 }
