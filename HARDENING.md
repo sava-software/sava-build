@@ -56,6 +56,12 @@ run cheaper. The cost model is directly optimisable:
   46.7s → 20.9s, and the new seconds-long suite is all most edits owe.
 - **Narrow `targetTests`** to the classes that actually cover the target —
   one suite went 10.6s → 6.1s.
+- **Split by layer, not just by cost**: code the harness's own machinery
+  executes — a logging shim the server's threads log through, anything a
+  socket test stands on — gets its own suite covered only by in-process
+  tests. A mutant in that layer can wedge the machinery *underneath* the
+  covering test, outside every per-test timeout's reach; one such run hung
+  for 40+ minutes *(casebook: the logger shim that wedged the server)*.
 - **Threads are not the lever they look like** — 8 threads bought ~10%, 10
   were slower than 8. Measure before spending here.
 
@@ -174,6 +180,14 @@ invoked it*, and the failure looks exactly like a real regression.
 - Prefer removing the cause: a fake collaborator that turns a would-be
   infinite loop into a deterministic assertion failure — a call budget, a
   bounded queue — beats leaning on the timeout.
+- **Some flip families never settle.** Mutants equivalent on the wire but
+  timing-dependent in detection (socket suites are the breeding ground) reach
+  a steady state where the baseline is deliberately the union of observed
+  survivals and quiet runs emit *permanent* stale-entry warnings. That is
+  correct, not cleanup debt: refreshing from any single run bakes in that
+  run's coin-flips and starts ping-pong. Union each newly observed flip by
+  hand, in canonical form, and stop *(casebook: the handled-flag family that
+  never settles)*.
 
 ### Two baseline-format traps
 
@@ -198,6 +212,12 @@ family rather than listing rows:
   result; a guard subsumed by a later branch is the common case
   (`if (a.feePayer()) return a;` above a `signer()` branch returning the same
   object).
+- **Error-funnel redundancy** — removal reaches code that *fails* into the
+  identical observable: a removed null guard NPEs into the catch that maps to
+  the same error code; a removed `setStatus(500)` still answers 500 through
+  `callback.failed`. Accept only after observing the funnel produce the
+  identical response, and name the funnel in the note — "probably the same
+  error" is the claim that rots *(casebook: the error funnel)*.
 - **Equal but not identical** — a fresh instance instead of the argument;
   killable only by asserting reference identity the API does not promise.
 - **Identity short-circuits** — `this == o ||` atop `equals`; removal falls
@@ -324,6 +344,35 @@ reads as measured, not forgotten. Property-asserting tests already kill
 96–98% of newly expressible mutants; implementation-restating ones do not
 *(casebook: EXPERIMENTAL_BIG_INTEGER trials)*.
 
+The same blindness has a structural sibling: **fluent APIs**. A call whose
+return type is its receiver type is an expression, so `VoidMethodCallMutator`
+never fires on it — a builder-style header write, a `StringBuilder.append`
+chain, `String` slicing. `EXPERIMENTAL_NAKED_RECEIVER` (replace a call with
+its receiver) makes the dropped call expressible; the same trial-and-record
+protocol applies, and in three suites it fired 22 times at zero baseline
+cost, twice exposing genuinely untested response headers *(casebook:
+EXPERIMENTAL_NAKED_RECEIVER trials)*. When auditing a suite's blind spots,
+ask what the mutated code's statements *return*, not only what they compute.
+
+## The class path is PIT's world
+
+PIT minions run tests on the class path. A repo whose tasks otherwise run on
+the module path therefore hardens code in a world where `module-info`
+services, exports and readability do not exist, and the divergence cuts both
+ways: a module-descriptor `provides` clause is invisible to a minion's
+`ServiceLoader` (tests that discover implementations that way fail under PIT
+with a misleading "did not pass without mutation"), while a test-resources
+`META-INF/services` file is honored by the minion but ignored by the
+module-path `test` task — a harness whose result depends on which task ran
+it, which is never committed *(casebook: PIT's world is the class path)*.
+
+For real (main-source) services the resolution is the standard dual
+declaration — `module-info` *and* `META-INF/services` — which is also just
+correct packaging for a library classpath consumers can load. For test-only
+providers there is no clean dual form; accept the uncovered path as
+unreachable in-harness and name the escape (a blackbox test module with its
+own descriptor).
+
 ## Test conventions for new or changed API
 
 - **Value, null/empty, and wrong-type cases** for every reader; type-guarded
@@ -349,6 +398,13 @@ reads as measured, not forgotten. Property-asserting tests already kill
 - **Records with array components compare by identity.** `assertEquals` on
   such a record is an identity check dressed as a value assertion. Compare
   scalar fields and `assertArrayEquals` the arrays.
+- **"Wire-invisible" configuration is usually observable through an injected
+  recording collaborator.** An executor preference, a thread-pool binding — a
+  recording wrapper that delegates and counts turns "no test can see this"
+  into an assertion; three such acceptances became kills that way. For
+  trivial log emissions, capturing the log stream (a JUL handler) is the
+  cheap alternative to the extract-construction refactor and pins a real
+  contract: failures are never silent.
 - **Reach for package-private, not reflection, when a test needs an
   internal.** Same-package tests see it, a rename fails at compile time
   instead of runtime, and reflective indirection is exactly what makes a
@@ -368,6 +424,16 @@ fixed without both is a crash that can return.
 **Replay the corpus inside `check`.** A committed corpus that only runs when
 someone remembers to fuzz is a directory of files, not a regression suite;
 feeding every seed through the harness costs milliseconds per build.
+
+**When a reference implementation would re-derive the same bugs, generate
+the oracle instead.** For a parser whose natural differential partner is
+just the same scanner written twice, build the *input* from fuzz-chosen
+tokens and construct the expected output alongside from each token's
+documented meaning — ground truth by construction. The design obligation is
+token independence: no token may change the meaning of its neighbor (end
+every token on a character that cannot open an escape or pair with a
+following delimiter). One such harness ran 154M executions against a
+placeholder formatter with the substitution semantics as the oracle.
 
 **When one thing has two representations, fuzz the differential** — two
 parsers for one config, an encode/decode round trip, a fast path beside a
@@ -398,6 +464,13 @@ Two mutation-specific details:
   monotonic nanos by default (system implementation overriding with the real
   epoch clock), a test clock implementing `nanoTime()` alone advances both
   coherently, and no mutant hides in a mixed-source comparison.
+
+**Socket harnesses add their own determinism rules.** Test clients name
+`127.0.0.1`, never `localhost`: a client resolving `localhost` may try `::1`
+first and reach a *different JVM's* wildcard bind on the same port number —
+no bind conflict, just wrong answers that only reproduce under parallel
+module runs *(casebook: cross-talk on ::1)*. A failure that appears only in
+parallel runs is an isolation bug to chase before it is a regression.
 
 **A flaky harness is worse than recorded debt.** A sleep-ordered or
 spin-waiting test that kills a mutant *most of the time* puts the ratchet
@@ -563,7 +636,15 @@ paste.
 > - **Kill rates are bounded by the mutator set.** `BigInteger`/`BigDecimal`
 >   arithmetic is method calls, invisible to the default arithmetic mutators —
 >   fixed-point and fee math needs `EXPERIMENTAL_BIG_INTEGER` (pitest ≥
->   1.25.8). Trial per suite, enable only what fires, and record the numbers.
+>   1.25.8) — and fluent calls returning their receiver are expressions,
+>   invisible to `VoidMethodCallMutator` — builder-style writes need
+>   `EXPERIMENTAL_NAKED_RECEIVER`. Trial per suite, enable only what fires,
+>   and record the numbers.
+> - **PIT minions run on the class path**, even in module-path repos:
+>   `module-info` services are invisible to them, and a test-resources
+>   `META-INF/services` is invisible to the module-path `test` task. Real
+>   services are declared in both places; a harness whose result depends on
+>   which task ran it is never committed.
 > - `SURVIVED` and `NO_COVERAGE` are different problems: the first is a
 >   judgment call about equivalence, the second is an untested line and is
 >   mechanical. Never accept a `NO_COVERAGE` mutant as "equivalent" — you have

@@ -230,3 +230,116 @@ dump — killed from outside, not crashed. An automatic retry on `MINION_DIED`
 was considered and declined at ~1 occurrence per 100 suite runs: it would
 mostly mask environment sickness. Per-mutant `RUN_ERROR` under multi-suite
 load is the same shape smaller, and the verify summary now names it.
+
+## PIT's world is the class path
+
+A module-path repo (gradlex whitebox test suites) hit the same trap from both
+directions in one adoption. First: a mutant on a `ServiceLoader.load(..)`
+success path was uncoverable — the module ships no provider, the patched test
+module cannot add a `provides` clause, and a test-resources
+`META-INF/services` file would register the provider under PIT but not under
+the module-path `test` task, because named modules ignore it. That is a
+harness that passes or fails depending on which task ran it; the mutant was
+accepted as unreachable in-harness instead. Second, the inverse: a demo
+module's round-trip tests discovered its backends via module-descriptor
+`provides` clauses alone — green under `test`, and dead under PIT with the
+misleading `3 tests did not pass without mutation` (each "failing" in 34ms,
+before any mutant existed), because on the minion's class path
+`ServiceLoader` found nothing.
+
+The mechanism behind both: PIT minions run tests on the **class path**, so a
+module-path repo's suites execute in a world where `module-info` services,
+exports and readability do not exist. The fix for the second case was the
+standard dual declaration — services named in `module-info` *and*
+`META-INF/services` — which is also just correct packaging for a library
+that classpath consumers can load. Rules: *declare services in both places*;
+*never commit a harness whose result depends on which task ran it*.
+
+## The logger shim that wedged the server
+
+A suite mutating a whole adapter module included its logging shim — the
+adapter framework's `LoggerFactory` binding, through which the framework's
+own server threads log. The covering tests were socket round trips, so each
+shim mutant ran inside the server serving them: one broke the server itself,
+and the run sat wedged for 40+ minutes having written 21 of ~63 report rows.
+PIT's per-mutant timeout never fired — it bounds test execution, and the hang
+was in server machinery underneath the test.
+
+The split that fixed it is not the cost-model split: the shim moved to its
+own suite whose `targetTests` are in-process logger tests only (13/13, 100%,
+ten seconds), and the dispatch suite excludes the package, so socket tests
+still *execute* the real shim but never run against a mutated one. Rule:
+*code the harness's own machinery executes gets its own suite, covered only
+by tests that do not stand on that machinery*.
+
+## EXPERIMENTAL_NAKED_RECEIVER trials
+
+The BigInteger blind spot has a sibling: fluent APIs. Jetty's
+`HttpFields.Mutable.put` returns the receiver, so every response-header write
+in that adapter was an expression, not a statement — `VoidMethodCallMutator`
+never fired on any of them, and a duplicate header write had already been
+found by reading rather than by a survivor. `EXPERIMENTAL_NAKED_RECEIVER`
+(replace a receiver-returning call with its receiver) makes exactly that
+shape expressible.
+
+Trialed per suite, per the Big-operator protocol: the jetty dispatch suite
+grew by 10 mutants — 8 died against existing header assertions and 2 exposed
+a real gap, the untested `Content-Type` on 404/405 error bodies; a
+query-parsing suite grew by 5 (dropped `String` slicing, list building) and a
+log-formatting suite by 7 (dropped `StringBuilder.append` chains), all killed
+outright. Enabled on all three at zero baseline cost; the sibling adapters
+were not trialed — their header APIs return `void`, so the default set
+already sees them. Rule: *any API style that turns statements into
+expressions moves defects out of the default mutators' sight; fluent builders
+are the common case*.
+
+## Cross-talk on ::1
+
+Three adapter modules' socket tests ran in parallel Gradle projects, each
+binding servers to `"localhost"` — which resolves to `127.0.0.1` for a bind —
+while their `HttpClient`s connected to `http://localhost:<port>`, which may
+try `::1` first. A wildcard-bound server in a *different module's* JVM can
+hold the same port number on `::1` without any bind conflict, so the client
+reached the wrong module's server: four tests failed with wrong status codes
+and bodies — indistinguishable from real regressions — and every retry of a
+single module passed, because the collision needed the parallel run. Clients
+were switched to `http://127.0.0.1:<port>`; three consecutive parallel runs
+came back clean. Rules: *socket-test clients name `127.0.0.1`, never
+`localhost`*; *a failure that only reproduces under parallel module runs is
+an isolation bug before it is a regression*.
+
+## The handled-flag family that never settles
+
+A Jetty controller returns booleans Jetty ignores once the response is
+committed; their mutants are equivalent on the wire but their *detection* is
+timing-dependent, flapping between `SURVIVED` and detected across runs — one
+row was detected during the seeding run and survived under the quality gate
+minutes later. Refreshing the baseline from any single run bakes in that
+run's coin-flips: rows detected in the refresh run drop out, then fail the
+next run they survive in — refresh ping-pong. The steady state is the
+baseline holding the **union of observed survivals**, hand-appending each
+newly observed flip in canonical form (the mutator name PIT's baseline
+writer uses, `returns.` prefix stripped), and quiet runs reporting recurring
+stale-entry warnings that are *expected and permanent*, not line-churn to
+clean up. Rule: *for a flip family, stale warnings are the steady state;
+union observed flips by hand and stop refreshing*.
+
+## The error funnel
+
+The dominant equivalence family in one adoption, distinct from
+result-identical fast paths: mutants whose removal reaches code that *fails*
+into the identical observable. A payment verifier's null guard, removed,
+reached `Base64.decode(null)` — NPE, caught by the surrounding handler,
+mapped to the same error code the guard returns. A controller's
+`setStatus(500)` in a catch block, removed, still answered 500 because
+`callback.failed(..)` on the next line produces one. A blank
+`Access-Control-Request-Method` treated as a pre-flight looked up method
+`" "`, which no handler map contains — the same 405 + Allow the
+non-pre-flight path returns.
+
+The discipline that keeps these honest: the claim is "the funnel produces
+the *identical* response", and that is checkable — same status, same error
+code, same payer/payload fields — not arguable. Two of these were verified
+by tests that pin the funnel output; the acceptance notes name the funnel.
+Rule: *accept a guard's removal only after observing the funnel produce the
+identical response, and write down which funnel*.
