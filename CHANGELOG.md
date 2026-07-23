@@ -1,5 +1,27 @@
 # Changelog
 
+## [21.5.9](https://github.com/sava-software/sava-build/compare/21.5.8...21.5.9) (2026-07-23)
+
+
+### Features
+
+* **hardening:** Add repetive tasks needed for adopting the hardening process. ([767b5d5](https://github.com/sava-software/sava-build/commit/767b5d5e15f511e1fc2b6f1e1d3545eb10f0da0e))
+* **hardening:** improve tracking status flips. ([2607369](https://github.com/sava-software/sava-build/commit/2607369586e49248b9a2bcf5e012bc1fa06a47b6))
+* **hardening:** Knobs to tune timeouts. Improve context. ([63d0f95](https://github.com/sava-software/sava-build/commit/63d0f95659b4162944bd2b0a9bc7278a3d024e3d))
+
+
+### Bug Fixes
+
+* **hardening:** close minion filters even when a pitest run fails ([d8c269d](https://github.com/sava-software/sava-build/commit/d8c269dd1586a37e740d57a2a890aff0a55f6a5c))
+* **hardening:** collapse repeated minion log lines on stderr ([ad5d8af](https://github.com/sava-software/sava-build/commit/ad5d8af64b398827fa1a499fd2dcf75652b2c30d))
+
+
+### Documentation
+
+* **hardening:** add six casebook entries from the http-servers adoption ([a6de477](https://github.com/sava-software/sava-build/commit/a6de47793624edf1730da649f4c0063a225c60fd))
+* **hardening:** Add strategy for when a full sweep is not feasable. ([11180bd](https://github.com/sava-software/sava-build/commit/11180bd690a036539a9b53a697d5ad048d67dbe3))
+* **hardening:** scope the "never settles" doctrine to live causes ([d4833a9](https://github.com/sava-software/sava-build/commit/d4833a992cb3bdff1ab36854058f8bbcfc8d58bd))
+
 ## [21.5.8](https://github.com/sava-software/sava-build/compare/21.5.7...21.5.8) (2026-07-21)
 
 
