@@ -1,6 +1,9 @@
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
+import java.io.ByteArrayOutputStream
+import java.io.OutputStream
+import java.util.concurrent.atomic.AtomicReference
 
 plugins {
   id("java")
@@ -26,6 +29,7 @@ hardening.jazzerVersion.convention(HardeningToolDefaults.JAZZER)
 hardening.arcmutateBaseVersion.convention(HardeningToolDefaults.ARCMUTATE_BASE)
 hardening.generateTestSupport.convention(false)
 hardening.testSupportExcludes.convention(emptyList())
+hardening.recompileExcludes.convention(emptyList())
 
 // Arcmutate incremental analysis ("history"): reuses per-mutant results across runs
 // when neither the mutated class nor its covering tests changed. Open-source PIT
@@ -67,6 +71,9 @@ fun registerRecompile(taskName: String, tool: String, destination: Provider<Dire
     javaCompiler.convention(javaToolchains.compilerFor(java.toolchain))
     source(sourceSets.main.get().java, sourceSets.test.get().java)
     exclude("**/module-info.java")
+    // lazy: the consuming build script sets the extension after the plugin applies
+    val recompileExcludes = hardening.recompileExcludes
+    exclude { element -> !element.isDirectory && element.file.name in recompileExcludes.get() }
     modularity.inferModulePath = false
     // dependency jars only — including other projects' — while this project's own
     // outputs are recompiled from source instead
@@ -326,6 +333,12 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
                 "status is not an observation of this mode. Re-run the suites with -PnoMutationHistory."
         )
       }
+      if (reportDir.resolve(".scoped").isFile) {
+        throw GradleException(
+            "pitestModeSnapshot: the '$suiteName' report was produced with -PmutateOnly — a partial " +
+                "population is not an observation of this mode. Re-run the suites without -PmutateOnly."
+        )
+      }
       csv.copyTo(dest.resolve("$suiteName.csv"))
       reportDir.deleteRecursively()
     }
@@ -476,6 +489,9 @@ hardening.mutation.all {
   val suite = this
   suite.mutators.convention("STRONGER")
   suite.threads.convention(4)
+  // PIT's own defaults; see MutationSuite.timeoutFactor for tuning guidance
+  suite.timeoutFactor.convention(1.25)
+  suite.timeoutConst.convention(4000L)
   suite.excludedClasses.convention(emptyList())
 
   // Mutation ratchet: after each 'pitest<Name>' run, diff the unkilled mutants
@@ -494,6 +510,8 @@ hardening.mutation.all {
     val update = providers.gradleProperty("updateMutationBaseline").isPresent
     val union = providers.gradleProperty("unionMutationBaseline").isPresent
     val listUnkilled = providers.gradleProperty("listUnkilled").isPresent
+    val noDriftTolerance = providers.gradleProperty("noDriftTolerance").isPresent
+    val statusStashFile = layout.projectDirectory.file(".pitest-history/$suiteName.statuses").asFile
     // captured locally so the doLast lambda does not hold the script instance
     val historyAssisted = mutationHistory
     // Resolved at configuration time so the scaffolding check below can ask whether a
@@ -601,6 +619,11 @@ hardening.mutation.all {
       fun describe(row: String) =
           (descriptions[row] ?: descriptions[row.substringBeforeLast(',')])?.let { " — $it" } ?: ""
 
+      // Kept as a LIST, not a set: a compound condition yields several mutants with
+      // identical (class, method, line, mutator) coordinates — one per operand or
+      // branch direction. Collapsing them to a set once let a killed sibling regress
+      // to SURVIVED invisibly, absorbed by its already-accepted twin's row. All
+      // comparisons below are multiset comparisons for the same reason.
       val current = rows.mapNotNull { parts ->
         if (parts[5] !in gated) {
           null
@@ -609,19 +632,79 @@ hardening.mutation.all {
           // refresh the baseline when they do
           "${parts[1]},${parts[3]},${parts[4]},${parts[2].substringAfterLast('.')},${parts[5]}"
         }
-      }.toSortedSet()
+      }.sorted()
+      fun multisetDiff(a: List<String>, b: List<String>): List<String> {
+        val remaining = b.groupingBy { it }.eachCount().toMutableMap()
+        return a.filter { row ->
+          val n = remaining[row] ?: 0
+          if (n > 0) {
+            remaining[row] = n - 1
+            false
+          } else {
+            true
+          }
+        }
+      }
+
+      // Same-line siblings of the same mutator FAMILY that ARE detected
+      // disambiguate a survivor's direction: the survivor is the opposite branch or
+      // operand of whatever the killing test pinned (see HARDENING.md on triaging
+      // RemoveConditional pairs). Family = the name before the _EQUAL_IF/_ORDER_ELSE
+      // style suffix, so the IF/ELSE cross-pair is matched too.
+      fun mutatorFamily(mutator: String) = mutator.substringBefore('_')
+      val detectedSiblings: Map<String, List<String>> = rows
+          .filter { it[5] == "KILLED" || it[5] == "TIMED_OUT" }
+          .groupBy(
+              { "${it[1]},${it[3]},${it[4]},${mutatorFamily(it[2].substringAfterLast('.'))}" },
+              {
+                val killer = it.drop(6).joinToString(",")
+                val test = Regex("method:([^(\\]]+)").find(killer)?.groupValues?.get(1)
+                val mutator = it[2].substringAfterLast('.')
+                if (it[5] == "KILLED" && test != null) "$mutator KILLED by $test" else "$mutator ${it[5]}"
+              }
+          )
+      fun siblingHint(row: String): String {
+        if (!row.endsWith(",SURVIVED")) return ""
+        val parts = row.split(',')
+        val siblings = detectedSiblings["${parts[0]},${parts[1]},${parts[2]},${mutatorFamily(parts[3])}"]
+            ?: return ""
+        return " [detected sibling at this line: ${siblings.distinct().joinToString("; ")}]"
+      }
       if (listUnkilled && current.isNotEmpty()) {
         logger.lifecycle(
             "pitest '$suiteName' unkilled:\n" +
                 current.joinToString("\n") { row -> "  $row${describe(row)}" }
         )
       }
+
+      // A scoped run mutated a hand-picked subset: its report is an iteration aid,
+      // not evidence about the suite. List what is still unkilled inside the scope
+      // and stop — no ratchet, no status stash, and certainly no baseline writes.
+      val scopedMarkerFile = csv.parentFile.resolve(".scoped")
+      if (scopedMarkerFile.isFile) {
+        val scope = scopedMarkerFile.readText().trim()
+        if (update || union) {
+          throw GradleException(
+              "pitest '$suiteName': the report was produced with -PmutateOnly=$scope — a partial " +
+                  "population cannot refresh the baseline. Re-run $pitestTaskName without -PmutateOnly first."
+          )
+        }
+        logger.lifecycle(
+            "pitest '$suiteName': SCOPED run (-PmutateOnly=$scope) — ratchet skipped; " +
+                (if (current.isEmpty()) "nothing unkilled in scope"
+                else "${current.size} unkilled in scope:\n" +
+                    current.joinToString("\n") { row -> "  $row${describe(row)}${siblingHint(row)}" })
+        )
+        return@doLast
+      }
       // A baseline row may carry a trailing '# note' ('# untriaged' is the conventional
       // label for seeded debt). Notes are stripped for comparison, preserved across both
       // refresh flags, and the untriaged count is printed — so triage state lives on the
       // row it describes and stays a number the build reports, not prose that drifts.
       val annotations = mutableMapOf<String, String>()
-      val accepted: Set<String> = if (baselineFile.exists()) {
+      // a list, preserving duplicate rows: identical coordinates hold one row per
+      // sibling mutant (see the multiset note above)
+      val accepted: List<String> = if (baselineFile.exists()) {
         baselineFile.readLines()
             .filter { it.isNotBlank() && !it.startsWith("#") }
             .map { line ->
@@ -633,17 +716,62 @@ hardening.mutation.all {
                 row
               }
             }
-            .toSet()
       } else {
-        emptySet()
+        emptyList()
       }
       fun baselineLine(row: String) = annotations[row]?.let { "$row $it" } ?: row
       val untriaged = accepted.count { annotations[it]?.contains("untriaged", ignoreCase = true) == true }
       if (untriaged > 0) {
         logger.lifecycle("pitest baseline '$suiteName': ${accepted.size} rows, $untriaged marked '# untriaged'")
       }
+
+      // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
+      // benign flavour (KILLED<->TIMED_OUT under load) and the dangerous one
+      // (SURVIVED->TIMED_OUT: a mutant nobody killed now reads as detected purely
+      // because its tests ran slowly) look identical in a single report. Comparing
+      // against the last run's statuses names each newcomer's origin.
+      val statusStash = statusStashFile
+      run {
+        fun coordinate(parts: List<String>) =
+            "${parts[1]},${parts[3]},${parts[4]},${parts[2].substringAfterLast('.')}"
+        val previous = if (statusStash.isFile) {
+          statusStash.readLines().mapNotNull { line ->
+            val sep = line.lastIndexOf(',')
+            if (sep < 0) null else line.substring(0, sep) to line.substring(sep + 1)
+          }.groupBy({ it.second }, { it.first })
+        } else {
+          emptyMap()
+        }
+        val nowTimedOut = rows.filter { it[5] == "TIMED_OUT" }.map(::coordinate).toSet()
+        if (previous.isNotEmpty()) {
+          val prevTimedOut = previous["TIMED_OUT"].orEmpty().toSet()
+          val prevSurvived = previous["SURVIVED"].orEmpty().toSet()
+          val fromSurvived = nowTimedOut.intersect(prevSurvived)
+          val newlyTimedOut = nowTimedOut - prevTimedOut - prevSurvived
+          val resolved = prevTimedOut - nowTimedOut
+          if (fromSurvived.isNotEmpty()) {
+            logger.warn(
+                "pitest '$suiteName': ${fromSurvived.size} previously SURVIVED mutant(s) now TIMED_OUT — " +
+                    "likely load-slowed tests reading as detection, not new kills; do not refresh them out:\n" +
+                    fromSurvived.sorted().joinToString("\n") { "  $it" }
+            )
+          }
+          if (newlyTimedOut.isNotEmpty() || resolved.isNotEmpty()) {
+            logger.lifecycle(
+                "pitest '$suiteName': timed-out drift vs previous run — " +
+                    "${newlyTimedOut.size} newly timed out (previously detected), ${resolved.size} no longer; load-dependent"
+            )
+          }
+        }
+        statusStash.parentFile.mkdirs()
+        statusStash.writeText(
+            rows.filter { it[5] == "TIMED_OUT" || it[5] == "SURVIVED" }
+                .joinToString("\n", postfix = "\n") { "${coordinate(it)},${it[5]}" }
+        )
+      }
+
       if (update) {
-        val dropped = accepted - current
+        val dropped = multisetDiff(accepted, current)
         baselineFile.parentFile.mkdirs()
         baselineFile.writeText(current.joinToString("\n", postfix = "\n") { baselineLine(it) })
         logger.lifecycle("pitest baseline '$suiteName': wrote ${current.size} accepted entries")
@@ -666,11 +794,16 @@ hardening.mutation.all {
         // baseline rows that happened to be detected this run — a full
         // '-PupdateMutationBaseline' there would bake in this run's coin-flips and start
         // refresh ping-pong.
-        val added = current - accepted
+        val added = multisetDiff(current, accepted)
         if (added.isEmpty()) {
           logger.lifecycle("pitest baseline '$suiteName': union added nothing new")
         } else {
-          val merged = (accepted + current).toSortedSet()
+          // multiset union: per coordinate, the larger of the two occurrence counts
+          val acceptedCounts = accepted.groupingBy { it }.eachCount()
+          val currentCounts = current.groupingBy { it }.eachCount()
+          val merged = (acceptedCounts.keys + currentCounts.keys).sorted().flatMap { row ->
+            List(maxOf(acceptedCounts[row] ?: 0, currentCounts[row] ?: 0)) { row }
+          }
           baselineFile.parentFile.mkdirs()
           baselineFile.writeText(merged.joinToString("\n", postfix = "\n") { baselineLine(it) })
           logger.lifecycle(
@@ -680,8 +813,8 @@ hardening.mutation.all {
         }
         return@doLast
       }
-      val fresh = current - accepted
-      val stale = accepted - current
+      val fresh = multisetDiff(current, accepted)
+      val stale = multisetDiff(accepted, current)
       // Two situations produce paired stale + "new" rows and look alike in a raw diff,
       // but call for opposite responses, so they are classified rather than lumped:
       //
@@ -697,16 +830,18 @@ hardening.mutation.all {
       fun rowLine(row: String) = row.split(',')[2]
       fun rowStatus(row: String) = row.substringAfterLast(',')
 
-      val unpairedStale = stale.toMutableSet()
-      val shiftedFrom = mutableMapOf<String, String>()
-      val newlyCoveredFrom = mutableMapOf<String, String>()
+      val unpairedStale = stale.toMutableList()
+      // pair counts are tracked as lists, not maps: duplicate sibling rows may each
+      // pair with their own stale counterpart, and a map would collapse them
+      val shiftPairs = mutableListOf<Pair<String, String>>()
+      val newlyCoveredPairs = mutableListOf<Pair<String, String>>()
       for (row in fresh.sorted()) {
         val sameLine = unpairedStale.firstOrNull {
           rowKey(it) == rowKey(row) && rowLine(it) == rowLine(row) && rowStatus(it) != rowStatus(row)
         }
         if (sameLine != null) {
           unpairedStale.remove(sameLine)
-          newlyCoveredFrom[row] = sameLine
+          newlyCoveredPairs.add(row to sameLine)
           continue
         }
         val moved = unpairedStale.firstOrNull {
@@ -714,10 +849,31 @@ hardening.mutation.all {
         }
         if (moved != null) {
           unpairedStale.remove(moved)
-          shiftedFrom[row] = moved
+          shiftPairs.add(row to moved)
         }
       }
-      val unexplained = fresh.size - shiftedFrom.size - newlyCoveredFrom.size
+      val shiftedFrom = shiftPairs.toMap(mutableMapOf())
+      val newlyCoveredFrom = newlyCoveredPairs.toMap(mutableMapOf())
+      val unexplained = fresh.size - shiftPairs.size - newlyCoveredPairs.size
+
+      // Line numbers are metadata, not identity. When every new row is a pure line
+      // shift AND the per-(class, method, mutator, status) population is unchanged,
+      // nothing moved but text: pass with a notice instead of demanding the
+      // refresh dance after every edit above a mutated method. '-PnoDriftTolerance'
+      // restores the strict behaviour for certifying runs.
+      fun lineless(rowList: List<String>) = rowList
+          .map { row -> row.split(',').let { "${it[0]},${it[1]},${it[3]},${it[4]}" } }
+          .groupingBy { it }.eachCount()
+      val pureShift = fresh.isNotEmpty() &&
+          unexplained == 0 && newlyCoveredPairs.isEmpty() && shiftPairs.size == fresh.size
+      val populationUnchanged = pureShift && lineless(current) == lineless(accepted)
+      if (populationUnchanged && !noDriftTolerance) {
+        logger.lifecycle(
+            "pitest baseline '$suiteName': ${shiftPairs.size} row(s) moved line only — same mutants, same " +
+                "statuses, same counts per method. Passing; refresh with -PupdateMutationBaseline when convenient."
+        )
+        return@doLast
+      }
       fun shiftHint(row: String): String = when {
         shiftedFrom.containsKey(row) -> " (shifted from line ${rowLine(shiftedFrom.getValue(row))})"
         newlyCoveredFrom.containsKey(row) ->
@@ -740,18 +896,23 @@ hardening.mutation.all {
           freshByStatus["SURVIVED"]?.let {
             append("\n  ${it.size} SURVIVED — a test ran these and could not tell the difference; ")
             append("strengthen the assertion or triage for equivalence:\n")
-            append(it.joinToString("\n") { row -> "    $row${shiftHint(row)}${describe(row)}" })
+            append(it.joinToString("\n") { row -> "    $row${shiftHint(row)}${describe(row)}${siblingHint(row)}" })
           }
           // The churn tally answers the question the per-row hints cannot: is the whole
           // set accounted for? Refreshing is only safe when nothing is unexplained and
           // nothing was newly covered.
-          append("\n  churn: ${shiftedFrom.size} shifted, ${newlyCoveredFrom.size} newly covered, ")
+          append("\n  churn: ${shiftPairs.size} shifted, ${newlyCoveredPairs.size} newly covered, ")
           append("$unexplained unexplained (of ${fresh.size} new; ${stale.size} stale)")
-          if (unexplained == 0 && newlyCoveredFrom.isEmpty() && shiftedFrom.isNotEmpty()) {
-            append("\n  every new row is a shifted counterpart and nothing is unexplained — line churn; ")
-            append("confirm the pairings above, then refresh with -PupdateMutationBaseline")
-          } else if (newlyCoveredFrom.isNotEmpty()) {
-            append("\n  ${newlyCoveredFrom.size} row(s) are newly covered rather than moved: a test now reaches ")
+          if (populationUnchanged) {
+            append("\n  every new row is a shifted counterpart and nothing is unexplained — pure line churn, ")
+            append("failing only because -PnoDriftTolerance is active; confirm the pairings above, then ")
+            append("refresh with -PupdateMutationBaseline")
+          } else if (unexplained == 0 && newlyCoveredPairs.isEmpty() && shiftPairs.isNotEmpty()) {
+            append("\n  every new row is a shifted counterpart and nothing is unexplained, but the per-method ")
+            append("population changed — kills mixed with drift; confirm the pairings above, then refresh ")
+            append("with -PupdateMutationBaseline")
+          } else if (newlyCoveredPairs.isNotEmpty()) {
+            append("\n  ${newlyCoveredPairs.size} row(s) are newly covered rather than moved: a test now reaches ")
             append("them, so they are triage (kill or accept with a reason), not a refresh")
           }
         }
@@ -765,6 +926,68 @@ hardening.mutation.all {
       }
     }
   }
+  tasks.register("${pitestTaskName}Debt") {
+    group = "verification"
+    description = "Prints the '$suiteName' unkilled-mutant debt grouped by class, largest first, with the baseline delta."
+    val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
+    val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
+    doLast {
+      fun tally(pairs: List<Pair<String, String>>): Map<String, Pair<Int, Int>> = pairs
+          .groupBy({ it.first }, { it.second })
+          .mapValues { (_, statuses) ->
+            statuses.count { it == "SURVIVED" } to statuses.count { it == "NO_COVERAGE" }
+          }
+
+      val baselinePairs = if (baselineFile.exists()) {
+        baselineFile.readLines()
+            .filter { it.isNotBlank() && !it.startsWith("#") }
+            .map { line -> line.substringBefore('#').trim().split(',') }
+            .filter { it.size >= 5 }
+            .map { it[0] to it[4] }
+      } else {
+        emptyList()
+      }
+      val csv = csvProvider.get().asFile
+      val reportPairs = if (csv.isFile && !csv.parentFile.resolve(".scoped").isFile) {
+        csv.readLines()
+            .map { it.split(',') }
+            .filter { it.size >= 6 && (it[5] == "SURVIVED" || it[5] == "NO_COVERAGE") }
+            .map { it[1] to it[5] }
+      } else {
+        null
+      }
+      val source = if (reportPairs != null) "current report" else "baseline (no full report present)"
+      val debt = tally(reportPairs ?: baselinePairs)
+      val baselineDebt = tally(baselinePairs)
+      if (debt.isEmpty()) {
+        logger.lifecycle("pitest '$suiteName' debt: none — nothing unkilled in the $source")
+        return@doLast
+      }
+      val lines = debt.entries
+          .sortedByDescending { it.value.first + it.value.second }
+          .map { (fqcn, counts) ->
+            val (survived, noCoverage) = counts
+            val base = baselineDebt[fqcn]
+            val delta = if (reportPairs == null || base == null && survived + noCoverage == 0) ""
+            else {
+              val d = (survived + noCoverage) - ((base?.first ?: 0) + (base?.second ?: 0))
+              when {
+                d < 0 -> "  ($d vs baseline)"
+                d > 0 -> "  (+$d vs baseline)"
+                else -> ""
+              }
+            }
+            "  %4d survived  %4d no_coverage  %s%s".format(survived, noCoverage, fqcn, delta)
+          }
+      val totalSurvived = debt.values.sumOf { it.first }
+      val totalNoCoverage = debt.values.sumOf { it.second }
+      logger.lifecycle(
+          "pitest '$suiteName' debt ($source) — $totalSurvived survived, $totalNoCoverage no_coverage " +
+              "across ${debt.size} class(es):\n" + lines.joinToString("\n")
+      )
+    }
+  }
+
   qualityGate.configure { dependsOn(pitestTaskName) }
   convergeSuiteNames.add(suiteName)
   pitestConvergeSnapshot.configure { dependsOn(pitestTaskName) }
@@ -774,6 +997,48 @@ hardening.mutation.all {
 
   // Shared JavaExec configuration for the ratchet run, the converge second round, and
   // the mutator trial (which redirects the report and swaps the mutator set).
+  // Minion-side test failures repeat once per mutant that reruns the test, burying
+  // the useful output under identical stack traces. First occurrence passes through;
+  // repeats are counted and summarized after the run.
+  class MinionLineFilter(private val delegate: OutputStream) : OutputStream() {
+    private val buffer = ByteArrayOutputStream()
+    private val seen = HashSet<String>()
+    @Volatile
+    var suppressed = 0
+      private set
+
+    override fun write(b: Int) {
+      buffer.write(b)
+      if (b == '\n'.code) {
+        flushLine()
+      }
+    }
+
+    private fun flushLine() {
+      val line = buffer.toString(Charsets.UTF_8)
+      buffer.reset()
+      if (line.contains("PIT >> INFO : MINION :")) {
+        val content = line.substringAfter("MINION :").trim()
+        if (!seen.add(content)) {
+          suppressed++
+          return
+        }
+      }
+      delegate.write(line.toByteArray())
+    }
+
+    override fun flush() {
+      delegate.flush()
+    }
+
+    override fun close() {
+      if (buffer.size() > 0) {
+        flushLine()
+      }
+      delegate.flush()
+    }
+  }
+
   fun pitestExec(
       reportSubdir: String,
       mutatorsSource: Provider<String>,
@@ -808,7 +1073,14 @@ hardening.mutation.all {
           }
           .joinToString(",")
     }
-    val targetClassesArg = suite.targetClasses.map { "--targetClasses=" + it.joinToString(",") }
+    // '-PmutateOnly=<glob[,glob]>' narrows the mutated classes for a fast
+    // kill-and-rerun iteration loop. The report it produces is partial, so the
+    // run stamps a '.scoped' marker and every baseline-touching consumer
+    // (verify's ratchet, refresh, union, mode snapshots) refuses to treat it
+    // as evidence. Tests still run in full: coverage targeting is unchanged.
+    val mutateOnly = providers.gradleProperty("mutateOnly")
+    val targetClassesArg = mutateOnly.map { "--targetClasses=$it" }
+        .orElse(suite.targetClasses.map { "--targetClasses=" + it.joinToString(",") })
     // a map lambda returning null leaves the provider absent, dropping the argument
     val excludedClassesArg = suite.excludedClasses.map { excluded ->
       if (excluded.isEmpty()) null else "--excludedClasses=" + excluded.joinToString(",")
@@ -816,6 +1088,8 @@ hardening.mutation.all {
     val targetTestsArg = suite.targetTests.map { "--targetTests=$it" }
     val mutatorsArg = mutatorsSource.map { "--mutators=$it" }
     val threadsArg = suite.threads.map { "--threads=$it" }
+    val timeoutFactorArg = suite.timeoutFactor.map { "--timeoutFactor=$it" }
+    val timeoutConstArg = suite.timeoutConst.map { "--timeoutConst=$it" }
     val sourceDirsArg = "--sourceDirs=" + layout.projectDirectory.dir("src/main/java").asFile.absolutePath
     val reportDirArg = "--reportDir=" + layout.buildDirectory.dir("reports/pitest/$reportSubdir").get().asFile.absolutePath
     // Incremental analysis: one rolling history file per suite, deliberately outside
@@ -825,6 +1099,29 @@ hardening.mutation.all {
     // keeps reuse honest — with history active a fast run is expected, so the log
     // must say why, and the pre-release gate re-earns its numbers with
     // '-PnoMutationHistory'.
+    val scopedMarker = layout.buildDirectory.file("reports/pitest/$reportSubdir/.scoped")
+    // holder so doFirst can hand the execution-time filter stream to doLast without
+    // the configuration cache trying to serialize a live stream
+    val minionFilter = AtomicReference<Any?>()
+    doFirst {
+      this as JavaExec
+      // the default (null) standard output forwards to the console; the filter
+      // keeps that destination while deduplicating repeated minion stack traces
+      standardOutput = MinionLineFilter(System.out).also(minionFilter::set)
+    }
+    doLast {
+      val marker = scopedMarker.get().asFile
+      if (mutateOnly.isPresent) marker.writeText(mutateOnly.get() + "\n") else marker.delete()
+      (minionFilter.get() as? MinionLineFilter)?.let { filter ->
+        filter.close()
+        if (filter.suppressed > 0) {
+          logger.lifecycle(
+              "pitest: suppressed ${filter.suppressed} repeated minion log line(s) — " +
+                  "first occurrence of each is above"
+          )
+        }
+      }
+    }
     val historyActive = withHistory && mutationHistory
     val historyFile = layout.projectDirectory.file(".pitest-history/${suite.name}.hist").asFile
     if (historyActive) {
@@ -851,6 +1148,8 @@ hardening.mutation.all {
         add("--outputFormats=HTML,XML,CSV")
         add("--timestampedReports=false")
         add(threadsArg.get())
+        add(timeoutFactorArg.get())
+        add(timeoutConstArg.get())
         if (historyActive) {
           if (historyFile.isFile) {
             add("--historyInputLocation=" + historyFile.absolutePath)
@@ -1079,11 +1378,13 @@ tasks.register("hardeningInit") {
           |
           |Never refresh with `-PupdateMutationBaseline` just to make the build pass:
           |kill the mutant, refactor it out of existence, or record its equivalence
-          |reason below. Line numbers are part of the baseline key, so edits to a
-          |mutated file shift entries — the verify task classifies each new row
-          |(`shifted` vs `newly covered` vs unexplained) and prints a churn tally;
-          |refresh only when nothing is newly covered and nothing is unexplained,
-          |and confirm the pairings first. A newly covered row is triage, not churn.
+          |reason below. Pure line drift (every new row a same-status shift of a
+          |stale one, populations unchanged) passes on its own with a notice —
+          |refresh at a convenient moment. Anything else fails with a per-row
+          |classification (`shifted` vs `newly covered` vs unexplained) and a churn
+          |tally: a newly covered row is triage, not churn, and identical rows are
+          |sibling mutants of one compound condition — the comparison is a
+          |multiset, so never hand-dedupe the CSV.
           |
           |A baseline row may carry a trailing `# note` — `# untriaged` is the
           |conventional label for seeded debt. Notes are preserved across
@@ -1212,6 +1513,63 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
         |
         |  public int dispatches() {
         |    return dispatches.get();
+        |  }
+        |}
+        |""".trimMargin() }
+    generate("ConcurrencyHarness") { """
+        |package software.sava.hardening.support;
+        |
+        |/// Generated by the sava-build hardening plugin; regenerated every build, do not edit.
+        |///
+        |/// Deterministic sequencing for concurrency tests, distilled from the mutation
+        |/// campaigns (see HARDENING.md's concurrency conventions): poll observable state
+        |/// instead of sleeping on timing guesses, assert timing only as a lower bound
+        |/// (machine load can lengthen an interval but never shorten it), and always
+        |/// bound joins so a hung thread fails the test instead of the build.
+        |/// Framework-neutral: failures throw AssertionError, which every test engine
+        |/// reports as a failure.
+        |public final class ConcurrencyHarness {
+        |
+        |  /// Polls the condition roughly every millisecond, failing after ~5 seconds.
+        |  /// Use an observable side effect (a recorded call, a volatile flag, a thread
+        |  /// state) as the condition — never a sleep of a guessed length.
+        |  public static void awaitTrue(final String what, final java.util.function.BooleanSupplier condition) throws InterruptedException {
+        |    for (int i = 0; i < 5_000; ++i) {
+        |      if (condition.getAsBoolean()) {
+        |        return;
+        |      }
+        |      Thread.sleep(1);
+        |    }
+        |    throw new AssertionError("timed out awaiting " + what);
+        |  }
+        |
+        |  /// Polls until the thread reaches one of the given states — WAITING for an
+        |  /// unbounded condition await, TIMED_WAITING for a bounded one. This is how a
+        |  /// test proves "the worker is parked" before poking it, instead of sleeping
+        |  /// and hoping.
+        |  public static void awaitState(final Thread thread, final Thread.State... states) throws InterruptedException {
+        |    awaitTrue(thread.getName() + " in " + java.util.Arrays.toString(states), () -> {
+        |      final Thread.State current = thread.getState();
+        |      for (final Thread.State state : states) {
+        |        if (current == state) {
+        |          return true;
+        |        }
+        |      }
+        |      return false;
+        |    });
+        |  }
+        |
+        |  /// Joins with a bound; a still-alive thread is interrupted (so the test JVM
+        |  /// can exit) and the test fails with the caller's explanation.
+        |  public static void joinOrFail(final Thread thread, final long millis, final String what) throws InterruptedException {
+        |    thread.join(millis);
+        |    if (thread.isAlive()) {
+        |      thread.interrupt();
+        |      throw new AssertionError(what + " (thread '" + thread.getName() + "' still alive after " + millis + "ms)");
+        |    }
+        |  }
+        |
+        |  private ConcurrencyHarness() {
         |  }
         |}
         |""".trimMargin() }

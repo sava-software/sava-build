@@ -385,3 +385,45 @@ single-cycle seam waiting to be extracted*; *flip families do not settle
 while their cause remains — remove the cause and the insurance is deleted
 for something*; *an extract-method refactor reports its moved mutants as
 unexplained, deliberately*.
+
+## The sibling absorbed by its accepted twin
+
+Found while auditing why a suite's baseline held 968 rows against a report
+with 1,030 unkilled mutants: 56 coordinates carried more than one mutant with
+identical `class,method,line,mutator` keys — compound conditions emit one
+mutant per operand or branch direction, all on one line. The old set-based
+comparison collapsed them, which meant a killed sibling could regress to
+`SURVIVED` and be silently absorbed by its already-accepted twin's row: a
+real ratchet hole, not an ergonomic nit. The comparison is now a multiset —
+one baseline row per mutant, duplicates preserved, refreshes
+multiplicity-exact — and migrating two suites materialized 62 previously
+absorbed sibling copies, every one inside an already-triaged family (in-lock
+race guards, null-key arms). The verify also names the killed sibling's test
+on such rows (`[detected sibling at this line: … KILLED by …]`), because the
+survivor is the opposite branch direction of whatever that test pinned, and
+guessing the direction from the mutator name had been the campaign's single
+biggest triage time sink.
+
+Rules: *identical rows are distinct mutants — count them, never dedupe*; *a
+survivor at a coordinate with a killed sibling is the other branch, and the
+killing test says which branch that is*.
+
+## Timeout budgets sized to the tests, not the default
+
+A suite whose slowest quiet-run test took 0.575s was paying PIT's default
+per-test allowance — `time × 1.25 + 4000ms` — on every hanging-mutant
+detection: ~4s of flat fee against tests that finish in milliseconds. Ranking
+the suite's test durations first, `timeoutFactor = 2.0; timeoutConst = 1500`
+cut the wall clock ~19% with byte-identical results across a confirmation
+rerun. The factor was raised while the constant was cut deliberately: load
+inflates a test in proportion to its own runtime, so proportional headroom is
+the safe kind. The failure mode to watch is `SURVIVED -> TIMED_OUT` — a
+mutant nobody killed reading as detected purely because its tests ran slow —
+which the verify now names by origin on the next run. On the same suite,
+`threads = 8` on 10 cores *lost* to the 4-thread default (3m32 vs 3m18
+back-to-back): the suite's await/signal tests are exactly what
+oversubscription inflates, and exactly what PIT re-runs most.
+
+Rules: *rank test durations before touching timeout knobs, and prefer factor
+over constant*; *thread counts are measured, not assumed — a timing-heavy
+suite can lose throughput to parallelism*.

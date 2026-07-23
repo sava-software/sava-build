@@ -95,7 +95,14 @@ class HardeningRatchetSmokeTest {
       """.trimIndent()
     )
 
-    val result = runner("pitestEncodingVerify", "-PlistUnkilled").buildAndFail()
+    // pure drift passes on its own; the strict flag restores the failing diff
+    val tolerated = runner("pitestEncodingVerify", "-PlistUnkilled").build().output
+    assertTrue(
+      tolerated.contains("1 row(s) moved line only"),
+      "drift-tolerance notice missing:\n$tolerated"
+    )
+
+    val result = runner("pitestEncodingVerify", "-PlistUnkilled", "-PnoDriftTolerance").buildAndFail()
     val output = result.output
     assertTrue(output.contains("1 rows, 1 marked '# untriaged'"), "untriaged count missing:\n$output")
     assertTrue(output.contains("pitest 'encoding' unkilled:"), "-PlistUnkilled listing missing:\n$output")
@@ -108,6 +115,82 @@ class HardeningRatchetSmokeTest {
     assertTrue(
       output.contains("churn: 1 shifted, 0 newly covered, 0 unexplained"),
       "churn tally missing:\n$output"
+    )
+  }
+
+  @Test
+  fun `a regressed sibling mutant is flagged even at an accepted coordinate`() {
+    // Two mutants share one (class, method, line, mutator) coordinate — a compound
+    // condition's operands. One is accepted; when the other regresses from killed to
+    // survived, the row TEXT already exists in the baseline, and only multiset
+    // comparison notices the second copy.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,12,RemoveConditionalMutator_EQUAL_IF,SURVIVED\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_IF,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_IF,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_ELSE,encode,12,KILLED,com.example.CodecTest.[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:encodesTheBoundary()]"
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(
+      output.contains("1 unkilled mutant(s) not in the accepted baseline"),
+      "the regressed sibling was absorbed by its accepted twin:\n$output"
+    )
+    // the killed sibling at the same coordinate names its test, so the survivor's
+    // branch direction can be inferred
+    assertTrue(
+      output.contains("detected sibling at this line: RemoveConditionalMutator_EQUAL_ELSE KILLED by encodesTheBoundary"),
+      "sibling hint missing:\n$output"
+    )
+  }
+
+  @Test
+  fun `duplicate sibling rows in the baseline are matched per copy`() {
+    // Both siblings accepted as two identical rows: a report with both must pass,
+    // and an update must preserve both copies.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,RemoveConditionalMutator_EQUAL_IF,SURVIVED\n" +
+          "com.example.Codec,encode,12,RemoveConditionalMutator_EQUAL_IF,SURVIVED\n"
+    )
+    val siblingRow =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_IF,encode,12,SURVIVED,none"
+    writeReport(listOf(siblingRow, siblingRow), "")
+
+    runner("pitestEncodingVerify").build()
+
+    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    val rows = baselineFile().readLines().filter { it.isNotBlank() }
+    assertEquals(2, rows.size, "the refresh collapsed sibling rows:\n$rows")
+  }
+
+  @Test
+  fun `a scoped report cannot touch the baseline`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,12,MathMutator,SURVIVED\n")
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none"),
+      ""
+    )
+    File(fixtureDir, "build/reports/pitest/encoding/.scoped").writeText("com.example.Codec\n")
+
+    // the ratchet is skipped: an in-scope survivor is listed, not failed
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(output.contains("SCOPED run"), "scoped notice missing:\n$output")
+    assertTrue(output.contains("1 unkilled in scope"), "scoped listing missing:\n$output")
+
+    // and neither refresh flavour may consume it
+    val refused = runner("pitestEncodingVerify", "-PupdateMutationBaseline").buildAndFail().output
+    assertTrue(
+      refused.contains("cannot refresh the baseline"),
+      "scoped refresh was not refused:\n$refused"
     )
   }
 

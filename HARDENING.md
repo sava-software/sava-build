@@ -63,7 +63,28 @@ run cheaper. The cost model is directly optimisable:
   covering test, outside every per-test timeout's reach; one such run hung
   for 40+ minutes *(casebook: the logger shim that wedged the server)*.
 - **Threads are not the lever they look like** — 8 threads bought ~10%, 10
-  were slower than 8. Measure before spending here.
+  were slower than 8. Measure before spending here. On a suite heavy with
+  await/signal tests, 8 threads *lost* to the 4-thread default outright:
+  oversubscription inflates exactly the tests PIT re-runs most.
+- **Scope the iteration loop with `-PmutateOnly=<glob[,glob]>`** — mutate
+  only the class under attack while writing its kills, then re-run unscoped
+  once before refreshing. The scoped report is stamped `.scoped` and every
+  baseline-touching consumer (the ratchet, `-PupdateMutationBaseline`,
+  `-PunionMutationBaseline`, mode snapshots) refuses it, so the shortcut
+  cannot leak into the record. Coverage still runs the full test set.
+- **Tune the per-test timeout to the suite's real runtimes** — PIT's default
+  allowance is `recorded time × 1.25 + 4000ms`; every hanging-mutant
+  detection pays that flat fee. Rank the suite's tests by duration first: one
+  suite whose slowest test ran 0.6s cut ~19% wall time with
+  `timeoutFactor = 2.0; timeoutConst = 1500L` and byte-identical results.
+  Prefer raising the factor over the constant — load inflates a test in
+  proportion to its own runtime — and if `SURVIVED -> TIMED_OUT` churn
+  appears in the ratchet afterwards, raise the constant back before
+  suspecting the code.
+- **`pitest<Suite>Debt` prints where the debt lives** — survivors and
+  no-coverage grouped by class, largest first, with the delta against the
+  baseline. Use it to pick the next cluster instead of re-deriving the
+  ranking from the CSV.
 
 *(casebook: loop-speed measurements)*
 
@@ -162,7 +183,10 @@ edited: the verify task then reports stale entries alongside "new" ones and
 classifies each pairing, because two situations produce paired rows and call
 for **opposite** responses:
 
-- `(shifted from line N)` — same status, different line. The mutant moved;
+- `(shifted from line N)` — same status, different line. The mutant moved.
+  When the *whole* run is this — every new row a shift, populations
+  unchanged — the verify passes on its own (see the line-drift section) and
+  no immediate action is needed. Shifts mixed with anything else still fail:
   confirm the pairings, then refresh with `-PupdateMutationBaseline`.
 - `(newly covered — was NO_COVERAGE at this line; triage, not a refresh)` —
   same line, different status. A test now *reaches* the mutant, which is a
@@ -216,6 +240,14 @@ invoked it*, and the failure looks exactly like a real regression.
   The comparison is scripted: `pitestModeSnapshot`/`pitestModeCompare` (see
   the wandering-kill-count section) diff the two modes per mutant and write
   the observed-flip unions with `-PunionModeFlips`.
+- **Run-to-run drift is announced automatically.** The verify stashes each
+  run's `TIMED_OUT` and `SURVIVED` coordinates
+  (`.pitest-history/<suite>.statuses`, machine-local) and names each
+  newcomer's origin on the next run. `KILLED -> TIMED_OUT` is the benign
+  flavour and gets a one-line count; `SURVIVED -> TIMED_OUT` gets a warning
+  with the rows, because a mutant nobody killed now reads as detected purely
+  through load — do not let a refresh quietly drop it from the baseline on
+  the strength of that.
 - **Union only rows you have observed to flip** — with
   `-PunionMutationBaseline`, which adds the run's unkilled rows in canonical
   form without dropping baseline rows that happened to be detected this run
@@ -258,15 +290,61 @@ invoked it*, and the failure looks exactly like a real regression.
 
 ### Two baseline-format traps
 
-- **Rows can duplicate.** PIT emits multiple mutants sharing a
-  `class,method,line,mutator,status` key; the baseline holds unique rows, so
-  a run's raw row count legitimately exceeds the baseline's. Compare *unique*
-  rows.
+- **Duplicate rows are sibling mutants, not noise.** A compound condition
+  (`a == null || b == null`) yields several mutants with identical
+  `class,method,line,mutator` coordinates — one per operand or branch
+  direction — and the baseline keeps one row per mutant, so identical lines
+  legitimately repeat. The comparison is a *multiset* comparison: if two
+  siblings are accepted and a third appears (or a killed sibling regresses),
+  the count mismatch is flagged even though the row text already exists.
+  Never hand-dedupe the file.
 - **Hand-edited rows can silently never match.** The canonical mutator name
   strips the `org.pitest.…gregor.mutators.` package *and* the `returns.`
   sub-package; a row spelled `returns.NullReturnValsMutator` matches nothing
   and reports new forever. Prefer `-PupdateMutationBaseline`, which writes
   the canonical form; hand-edit only to union a known flip.
+
+### Line numbers are metadata; pure drift passes on its own
+
+Editing anything above a mutated method used to demand a baseline refresh for
+rows that only moved. The verify now treats that case as metadata: when every
+new row is a same-status line shift of a stale one *and* the
+per-`(class, method, mutator, status)` population is unchanged, it passes with
+a notice and the refresh can wait for a convenient moment. Anything else — a
+newly covered row, an unexplained row, or a changed population (kills mixed
+into the drift) — still fails and still wants the full triage-then-refresh
+treatment. `-PnoDriftTolerance` restores strict behaviour; certifying runs
+should use it alongside `-PnoMutationHistory`.
+
+### When a mutant won't die — a decision tree
+
+Worked in this order, each step cheaper than the one after it:
+
+1. **Strengthen the assertion toward the property, not the implementation.**
+   Content equality cannot tell a reuse from a reparse — assert identity.
+   A log call is only pinned by asserting the *rendered* message (parameters
+   included), a lock only by asserting it is free afterwards.
+2. **Identify which sibling survived.** For `RemoveConditional` pairs on
+   compound conditions, one bytecode direction is usually killed and its
+   same-coordinate sibling survives; the verify prints
+   `[detected sibling at this coordinate: KILLED by <test>]` on such rows.
+   The survivor is the *opposite* branch of whatever that test pinned —
+   often an in-lock recheck or short-circuit leg that only a concurrent
+   interleaving could observe. Triage it as its own mutant; do not assume it
+   is the one the test was aimed at.
+3. **Suspect the code before declaring equivalence.** A survivor that looks
+   unkillable is a claim that the guarded behaviour cannot be observed —
+   sometimes true, sometimes the observation *path* is broken. The campaigns
+   this process comes from found double-digit real defects exactly here:
+   starved dispatches, corrupted invariants, crash-on-empty edge paths —
+   all wearing "equivalent mutant" as camouflage. Ask what user-visible
+   promise the mutated line serves; if there is one and no test can reach
+   it, the code (or its API) is the problem.
+4. **Accept with a named escape.** If it is genuinely equivalent, say *why*
+   in the family note and name the condition under which it would become
+   killable — a fixture that does not exist yet, a concurrency harness, a
+   multi-row caller. The escape is what keeps the acceptance honest when
+   the code changes underneath it.
 
 ### The recurring equivalence families
 
@@ -667,12 +745,24 @@ the recipe no longer has to be rediscovered per repo.
 
 ## Shared test scaffolding (generated)
 
-`hardening.generateTestSupport = true` generates five small classes into the
+`hardening.generateTestSupport = true` generates six small classes into the
 test source set (package `software.sava.hardening.support` — fixed; it names
 the plugin, not the consuming repo), compiled inside the consuming module so
 the module path and PIT's class path both just work: no published artifact,
 no version skew across repos, always plugin-synced. Off by default;
 regenerated every build.
+
+- **`ConcurrencyHarness`** — deterministic sequencing for concurrency tests:
+  `awaitTrue(what, condition)` polls an observable side effect instead of
+  sleeping a guessed length; `awaitState(thread, states...)` proves a worker
+  is parked (`WAITING` for an unbounded await, `TIMED_WAITING` for a bounded
+  one) before the test pokes it; `joinOrFail(thread, millis, what)` bounds
+  every join so a hung thread fails the test, not the build. The companion
+  conventions: assert timing only as a *lower* bound (load lengthens
+  intervals, never shortens them), and give the woken path a generous
+  join — the mutants these tests target reveal themselves as never-wakes,
+  which the bound converts into a clean assertion failure or a PIT timeout,
+  both detected.
 
 - **`Ports.freePort()`** — ephemeral-port probe. Connect to `127.0.0.1`,
   never `localhost` (see the socket determinism rules).
@@ -763,9 +853,17 @@ paste.
 >   implementation), **refactor** it out of existence, or **accept it** with a
 >   written reason in `config/pitest/README.md`. Never run
 >   `-PupdateMutationBaseline` just to make the build pass.
-> - Line-number churn from editing a mutated file shows up as paired stale +
->   "new" baseline entries; confirm they're the shifted old ones before
->   refreshing.
+> - Pure line drift — every new baseline entry a same-status shift of a stale
+>   one, populations unchanged — passes on its own with a notice; refresh at a
+>   convenient moment. Anything mixed in (newly covered, unexplained, changed
+>   counts) still fails and is triage first, refresh after.
+> - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
+>   seconds instead of the full suite — then re-run unscoped before any
+>   refresh; the tooling refuses to let a scoped report touch the baseline.
+> - Identical baseline rows are sibling mutants of one compound condition and
+>   the comparison is a multiset: never hand-dedupe. When one sibling
+>   survives, the verify names the killed sibling's test — the survivor is
+>   the opposite branch direction; triage it as its own mutant.
 > - **Randomized tests use fixed seeds, and never sleep**: the ratchet needs
 >   deterministic kills, and PIT re-runs the suite per mutant, so one real wait
 >   costs minutes. Exploration belongs to the fuzz targets.

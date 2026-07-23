@@ -55,6 +55,14 @@ abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
    *  See HARDENING.md 'Shared test scaffolding (generated)'. */
   abstract val generateTestSupport: Property<Boolean>
 
+  /**
+   * Source FILE NAMES excluded from the PIT/Jazzer recompiles (e.g. "Integ.java"
+   * for git-ignored scratch files: present on a dev machine, absent in CI — the
+   * exclusion restores parity, and the mutation suite's excludedClasses already
+   * keeps them out of the mutant population).
+   */
+  abstract val recompileExcludes: ListProperty<String>
+
   /** Simple class names to omit from [generateTestSupport] — e.g. "JulRecorder" in a
    *  repo whose test module cannot read 'java.logging'. Empty by default. */
   abstract val testSupportExcludes: ListProperty<String>
@@ -88,6 +96,19 @@ abstract class MutationSuite @Inject constructor(private val name: String) : Nam
 
   /** PIT worker threads (default 4). */
   abstract val threads: Property<Int>
+
+  /**
+   * PIT per-test timeout: allowed time = recorded test time x [timeoutFactor]
+   * + [timeoutConst] milliseconds. Defaults mirror PIT's own (1.25 / 4000).
+   * Suites whose slowest tests run in milliseconds can cut the constant
+   * sharply -- hanging-mutant detections then cost their real bound instead
+   * of a four-second flat fee -- but a too-tight value converts load-slowed
+   * tests into false TIMED_OUT detections, which is baseline churn. Prefer
+   * raising the factor over raising the constant: load inflates a test
+   * proportionally to its own runtime.
+   */
+  abstract val timeoutFactor: Property<Double>
+  abstract val timeoutConst: Property<Long>
 }
 
 /** One Jazzer entry point: a class with 'public static void fuzzerTestOneInput(byte[])'.
