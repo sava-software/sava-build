@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.10](https://github.com/sava-software/sava-build/compare/21.5.9...21.5.10) (2026-07-23)
+
+
+### Features
+
+* **hardening:** note-carrying refresh, prune flag, surfaced-sibling classifier, corpus minimize ([4b6decc](https://github.com/sava-software/sava-build/commit/4b6deccf02a920ab18ca6c5fee271cbe4eb773b3))
+
 ## [21.5.9](https://github.com/sava-software/sava-build/compare/21.5.8...21.5.9) (2026-07-23)
 
 
