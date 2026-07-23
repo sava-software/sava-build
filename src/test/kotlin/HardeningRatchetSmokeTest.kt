@@ -21,8 +21,31 @@ class HardeningRatchetSmokeTest {
 
   private fun writeFixture(
     generateTestSupport: Boolean = false,
-    testSupportExcludes: List<String> = emptyList()
+    testSupportExcludes: List<String> = emptyList(),
+    recompileExcludes: List<String> = emptyList(),
+    // the fuzz targets emit generated junit test sources; omit them when a test
+    // actually compiles the fixture (the fixture declares no junit dependency)
+    registerFuzz: Boolean = true,
+    // pin the recompile's bytecode target when a test actually runs it: the fixture
+    // sets no toolchain, so the recompile runs on the daemon JDK, which this build
+    // pins to 21 via gradle/gradle-daemon-jvm.properties
+    bytecodeRelease: Int? = null
   ) {
+    val releaseLine = if (bytecodeRelease != null) "bytecodeRelease = $bytecodeRelease" else ""
+    val fuzzBlock = if (registerFuzz) {
+      """
+          fuzz.register("codec") {
+            targetClass = "com.example.CodecFuzz"
+            seedCorpus = layout.projectDirectory.dir("src/test/resources/fuzz/codec")
+          }
+          fuzz.register("outside") {
+            targetClass = "com.example.OutsideFuzz"
+            seedCorpus = layout.projectDirectory.dir("corpus/outside")
+          }
+      """.trimIndent()
+    } else {
+      ""
+    }
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
         pluginManagement { includeBuild("$savaBuildRoot") }
@@ -42,20 +65,15 @@ class HardeningRatchetSmokeTest {
         }
 
         hardening {
+          $releaseLine
           generateTestSupport = $generateTestSupport
           testSupportExcludes = listOf(${testSupportExcludes.joinToString(", ") { "\"$it\"" }})
+          recompileExcludes = listOf(${recompileExcludes.joinToString(", ") { "\"$it\"" }})
           mutation.register("encoding") {
             targetClasses = listOf("com.example.Codec")
             targetTests = "com.example.*Test*"
           }
-          fuzz.register("codec") {
-            targetClass = "com.example.CodecFuzz"
-            seedCorpus = layout.projectDirectory.dir("src/test/resources/fuzz/codec")
-          }
-          fuzz.register("outside") {
-            targetClass = "com.example.OutsideFuzz"
-            seedCorpus = layout.projectDirectory.dir("corpus/outside")
-          }
+$fuzzBlock
         }
       """.trimIndent() + "\n"
     )
@@ -410,5 +428,35 @@ class HardeningRatchetSmokeTest {
     expected.forEach { name ->
       assertFalse(supportDir.resolve("$name.java").isFile, "$name.java should be cleared when disabled")
     }
+  }
+
+  @Test
+  fun `recompileExcludes drops a named source file from PIT's recompile`() {
+    // A git-ignored scratch file is a parity hazard: present on one machine, absent on
+    // another, it puts a different class on PIT's recompiled root per checkout.
+    // recompileExcludes drops it by file name — from the recompile only, not the
+    // project's own build, so the class file lands under build/classes as usual.
+    val srcDir = File(fixtureDir, "src/main/java/com/example").apply { mkdirs() }
+    srcDir.resolve("Codec.java").writeText("package com.example;\npublic final class Codec {}\n")
+    srcDir.resolve("Scratch.java").writeText("package com.example;\npublic final class Scratch {}\n")
+    val recompiled = File(fixtureDir, "build/mutation-classes/com/example")
+
+    // excluded: PIT's recompiled root carries Codec but not the scratch file...
+    writeFixture(recompileExcludes = listOf("Scratch.java"), registerFuzz = false, bytecodeRelease = 21)
+    val ok = runner("compileForPitest").build()
+    assertFalse(ok.output.contains("FAILED"), ok.output)
+    assertTrue(recompiled.resolve("Codec.class").isFile, "Codec.class not on PIT's recompiled root:\n${ok.output}")
+    assertFalse(recompiled.resolve("Scratch.class").isFile, "Scratch.class must be excluded:\n${ok.output}")
+    // ...while the ordinary build still compiles it — the exclusion is scoped to PIT
+    assertTrue(
+      File(fixtureDir, "build/classes/java/main/com/example/Scratch.class").isFile,
+      "recompileExcludes must not touch the project's own compile:\n${ok.output}"
+    )
+
+    // without the exclusion the recompile carries the scratch class too — proof it was
+    // genuinely in the source set, dropped only by the name filter
+    writeFixture(registerFuzz = false, bytecodeRelease = 21)
+    runner("compileForPitest").build()
+    assertTrue(recompiled.resolve("Scratch.class").isFile, "Scratch.class should return once un-excluded")
   }
 }

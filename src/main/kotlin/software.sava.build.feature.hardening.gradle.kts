@@ -1068,7 +1068,10 @@ hardening.mutation.all {
   fun pitestExec(
       reportSubdir: String,
       mutatorsSource: Provider<String>,
-      withHistory: Boolean
+      withHistory: Boolean,
+      // when false (the mutator trial) a non-zero exit is a tolerated result, not a
+      // failure; otherwise doLast re-raises it after the filters are closed
+      enforceExit: Boolean = true
   ): JavaExec.() -> Unit = {
     dependsOn(compileForPitest)
     mainClass = "org.pitest.mutationtest.commandline.MutationCoverageReport"
@@ -1126,6 +1129,11 @@ hardening.mutation.all {
     // must say why, and the pre-release gate re-earns its numbers with
     // '-PnoMutationHistory'.
     val scopedMarker = layout.buildDirectory.file("reports/pitest/$reportSubdir/.scoped")
+    // Defer PIT's non-zero exit to doLast so a failed run still closes the minion
+    // filters — otherwise the exec action throws, doLast is skipped, and the
+    // suppressed-count summary and any buffered partial line (now including stderr,
+    // where the last bytes before a crash live) are lost.
+    isIgnoreExitValue = true
     // holder so doFirst can hand the execution-time filters to doLast without
     // the configuration cache trying to serialize a live stream
     val minionFilters = AtomicReference<MinionFilters?>()
@@ -1139,8 +1147,8 @@ hardening.mutation.all {
       minionFilters.set(filters)
     }
     doLast {
-      val marker = scopedMarker.get().asFile
-      if (mutateOnly.isPresent) marker.writeText(mutateOnly.get() + "\n") else marker.delete()
+      // Close the filters first, before the deferred failure is re-raised, so the
+      // summary and any buffered tail survive a failing run.
       minionFilters.get()?.let { filters ->
         val suppressed = filters.closeAndCount()
         if (suppressed > 0) {
@@ -1150,6 +1158,12 @@ hardening.mutation.all {
           )
         }
       }
+      // Re-raise PIT's non-zero exit here (deferred by isIgnoreExitValue above). A
+      // failed run is not evidence, so its scope marker must not be rewritten — the
+      // marker update stays below the assert.
+      if (enforceExit) executionResult.get().assertNormalExitValue()
+      val marker = scopedMarker.get().asFile
+      if (mutateOnly.isPresent) marker.writeText(mutateOnly.get() + "\n") else marker.delete()
     }
     val historyActive = withHistory && mutationHistory
     val historyFile = layout.projectDirectory.file(".pitest-history/${suite.name}.hist").asFile
@@ -1223,9 +1237,6 @@ hardening.mutation.all {
   tasks.register<JavaExec>(trialTaskName) {
     description = "Internal to pitestMutatorTrial: '${suite.name}' with only the -PtrialMutators candidates."
     trialAfter?.let { mustRunAfter(it) }
-    // A zero-fire trial is a result, not a failure: PIT exits non-zero when the mutator
-    // set generates nothing, and the aggregate reads a missing report as zero fired.
-    isIgnoreExitValue = true
     val trialReportDir = layout.buildDirectory.dir("reports/pitest/$suiteName-trial")
     // captured locally so the doFirst lambda does not hold the script instance
     val trialMutators = trialMutatorsProperty
@@ -1240,7 +1251,10 @@ hardening.mutation.all {
       // previous trial's numbers.
       trialReportDir.get().asFile.deleteRecursively()
     }
-    pitestExec("$suiteName-trial", trialMutatorsProperty, withHistory = false).invoke(this)
+    // A zero-fire trial is a result, not a failure: PIT exits non-zero when the mutator
+    // set generates nothing, and the aggregate reads a missing report as zero fired —
+    // so enforceExit stays off (pitestExec already runs with isIgnoreExitValue).
+    pitestExec("$suiteName-trial", trialMutatorsProperty, withHistory = false, enforceExit = false).invoke(this)
   }
   pitestMutatorTrial.configure { dependsOn(trialTaskName) }
 }
