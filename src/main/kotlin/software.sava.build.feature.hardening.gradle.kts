@@ -2,6 +2,7 @@ import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -511,6 +512,7 @@ hardening.mutation.all {
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val update = providers.gradleProperty("updateMutationBaseline").isPresent
     val union = providers.gradleProperty("unionMutationBaseline").isPresent
+    val prune = providers.gradleProperty("pruneMutationBaseline").isPresent
     val listUnkilled = providers.gradleProperty("listUnkilled").isPresent
     val noDriftTolerance = providers.gradleProperty("noDriftTolerance").isPresent
     val statusStashFile = layout.projectDirectory.file(".pitest-history/$suiteName.statuses").asFile
@@ -772,11 +774,95 @@ hardening.mutation.all {
         )
       }
 
+      if (listOf(update, union, prune).count { it } > 1) {
+        throw GradleException(
+            "pass at most one of -PupdateMutationBaseline, -PunionMutationBaseline, " +
+                "-PpruneMutationBaseline — they answer different questions (see HARDENING.md)."
+        )
+      }
+      if (prune) {
+        // Shrink-only refresh: drop baseline rows matching nothing this run, add or
+        // rewrite nothing. This is the one direction a refresh is always safe in —
+        // shrinking the baseline is an improvement, and no coin-flip from this run can
+        // be baked in. Two classes of unmatched row are kept anyway: rows whose
+        // coordinate TIMED_OUT this run (load-dependent detection, not a kill —
+        // pruning it starts the refresh ping-pong the TIMED_OUT doctrine warns about),
+        // and rows whose coordinate still holds an unkilled mutant at a different
+        // status (a coverage flip pending triage — pruning the stale side would erase
+        // the pairing the newly-covered classifier explains it with).
+        fun coordinate(row: String) = row.substringBeforeLast(',')
+        val timedOutCoordinates = rows.filter { it[5] == "TIMED_OUT" }
+            .map { "${it[1]},${it[3]},${it[4]},${it[2].substringAfterLast('.')}" }
+            .toSet()
+        val unkilledCoordinates = current.map(::coordinate).toSet()
+        val budget = current.groupingBy { it }.eachCount().toMutableMap()
+        val kept = mutableListOf<String>()
+        val keptUnmatched = mutableListOf<Pair<String, String>>()
+        val droppedRows = mutableListOf<String>()
+        for (row in accepted) {
+          val remaining = budget[row] ?: 0
+          if (remaining > 0) {
+            budget[row] = remaining - 1
+            kept.add(row)
+          } else if (coordinate(row) in timedOutCoordinates) {
+            kept.add(row)
+            keptUnmatched.add(row to "TIMED_OUT this run (load-dependent)")
+          } else if (coordinate(row) in unkilledCoordinates) {
+            kept.add(row)
+            keptUnmatched.add(row to "coordinate unkilled at another status (flip pending triage)")
+          } else {
+            droppedRows.add(row)
+          }
+        }
+        val keptDetail = if (keptUnmatched.isEmpty()) "" else
+          "\n  kept ${keptUnmatched.size} unmatched row(s):\n" +
+              keptUnmatched.joinToString("\n") { (row, why) -> "  ${baselineLine(row)} — $why" }
+        if (droppedRows.isEmpty()) {
+          logger.lifecycle(
+              "pitest baseline '$suiteName': prune dropped nothing — every row matches this run$keptDetail")
+        } else {
+          baselineFile.writeText(kept.joinToString("\n", postfix = "\n") { baselineLine(it) })
+          logger.lifecycle(
+              "pitest baseline '$suiteName': prune dropped ${droppedRows.size} row(s) since killed or moved " +
+                  "(baseline now ${kept.size}):\n" +
+                  droppedRows.joinToString("\n") { row -> "  ${baselineLine(row)}${describe(row)}" } +
+                  keptDetail
+          )
+        }
+        return@doLast
+      }
       if (update) {
         val dropped = multisetDiff(accepted, current)
+        // A status flip at one coordinate — NO_COVERAGE -> SURVIVED once a test reaches
+        // the line, SURVIVED -> NO_COVERAGE when its covering test goes away — drops one
+        // row and writes another, and the dropped row's '# note' used to vanish with it.
+        // Carry the note onto the rewritten row, marked with the flip it crossed: the
+        // acceptance argument travels, but flagged for re-reading — a reason written for
+        // an unreached mutant is not automatically a reason once a test can observe it.
+        val flippedNotes = mutableMapOf<String, MutableList<Pair<String, String>>>()
+        for (row in dropped) {
+          val note = annotations[row] ?: continue
+          val coordinate = row.substringBeforeLast(',')
+          flippedNotes.getOrPut(coordinate) { mutableListOf() }
+              .add(row.substringAfterLast(',') to note)
+        }
+        var carried = 0
+        val written = current.map { row ->
+          annotations[row]?.let { return@map "$row $it" }
+          val candidates = flippedNotes[row.substringBeforeLast(',')]
+          if (candidates.isNullOrEmpty()) row
+          else {
+            val (oldStatus, note) = candidates.removeFirst()
+            carried++
+            "$row $note (carried across $oldStatus -> ${row.substringAfterLast(',')})"
+          }
+        }
         baselineFile.parentFile.mkdirs()
-        baselineFile.writeText(current.joinToString("\n", postfix = "\n") { baselineLine(it) })
-        logger.lifecycle("pitest baseline '$suiteName': wrote ${current.size} accepted entries")
+        baselineFile.writeText(written.joinToString("\n", postfix = "\n"))
+        logger.lifecycle(
+            "pitest baseline '$suiteName': wrote ${current.size} accepted entries" +
+                (if (carried == 0) "" else " ($carried note(s) carried across a status flip — re-check them)")
+        )
         if (dropped.isNotEmpty()) {
           // The silent half of the refresh footgun: a full update rewrites from this one
           // run, so a flip-insurance union (detected today, survived under other load)
@@ -837,13 +923,26 @@ hardening.mutation.all {
       // pair with their own stale counterpart, and a map would collapse them
       val shiftPairs = mutableListOf<Pair<String, String>>()
       val newlyCoveredPairs = mutableListOf<Pair<String, String>>()
+      // A "new" row identical to an accepted row is not new code and not churn: the
+      // coordinate holds more sibling mutants than the baseline has rows, which is
+      // what upgrading a set-based (pre-multiset) baseline materializes — pre-existing
+      // debt made visible, not a regression. Classified so the upgrade does not read
+      // as unexplained (casebook: the sibling absorbed by its accepted twin).
+      val acceptedRowTexts = accepted.toSet()
+      val surfacedSiblings = mutableListOf<String>()
       for (row in fresh.sorted()) {
         val sameLine = unpairedStale.firstOrNull {
           rowKey(it) == rowKey(row) && rowLine(it) == rowLine(row) && rowStatus(it) != rowStatus(row)
         }
         if (sameLine != null) {
+          // a same-coordinate status flip outranks the sibling reading: with a stale
+          // row to pair, "newly covered" explains both rows; "sibling" explains one
           unpairedStale.remove(sameLine)
           newlyCoveredPairs.add(row to sameLine)
+          continue
+        }
+        if (row in acceptedRowTexts) {
+          surfacedSiblings.add(row)
           continue
         }
         val moved = unpairedStale.firstOrNull {
@@ -856,7 +955,8 @@ hardening.mutation.all {
       }
       val shiftedFrom = shiftPairs.toMap(mutableMapOf())
       val newlyCoveredFrom = newlyCoveredPairs.toMap(mutableMapOf())
-      val unexplained = fresh.size - shiftPairs.size - newlyCoveredPairs.size
+      val surfacedSiblingTexts = surfacedSiblings.toSet()
+      val unexplained = fresh.size - shiftPairs.size - newlyCoveredPairs.size - surfacedSiblings.size
 
       // Line numbers are metadata, not identity. When every new row is a pure line
       // shift AND the per-(class, method, mutator, status) population is unchanged,
@@ -877,13 +977,30 @@ hardening.mutation.all {
         return@doLast
       }
       fun shiftHint(row: String): String = when {
+        row in surfacedSiblingTexts ->
+          " (sibling of an accepted identical row — surfaced by the multiset comparison; pre-existing debt, not a regression)"
         shiftedFrom.containsKey(row) -> " (shifted from line ${rowLine(shiftedFrom.getValue(row))})"
         newlyCoveredFrom.containsKey(row) ->
           " (newly covered — was ${rowStatus(newlyCoveredFrom.getValue(row))} at this line; triage, not a refresh)"
         else -> ""
       }
       if (stale.isNotEmpty()) {
-        logger.lifecycle("pitest baseline '$suiteName': ${stale.size} stale entries (since killed or moved) — refresh with -PupdateMutationBaseline")
+        // Point at prune, not update: when the only news is *fewer* survivors, the
+        // shrink-only refresh is the always-safe direction — it cannot bake in a
+        // coin-flip from this one run, which is exactly what recommending a full
+        // rewrite here used to invite. Update stays the answer when rows also need
+        // rewriting (a status flip), and that path is reported separately below.
+        // Only the pure-shrink case gets the prune recommendation. With new rows
+        // present the stale ones are usually their moved counterparts, and prune
+        // would drop the old line without writing the new one — leaving the shift
+        // unexplained. That case still wants update — after the new rows are
+        // triaged, since they may also be newly covered or surfaced siblings,
+        // where update-before-triage is exactly the laundering the ratchet exists
+        // to prevent.
+        val direction = if (fresh.isEmpty()) "-PpruneMutationBaseline (shrink-only; nothing new to bake in)"
+        else "-PupdateMutationBaseline after the new rows below are triaged"
+        logger.lifecycle(
+            "pitest baseline '$suiteName': ${stale.size} stale entries (since killed or moved) — refresh with $direction")
       }
       if (fresh.isNotEmpty()) {
         // Split the report: the two statuses need opposite responses, and saying so
@@ -904,6 +1021,7 @@ hardening.mutation.all {
           // set accounted for? Refreshing is only safe when nothing is unexplained and
           // nothing was newly covered.
           append("\n  churn: ${shiftPairs.size} shifted, ${newlyCoveredPairs.size} newly covered, ")
+          if (surfacedSiblings.isNotEmpty()) append("${surfacedSiblings.size} surfaced sibling(s), ")
           append("$unexplained unexplained (of ${fresh.size} new; ${stale.size} stale)")
           if (populationUnchanged) {
             append("\n  every new row is a shifted counterpart and nothing is unexplained — pure line churn, ")
@@ -916,6 +1034,11 @@ hardening.mutation.all {
           } else if (newlyCoveredPairs.isNotEmpty()) {
             append("\n  ${newlyCoveredPairs.size} row(s) are newly covered rather than moved: a test now reaches ")
             append("them, so they are triage (kill or accept with a reason), not a refresh")
+          }
+          if (surfacedSiblings.isNotEmpty()) {
+            append("\n  ${surfacedSiblings.size} row(s) are sibling mutants of accepted identical rows, surfaced ")
+            append("by the multiset comparison (upgrading a set-based baseline materializes these): pre-existing ")
+            append("debt made visible — kill, or accept into the documented family")
           }
         }
         throw GradleException(
@@ -1307,6 +1430,99 @@ hardening.fuzz.all {
         add(corpusDir.absolutePath)
         seedCorpusDir.orNull?.let(::add)
       }
+    }
+  }
+
+  // libFuzzer's '-merge=1' copies into the first (output) directory only the inputs
+  // that add coverage, smallest first — corpus dedup as a task. By default the only
+  // source is the committed seed corpus (pure dedup); '-PadoptLocalCorpus' adds
+  // whatever local 'fuzz<Target>' runs accumulated under build/ as a second source,
+  // folding locally found interesting inputs into the committed set — a deliberate
+  // adoption (it can be megabytes of hash-named files), not a side effect of dedup.
+  // The merge writes into a fresh staging dir and the seed corpus is replaced only
+  // from a non-empty result, so a failed merge can never wipe a committed corpus.
+  // Seeds whose content survives keep their committed file name (corpora name seeds
+  // meaningfully — an account address, a minimized finding); only genuinely new
+  // inputs arrive under libFuzzer's hash names.
+  tasks.register<JavaExec>("fuzz" + target.name.replaceFirstChar(Char::uppercase) + "Minimize") {
+    group = "verification"
+    description = "Minimizes the '${target.name}' seed corpus with libFuzzer -merge=1; -PadoptLocalCorpus also folds in inputs found by local fuzz runs."
+    dependsOn(compileForFuzz)
+    dependsOn(tasks.named("processResources"), tasks.named("processTestResources"))
+    mainClass = "com.code_intelligence.jazzer.Jazzer"
+    val ownBuildDir = layout.buildDirectory.get().asFile.absolutePath + File.separator
+    classpath = jazzer + files(fuzzClassesDir) +
+        files(sourceSets.main.get().output.resourcesDir!!, sourceSets.test.get().output.resourcesDir!!) +
+        configurations["testRuntimeClasspath"].filter {
+          !it.absolutePath.startsWith(ownBuildDir)
+        }
+    jvmArgs(
+        "-XX:+EnableDynamicAgentLoading",
+        "--enable-native-access=ALL-UNNAMED",
+        "--sun-misc-unsafe-memory-access=allow"
+    )
+    val targetName = target.name
+    val seedCorpus = target.seedCorpus
+    val stagingDir = layout.buildDirectory.dir("fuzz/${target.name}-minimized").get().asFile
+    val localCorpusDir = layout.buildDirectory.dir("fuzz/${target.name}-corpus").get().asFile
+    val minimizeTargetClassArg = target.targetClass.map { "--target_class=$it" }
+    val minimizeMaxLenArg = target.maxLen.map { "-max_len=$it" }
+    val adoptLocalCorpus = providers.gradleProperty("adoptLocalCorpus").isPresent
+    doFirst {
+      val corpus = seedCorpus.orNull?.asFile ?: throw GradleException(
+          "fuzz target '$targetName' declares no seedCorpus — nothing to minimize into. " +
+              "Commit a seed corpus first (see HARDENING.md 'Fuzzing').")
+      if (corpus.listFiles()?.any { it.isFile } != true) {
+        throw GradleException(
+            "fuzz target '$targetName': seed corpus at $corpus is missing or empty — a merge cannot start from nothing.")
+      }
+      stagingDir.deleteRecursively()
+      stagingDir.mkdirs()
+    }
+    argumentProviders.add {
+      buildList {
+        add(minimizeTargetClassArg.get())
+        add("-merge=1")
+        minimizeMaxLenArg.orNull?.let(::add)
+        add(stagingDir.absolutePath)
+        add(seedCorpus.get().asFile.absolutePath)
+        if (adoptLocalCorpus && localCorpusDir.listFiles()?.any { it.isFile } == true) {
+          add(localCorpusDir.absolutePath)
+        }
+      }
+    }
+    doLast {
+      val corpus = seedCorpus.get().asFile
+      val merged = stagingDir.listFiles()?.filter { it.isFile }.orEmpty()
+      if (merged.isEmpty()) {
+        throw GradleException(
+            "fuzz '$targetName': the merge produced an empty corpus — refusing to touch $corpus. " +
+                "Staging output: $stagingDir; the committed seed corpus is unchanged.")
+      }
+      fun sha256(file: File): String = MessageDigest.getInstance("SHA-256")
+          .digest(file.readBytes()).joinToString("") { b -> "%02x".format(b) }
+      val before = corpus.listFiles()?.filter { it.isFile }.orEmpty()
+      val beforeBytes = before.sumOf { it.length() }
+      val originalByHash = before.associateBy(::sha256)
+      val keep = mutableSetOf<File>()
+      var adopted = 0
+      for (file in merged) {
+        val original = originalByHash[sha256(file)]
+        if (original != null) {
+          keep.add(original)
+        } else {
+          file.copyTo(corpus.resolve(file.name), overwrite = true)
+          adopted++
+        }
+      }
+      val removed = before.filterNot { it in keep }
+      removed.forEach { it.delete() }
+      val afterFiles = corpus.listFiles()?.filter { it.isFile }.orEmpty()
+      logger.lifecycle(
+          "fuzz '$targetName': corpus minimized ${before.size} -> ${afterFiles.size} file(s) " +
+              "($beforeBytes -> ${afterFiles.sumOf { it.length() }} bytes) at $corpus — " +
+              "$adopted newly adopted, ${removed.size} redundant removed, surviving seeds keep their names. " +
+              "Review the diff before committing; update the provenance README next to the corpus.")
     }
   }
 }

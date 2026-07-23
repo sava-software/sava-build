@@ -134,6 +134,38 @@ $fuzzBlock
       output.contains("churn: 1 shifted, 0 newly covered, 0 unexplained"),
       "churn tally missing:\n$output"
     )
+    // with new rows present, the stale hint must point at update-after-triage,
+    // never at prune (which would drop the shifted row's old line without
+    // writing the new one)
+    assertTrue(
+      output.contains("refresh with -PupdateMutationBaseline after the new rows below are triaged"),
+      "mixed-case stale hint missing:\n$output"
+    )
+    assertFalse(output.contains("-PpruneMutationBaseline"), "must not recommend prune with new rows present:\n$output")
+  }
+
+  @Test
+  fun `the stale hint recommends the shrink-only refresh when nothing is new`() {
+    // A pass that killed baseline rows leaves stale entries and nothing fresh:
+    // the always-safe direction is prune, and recommending update here used to
+    // invite baking a single run's coin-flips into the record.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,decode,30,MathMutator,SURVIVED\n")
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,KILLED,com.example.CodecTest.roundTrips"),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("refresh with -PpruneMutationBaseline (shrink-only; nothing new to bake in)"),
+      "shrink-case stale hint missing:\n$output"
+    )
+    assertFalse(
+      output.contains("refresh with -PupdateMutationBaseline"),
+      "must not recommend the full rewrite when nothing is new:\n$output"
+    )
   }
 
   @Test
@@ -242,6 +274,126 @@ $fuzzBlock
     assertFalse(
       output.contains("every new row is a shifted counterpart"),
       "must not advise a refresh:\n$output"
+    )
+  }
+
+  @Test
+  fun `prune drops only since-killed rows and keeps flip-protected ones`() {
+    // The shrink-only refresh: rows matching this run stay (notes intact), rows whose
+    // mutants are gone are dropped, and two unmatched classes are kept anyway — a
+    // TIMED_OUT coordinate (load-dependent detection, not a kill) and a coordinate
+    // still unkilled at another status (a coverage flip the ratchet must triage).
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,10,MathMutator,SURVIVED # untriaged\n" +
+          "com.example.Codec,encode,12,MathMutator,NO_COVERAGE # unreachable claim\n" +
+          "com.example.Codec,encode,14,MathMutator,SURVIVED\n" +
+          "com.example.Codec,decode,30,MathMutator,SURVIVED # since killed\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,14,TIMED_OUT,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,10,MathMutator,SURVIVED # untriaged",
+        "com.example.Codec,encode,12,MathMutator,NO_COVERAGE # unreachable claim",
+        "com.example.Codec,encode,14,MathMutator,SURVIVED",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("com.example.Codec,decode,30,MathMutator,SURVIVED # since killed"), output)
+    assertTrue(output.contains("TIMED_OUT this run (load-dependent)"), output)
+    assertTrue(output.contains("flip pending triage"), output)
+  }
+
+  @Test
+  fun `the refresh flags are mutually exclusive`() {
+    writeFixture()
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
+      ""
+    )
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline", "-PupdateMutationBaseline")
+      .buildAndFail().output
+    assertTrue(output.contains("pass at most one of"), output)
+  }
+
+  @Test
+  fun `a sibling of an accepted identical row is surfaced, not unexplained`() {
+    // Upgrading a set-based baseline materializes sibling mutants the old comparison
+    // collapsed: a "new" row identical to an accepted row is pre-existing debt made
+    // visible, and the failure must say so instead of reporting it unexplained.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,10,MathMutator,SURVIVED\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(
+      output.contains("(sibling of an accepted identical row — surfaced by the multiset comparison; pre-existing debt, not a regression)"),
+      "sibling hint missing:\n$output"
+    )
+    assertTrue(
+      output.contains("churn: 0 shifted, 0 newly covered, 1 surfaced sibling(s), 0 unexplained (of 1 new; 0 stale)"),
+      "churn tally missing:\n$output"
+    )
+    assertTrue(output.contains("pre-existing debt made visible"), output)
+  }
+
+  @Test
+  fun `an update carries a note across a status flip, marked with the flip`() {
+    // Accepting a newly covered mutant goes through -PupdateMutationBaseline: the old
+    // NO_COVERAGE row is dropped and a SURVIVED row written at the same coordinate.
+    // The dropped row's note must travel — marked with the flip it crossed, because an
+    // acceptance written for an unreached mutant deserves a re-read once a test can
+    // observe its behaviour. A row whose status did not change keeps its note verbatim.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,NO_COVERAGE # unreachable without a decoder fixture\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED # untriaged\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,12,MathMutator,SURVIVED # unreachable without a decoder fixture (carried across NO_COVERAGE -> SURVIVED)",
+        "com.example.Codec,encode,20,MathMutator,SURVIVED # untriaged",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertTrue(output.contains("1 note(s) carried across a status flip"), output)
+
+    // idempotent: a second update with no flips leaves both notes untouched
+    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,12,MathMutator,SURVIVED # unreachable without a decoder fixture (carried across NO_COVERAGE -> SURVIVED)",
+        "com.example.Codec,encode,20,MathMutator,SURVIVED # untriaged",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }
     )
   }
 

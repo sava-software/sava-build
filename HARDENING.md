@@ -224,7 +224,26 @@ README warning. And a baseline row may carry a trailing `# note` —
 `# untriaged` is the conventional label for seeded debt — which both refresh
 flags preserve and the verify summary counts (`140 rows, 70 marked
 '# untriaged'`), so triage debt is a number the build prints rather than
-prose that drifts from the CSV it describes.
+prose that drifts from the CSV it describes. Preservation extends across a
+status flip: when a refresh rewrites a coordinate whose status changed (a
+`NO_COVERAGE` row whose line a test now reaches), the dropped row's note is
+carried onto the new row annotated `(carried across NO_COVERAGE ->
+SURVIVED)` and the summary counts the carries — the acceptance argument
+travels, but flagged for re-reading, because a reason written for an
+unreached mutant is not automatically a reason once its behaviour is
+observable *(casebook: the status-blind prune)*.
+
+The third refresh is the only one that is always safe:
+`-PpruneMutationBaseline` drops baseline rows matching nothing this run and
+adds or rewrites nothing — shrinking the baseline is always an improvement,
+and no coin-flip from the run can be baked in. Two unmatched classes are kept
+anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
+(load-dependent detection, not a kill), and rows whose coordinate still holds
+an unkilled mutant at another status (a coverage flip the ratchet must
+triage first). Reach for prune after a pass that killed baseline rows —
+never for a hand-rolled cleanup script, which is how the status-blind prune
+happened. The three flags are mutually exclusive; the build refuses a
+combination.
 
 ### `TIMED_OUT` is detected, and detection is load-dependent
 
@@ -288,8 +307,16 @@ invoked it*, and the failure looks exactly like a real regression.
   *(casebook: flip insurance that outlived its cause; the check-loop seam
   that deleted its flip insurance)*.
 
-### Two baseline-format traps
+### Three baseline-format traps
 
+- **Status is part of the row.** A `NO_COVERAGE -> SURVIVED` flip is two
+  different rows at one coordinate. A script that matches baseline rows by
+  `class,method,line,mutator` alone — say, to prune since-killed entries —
+  lets the stale row sitting earlier in the file consume the surviving
+  mutant's match and deletes the acceptance instead, leaving a baseline the
+  verify rightly fails one command after it was correct. Match on the full
+  row, and prefer the refresh flags over hand-rolled scripts *(casebook: the
+  status-blind prune)*.
 - **Duplicate rows are sibling mutants, not noise.** A compound condition
   (`a == null || b == null`) yields several mutants with identical
   `class,method,line,mutator` coordinates — one per operand or branch
@@ -297,7 +324,11 @@ invoked it*, and the failure looks exactly like a real regression.
   legitimately repeat. The comparison is a *multiset* comparison: if two
   siblings are accepted and a third appears (or a killed sibling regresses),
   the count mismatch is flagged even though the row text already exists.
-  Never hand-dedupe the file.
+  Never hand-dedupe the file. Upgrading a baseline written under the old
+  set-based comparison materializes the collapsed copies; the verify names
+  each one `(sibling of an accepted identical row — surfaced by the multiset
+  comparison)` and counts them in the churn tally — pre-existing debt made
+  visible, to accept into its documented family or kill, not a regression.
 - **Hand-edited rows can silently never match.** The canonical mutator name
   strips the `org.pitest.…gregor.mutators.` package *and* the `returns.`
   sub-package; a row spelled `returns.NullReturnValsMutator` matches nothing
@@ -579,6 +610,17 @@ build contract depends on belongs in the repo instead.
   `System.Logger` emissions too, whose default backend is JUL: attach a
   handler to `java.util.logging.Logger.getLogger(<same name>)` and assert
   the record (its `getThrown()` pins *which* failure was reported).
+- **Build the client under test inside the test body, not in a field.** With
+  `PER_CLASS` lifecycle a field-initialized client is constructed once, so
+  PIT attributes the builder's and constructor's coverage to whichever test
+  happens to run first — which can never pair a URL-wiring or configuration
+  mutant with the test that drives that URL, *even when the harness asserts
+  every path*. The mutants read `SURVIVED` with a test count that never
+  includes the right test. It is the unstable-field-initializer coverage
+  problem (see the wandering-kill-count section) wearing a REST-client
+  costume: one `urlWiringIsCoveredFromInsideTheTest`-style test that builds
+  the client in the test method restores the pairing *(casebook: the client
+  built in a field initializer)*.
 - **Reach for package-private, not reflection, when a test needs an
   internal.** Same-package tests see it, a rename fails at compile time
   instead of runtime, and reflective indirection is exactly what makes a
@@ -610,6 +652,23 @@ classes can delete them once nothing in them exceeds that; seed provenance
 prose (what each input pins) moves to a README **next to** the corpus
 directory — never inside it, where the file would itself be fed to the
 harness as a seed.
+
+**Minimize the corpus with the tool, not by hand.** `fuzz<Target>Minimize`
+wraps libFuzzer's `-merge=1`: it keeps only the inputs that add coverage,
+smallest first. By default the only source is the committed seed corpus —
+pure dedup, a no-op on a corpus whose every seed earns its place.
+`-PadoptLocalCorpus` adds what the local `fuzz<Target>` runs accumulated
+under `build/` as a second source, folding locally found interesting inputs
+into the committed set — deliberately opt-in, because a long local campaign
+can contribute megabytes of hash-named files, and because smaller local
+inputs can displace a *named* seed whose coverage they replicate. The merge
+writes to a staging directory and the seed corpus is replaced only from a
+non-empty result, so a failed merge cannot wipe a committed corpus; seeds
+whose content survives keep their committed file names (corpora name seeds
+meaningfully — an account address, a minimized finding), and only genuinely
+new inputs arrive under libFuzzer's hash names. Review the diff before
+committing, and update the provenance README next to the corpus for anything
+adopted or removed.
 
 **When a reference implementation would re-derive the same bugs, generate
 the oracle instead.** For a parser whose natural differential partner is
@@ -901,6 +960,13 @@ paste.
 >   abstract base (version-dependent — JUnit 6 marks both `@Inherited`; check
 >   the resolved jar), and coverage attributed to field initializers —
 >   exercise factories from inside a `@Test`.
+> - **Build the subject under test inside the test body, not in a field.**
+>   Under `PER_CLASS` lifecycle a field-initialized client's construction
+>   coverage attaches to whichever test runs first, so wiring mutants can
+>   never pair with the test that drives what they wire — they survive even
+>   under a harness that asserts every request. One test that constructs the
+>   client in the test method and drives each configured URL restores the
+>   pairing.
 > - **Kill rates are bounded by the mutator set.** `BigInteger`/`BigDecimal`
 >   arithmetic is method calls, invisible to the default arithmetic mutators —
 >   fixed-point and fee math needs `EXPERIMENTAL_BIG_INTEGER` (pitest ≥

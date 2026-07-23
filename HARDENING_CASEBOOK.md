@@ -427,3 +427,57 @@ oversubscription inflates, and exactly what PIT re-runs most.
 Rules: *rank test durations before touching timeout knobs, and prefer factor
 over constant*; *thread counts are measured, not assumed — a timing-heavy
 suite can lose throughput to parallelism*.
+
+## The status-blind prune
+
+During a downstream adoption, an agent accepted six newly covered mutants by
+hand-appending `SURVIVED # reason` rows — legitimately: the next run matched
+them and passed. Then its own cleanup script pruned "since-killed" baseline
+rows by matching `class,method,line,mutator` *without the status field*,
+first match wins in file order. Each coordinate still carried its old
+`NO_COVERAGE` row from the seeded baseline; that stale row, sitting earlier
+in the file, consumed the run's one `SURVIVED` mutant and the script deleted
+the freshly written acceptance instead. The verify then — correctly — paired
+the leftover `NO_COVERAGE` row with the run's `SURVIVED` mutant, reported
+`newly covered — triage, not a refresh`, and failed a baseline that had been
+right one command earlier. The failure was initially misdiagnosed as the
+verify refusing hand-edited acceptances; the tool was right and the script
+was wrong, which is the point of recording it.
+
+The second-order cost: recovering via `-PupdateMutationBaseline` rewrote the
+flipped coordinates with fresh noteless rows, so the hand-written acceptance
+reasons had to be re-added a third time. The refresh now carries a dropped
+row's note onto the rewritten row at the same coordinate, annotated
+`(carried across NO_COVERAGE -> SURVIVED)` — the argument travels, flagged
+for re-reading rather than silently re-trusted.
+
+Rules: *status is part of the row — a `NO_COVERAGE -> SURVIVED` flip is two
+different rows at one coordinate, and any script touching a baseline must
+match on the full row*; *to accept a newly covered mutant, flip the existing
+row's status in place or let the refresh rewrite it — the note survives
+either way*.
+
+## The client built in a field initializer
+
+A REST-client test class held its client in a field — `private final client =
+buildClient()` — under `PER_CLASS` lifecycle, over a loopback harness that
+matched every request's method and path. Coverage-wise that construction runs
+once, attributed to whichever test executes first: a dexLabel test, say, which
+never calls `swap()`. So the `URI::resolve` wiring mutants for `swapURI` and
+`executeUltraOrderURI` read `SURVIVED` with `numberOfTestsRun=2` — PIT
+faithfully ran the two tests its coverage said reach the builder, and neither
+was the test that drives those URLs. The harness asserting every path was no
+defense, because the pairing between "mutant runs" and "request asserted"
+could never form. Nothing wanders, so the wandering-count rule never fires;
+the row just sits in the baseline looking like a triage judgment call.
+
+One test that builds the client *inside the test body* and drives each
+resolved URL killed all of them at once, plus the response-mapping mutant
+(`thenApply` dropped: the raw `HttpResponse` future flows through erased
+generics until a field access finally CCEs — assert a parsed field, not
+`assertNotNull`).
+
+Rules: *construction wiring is only testable by the test that constructs —
+build the client in the test method, and drive every URL it resolves from
+there*; *a `SURVIVED` builder/constructor mutant in a `PER_CLASS` test class
+with a field-initialized subject is this pattern until proven otherwise*.
