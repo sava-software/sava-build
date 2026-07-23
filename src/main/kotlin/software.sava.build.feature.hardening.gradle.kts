@@ -3,6 +3,8 @@ import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 plugins {
@@ -1000,12 +1002,20 @@ hardening.mutation.all {
   // Minion-side test failures repeat once per mutant that reruns the test, burying
   // the useful output under identical stack traces. First occurrence passes through;
   // repeats are counted and summarized after the run.
-  class MinionLineFilter(private val delegate: OutputStream) : OutputStream() {
+  //
+  // Both of the process's streams are filtered: PIT logs through java.util.logging,
+  // whose default console handler writes to *stderr*, so a stdout-only filter sees
+  // none of the minion chatter it exists to collapse. The two streams share the
+  // seen-set and the counter — a repeat is a repeat whichever stream carried it —
+  // and Gradle pumps each on its own reader thread, hence the concurrent state; the
+  // partial-line buffer stays per-stream so interleaved writes cannot splice.
+  class MinionLineFilter(
+      private val delegate: OutputStream,
+      private val seen: MutableSet<String>,
+      private val suppressed: AtomicInteger
+  ) : OutputStream() {
+    // (constructed only through MinionFilters, which owns the shared state)
     private val buffer = ByteArrayOutputStream()
-    private val seen = HashSet<String>()
-    @Volatile
-    var suppressed = 0
-      private set
 
     override fun write(b: Int) {
       buffer.write(b)
@@ -1020,7 +1030,7 @@ hardening.mutation.all {
       if (line.contains("PIT >> INFO : MINION :")) {
         val content = line.substringAfter("MINION :").trim()
         if (!seen.add(content)) {
-          suppressed++
+          suppressed.incrementAndGet()
           return
         }
       }
@@ -1036,6 +1046,22 @@ hardening.mutation.all {
         flushLine()
       }
       delegate.flush()
+    }
+  }
+
+  // One filter per process stream, sharing the seen-set and counter (a repeat
+  // is a repeat whichever stream carried it); created at execution time so the
+  // configuration cache never sees a live stream.
+  class MinionFilters {
+    private val seen = ConcurrentHashMap.newKeySet<String>()
+    private val suppressed = AtomicInteger()
+    val out = MinionLineFilter(System.out, seen, suppressed)
+    val err = MinionLineFilter(System.err, seen, suppressed)
+
+    fun closeAndCount(): Int {
+      out.close()
+      err.close()
+      return suppressed.get()
     }
   }
 
@@ -1100,23 +1126,26 @@ hardening.mutation.all {
     // must say why, and the pre-release gate re-earns its numbers with
     // '-PnoMutationHistory'.
     val scopedMarker = layout.buildDirectory.file("reports/pitest/$reportSubdir/.scoped")
-    // holder so doFirst can hand the execution-time filter stream to doLast without
+    // holder so doFirst can hand the execution-time filters to doLast without
     // the configuration cache trying to serialize a live stream
-    val minionFilter = AtomicReference<Any?>()
+    val minionFilters = AtomicReference<MinionFilters?>()
     doFirst {
       this as JavaExec
-      // the default (null) standard output forwards to the console; the filter
-      // keeps that destination while deduplicating repeated minion stack traces
-      standardOutput = MinionLineFilter(System.out).also(minionFilter::set)
+      // the default (null) standard output and error both forward to the console; the
+      // filters keep that destination while deduplicating repeated minion log lines
+      val filters = MinionFilters()
+      standardOutput = filters.out
+      errorOutput = filters.err
+      minionFilters.set(filters)
     }
     doLast {
       val marker = scopedMarker.get().asFile
       if (mutateOnly.isPresent) marker.writeText(mutateOnly.get() + "\n") else marker.delete()
-      (minionFilter.get() as? MinionLineFilter)?.let { filter ->
-        filter.close()
-        if (filter.suppressed > 0) {
+      minionFilters.get()?.let { filters ->
+        val suppressed = filters.closeAndCount()
+        if (suppressed > 0) {
           logger.lifecycle(
-              "pitest: suppressed ${filter.suppressed} repeated minion log line(s) — " +
+              "pitest: suppressed $suppressed repeated minion log line(s) — " +
                   "first occurrence of each is above"
           )
         }

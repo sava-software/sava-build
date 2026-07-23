@@ -533,6 +533,16 @@ providers there is no clean dual form; accept the uncovered path as
 unreachable in-harness and name the escape (a blackbox test module with its
 own descriptor).
 
+That world is built by recompiling **every** main and test source into one
+class-path root, which makes a git-ignored source file a parity hazard: it is
+compiled on the machine that has it and absent everywhere else, so the tools
+see a different class path per checkout. `hardening.recompileExcludes =
+listOf("Integ.java")` drops such files by file name (a suite's
+`excludedClasses` only keeps them out of the *mutant population* — the class
+is still on the path, still loadable, still able to drag a dependency in).
+Reach for it for scratch drivers and local experiment classes; anything a
+build contract depends on belongs in the repo instead.
+
 ## Test conventions for new or changed API
 
 - **Value, null/empty, and wrong-type cases** for every reader; type-guarded
