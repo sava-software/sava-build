@@ -1,5 +1,18 @@
 # Changelog
 
+## [21.5.13](https://github.com/sava-software/sava-build/compare/21.5.12...21.5.13) (2026-07-24)
+
+
+### Features
+
+* **hardening:** add smoke test for detected-sibling hint in unkilled listing ([f9ca45a](https://github.com/sava-software/sava-build/commit/f9ca45a9f95f5d2b54f2fd48a47adff379627aee))
+* **hardening:** warn on unresolved labels in baseline and debt listing ([77ff89b](https://github.com/sava-software/sava-build/commit/77ff89b254c4ed76100c469c4f9f2f6e3bfd3105))
+
+
+### Bug Fixes
+
+* **hardening:** read configured classpath to fix inconsistent recompile failures ([e7356ac](https://github.com/sava-software/sava-build/commit/e7356acdc03f07fdbe0cb14f6fbc9844f601077a))
+
 ## [21.5.12](https://github.com/sava-software/sava-build/compare/21.5.11...21.5.12) (2026-07-24)
 
 
