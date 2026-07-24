@@ -1,5 +1,14 @@
 # Changelog
 
+## [21.5.14](https://github.com/sava-software/sava-build/compare/21.5.13...21.5.14) (2026-07-24)
+
+
+### Features
+
+* **hardening:** add comprehensive smoke tests for hardening plugin behaviors ([489b24a](https://github.com/sava-software/sava-build/commit/489b24a19129e98b897e001cc11806dc386901db))
+* **hardening:** add unit tests for atomic writes and baseline parsing ([cdabf62](https://github.com/sava-software/sava-build/commit/cdabf62a7c210722b115ce21a5e75c346919a978))
+* **publish:** add retryDelayMillis support for configurable retries ([8646d14](https://github.com/sava-software/sava-build/commit/8646d146d4dba54836d2b5912e7aa25c1b710ddd))
+
 ## [21.5.13](https://github.com/sava-software/sava-build/compare/21.5.12...21.5.13) (2026-07-24)
 
 
