@@ -567,3 +567,91 @@ damaged baseline rather than a broken ratchet.
 Rules: *writes to the accepted record are atomic or they are bugs*; *a
 verify reporting the whole population as unexplained-new is diagnosing the
 baseline file, not the code*.
+
+## The recompile that only failed when another compile ran
+
+During the incident-client adoption, `compileForPitest` failed three times in
+one afternoon with the same shape: exactly 100 errors (javac's cap), every
+import unresolved — external jars, dependency projects, junit itself — and an
+immediate green re-run. Each failure looked like a transient and was waved
+through with the "run it twice" reflex, which is precisely why it survived
+long enough to be diagnosed by daemon-log archaeology instead of at first
+sight.
+
+The mechanism was deterministic all along. The recompile read its classpath
+from the live task — `tasks.named("compileTestJava").map { it.classpath }` —
+and the whitebox JPMS test plugin rewrites `compileTestJava`'s classpath
+*while that task executes*, moving entries to the module path. So the value
+the recompile observed depended on whether `compileTestJava` had actually run
+in that invocation: after a clean or a test-source edit it executed, the
+property was emptied under the recompile's feet, and the build failed; on
+retry the task was up-to-date, its `doFirst` never fired, and the stale
+configured value read fine. Reproduction was one command once the mechanism
+was suspected: `clean` then `compileForPitest` failed every time.
+
+The fix reads the *configured* `sourceSets.test.compileClasspath` instead of
+the live task's property — same contents, immune to execution-time rewiring.
+Rules: *a "transient" with a reproducible precondition is a bug wearing a
+flake's clothing — the daemon log keeps the evidence to tell them apart*;
+*never read another task's mutable state at execution time; snapshot
+configuration-time state instead*.
+
+## The sibling guessed wrong three times
+
+Triaging the incident-client seed, three survivors in a row were misread
+before the XML settled them. A compound condition compiles to one mutant per
+operand and branch direction, all sharing `class,method,line,mutator` — and
+"removed conditional - replaced equality check with true" does not say which
+operand. Each time, the plausible reading ("the isEmpty check, obviously")
+was wrong: the survivor was the null-operand direction reachable only through
+a caller-supplied implementation, or the blank-string direction of a
+`null || isBlank()` chain whose null side was already pinned.
+
+The tell that resolves it without guessing already existed in the report:
+`mutations.xml` records which test killed the twin at the same coordinate,
+and the survivor is the *opposite* direction of whatever that test pinned.
+The verify computed exactly this hint — `[detected sibling at this line:
+KILLED by <test>]` — but printed it only on ratchet failures and scoped runs,
+not on `-PlistUnkilled`, which is where triage actually reads rows. The fix
+wires the hint into the `listUnkilled` listing. Rules: *identify which
+sibling survived before arguing with it — the killed twin's test names the
+direction*; *put triage information where the triager is looking*.
+
+## The stub that returned the mutant's value
+
+Two adapter suites carried an unkillable `NullReturnValsMutator` on a
+`httpClient()` delegation — because the test stub's own `httpClient()`
+returned null, so replacing the delegating return with `null` produced a
+byte-identical observable. The mutant was equivalent purely by accident of
+the fixture; a one-line stub change (return a real shared `HttpClient`) plus
+an `assertSame` turned both into ordinary kills.
+
+This is the fixture-value trap in general form, already known in one
+special case — a test clock starting at 0 makes every "timestamp mutated to
+0" mutant equivalent. A stub returning null, 0, `""`, `true`, or an empty
+collection silently blinds the corresponding return-value mutant wherever
+the stubbed value flows. Rule: *fixtures return distinguishable, non-default
+values — a stub that returns the mutator's replacement value has withdrawn
+that mutant from the game before the tests were consulted*.
+
+## The copy-on-write family that split
+
+The incident-client repo's guidance said survivors from the copy-on-write
+builder pattern (`size() > 1 ? copy : as-is`) "are largely equivalent
+mutants; don't chase them" — and 22 of the seeded rows matched the pattern.
+Triaging them as one family would have been wrong in the direction that
+matters: the family splits by branch direction, and one half is real.
+
+The content-equal half (`ORDER_IF`, boundary flips routing a size-≤1
+collection through the copying branch) only ever exchanges one immutable
+collection for an equal one — genuinely equivalent, accepted with the
+family label. But the mutable-escape half (`ORDER_ELSE`: a multi-entry
+`ArrayList`/`LinkedHashMap` returned as-is where the code promises an
+unmodifiable view) is observable with one assertion the API already
+implies: `assertThrows(UnsupportedOperationException, () ->
+record.links().add(...))`. Immutability tests at both sizes killed every
+escape-direction mutant in the family, leaving only the equal-content
+siblings for acceptance — and one seeded row that read as family noise was
+exactly such an escape. Rules: *a family acceptance is per-direction, not
+per-pattern*; *assert immutability of returned collections — it converts
+the escape half of every copy-on-write cluster into kills*.

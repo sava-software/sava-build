@@ -232,7 +232,11 @@ unlabeled`; the debt task prints the same breakdown), so triage state is a
 number the build prints rather than prose that drifts from the CSV it
 describes — and prose line numbers rot on the first edit, while a label
 rides its row through every shift and refresh. Rows that predate seeding
-print as `unlabeled`; label them when touched. Surfaced siblings are never
+print as `unlabeled`; label them when touched. A label is also a pointer to
+its argument: the verify warns when a family label has no `# <label>`
+mention in `config/pitest/README.md`, so a typo'd label or an orphaned
+argument surfaces instead of silently opening a new bucket
+(`# untriaged` is exempt — seeded debt needs no section). Surfaced siblings are never
 auto-labeled: notes are keyed by row text, and a second label on a
 duplicate row would collide with its twin's on reload. All baseline
 rewrites land atomically (a sibling temp file moved over the target), so an
@@ -384,7 +388,8 @@ Worked in this order, each step cheaper than the one after it:
 2. **Identify which sibling survived.** For `RemoveConditional` pairs on
    compound conditions, one bytecode direction is usually killed and its
    same-coordinate sibling survives; the verify prints
-   `[detected sibling at this coordinate: KILLED by <test>]` on such rows.
+   `[detected sibling at this line: KILLED by <test>]` on such rows — in the
+   ratchet-failure listing, scoped runs, and `-PlistUnkilled` alike.
    The survivor is the *opposite* branch of whatever that test pinned —
    often an in-lock recheck or short-circuit leg that only a concurrent
    interleaving could observe. Triage it as its own mutant; do not assume it
@@ -424,6 +429,13 @@ family rather than listing rows:
   killable only by asserting reference identity the API does not promise.
 - **Identity short-circuits** — `this == o ||` atop `equals`; removal falls
   through to a field comparison with the same answer.
+- **Copy-on-write routing — accepted per-direction, never per-pattern** —
+  `size() > 1 ? unmodifiableCopy : as-is` clusters split by branch
+  direction: swapping one immutable collection for an equal one is
+  equivalent, but the direction that lets a mutable multi-entry collection
+  escape an API promising unmodifiable views is a kill — one
+  `assertThrows(UnsupportedOperationException, ...)` per size converts it
+  *(casebook: the copy-on-write family that split)*.
 - **Defensive code unreachable in context** — note *why* it is unreachable;
   that claim is the part that rots.
 
@@ -625,6 +637,12 @@ build contract depends on belongs in the repo instead.
 - **Records with array components compare by identity.** `assertEquals` on
   such a record is an identity check dressed as a value assertion. Compare
   scalar fields and `assertArrayEquals` the arrays.
+- **Stubs return distinguishable, non-default values.** A fixture method
+  returning null, 0, `""`, `true`, or an empty collection makes the
+  corresponding return-value mutant equivalent by accident wherever that
+  value flows — the rule already named for clocks (non-zero origin)
+  generalized to every stubbed return *(casebook: the stub that returned
+  the mutant's value)*.
 - **"Wire-invisible" configuration is usually observable through an injected
   recording collaborator.** An executor preference, a thread-pool binding — a
   recording wrapper that delegates and counts turns "no test can see this"
@@ -973,6 +991,14 @@ paste.
 >   the comparison is a multiset: never hand-dedupe. When one sibling
 >   survives, the verify names the killed sibling's test — the survivor is
 >   the opposite branch direction; triage it as its own mutant.
+> - **Stubs and fixtures return distinguishable, non-default values.** A stub
+>   returning null/0/""/true/empty makes the matching return-value mutant
+>   equivalent by accident of the fixture — the clock non-zero-origin rule
+>   generalized to every stubbed return.
+> - **Copy-on-write clusters split by direction.** Assert immutability of
+>   returned collections (`assertThrows(UnsupportedOperationException, ...)`)
+>   at every size: the mutable-escape direction is a kill, not an acceptance;
+>   only the content-equal siblings are family-accepted equivalents.
 > - **Randomized tests use fixed seeds, and never sleep**: the ratchet needs
 >   deterministic kills, and PIT re-runs the suite per mutant, so one real wait
 >   costs minutes. Exploration belongs to the fuzz targets.

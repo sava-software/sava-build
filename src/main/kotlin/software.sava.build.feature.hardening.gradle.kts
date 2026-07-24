@@ -81,11 +81,15 @@ fun registerRecompile(taskName: String, tool: String, destination: Provider<Dire
     exclude { element -> !element.isDirectory && element.file.name in recompileExcludes.get() }
     modularity.inferModulePath = false
     // dependency jars only — including other projects' — while this project's own
-    // outputs are recompiled from source instead
+    // outputs are recompiled from source instead. Read the *configured* source-set
+    // classpath, never the live 'compileTestJava' task's property: the whitebox JPMS
+    // test plugin rewrites that task's classpath while the task executes, so reading
+    // it here hands this recompile an emptied classpath on exactly the runs where
+    // compileTestJava had work to do, while an up-to-date run leaves it intact — a
+    // first-run-only failure that vanishes on retry (casebook: the recompile that
+    // only failed when another compile ran).
     val ownBuildDir = layout.buildDirectory.get().asFile.absolutePath + File.separator
-    classpath = files(tasks.named<JavaCompile>("compileTestJava").map { task ->
-      task.classpath.filter { !it.absolutePath.startsWith(ownBuildDir) }
-    })
+    classpath = sourceSets.test.get().compileClasspath.filter { !it.absolutePath.startsWith(ownBuildDir) }
     destinationDirectory = destination
     options.release = release
   }
@@ -511,6 +515,7 @@ hardening.mutation.all {
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
     val xmlProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.xml")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
+    val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
     val update = providers.gradleProperty("updateMutationBaseline").isPresent
     val union = providers.gradleProperty("unionMutationBaseline").isPresent
     val prune = providers.gradleProperty("pruneMutationBaseline").isPresent
@@ -676,9 +681,14 @@ hardening.mutation.all {
         return " [detected sibling at this line: ${siblings.distinct().joinToString("; ")}]"
       }
       if (listUnkilled && current.isNotEmpty()) {
+        // the sibling hint does the coordinate disambiguation the CSV cannot: for a
+        // survivor at a coordinate whose twin was detected, it names the twin's killer,
+        // so the triager reads the surviving direction off the build output instead of
+        // reconstructing it from mutations.xml (casebook: the sibling guessed wrong
+        // three times)
         logger.lifecycle(
             "pitest '$suiteName' unkilled:\n" +
-                current.joinToString("\n") { row -> "  $row${describe(row)}" }
+                current.joinToString("\n") { row -> "  $row${describe(row)}${siblingHint(row)}" }
         )
       }
 
@@ -727,6 +737,32 @@ hardening.mutation.all {
       // which predate seeding — named rather than folded into a bucket).
       BaselineNotes.summarize(accepted.mapNotNull { annotations[it] }, accepted.count { annotations[it] == null })
           ?.let { logger.lifecycle("pitest baseline '$suiteName': ${accepted.size} rows — $it") }
+      // A family label is a pointer to its argument in config/pitest/README.md; a
+      // typo'd label silently opens a new bucket and a deleted README section orphans
+      // its rows. Warned rather than failed, mirroring the scaffolding check: the gap
+      // may predate this check, and a fresh '-PunionModeFlips' row legitimately lands
+      // before its README criterion is written. '# untriaged' is the seeded-debt
+      // convention and needs no section.
+      val undocumentedLabels = accepted.asSequence()
+          .mapNotNull { annotations[it] }
+          .map { BaselineNotes.labelOf(it) }
+          .distinct()
+          .filter { it != "untriaged" }
+          .toList()
+          .let { labels ->
+            if (labels.isEmpty()) emptyList()
+            else {
+              val readme = readmeFile.takeIf { it.isFile }?.readText() ?: ""
+              labels.filterNot { readme.contains("# $it") }
+            }
+          }
+      if (undocumentedLabels.isNotEmpty()) {
+        logger.warn(
+            "pitest baseline '$suiteName': label(s) with no argument in config/pitest/README.md — " +
+                undocumentedLabels.joinToString(", ") { "'# $it'" } +
+                " — document the family there, or fix the label if it is a typo"
+        )
+      }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
       // benign flavour (KILLED<->TIMED_OUT under load) and the dangerous one
@@ -1116,6 +1152,7 @@ hardening.mutation.all {
     description = "Prints the '$suiteName' unkilled-mutant debt grouped by class, largest first, with the baseline delta."
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
+    val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
     doLast {
       fun tally(pairs: List<Pair<String, String>>): Map<String, Pair<Int, Int>> = pairs
           .groupBy({ it.first }, { it.second })
