@@ -6,12 +6,12 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.File
 
 /**
- * Behavioural smoke test for 'hardeningInit', the one-shot adoption scaffolding:
+ * Functional test for 'hardeningInit', the one-shot adoption scaffolding:
  * writes config/pitest/README.md and the .gitignore line only where they are absent,
  * never overwrites what exists, and prints the adoption checklist with the current
  * template digest.
  */
-class HardeningInitSmokeTest {
+class HardeningInitFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File

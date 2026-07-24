@@ -7,14 +7,14 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.File
 
 /**
- * Behavioural smoke test for the execution-time plumbing around the tool JavaExec
+ * Functional test for the execution-time plumbing around the tool JavaExec
  * tasks: the minion-line filter (dedup across both streams, summary and buffered-tail
  * survival on a failing exit), the '.scoped' marker lifecycle, and the corpus
  * minimize's hash-based adoption. The fixture hijacks each task's mainClass to a
  * fixture-compiled fake ('FakePit' / 'FakeMerge') and replaces its classpath, so the
  * plugin's own doFirst/doLast logic runs for real with no PIT or Jazzer involved.
  */
-class HardeningToolExecSmokeTest {
+class HardeningToolExecFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File

@@ -7,11 +7,11 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.File
 
 /**
- * Behavioural smoke test for the mutation ratchet and the generators: fabricates PIT
+ * Functional test for the mutation ratchet and the generators: fabricates PIT
  * reports (CSV + XML) so 'pitest<Suite>Verify' and the baseline flags can be exercised
  * without resolving or running PIT itself.
  */
-class HardeningRatchetSmokeTest {
+class HardeningRatchetFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File

@@ -6,13 +6,13 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.File
 
 /**
- * Behavioural smoke test for 'pitestConverge' / 'pitestConvergeSnapshot' and
+ * Functional test for 'pitestConverge' / 'pitestConvergeSnapshot' and
  * 'pitestMutatorTrial': fabricates PIT reports and excludes the real PIT executions
  * with '-x' (unlike pitestModeSnapshot, these aggregates hard-depend on the run
  * tasks), so the snapshot/diff/tabulation logic runs against known statuses without
  * resolving or running PIT.
  */
-class HardeningConvergeSmokeTest {
+class HardeningConvergeFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File

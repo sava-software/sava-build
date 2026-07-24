@@ -683,6 +683,30 @@ runs via `-PmaxFuzzTime`. Every finding becomes two artifacts: a minimized
 input committed to the seed corpus, and a named regression unit test. A crash
 fixed without both is a crash that can return.
 
+**Silence operator diagnostics by the logger's declaration site, not the
+class that logs.** A parser that logs each failure at ERROR with the full
+document floods a campaign into gigabytes, so harnesses silence it through
+the JUL backend — but the name that matters is where the `System.Logger`
+field is *declared*: a logger inherited from an interface carries the
+interface's name, while JUL's formatter prints the *source class*, so a
+silence keyed to the class you see in the output compiles, looks right
+against the very lines it fails to suppress, and silences nothing. Verify a
+silence by running the harness and seeing zero lines — never by reading the
+log format *(casebook: the silence that named the wrong logger)*.
+
+**A long campaign writes to a file, and a fuzzer that stops printing may be
+frozen, not finished.** libFuzzer prints progress to the launching pipeline;
+when the consumer dies, the next progress write blocks forever inside native
+code and the JVM parks `RUNNABLE` in `startLibFuzzer` — by thread state
+alone, indistinguishable from a healthy quiet stretch. The tell is the CPU
+delta: a fuzzing JVM accumulates CPU continuously, a frozen one stops cold.
+Route campaign output straight to a file rather than through any consumer
+that can die mid-run. And a killed campaign dumps each in-flight input as a
+`crash-<hash>` artifact — one per parallel target, all stamped the kill
+moment, reproducing nothing: dump-on-death, not findings; replay against the
+harness before treating them as crashes *(casebook: the fuzzer frozen by its
+own stdout)*.
+
 **Replay the corpus inside `check`.** A committed corpus that only runs when
 someone remembers to fuzz is a directory of files, not a regression suite;
 feeding every seed through the harness costs milliseconds per build. The

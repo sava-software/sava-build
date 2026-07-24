@@ -11,7 +11,7 @@ import java.io.File
  * fixture (no javaModules) so no dependency resolution against remote repositories occurs.
  * The extension properties mirror the consumer repositories' 'jlinkApplication' blocks.
  */
-class JlinkFeatureSmokeTest {
+class JlinkFeatureFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File

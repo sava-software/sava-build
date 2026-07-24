@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference
  * a fake software.sava artifact from a local Maven repository, the task digests it, asks a
  * mock GitHub attestations API for bundles, and verifies them via a stub cosign executable.
  */
-class AttestationsSmokeTest {
+class AttestationsFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File

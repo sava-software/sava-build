@@ -7,13 +7,13 @@ import java.io.File
 import java.security.MessageDigest
 
 /**
- * Behavioural smoke test for 'agentsTemplateInSync': fixture repos with a missing,
+ * Functional test for 'agentsTemplateInSync': fixture repos with a missing,
  * marker-less, stale, and current AGENTS.md exercise the acknowledgment check without
  * resolving any tool dependencies. The expected digest is recomputed here from
  * HARDENING.md with the generator's own algorithm, so drift on either side of the
  * generator/task contract fails this test before it fails every consuming repo.
  */
-class AgentsTemplateSyncSmokeTest {
+class AgentsTemplateSyncFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File

@@ -655,3 +655,46 @@ siblings for acceptance — and one seeded row that read as family noise was
 exactly such an escape. Rules: *a family acceptance is per-direction, not
 per-pattern*; *assert immutability of returned collections — it converts
 the escape half of every copy-on-write cluster into kills*.
+
+## The silence that named the wrong logger
+
+A 600-second six-target campaign died at the ten-minute mark with a 5.1 GB
+log: 6.9 million SEVERE lines, each carrying a full mutated IDL document.
+The harness *had* the flood defense — a held reference to the JUL logger for
+the parser class, level OFF, exactly as documented — and it silenced
+nothing, because the parser's ERROR calls go through a `System.Logger` field
+it inherits from an interface, so the logger's name is the *interface's*
+fully-qualified name. JUL's formatter prints the source class and method
+(`AnchorProgramDefinition parseIDL`), so the flood itself displayed the name
+the silence was keyed to; every eyeball check confirmed the wrong belief.
+The second unsilenced logger (a named-type parser with its own ERROR spray)
+was found the same minute, once the first lie was visible.
+
+Rules: *silence a logger by its declaration site — an interface-inherited
+`System.Logger` carries the interface's name, and the formatter's class
+column is not the logger name*; *verify a silence empirically — a silenced
+harness prints zero lines, and reading the output format is how this one
+survived review*.
+
+## The fuzzer frozen by its own stdout
+
+The relaunched campaign streamed through a filtering pipe whose consumer
+died at the same ten-minute mark. Three of six targets then "ran" for an
+hour: log file static, JVMs alive, threads `RUNNABLE` inside native
+`startLibFuzzer` — which reads as a healthy quiet stretch, because a blocked
+native `write(2)` to a full pipe does not park a Java thread state. What
+settled it was the CPU column, not the thread dump: ~153 s of CPU over
+3,900 s elapsed, and no growth between samples. libFuzzer freezes at
+whatever instant its progress write cannot complete, silently discarding
+the rest of the campaign.
+
+The first kill had a second deception waiting: six `crash-<hash>` files, one
+per parallel target, all stamped the kill minute. Replayed against every
+harness, none reproduced — libFuzzer dumps its in-flight input on abnormal
+death, so kill artifacts wear crash artifacts' clothing and classify only by
+replay.
+
+Rules: *campaign output goes to a file, never through a consumer that can
+die mid-run*; *a fuzzer that stopped printing is diagnosed by CPU delta,
+not thread state*; *crash artifacts stamped at the kill moment that replay
+clean are dump-on-death, not findings*.

@@ -18,7 +18,7 @@ import java.util.zip.ZipFile
  * project bundles them via 'software.sava.build.feature.publish-maven-central'. Only the
  * upload itself is not exercised (it needs real credentials and an external service).
  */
-class CentralPortalBundleSmokeTest {
+class CentralPortalBundleFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
