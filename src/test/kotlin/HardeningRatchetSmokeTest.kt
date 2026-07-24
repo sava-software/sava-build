@@ -26,6 +26,8 @@ class HardeningRatchetSmokeTest {
     // the fuzz targets emit generated junit test sources; omit them when a test
     // actually compiles the fixture (the fixture declares no junit dependency)
     registerFuzz: Boolean = true,
+    // caps the 'codec' target when a test exercises the oversized-seed refusal
+    codecMaxLen: Int? = null,
     // pin the recompile's bytecode target when a test actually runs it: the fixture
     // sets no toolchain, so the recompile runs on the daemon JDK, which this build
     // pins to 21 via gradle/gradle-daemon-jvm.properties
@@ -37,6 +39,7 @@ class HardeningRatchetSmokeTest {
           fuzz.register("codec") {
             targetClass = "com.example.CodecFuzz"
             seedCorpus = layout.projectDirectory.dir("src/test/resources/fuzz/codec")
+            ${if (codecMaxLen != null) "maxLen = $codecMaxLen" else ""}
           }
           fuzz.register("outside") {
             targetClass = "com.example.OutsideFuzz"
@@ -527,6 +530,39 @@ $fuzzBlock
 
     val single = runner("pitestModeCompare").buildAndFail()
     assertTrue(single.output.contains("at least two labeled snapshots"), single.output)
+  }
+
+  @Test
+  fun `a committed seed larger than maxLen is refused, never truncated`() {
+    // libFuzzer clips oversized inputs on load: a fuzz run explores a truncated copy,
+    // and the minimize merge re-hashes the clip — adopting it hash-named and deleting
+    // the named original. Both tasks must refuse before Jazzer runs, naming only the
+    // offending seed, and the committed corpus must be untouched.
+    writeFixture(codecMaxLen = 16)
+    val corpus = File(fixtureDir, "src/test/resources/fuzz/codec").apply { mkdirs() }
+    corpus.resolve("named-probe").writeText("x".repeat(64))
+    corpus.resolve("small-seed").writeText("ok")
+
+    val refused = runner("fuzzCodecSeedLenCheck").buildAndFail().output
+    assertTrue(refused.contains("1 seed(s) exceed maxLen=16"), refused)
+    assertTrue(refused.contains("named-probe (64 bytes, committed)"), refused)
+    assertFalse(refused.contains("small-seed"), "the in-cap seed must not be named:\n$refused")
+    assertTrue(refused.contains("delete the named original"), refused)
+
+    assertEquals("x".repeat(64), corpus.resolve("named-probe").readText(), "the corpus must be untouched")
+    assertEquals(listOf("named-probe", "small-seed"), corpus.listFiles()!!.map { it.name }.sorted())
+
+    // both consumers gate on the check (dry-run: the fixture cannot compile the
+    // generated junit replay sources, and no Jazzer download belongs in this test)
+    val fuzzPlan = runner("fuzzCodec", "--dry-run").build().output
+    assertTrue(fuzzPlan.contains(":fuzzCodecSeedLenCheck SKIPPED"), fuzzPlan)
+    val minimizePlan = runner("fuzzCodecMinimize", "--dry-run").build().output
+    assertTrue(minimizePlan.contains(":fuzzCodecSeedLenCheck SKIPPED"), minimizePlan)
+
+    // an uncapped target has nothing to refuse — the check is inert, not a new demand
+    writeFixture()
+    val uncapped = runner("fuzzCodecSeedLenCheck").build()
+    assertFalse(uncapped.output.contains("FAILED"), uncapped.output)
   }
 
   @Test

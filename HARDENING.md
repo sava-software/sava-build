@@ -670,6 +670,17 @@ new inputs arrive under libFuzzer's hash names. Review the diff before
 committing, and update the provenance README next to the corpus for anything
 adopted or removed.
 
+That name-keeping guarantee has one hole libFuzzer digs itself: any input
+longer than `max_len` is silently truncated on load, so a committed seed
+larger than the target's `maxLen` reaches the merge as a clipped copy with a
+new hash — which would be adopted hash-named while the named original is
+deleted, degrading exactly what the seed pins (a depth-bound probe fell below
+the bound it probes). The same truncation applies on every `fuzz<Target>`
+run: the campaign explores the clip, not the seed. Both tasks therefore
+refuse up front when a committed seed exceeds `maxLen` — raise the cap to
+cover the largest committed seed, or re-minimize the seed deliberately
+*(casebook: the seed clipped by its own max_len)*.
+
 **When a reference implementation would re-derive the same bugs, generate
 the oracle instead.** For a parser whose natural differential partner is
 just the same scanner written twice, build the *input* from fuzz-chosen

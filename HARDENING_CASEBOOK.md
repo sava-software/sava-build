@@ -481,3 +481,31 @@ Rules: *construction wiring is only testable by the test that constructs —
 build the client in the test method, and drive every URL it resolves from
 there*; *a `SURVIVED` builder/constructor mutant in a `PER_CLASS` test class
 with a field-initialized subject is this pattern until proven otherwise*.
+
+## The seed clipped by its own max_len
+
+The first `fuzz<Target>Minimize` run in a downstream repo, in pure-dedup mode
+— advertised as "a no-op on a corpus whose every seed earns its place" —
+reported `6 -> 6 file(s), 1 newly adopted, 1 redundant removed`. It had not
+found redundancy. The target's `maxLen` was 1024 and its stack-overflow
+regression probe was 3298 bytes: libFuzzer truncates any input longer than
+`max_len` on load, so the merge saw a clipped copy with a new hash, the task
+adopted the clip under its hash name, and the named original — a minimized
+finding — was deleted as "redundant". The clip nested 19 type wrappers
+against a depth bound of 64, so the corpus no longer reached what the seed
+pinned, and nothing failed: the generated replay test replays whatever files
+exist, so `check` stayed green while the corpus quietly lost its finding.
+
+The truncation was not new, only newly visible: every `fuzz<Target>` run had
+been loading the same clipped copy, so the campaign had explored a probe that
+never reached the bound since the day the seed outgrew the cap. The commit
+history made it look deliberate — the seed was committed at 3298 bytes into a
+target already capped at 1024, and no tool ever objected.
+
+Both tasks now refuse up front when a committed seed exceeds the target's
+`maxLen` (and, under `-PadoptLocalCorpus`, when a stale local input does),
+naming each oversized file. Rules: *a target's `maxLen` covers its largest
+committed seed — the caps exist to bound exploration, not to re-edit
+findings*; *a minimize diff that touches a named seed is triage, not
+cleanup — the tool asked you to review the diff because this entry is what a
+surprising diff looks like*.

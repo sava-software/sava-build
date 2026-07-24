@@ -1384,9 +1384,41 @@ hardening.mutation.all {
 
 hardening.fuzz.all {
   val target = this
+
+  // libFuzzer silently truncates any input longer than max_len when loading a corpus:
+  // a fuzz run explores a clipped copy of an oversized seed, and the minimize merge
+  // re-hashes the clip — adopting it under a hash name and deleting the named original,
+  // which quietly degrades what the seed pins (casebook: the seed clipped by its own
+  // max_len). Both consumers refuse up front instead; the fix is a one-line maxLen bump
+  // or a deliberate re-minimization of the seed.
+  val seedLenCheck = tasks.register("fuzz" + target.name.replaceFirstChar(Char::uppercase) + "SeedLenCheck") {
+    description = "Internal to the '${target.name}' fuzz tasks: refuses seeds larger than the target's maxLen."
+    val targetName = target.name
+    val maxLen = target.maxLen
+    val seedCorpus = target.seedCorpus
+    val localCorpusDir = layout.buildDirectory.dir("fuzz/${target.name}-corpus").get().asFile
+    val adoptLocalCorpus = providers.gradleProperty("adoptLocalCorpus").isPresent
+    doLast {
+      val cap = maxLen.orNull ?: return@doLast
+      fun oversizedIn(dir: File?) =
+          dir?.listFiles()?.filter { it.isFile && it.length() > cap }.orEmpty().sortedBy { it.name }
+      val committed = oversizedIn(seedCorpus.orNull?.asFile)
+      val local = if (adoptLocalCorpus) oversizedIn(localCorpusDir) else emptyList()
+      if (committed.isEmpty() && local.isEmpty()) return@doLast
+      val listing = (committed.map { "  ${it.name} (${it.length()} bytes, committed)" } +
+          local.map { "  ${it.name} (${it.length()} bytes, local corpus)" }).joinToString("\n")
+      throw GradleException(
+          "fuzz '$targetName': ${committed.size + local.size} seed(s) exceed maxLen=$cap. libFuzzer " +
+              "truncates oversized inputs on load — a fuzz run would explore a clipped copy, and a merge " +
+              "would adopt the clip under a hash name and delete the named original:\n$listing\n" +
+              "Raise the target's maxLen to cover its largest committed seed, or shrink the seed deliberately.")
+    }
+  }
+
   tasks.register<JavaExec>("fuzz" + target.name.replaceFirstChar(Char::uppercase)) {
     group = "verification"
     description = "Coverage-guided fuzzing of the '${target.name}' target with Jazzer; -PmaxFuzzTime=<seconds> (default 60)."
+    dependsOn(seedLenCheck)
     // Jazzer gets its own recompile: it may not read the class files
     // 'mutationBytecodeRelease' targets.
     dependsOn(compileForFuzz)
@@ -1443,10 +1475,12 @@ hardening.fuzz.all {
   // from a non-empty result, so a failed merge can never wipe a committed corpus.
   // Seeds whose content survives keep their committed file name (corpora name seeds
   // meaningfully — an account address, a minimized finding); only genuinely new
-  // inputs arrive under libFuzzer's hash names.
+  // inputs arrive under libFuzzer's hash names — the seedLenCheck above keeps
+  // truncation from forging a "new" input out of an oversized named seed.
   tasks.register<JavaExec>("fuzz" + target.name.replaceFirstChar(Char::uppercase) + "Minimize") {
     group = "verification"
     description = "Minimizes the '${target.name}' seed corpus with libFuzzer -merge=1; -PadoptLocalCorpus also folds in inputs found by local fuzz runs."
+    dependsOn(seedLenCheck)
     dependsOn(compileForFuzz)
     dependsOn(tasks.named("processResources"), tasks.named("processTestResources"))
     mainClass = "com.code_intelligence.jazzer.Jazzer"
