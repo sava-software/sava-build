@@ -12,6 +12,12 @@ import java.nio.file.StandardCopyOption
  * truncated file the next verify reads as an empty ratchet
  * (casebook: the baseline truncated mid-write).
  * Falls back to a plain move on filesystems without atomic move.
+ *
+ * This is safe across process death (a kill, a stopped task, a dead daemon): the
+ * rename is atomic and the surviving kernel keeps the page cache coherent. It is not
+ * a power-loss guarantee — neither the temp contents nor the directory entry are
+ * fsynced, so a crash could leave an atomically-renamed but still-empty file. The
+ * threat model is interruption, not power loss, so that trade is deliberate.
  */
 internal object BaselineFiles {
 

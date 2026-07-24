@@ -1,4 +1,5 @@
 import software.sava.build.hardening.BaselineFiles
+import software.sava.build.hardening.BaselineNotes
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
@@ -713,36 +714,19 @@ hardening.mutation.all {
         baselineFile.readLines()
             .filter { it.isNotBlank() && !it.startsWith("#") }
             .map { line ->
-              val hash = line.indexOf('#')
-              if (hash < 0) line.trim()
-              else {
-                val row = line.substring(0, hash).trim()
-                annotations[row] = line.substring(hash).trim()
-                row
-              }
+              val row = BaselineNotes.rowOf(line)
+              BaselineNotes.noteOf(line)?.let { annotations[row] = it }
+              row
             }
       } else {
         emptyList()
       }
       fun baselineLine(row: String) = annotations[row]?.let { "$row $it" } ?: row
-      // Per-label breakdown: the parenthetical (a carry marker or flip detail) is not
-      // part of the label, so '# race guard (carried across ...)' still counts as
-      // 'race guard'. Unlabeled rows are named too — they predate label seeding and
-      // are indistinguishable from debt until someone labels them.
-      run {
-        val labelCounts = accepted.mapNotNull { annotations[it] }
-            .groupingBy { it.removePrefix("#").trim().substringBefore(" (").trim() }
-            .eachCount()
-        if (labelCounts.isNotEmpty()) {
-          val unlabeled = accepted.count { annotations[it] == null }
-          logger.lifecycle(
-              "pitest baseline '$suiteName': ${accepted.size} rows — " +
-                  labelCounts.entries.sortedByDescending { it.value }
-                      .joinToString(", ") { (label, count) -> "$count '# $label'" } +
-                  (if (unlabeled == 0) "" else ", $unlabeled unlabeled")
-          )
-        }
-      }
+      // Per-label breakdown so triage state is a number the build prints (BaselineNotes
+      // owns the label semantics: carry/flip parentheticals stripped, unlabeled rows —
+      // which predate seeding — named rather than folded into a bucket).
+      BaselineNotes.summarize(accepted.mapNotNull { annotations[it] }, accepted.count { annotations[it] == null })
+          ?.let { logger.lifecycle("pitest baseline '$suiteName': ${accepted.size} rows — $it") }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
       // benign flavour (KILLED<->TIMED_OUT under load) and the dangerous one
@@ -1188,23 +1172,14 @@ hardening.mutation.all {
         val minutes = (System.currentTimeMillis() - csv.lastModified()) / 60_000
         if (minutes < 2) "" else ", ${minutes}m old — rerun $pitestTaskName if stale"
       }
-      // Label breakdown from the baseline: triaged-accepted rows carry a family
-      // label, seeded debt reads '# untriaged', and unlabeled rows predate seeding.
+      // Label breakdown from the baseline (one read, the shared BaselineNotes parse):
+      // triaged-accepted rows carry a family label, seeded debt reads '# untriaged',
+      // and unlabeled rows predate seeding.
       val labelBreakdown = if (!baselineFile.exists()) "" else {
-        val noted = baselineFile.readLines()
-            .filter { it.isNotBlank() && !it.startsWith("#") }
-            .mapNotNull { line ->
-              val hash = line.indexOf('#')
-              if (hash < 0) null else line.substring(hash).removePrefix("#").trim().substringBefore(" (").trim()
-            }
-        if (noted.isEmpty()) "" else {
-          val total = baselineFile.readLines().count { it.isNotBlank() && !it.startsWith("#") }
-          val unlabeled = total - noted.size
-          "\n  baseline labels: " +
-              noted.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }
-                  .joinToString(", ") { (label, count) -> "$count '# $label'" } +
-              (if (unlabeled == 0) "" else ", $unlabeled unlabeled")
-        }
+        val rows = baselineFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }
+        val notes = rows.mapNotNull { BaselineNotes.noteOf(it) }
+        BaselineNotes.summarize(notes, rows.size - notes.size)
+            ?.let { "\n  baseline labels: $it" } ?: ""
       }
       logger.lifecycle(
           "pitest '$suiteName' debt ($source$age) — $totalSurvived survived, $totalNoCoverage no_coverage " +

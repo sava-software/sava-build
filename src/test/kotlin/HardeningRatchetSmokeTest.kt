@@ -837,4 +837,27 @@ $fuzzBlock
       output
     )
   }
+
+  @Test
+  fun `the verify names an all-unlabeled baseline instead of staying silent`() {
+    // A baseline that predates label seeding carries no notes, but it is exactly the
+    // one worth nudging — so the summary still prints, naming every row unlabeled
+    // rather than skipping the line and hiding that nothing is triaged.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(output.contains("2 rows — 2 unlabeled"), output)
+  }
 }
