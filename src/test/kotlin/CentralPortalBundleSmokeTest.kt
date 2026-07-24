@@ -148,6 +148,7 @@ class CentralPortalBundleSmokeTest {
           baseUrl = "http://127.0.0.1:${server.address.port}"
           username = "portal-user"
           password = "portal-pass"
+          retryDelayMillis = 5L
         }
         tasks.named<software.sava.build.publish.CentralPortalReleaseTask>("releaseCentralPortalDeployment") {
           baseUrl = "http://127.0.0.1:${server.address.port}"

@@ -60,11 +60,20 @@ abstract class CentralPortalUploadTask : DefaultTask() {
   @get:Input
   abstract val validationTimeoutSeconds: Property<Long>
 
+  /**
+   * Base delay for the upload-retry backoff and the validation poll, in millis.
+   * Production keeps the 1s/2s defaults; tests polling a mock portal shrink it so
+   * the suite carries no real waits (the repo's own no-sleeps doctrine).
+   */
+  @get:Internal
+  abstract val retryDelayMillis: Property<Long>
+
   init {
     publishingType.convention("USER_MANAGED")
     baseUrl.convention("https://central.sonatype.com/api/v1/publisher")
     awaitValidation.convention(true)
     validationTimeoutSeconds.convention(600L)
+    retryDelayMillis.convention(1_000L)
   }
 
   @TaskAction
@@ -108,7 +117,7 @@ abstract class CentralPortalUploadTask : DefaultTask() {
         "Central Portal upload attempt {} failed with HTTP {}; retrying...",
         attempt, response.statusCode()
       )
-      Thread.sleep(1_000L * attempt)
+      Thread.sleep(retryDelayMillis.get() * attempt)
       response = client.send(request, HttpResponse.BodyHandlers.ofString())
       attempt++
     }
@@ -134,7 +143,7 @@ abstract class CentralPortalUploadTask : DefaultTask() {
       .build()
 
     val deadline = System.nanoTime() + Duration.ofSeconds(validationTimeoutSeconds.get()).toNanos()
-    var delayMillis = 2_000L
+    var delayMillis = retryDelayMillis.get() * 2
     var consecutiveAuthFailures = 0
     while (true) {
       val (state, detail) = fetchState(client, request)
