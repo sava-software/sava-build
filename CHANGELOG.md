@@ -1,5 +1,13 @@
 # Changelog
 
+## [21.5.12](https://github.com/sava-software/sava-build/compare/21.5.11...21.5.12) (2026-07-24)
+
+
+### Features
+
+* **hardening:** centralize and streamline baseline note parsing ([91f0b20](https://github.com/sava-software/sava-build/commit/91f0b20686233ba9d510d1437a59e0836431721e))
+* **hardening:** introduce atomic baseline writes to prevent corruption ([9186caa](https://github.com/sava-software/sava-build/commit/9186caae965b3c3eef23f1902ecb4fad79f82026))
+
 ## [21.5.11](https://github.com/sava-software/sava-build/compare/21.5.10...21.5.11) (2026-07-24)
 
 
