@@ -203,6 +203,41 @@ $fuzzBlock
   }
 
   @Test
+  fun `the listUnkilled listing carries the detected-sibling hint`() {
+    // The hint names the killed twin's test at a survivor's coordinate — and it must
+    // appear on the -PlistUnkilled surface, where triage actually reads rows, not only
+    // on ratchet failures (casebook: the sibling guessed wrong three times).
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,RemoveConditionalMutator_EQUAL_IF,SURVIVED # untriaged\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_IF,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_ELSE,encode,12,KILLED,com.example.CodecTest.[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:encodesTheBoundary()]"
+      ),
+      """
+        <mutation status="SURVIVED" detected="false">
+          <sourceFile>Codec.java</sourceFile>
+          <mutatedClass>com.example.Codec</mutatedClass>
+          <mutatedMethod>encode</mutatedMethod>
+          <lineNumber>12</lineNumber>
+          <mutator>org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_IF</mutator>
+          <description>removed conditional - replaced equality check with true</description>
+        </mutation>
+      """.trimIndent()
+    )
+
+    val output = runner("pitestEncodingVerify", "-PlistUnkilled").build().output
+    assertTrue(output.contains("pitest 'encoding' unkilled:"), "-PlistUnkilled listing missing:\n$output")
+    assertTrue(
+      output.contains("detected sibling at this line: RemoveConditionalMutator_EQUAL_ELSE KILLED by encodesTheBoundary"),
+      "sibling hint missing from the listUnkilled listing:\n$output"
+    )
+  }
+
+  @Test
   fun `duplicate sibling rows in the baseline are matched per copy`() {
     // Both siblings accepted as two identical rows: a report with both must pass,
     // and an update must preserve both copies.
