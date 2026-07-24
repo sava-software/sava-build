@@ -718,6 +718,26 @@ $fuzzBlock
   }
 
   @Test
+  fun `an oversized local-corpus input is refused only when adoption is requested`() {
+    // Local fuzz-run finds live under build/ and are not merge sources by default, so
+    // an oversized one is ignorable noise — until '-PadoptLocalCorpus' makes it a
+    // source, at which point the same truncation hazard applies and the check must
+    // name it with its origin.
+    writeFixture(codecMaxLen = 16)
+    File(fixtureDir, "src/test/resources/fuzz/codec").apply { mkdirs() }
+      .resolve("small-seed").writeText("ok")
+    File(fixtureDir, "build/fuzz/codec-corpus").apply { mkdirs() }
+      .resolve("local-probe").writeText("y".repeat(48))
+
+    val ignored = runner("fuzzCodecSeedLenCheck").build()
+    assertFalse(ignored.output.contains("FAILED"), ignored.output)
+
+    val refused = runner("fuzzCodecSeedLenCheck", "-PadoptLocalCorpus").buildAndFail().output
+    assertTrue(refused.contains("1 seed(s) exceed maxLen=16"), refused)
+    assertTrue(refused.contains("local-probe (48 bytes, local corpus)"), refused)
+  }
+
+  @Test
   fun `replay tests resolve resource corpora on the classpath and guard against rot`() {
     writeFixture()
     File(fixtureDir, "src/test/resources/fuzz/codec").mkdirs()

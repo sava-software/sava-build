@@ -48,6 +48,12 @@ class HardeningFeatureSmokeTest {
             targetClasses = listOf("com.example.Codec", "com.example.Checksum")
             targetTests = "com.example.*Test*"
           }
+          mutation.register("tuned") {
+            targetClasses = listOf("com.example.Tuned")
+            targetTests = "com.example.*Test*"
+            timeoutFactor = 2.5
+            timeoutConst = 10000L
+          }
           fuzz.register("codec") {
             targetClass = "com.example.CodecFuzz"
             maxLen = 256
@@ -61,6 +67,8 @@ class HardeningFeatureSmokeTest {
           val mutationRelease = tasks.named<JavaCompile>("compileForPitest").flatMap { it.options.release }
           val fuzzRelease = tasks.named<JavaCompile>("compileForFuzz").flatMap { it.options.release }
           val pitestArgs = tasks.named<JavaExec>("pitestEncoding")
+            .map { task -> task.argumentProviders.flatMap { it.asArguments() } }
+          val tunedArgs = tasks.named<JavaExec>("pitestTuned")
             .map { task -> task.argumentProviders.flatMap { it.asArguments() } }
           val fuzzArgs = tasks.named<JavaExec>("fuzzCodec")
             .map { task -> task.argumentProviders.flatMap { it.asArguments() } }
@@ -76,6 +84,12 @@ class HardeningFeatureSmokeTest {
             check(pit.any { it == "--mutators=STRONGER" }) { "mutators: " + pit }
             check(pit.any { it == "--threads=4" }) { "threads: " + pit }
             check(pit.any { it.startsWith("--classPath=") && it.contains("mutation-classes") }) { "classPath: " + pit }
+            // PIT's own timeout defaults ride along unless the suite tunes them
+            check(pit.any { it == "--timeoutFactor=1.25" }) { "timeoutFactor default: " + pit }
+            check(pit.any { it == "--timeoutConst=4000" }) { "timeoutConst default: " + pit }
+            val tuned = tunedArgs.get()
+            check(tuned.any { it == "--timeoutFactor=2.5" }) { "timeoutFactor override: " + tuned }
+            check(tuned.any { it == "--timeoutConst=10000" }) { "timeoutConst override: " + tuned }
             val fuzz = fuzzArgs.get()
             check(fuzz.any { it == "--target_class=com.example.CodecFuzz" }) { "target_class: " + fuzz }
             check(fuzz.any { it == "-max_total_time=60" }) { "max_total_time: " + fuzz }
