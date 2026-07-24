@@ -221,10 +221,24 @@ names every row it drops — a dropped flip-insurance union (below) must be
 re-added with `-PunionMutationBaseline` once observed to flip again; before
 this the drop was silent and the re-append relied on someone remembering the
 README warning. And a baseline row may carry a trailing `# note` —
-`# untriaged` is the conventional label for seeded debt — which both refresh
-flags preserve and the verify summary counts (`140 rows, 70 marked
-'# untriaged'`), so triage debt is a number the build prints rather than
-prose that drifts from the CSV it describes. Preservation extends across a
+`# untriaged` is the conventional label for seeded debt, and
+`-PupdateMutationBaseline` seeds it on **every genuinely new row** it
+writes, so a bare row never enters the baseline through the tooling: triage
+means replacing that label with a short family label (`# race-guard
+family`, `# capacity-hint`) whose full argument lives in the README. Both
+refresh flags preserve notes, and the verify summary counts them **per
+label** (`38 rows — 13 '# untriaged', 20 '# race-guard family', 5
+unlabeled`; the debt task prints the same breakdown), so triage state is a
+number the build prints rather than prose that drifts from the CSV it
+describes — and prose line numbers rot on the first edit, while a label
+rides its row through every shift and refresh. Rows that predate seeding
+print as `unlabeled`; label them when touched. Surfaced siblings are never
+auto-labeled: notes are keyed by row text, and a second label on a
+duplicate row would collide with its twin's on reload. All baseline
+rewrites land atomically (a sibling temp file moved over the target), so an
+interrupted refresh — a stopped task, a killed daemon — leaves the previous
+baseline intact instead of a truncated file the next verify reads as an
+empty ratchet *(casebook: the baseline truncated mid-write)*. Preservation extends across a
 status flip: when a refresh rewrites a coordinate whose status changed (a
 `NO_COVERAGE` row whose line a test now reaches), the dropped row's note is
 carried onto the new row annotated `(carried across NO_COVERAGE ->
@@ -943,8 +957,11 @@ paste.
 > - A new unkilled mutant has exactly three legal outcomes: **kill it** with a
 >   test (prefer asserting the property it breaks over restating the
 >   implementation), **refactor** it out of existence, or **accept it** with a
->   written reason in `config/pitest/README.md`. Never run
->   `-PupdateMutationBaseline` just to make the build pass.
+>   written reason in `config/pitest/README.md` **and a short family label on
+>   the row itself** — refreshes seed new rows `# untriaged`, and triage means
+>   replacing that label, so the baseline always says which rows are argued
+>   and which are debt. Never run `-PupdateMutationBaseline` just to make the
+>   build pass.
 > - Pure line drift — every new baseline entry a same-status shift of a stale
 >   one, populations unchanged — passes on its own with a notice; refresh at a
 >   convenient moment. Anything mixed in (newly covered, unexplained, changed

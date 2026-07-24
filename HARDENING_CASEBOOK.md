@@ -542,3 +542,28 @@ Rules: *a note is part of its row, and a refresh that loses one is a bug in
 the refresh, not bookkeeping*; *notes travel across both refresh
 relationships — marked when the status flipped, verbatim when only the line
 did*.
+
+## The baseline truncated mid-write
+
+During glam-sdk-java's adoption (2026-07-23), an agent started a redundant
+`-PupdateMutationBaseline` run, realized the answer it wanted was already in
+the previous run's diff, and stopped the task — landing the kill mid-write
+and leaving a one-byte `sdk-accepted.csv`. The next verify read an empty
+ratchet and reported the suite's entire unkilled population as "38
+unexplained new rows, 0 stale". That inversion was the tell: a healthy
+baseline never goes 100% unexplained in one step, it goes stale. The
+recovery was a single uninterrupted refresh — but only because the previous
+run's report still described the intended content; an interrupt landing
+during a busier evening loses the acceptance record outright.
+
+Two fixes with different scopes. The tooling one: baseline rewrites are now
+atomic — content lands in a sibling temp file that is moved over the
+target, so an interrupt at any point leaves either the old baseline or the
+new one, never a fragment. The behavioural one: a refresh run is a
+write-transaction on the team's triage record, and killing it is not like
+killing a test run — don't, and treat any all-rows-unexplained verify as a
+damaged baseline rather than a broken ratchet.
+
+Rules: *writes to the accepted record are atomic or they are bugs*; *a
+verify reporting the whole population as unexplained-new is diagnosing the
+baseline file, not the code*.

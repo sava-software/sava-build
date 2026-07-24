@@ -125,7 +125,7 @@ $fuzzBlock
 
     val result = runner("pitestEncodingVerify", "-PlistUnkilled", "-PnoDriftTolerance").buildAndFail()
     val output = result.output
-    assertTrue(output.contains("1 rows, 1 marked '# untriaged'"), "untriaged count missing:\n$output")
+    assertTrue(output.contains("1 rows — 1 '# untriaged'"), "per-label count missing:\n$output")
     assertTrue(output.contains("pitest 'encoding' unkilled:"), "-PlistUnkilled listing missing:\n$output")
     assertTrue(output.contains("(shifted from line 10)"), "shift pairing missing:\n$output")
     assertTrue(output.contains("Replaced Shift Left with Shift Right"), "XML description missing:\n$output")
@@ -763,5 +763,78 @@ $fuzzBlock
     writeFixture(registerFuzz = false, bytecodeRelease = 21)
     runner("compileForPitest").build()
     assertTrue(recompiled.resolve("Scratch.class").isFile, "Scratch.class should return once un-excluded")
+  }
+
+  @Test
+  fun `an update seeds new rows untriaged and never relabels accepted or sibling rows`() {
+    // A genuinely new coordinate enters the baseline as explicit debt, never bare —
+    // triage means replacing the seeded label. Pre-existing rows keep their state:
+    // a labeled row keeps its label (surfaced sibling copies included, since notes
+    // are keyed by row text), and a bare pre-seeding row stays bare rather than
+    // being retroactively branded debt it may not be.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED # race guard family\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,33,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertEquals(
+      listOf(
+        "com.example.Codec,decode,33,MathMutator,SURVIVED # untriaged",
+        "com.example.Codec,encode,12,MathMutator,SURVIVED # race guard family",
+        "com.example.Codec,encode,12,MathMutator,SURVIVED # race guard family",
+        "com.example.Codec,encode,20,MathMutator,SURVIVED",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }.sorted()
+    )
+    assertTrue(output.contains("1 new row(s) seeded '# untriaged'"), output)
+    // the interrupted-refresh guard: the atomic write leaves no temp file behind
+    assertFalse(File(baselineFile().parentFile, "${baselineFile().name}.tmp").exists())
+
+    // idempotent: a second update seeds nothing and changes nothing
+    val second = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertFalse(second.contains("seeded '# untriaged'"), second)
+  }
+
+  @Test
+  fun `the verify prints a per-label baseline breakdown`() {
+    // Triage state is a number the build prints: one count per label, with carry
+    // markers and flip details stripped ('# race guard family (carried across ...)'
+    // still counts as 'race guard family'), and pre-seeding bare rows named as
+    // unlabeled rather than silently folded into a bucket.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED # untriaged\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED # untriaged\n" +
+          "com.example.Codec,decode,33,MathMutator,SURVIVED # race guard family (carried across NO_COVERAGE -> SURVIVED)\n" +
+          "com.example.Codec,decode,41,MathMutator,SURVIVED\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,33,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,41,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("4 rows — 2 '# untriaged', 1 '# race guard family', 1 unlabeled"),
+      output
+    )
   }
 }

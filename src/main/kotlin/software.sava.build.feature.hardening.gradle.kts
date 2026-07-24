@@ -1,3 +1,4 @@
+import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
@@ -451,8 +452,7 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
         }
       }
       if (unionedHere) {
-        baselineFile.parentFile.mkdirs()
-        baselineFile.writeText(accepted.toSortedSet().joinToString("\n", postfix = "\n") { row ->
+        BaselineFiles.writeAtomically(baselineFile, accepted.toSortedSet().joinToString("\n", postfix = "\n") { row ->
           annotations[row]?.let { "$row $it" } ?: row
         })
       }
@@ -702,9 +702,10 @@ hardening.mutation.all {
         return@doLast
       }
       // A baseline row may carry a trailing '# note' ('# untriaged' is the conventional
-      // label for seeded debt). Notes are stripped for comparison, preserved across both
-      // refresh flags, and the untriaged count is printed — so triage state lives on the
-      // row it describes and stays a number the build reports, not prose that drifts.
+      // label for seeded debt; refreshes seed it on every new row). Notes are stripped
+      // for comparison, preserved across both refresh flags, and counted per label — so
+      // triage state lives on the row it describes and stays a number the build
+      // reports, not prose that drifts.
       val annotations = mutableMapOf<String, String>()
       // a list, preserving duplicate rows: identical coordinates hold one row per
       // sibling mutant (see the multiset note above)
@@ -724,9 +725,23 @@ hardening.mutation.all {
         emptyList()
       }
       fun baselineLine(row: String) = annotations[row]?.let { "$row $it" } ?: row
-      val untriaged = accepted.count { annotations[it]?.contains("untriaged", ignoreCase = true) == true }
-      if (untriaged > 0) {
-        logger.lifecycle("pitest baseline '$suiteName': ${accepted.size} rows, $untriaged marked '# untriaged'")
+      // Per-label breakdown: the parenthetical (a carry marker or flip detail) is not
+      // part of the label, so '# race guard (carried across ...)' still counts as
+      // 'race guard'. Unlabeled rows are named too — they predate label seeding and
+      // are indistinguishable from debt until someone labels them.
+      run {
+        val labelCounts = accepted.mapNotNull { annotations[it] }
+            .groupingBy { it.removePrefix("#").trim().substringBefore(" (").trim() }
+            .eachCount()
+        if (labelCounts.isNotEmpty()) {
+          val unlabeled = accepted.count { annotations[it] == null }
+          logger.lifecycle(
+              "pitest baseline '$suiteName': ${accepted.size} rows — " +
+                  labelCounts.entries.sortedByDescending { it.value }
+                      .joinToString(", ") { (label, count) -> "$count '# $label'" } +
+                  (if (unlabeled == 0) "" else ", $unlabeled unlabeled")
+          )
+        }
       }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
@@ -821,7 +836,7 @@ hardening.mutation.all {
           logger.lifecycle(
               "pitest baseline '$suiteName': prune dropped nothing — every row matches this run$keptDetail")
         } else {
-          baselineFile.writeText(kept.joinToString("\n", postfix = "\n") { baselineLine(it) })
+          BaselineFiles.writeAtomically(baselineFile, kept.joinToString("\n", postfix = "\n") { baselineLine(it) })
           logger.lifecycle(
               "pitest baseline '$suiteName': prune dropped ${droppedRows.size} row(s) since killed or moved " +
                   "(baseline now ${kept.size}):\n" +
@@ -868,6 +883,7 @@ hardening.mutation.all {
         val acceptedRowTexts = accepted.toSet()
         var flipped = 0
         var shifted = 0
+        var seeded = 0
         val written = current.map { row ->
           annotations[row]?.let { return@map "$row $it" }
           val flip = droppedNotes.firstOrNull { coordinate(it.first) == coordinate(row) }
@@ -888,12 +904,21 @@ hardening.mutation.all {
               return@map "$row ${shift.second}"
             }
           }
+          // A genuinely new coordinate arrives as explicit debt, never as a bare row:
+          // triage means replacing this label, so the baseline itself always says
+          // which rows are argued and which are waiting. Surfaced siblings (row text
+          // already accepted) are excluded — notes are keyed by row text, and a
+          // second label on a duplicate row would collide with its twin's on reload.
+          if (row !in acceptedRowTexts) {
+            seeded++
+            return@map "$row # untriaged"
+          }
           row
         }
-        baselineFile.parentFile.mkdirs()
-        baselineFile.writeText(written.joinToString("\n", postfix = "\n"))
+        BaselineFiles.writeAtomically(baselineFile, written.joinToString("\n", postfix = "\n"))
         logger.lifecycle(
             "pitest baseline '$suiteName': wrote ${current.size} accepted entries" +
+                (if (seeded == 0) "" else " ($seeded new row(s) seeded '# untriaged')") +
                 (if (flipped == 0) "" else " ($flipped note(s) carried across a status flip — re-check them)") +
                 (if (shifted == 0) "" else " ($shifted note(s) carried across a line shift)")
         )
@@ -944,8 +969,7 @@ hardening.mutation.all {
           val merged = (acceptedCounts.keys + currentCounts.keys).sorted().flatMap { row ->
             List(maxOf(acceptedCounts[row] ?: 0, currentCounts[row] ?: 0)) { row }
           }
-          baselineFile.parentFile.mkdirs()
-          baselineFile.writeText(merged.joinToString("\n", postfix = "\n") { baselineLine(it) })
+          BaselineFiles.writeAtomically(baselineFile, merged.joinToString("\n", postfix = "\n") { baselineLine(it) })
           logger.lifecycle(
               "pitest baseline '$suiteName': union added ${added.size} entries (baseline now ${merged.size}):\n" +
                   added.joinToString("\n") { row -> "  $row${describe(row)}" }
@@ -1158,9 +1182,33 @@ hardening.mutation.all {
           }
       val totalSurvived = debt.values.sumOf { it.first }
       val totalNoCoverage = debt.values.sumOf { it.second }
+      // The report is a snapshot, not live state: name its age so numbers from a
+      // run made before the current change are not read as current.
+      val age = if (reportPairs == null) "" else {
+        val minutes = (System.currentTimeMillis() - csv.lastModified()) / 60_000
+        if (minutes < 2) "" else ", ${minutes}m old — rerun $pitestTaskName if stale"
+      }
+      // Label breakdown from the baseline: triaged-accepted rows carry a family
+      // label, seeded debt reads '# untriaged', and unlabeled rows predate seeding.
+      val labelBreakdown = if (!baselineFile.exists()) "" else {
+        val noted = baselineFile.readLines()
+            .filter { it.isNotBlank() && !it.startsWith("#") }
+            .mapNotNull { line ->
+              val hash = line.indexOf('#')
+              if (hash < 0) null else line.substring(hash).removePrefix("#").trim().substringBefore(" (").trim()
+            }
+        if (noted.isEmpty()) "" else {
+          val total = baselineFile.readLines().count { it.isNotBlank() && !it.startsWith("#") }
+          val unlabeled = total - noted.size
+          "\n  baseline labels: " +
+              noted.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }
+                  .joinToString(", ") { (label, count) -> "$count '# $label'" } +
+              (if (unlabeled == 0) "" else ", $unlabeled unlabeled")
+        }
+      }
       logger.lifecycle(
-          "pitest '$suiteName' debt ($source) — $totalSurvived survived, $totalNoCoverage no_coverage " +
-              "across ${debt.size} class(es):\n" + lines.joinToString("\n")
+          "pitest '$suiteName' debt ($source$age) — $totalSurvived survived, $totalNoCoverage no_coverage " +
+              "across ${debt.size} class(es):\n" + lines.joinToString("\n") + labelBreakdown
       )
     }
   }
