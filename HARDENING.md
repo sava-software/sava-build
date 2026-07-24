@@ -233,9 +233,11 @@ number the build prints rather than prose that drifts from the CSV it
 describes — and prose line numbers rot on the first edit, while a label
 rides its row through every shift and refresh. Rows that predate seeding
 print as `unlabeled`; label them when touched. A label is also a pointer to
-its argument: the verify warns when a family label has no `# <label>`
-mention in `config/pitest/README.md`, so a typo'd label or an orphaned
-argument surfaces instead of silently opening a new bucket
+its argument: the verify *and* the debt listing warn when a family label has
+no `# <label>` mention in `config/pitest/README.md`, so a typo'd label or an
+orphaned argument surfaces instead of silently opening a new bucket — and it
+surfaces in the listing where the counts are read, since a count is exactly
+what makes a mistyped label read as finished triage
 (`# untriaged` is exempt — seeded debt needs no section). Surfaced siblings are never
 auto-labeled: notes are keyed by row text, and a second label on a
 duplicate row would collide with its twin's on reload. All baseline

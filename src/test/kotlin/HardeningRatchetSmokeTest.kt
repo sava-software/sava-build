@@ -860,4 +860,62 @@ $fuzzBlock
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(output.contains("2 rows — 2 unlabeled"), output)
   }
+
+  @Test
+  fun `the verify warns when a family label resolves to no README section`() {
+    // A label is a pointer to its argument, and a per-label count cannot tell a typo
+    // from triage — '1 race gaurd family' reads like closed work. Resolving each label
+    // against the README is what makes the difference visible.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED # untriaged\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED # race guard family\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val warned = runner("pitestEncodingVerify").build().output
+    // only the family label: '# untriaged' is the seeded-debt convention and argues
+    // nothing, so it is never expected to have a section of its own
+    assertTrue(
+      warned.contains("config/pitest/README.md — '# race guard family' — document the family"),
+      warned
+    )
+
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "# Triage\n\nRows labelled `# race guard family` are …\n"
+    )
+    val quiet = runner("pitestEncodingVerify").build().output
+    assertFalse(quiet.contains("label(s) with no argument"), quiet)
+  }
+
+  @Test
+  fun `the debt listing resolves labels against the README too`() {
+    // Debt is where a triager reads the per-label counts and picks the next cluster, so
+    // an unresolvable label is named there as well as in the verify — same rule, one
+    // implementation, so the two cannot disagree about which labels resolve.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED # capacity hint\n" +
+          "com.example.Codec,decode,33,MathMutator,NO_COVERAGE # untriaged\n"
+    )
+
+    val output = runner("pitestEncodingDebt").build().output
+    assertTrue(output.contains("baseline labels: 1 '# capacity hint', 1 '# untriaged'"), output)
+    assertTrue(
+      output.contains("config/pitest/README.md — '# capacity hint' — document the family"),
+      output
+    )
+
+    File(fixtureDir, "config/pitest/README.md").writeText("# capacity hint\n\nGrowth arithmetic …\n")
+    val quiet = runner("pitestEncodingDebt").build().output
+    assertFalse(quiet.contains("label(s) with no argument"), quiet)
+  }
 }

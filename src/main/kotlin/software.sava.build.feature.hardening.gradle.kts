@@ -737,32 +737,14 @@ hardening.mutation.all {
       // which predate seeding — named rather than folded into a bucket).
       BaselineNotes.summarize(accepted.mapNotNull { annotations[it] }, accepted.count { annotations[it] == null })
           ?.let { logger.lifecycle("pitest baseline '$suiteName': ${accepted.size} rows — $it") }
-      // A family label is a pointer to its argument in config/pitest/README.md; a
-      // typo'd label silently opens a new bucket and a deleted README section orphans
-      // its rows. Warned rather than failed, mirroring the scaffolding check: the gap
-      // may predate this check, and a fresh '-PunionModeFlips' row legitimately lands
-      // before its README criterion is written. '# untriaged' is the seeded-debt
-      // convention and needs no section.
-      val undocumentedLabels = accepted.asSequence()
-          .mapNotNull { annotations[it] }
-          .map { BaselineNotes.labelOf(it) }
-          .distinct()
-          .filter { it != "untriaged" }
-          .toList()
-          .let { labels ->
-            if (labels.isEmpty()) emptyList()
-            else {
-              val readme = readmeFile.takeIf { it.isFile }?.readText() ?: ""
-              labels.filterNot { readme.contains("# $it") }
-            }
-          }
-      if (undocumentedLabels.isNotEmpty()) {
-        logger.warn(
-            "pitest baseline '$suiteName': label(s) with no argument in config/pitest/README.md — " +
-                undocumentedLabels.joinToString(", ") { "'# $it'" } +
-                " — document the family there, or fix the label if it is a typo"
-        )
-      }
+      // A family label is a pointer to its argument in config/pitest/README.md (the rule
+      // and its message live in BaselineNotes, so this and 'Debt' resolve labels the same
+      // way). Warned rather than failed, mirroring the scaffolding check: the gap may
+      // predate this check, and a fresh '-PunionModeFlips' row legitimately lands before
+      // its README criterion is written.
+      BaselineNotes.undocumentedLabelWarning(suiteName, accepted.mapNotNull { annotations[it] }) {
+        readmeFile.takeIf { it.isFile }?.readText() ?: ""
+      }?.let { logger.warn(it) }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
       // benign flavour (KILLED<->TIMED_OUT under load) and the dangerous one
@@ -1212,16 +1194,22 @@ hardening.mutation.all {
       // Label breakdown from the baseline (one read, the shared BaselineNotes parse):
       // triaged-accepted rows carry a family label, seeded debt reads '# untriaged',
       // and unlabeled rows predate seeding.
-      val labelBreakdown = if (!baselineFile.exists()) "" else {
-        val rows = baselineFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }
-        val notes = rows.mapNotNull { BaselineNotes.noteOf(it) }
-        BaselineNotes.summarize(notes, rows.size - notes.size)
-            ?.let { "\n  baseline labels: $it" } ?: ""
-      }
+      val baselineRows = if (!baselineFile.exists()) emptyList()
+      else baselineFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }
+      val baselineNotes = baselineRows.mapNotNull { BaselineNotes.noteOf(it) }
+      val labelBreakdown = BaselineNotes.summarize(baselineNotes, baselineRows.size - baselineNotes.size)
+          ?.let { "\n  baseline labels: $it" } ?: ""
       logger.lifecycle(
           "pitest '$suiteName' debt ($source$age) — $totalSurvived survived, $totalNoCoverage no_coverage " +
               "across ${debt.size} class(es):\n" + lines.joinToString("\n") + labelBreakdown
       )
+      // The same pointer check the verify runs, after the breakdown rather than before
+      // it: this task is where a triager reads the counts and picks the next cluster, so
+      // a label resolving to nothing is named at the moment it would be acted on — a
+      // count is what makes a mistyped label look like finished triage.
+      BaselineNotes.undocumentedLabelWarning(suiteName, baselineNotes) {
+        readmeFile.takeIf { it.isFile }?.readText() ?: ""
+      }?.let { logger.warn(it) }
     }
   }
 
