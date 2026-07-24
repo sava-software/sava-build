@@ -1,5 +1,18 @@
 # Changelog
 
+## [21.5.11](https://github.com/sava-software/sava-build/compare/21.5.10...21.5.11) (2026-07-24)
+
+
+### Features
+
+* **hardening:** carry notes across line shifts, drop orphaned ones ([469740c](https://github.com/sava-software/sava-build/commit/469740c6ea2cf7913659b21f07f1df14e4fed985))
+* **hardening:** enforce maxLen check on corpus seeds, prevent truncation ([418eadc](https://github.com/sava-software/sava-build/commit/418eadcc232935f8323683bef92a33ae5438b571))
+
+
+### Build System
+
+* **deps:** bump actions/checkout from 7.0.0 to 7.0.1 ([#64](https://github.com/sava-software/sava-build/issues/64)) ([421b207](https://github.com/sava-software/sava-build/commit/421b2074861b530d576fccea84fbabaf12dbb37b))
+
 ## [21.5.10](https://github.com/sava-software/sava-build/compare/21.5.9...21.5.10) (2026-07-23)
 
 
