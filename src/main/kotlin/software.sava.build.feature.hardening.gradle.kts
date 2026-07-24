@@ -833,43 +833,95 @@ hardening.mutation.all {
       }
       if (update) {
         val dropped = multisetDiff(accepted, current)
-        // A status flip at one coordinate — NO_COVERAGE -> SURVIVED once a test reaches
-        // the line, SURVIVED -> NO_COVERAGE when its covering test goes away — drops one
-        // row and writes another, and the dropped row's '# note' used to vanish with it.
-        // Carry the note onto the rewritten row, marked with the flip it crossed: the
-        // acceptance argument travels, but flagged for re-reading — a reason written for
-        // an unreached mutant is not automatically a reason once a test can observe it.
-        val flippedNotes = mutableMapOf<String, MutableList<Pair<String, String>>>()
-        for (row in dropped) {
-          val note = annotations[row] ?: continue
-          val coordinate = row.substringBeforeLast(',')
-          flippedNotes.getOrPut(coordinate) { mutableListOf() }
-              .add(row.substringAfterLast(',') to note)
-        }
-        var carried = 0
+        val freshRows = multisetDiff(current, accepted)
+        // A rewrite drops rows and writes replacements, and a dropped row's '# note'
+        // used to vanish with it. Two relationships let the note travel:
+        //
+        //   status flip  — same coordinate, different status (NO_COVERAGE -> SURVIVED
+        //                  once a test reaches the line). Carried marked for
+        //                  re-reading: a reason written for an unreached mutant is not
+        //                  automatically a reason once a test can observe it.
+        //   line shift   — same class, method, mutator and status, only the line
+        //                  moved. Paired against *fresh, non-surfaced-sibling* rows
+        //                  only, exactly as the ratchet's shift classifier pairs them
+        //                  (surfaced siblings classified out first), so a killed row's
+        //                  note can never migrate onto an unrelated pre-existing row.
+        //                  Carried verbatim: nothing about the mutant changed, so
+        //                  unlike a flip there is nothing to re-read
+        //                  (casebook: the note the line shift dropped).
+        //
+        // The two lookups are disjoint — a flip differs in status, a shift matches on
+        // it — but both consume from one (row, note) pool so no note is written twice.
+        val droppedNotes = dropped
+            .mapNotNull { row -> annotations[row]?.let { row to it } }
+            .toMutableList()
+        fun coordinate(row: String) = row.substringBeforeLast(',')
+        fun linelessKey(row: String) = row.split(',').let { "${it[0]},${it[1]},${it[3]},${it[4]}" }
+        fun rowLine(row: String) = row.split(',')[2]
+        val freshBudget = freshRows.groupingBy { it }.eachCount().toMutableMap()
+        // A fresh row that exactly duplicates an accepted row is a surfaced sibling, not
+        // a shift target — the multiset comparison exposing pre-existing debt, not a moved
+        // mutant. The ratchet's classifier pulls it out before its shift check for exactly
+        // this reason; do the same here, or a dropped note (possibly from a killed row that
+        // still reads SURVIVED in the baseline) rides the shared class/method/mutator/status
+        // key onto the duplicate — the migration the shift carry exists to prevent.
+        val acceptedRowTexts = accepted.toSet()
+        var flipped = 0
+        var shifted = 0
         val written = current.map { row ->
           annotations[row]?.let { return@map "$row $it" }
-          val candidates = flippedNotes[row.substringBeforeLast(',')]
-          if (candidates.isNullOrEmpty()) row
-          else {
-            val (oldStatus, note) = candidates.removeFirst()
-            carried++
-            "$row $note (carried across $oldStatus -> ${row.substringAfterLast(',')})"
+          val flip = droppedNotes.firstOrNull { coordinate(it.first) == coordinate(row) }
+          if (flip != null) {
+            droppedNotes.remove(flip)
+            flipped++
+            return@map "$row ${flip.second} (carried across ${flip.first.substringAfterLast(',')} -> ${row.substringAfterLast(',')})"
           }
+          val freshCopies = freshBudget[row] ?: 0
+          if (freshCopies > 0 && row !in acceptedRowTexts) {
+            val shift = droppedNotes.firstOrNull {
+              linelessKey(it.first) == linelessKey(row) && rowLine(it.first) != rowLine(row)
+            }
+            if (shift != null) {
+              freshBudget[row] = freshCopies - 1
+              droppedNotes.remove(shift)
+              shifted++
+              return@map "$row ${shift.second}"
+            }
+          }
+          row
         }
         baselineFile.parentFile.mkdirs()
         baselineFile.writeText(written.joinToString("\n", postfix = "\n"))
         logger.lifecycle(
             "pitest baseline '$suiteName': wrote ${current.size} accepted entries" +
-                (if (carried == 0) "" else " ($carried note(s) carried across a status flip — re-check them)")
+                (if (flipped == 0) "" else " ($flipped note(s) carried across a status flip — re-check them)") +
+                (if (shifted == 0) "" else " ($shifted note(s) carried across a line shift)")
         )
         if (dropped.isNotEmpty()) {
           // The silent half of the refresh footgun: a full update rewrites from this one
           // run, so a flip-insurance union (detected today, survived under other load)
-          // vanishes without a trace unless it is named here.
+          // vanishes without a trace unless it is named here. Notes get the same
+          // treatment: whatever the carry pool still holds after the rewrite is an
+          // acceptance argument that just left the baseline — name its fate per row,
+          // because a lost note that prints identically to a carried one is still
+          // silent (casebook: the note the line shift dropped).
+          val lostNotes = droppedNotes.groupingBy { it.first }.eachCount().toMutableMap()
+          fun noteFate(row: String): String {
+            if (annotations[row] == null) return ""
+            val lost = lostNotes[row] ?: 0
+            return if (lost > 0) {
+              lostNotes[row] = lost - 1
+              " — note dropped with the row"
+            } else {
+              " — note carried"
+            }
+          }
+          val lostCount = droppedNotes.size
           logger.lifecycle(
               "pitest baseline '$suiteName': dropped ${dropped.size} row(s) not unkilled this run:\n" +
-                  dropped.joinToString("\n") { row -> "  ${baselineLine(row)}${describe(row)}" } +
+                  dropped.joinToString("\n") { row -> "  ${baselineLine(row)}${describe(row)}${noteFate(row)}" } +
+                  (if (lostCount == 0) "" else
+                      "\n  $lostCount note(s) dropped with their rows — re-home the acceptance argument by hand if it still applies") +
                   "\n  a dropped flip-insurance union (see config/pitest/README.md) must be " +
                   "re-added with -PunionMutationBaseline once observed to flip again"
           )

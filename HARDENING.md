@@ -231,7 +231,19 @@ carried onto the new row annotated `(carried across NO_COVERAGE ->
 SURVIVED)` and the summary counts the carries — the acceptance argument
 travels, but flagged for re-reading, because a reason written for an
 unreached mutant is not automatically a reason once its behaviour is
-observable *(casebook: the status-blind prune)*.
+observable *(casebook: the status-blind prune)*. Preservation also extends
+across a pure line shift: when a source edit moves a mutated method, the
+refresh pairs the dropped row's note with the *fresh* row at the new line —
+same class, method, mutator and status, exactly as the ratchet's shift
+classifier pairs them, surfaced siblings classified out first — and carries
+it verbatim, since nothing about the mutant changed. Both exclusions are the
+safety half of the carry: a killed row has no fresh counterpart, and a fresh
+row that duplicates an accepted row is pre-existing sibling debt, not a
+moved mutant — either way the note must not migrate onto a survivor it never
+described. A note that finds no carry target is not lost silently: the
+dropped-rows listing names each note's fate (`note carried` / `note dropped
+with the row`) and counts the losses *(casebook: the note the line shift
+dropped)*.
 
 The third refresh is the only one that is always safe:
 `-PpruneMutationBaseline` drops baseline rows matching nothing this run and

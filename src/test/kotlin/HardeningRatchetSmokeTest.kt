@@ -388,6 +388,9 @@ $fuzzBlock
       baselineFile().readLines().filter { it.isNotBlank() }
     )
     assertTrue(output.contains("1 note(s) carried across a status flip"), output)
+    // the dropped listing names the note's fate, so a carried note reads as such
+    assertTrue(output.contains("— note carried"), output)
+    assertFalse(output.contains("note dropped with the row"), output)
 
     // idempotent: a second update with no flips leaves both notes untouched
     runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
@@ -398,6 +401,120 @@ $fuzzBlock
       ),
       baselineFile().readLines().filter { it.isNotBlank() }
     )
+  }
+
+  @Test
+  fun `an update carries a note across a pure line shift, verbatim`() {
+    // Editing above a mutated method shifts every row below it: the refresh drops
+    // the old line's row and writes the new line's, and the note used to vanish
+    // with the dropped row (casebook: the note the line shift dropped). It must
+    // follow the shifted row verbatim — nothing about the mutant changed, so
+    // unlike a status flip there is nothing to flag for re-reading — while a row
+    // with an exact match keeps its note where it is.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED # sibling operand, same documented family\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED # untriaged\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,13,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,13,MathMutator,SURVIVED # sibling operand, same documented family",
+        "com.example.Codec,encode,20,MathMutator,SURVIVED # untriaged",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertTrue(output.contains("1 note(s) carried across a line shift"), output)
+    assertFalse(output.contains("carried across a status flip"), output)
+    assertTrue(output.contains("— note carried"), output)
+    assertFalse(output.contains("note dropped with the row"), output)
+
+    // idempotent: a second update finds exact rows and keeps both notes verbatim
+    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,13,MathMutator,SURVIVED # sibling operand, same documented family",
+        "com.example.Codec,encode,20,MathMutator,SURVIVED # untriaged",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+  }
+
+  @Test
+  fun `a killed row's note does not migrate to a surviving sibling line`() {
+    // The shift carry pairs dropped notes against *fresh* rows only, mirroring the
+    // ratchet's shift classifier. A killed row leaves no fresh counterpart, so its
+    // note dies with it instead of silently relabelling an unrelated survivor at
+    // another line of the same method.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED # killed since; this note must not travel\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,20,MathMutator,SURVIVED"),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    // the loss is loud: the dropped listing names the note's fate and counts it
+    assertTrue(output.contains("— note dropped with the row"), output)
+    assertTrue(output.contains("1 note(s) dropped with their rows"), output)
+    assertFalse(output.contains("— note carried"), output)
+  }
+
+  @Test
+  fun `a killed row's note does not ride a surfaced sibling to another line`() {
+    // The sharp edge of the shift carry: a killed row still reads SURVIVED in the
+    // baseline, so it shares the class/method/mutator/status key with a live survivor
+    // at another line. If that survivor's coordinate also holds a surfaced sibling — a
+    // fresh row that exactly duplicates an accepted row, the pre-existing debt the
+    // multiset comparison exposes — the extra fresh copy must NOT let the killed row's
+    // note migrate onto it. The ratchet classifies surfaced siblings out before its
+    // shift check; the carry must too, or the very migration it exists to prevent slips
+    // through the duplicate.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED # killed since; this note must not travel\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED\n"
+    )
+    // line 12's mutant is gone (killed); line 20 now reports the sibling twice
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,20,MathMutator,SURVIVED",
+        "com.example.Codec,encode,20,MathMutator,SURVIVED",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertFalse(output.contains("carried across a line shift"), output)
+    assertTrue(output.contains("— note dropped with the row"), output)
+    assertTrue(output.contains("1 note(s) dropped with their rows"), output)
   }
 
   @Test

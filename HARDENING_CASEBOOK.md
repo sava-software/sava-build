@@ -509,3 +509,36 @@ committed seed — the caps exist to bound exploration, not to re-edit
 findings*; *a minimize diff that touches a named seed is triage, not
 cleanup — the tool asked you to review the diff because this entry is what a
 surprising diff looks like*.
+
+## The note the line shift dropped
+
+During ravina's adoption of the 21.5.10 multiset comparison, six surfaced
+sibling mutants were accepted as duplicate baseline rows, each carrying a
+`# note` naming its documented family. The next day a one-line comment in the
+mutated source shifted every row in the file; the follow-up
+`-PupdateMutationBaseline` — run exactly as the verify's own hint recommended
+after the shifted rows were confirmed — rewrote all 28 rows at their new
+lines and silently dropped all six notes. The status-flip carry never fired:
+it keys on the full `class,method,line,mutator` coordinate, and a line shift
+is precisely a change in that key. Nothing failed; the acceptance arguments
+were simply gone, noticed only because the same agent had written them the
+previous day, and restored by hand.
+
+The refresh now pairs a dropped noted row with a *fresh* row that matches on
+class, method, mutator and status — the same pairing the ratchet's shift
+classifier uses — and carries the note verbatim, no re-read marker, because
+a line move changes nothing about the mutant. The safety half has two
+exclusions, both inherited from the classifier's precedence. Fresh rows
+only: a killed row has no fresh counterpart, so its note dies with it rather
+than relabelling an unrelated survivor elsewhere in the method. And fresh
+rows that exactly duplicate an accepted row are classified out as surfaced
+siblings first: a killed row still reads `SURVIVED` in the baseline, so it
+shares the pairing key with a live survivor at another line, and a sibling
+surfacing at that survivor's coordinate would otherwise hand the dead row's
+note a fresh copy to ride — review caught this via the guard test, not the
+original implementation.
+
+Rules: *a note is part of its row, and a refresh that loses one is a bug in
+the refresh, not bookkeeping*; *notes travel across both refresh
+relationships — marked when the status flipped, verbatim when only the line
+did*.
