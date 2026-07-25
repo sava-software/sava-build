@@ -47,6 +47,52 @@ object MutatorAdvice {
   /// candidate's arithmetic, keyed by mutator name.
   data class Finding(val mutator: String, val label: String, val classCount: Int, val callCount: Int)
 
+  /// A recorded decline that no longer suppresses anything, with the sentence
+  /// explaining why it can go. Declines rot the way baseline rows do: the
+  /// mutator gets enabled, or the arithmetic it would have rewritten is
+  /// deleted, and what is left reads as a settled decision about code that no
+  /// longer exists.
+  data class StaleDecline(val mutator: String, val why: String)
+
+  /// What a suite should print: findings still worth advising, and declines
+  /// that have outlived their subject.
+  data class Advice(val findings: List<Finding>, val staleDeclines: List<StaleDecline>)
+
+  /// Filters [findings] by the suite's recorded declines and reports the
+  /// declines that have gone stale. Pure, so the policy — what a decline
+  /// suppresses, and when it stops being one — is unit-testable without a
+  /// build.
+  ///
+  /// A blank reason suppresses nothing. A suppression is only worth as much as
+  /// the argument attached to it: an empty one cannot be distinguished later
+  /// from an oversight, so the advice keeps firing and the decline itself is
+  /// reported.
+  @JvmStatic
+  fun advise(
+      findings: List<Finding>,
+      enabledMutators: String,
+      declined: Map<String, String>,
+  ): Advice {
+    val enabled = enabledMutators.split(',').map { it.trim() }.toSet()
+    val advised = findings.filterNot { finding ->
+      declined[finding.mutator]?.isNotBlank() == true
+    }
+    val stale = declined.mapNotNull { (mutator, reason) ->
+      val why = when {
+        reason.isBlank() ->
+          "the decline carries no reason, so it suppresses nothing — record what the trial " +
+              "measured, or drop the decline"
+        enabled.contains(mutator) ->
+          "the mutator is enabled on this suite, so the decline contradicts it"
+        findings.none { it.mutator == mutator } ->
+          "nothing here is left for it to mutate, so the decline no longer suppresses anything"
+        else -> null
+      }
+      why?.let { StaleDecline(mutator, it) }
+    }
+    return Advice(advised, stale)
+  }
+
   /// Scans [classesDir] for classes matching the suite's PIT globs and reports
   /// candidates whose arithmetic is called but whose mutator is absent from
   /// [enabledMutators]. Never throws: advice must not be able to fail a build,

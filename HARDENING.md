@@ -571,7 +571,28 @@ call-site count. The scan reads the constant pool of the recompiled classes,
 counts only the operations these mutators rewrite (`add`, `multiply`, `and`,
 `shiftLeft`, …) so that merely formatting or comparing a Big value does not
 trip it, and never fails a build. It goes quiet as soon as the mutator is
-enabled — or when you record a measured decision not to. `NAKED_RECEIVER` is
+enabled — or when the decision not to is recorded on the suite:
+
+```kotlin
+mutation.register("decimal") {
+  declineMutator(
+      "EXPERIMENTAL_BIG_DECIMAL",
+      "trialed 2026-07-21: generated 0. It rewrites only (BigDecimal)BigDecimal " +
+          "arithmetic, and this package's math is movePointLeft/Right(int).",
+  )
+}
+```
+
+The reason is not decoration. A suppression is worth exactly the argument
+attached to it, and an empty one cannot be told apart later from an oversight —
+so a blank reason suppresses nothing and is itself reported. Only decline what
+was *measured*: a decline recorded to quiet a warning nobody investigated is the
+failure this mechanism exists to surface, and it will read as settled to
+everyone who comes after.
+
+Declines expire the way baseline rows do. Enable the mutator, or delete the
+arithmetic it argued about, and the run reports the decline as deletable rather
+than letting it fossilise. `NAKED_RECEIVER` is
 deliberately not advised this way: fluent APIs are near-universal, so it would
 fire on almost every suite, and advice that always fires stops being read.
 
@@ -743,9 +764,21 @@ it silently: no replay test, nothing re-run by `check`, and a
 `fuzz<Target>Minimize` that fails only when someone happens to reach for it.
 Since a fuzz target whose findings are never replayed is the exact rot the
 replay mechanism exists to prevent, `generateFuzzReplayTests` now names every
-corpus-less target and prints the one-line fix. Declaring the corpus under the
-test resources is what makes the generated test resolve it as a classpath
-resource, hermetic under any working directory. The
+corpus-less target and prints the one-line fix.
+
+**A corpus does two independent jobs, and only the first is about the input
+format.** A *bootstrap* corpus buys coverage a mutator would take too long to
+reach alone — a transaction whose header, offsets, and lengths must all agree
+before any body-walking code runs. A *regression* corpus is where a finding
+lands: a committed reproducer replayed by `check` is how a fixed crash stays
+fixed, and that holds whatever the format looks like. So "a mutator reaches this
+format from scratch" is a sound answer to the first question and no answer at
+all to the second — a target with nowhere to put a finding cannot satisfy the
+seed-plus-named-test rule above. Expect a regression corpus to change no
+mutation score; that is not what it is for. Where neither job applies, record it
+with `declineSeedCorpus("...")`, under the same terms as a declined mutator: a
+blank reason suppresses nothing, and a decline on a target that later declares a
+corpus is reported as stale. The
 generated test resolves a corpus under the test resources as a classpath
 resource (hermetic under any working directory; anything else falls back to
 its configured path), replays only regular files, and **fails on an empty

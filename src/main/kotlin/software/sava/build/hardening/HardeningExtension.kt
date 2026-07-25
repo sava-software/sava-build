@@ -5,6 +5,7 @@ import org.gradle.api.NamedDomainObjectContainer
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.ListProperty
+import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
 import javax.inject.Inject
 
@@ -109,6 +110,33 @@ abstract class MutationSuite @Inject constructor(private val name: String) : Nam
    */
   abstract val timeoutFactor: Property<Double>
   abstract val timeoutConst: Property<Long>
+
+  /**
+   * Mutators trialed against this suite and deliberately left off, keyed by mutator
+   * name with the measured reason. Set through [declineMutator].
+   */
+  abstract val declinedMutators: MapProperty<String, String>
+
+  /**
+   * Records a measured decision **not** to enable [mutator] here, silencing the
+   * blind-spot advice for it. [reason] carries the measurement -- what the trial
+   * generated, and why that was not worth the baseline -- because a suppression
+   * whose argument is not written down is indistinguishable from an oversight, and
+   * the next reader has to re-run the trial to find out which it was.
+   *
+   * Only for candidates that were *measured*. A decline recorded to quiet a warning
+   * nobody investigated is the failure this whole mechanism exists to surface, and
+   * it will read as settled to everyone who comes after. A blank [reason] therefore
+   * does not suppress anything: the advice keeps firing and the empty decline is
+   * reported.
+   *
+   * Declines go stale like baseline rows do. Enable the mutator, or remove the
+   * arithmetic it would have rewritten, and the decline is reported as deletable
+   * rather than sitting on as a fossil.
+   */
+  fun declineMutator(mutator: String, reason: String) {
+    declinedMutators.put(mutator, reason)
+  }
 }
 
 /** One Jazzer entry point: a class with 'public static void fuzzerTestOneInput(byte[])'.
@@ -133,4 +161,26 @@ abstract class FuzzTarget @Inject constructor(private val name: String) : Named 
    *  (e.g. a raw codec). Unset leaves the run seedless. Seeds are never mutated in
    *  place — libFuzzer copies newly interesting inputs into the writable corpus. */
   abstract val seedCorpus: DirectoryProperty
+
+  /** Recorded reason this target carries no [seedCorpus]. Set through [declineSeedCorpus]. */
+  abstract val declinedSeedCorpus: Property<String>
+
+  /**
+   * Records a measured decision that this target needs no committed corpus,
+   * silencing the corpus-less advice.
+   *
+   * Weigh it against both jobs a corpus does, because they are independent and only
+   * the first is about the input format. A **bootstrap** corpus buys coverage a
+   * mutator would take too long to reach on its own — unnecessary where every prefix
+   * is valid. A **regression** corpus is where a finding lands: committed
+   * reproducers replayed by `check` are how a fixed crash stays fixed, and that
+   * applies whatever the format looks like. "A mutator reaches this from scratch"
+   * answers only the first, so it is rarely a sufficient reason on its own.
+   *
+   * A blank [reason] does not suppress anything. A target that later declares a
+   * [seedCorpus] has its decline reported as deletable.
+   */
+  fun declineSeedCorpus(reason: String) {
+    declinedSeedCorpus.set(reason)
+  }
 }

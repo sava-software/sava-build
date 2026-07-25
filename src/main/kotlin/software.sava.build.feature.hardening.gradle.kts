@@ -1449,22 +1449,41 @@ hardening.mutation.all {
     val adviceTargets = suite.targetClasses
     val adviceExcludes = suite.excludedClasses
     val adviceMutators = suite.mutators
+    val adviceDeclined = suite.declinedMutators
     val adviceTrialTask = path.substringBeforeLast(':') + ":pitestMutatorTrial"
     doFirst {
-      MutatorAdvice.scan(
-          adviceClassesDir.get().asFile,
-          adviceTargets.get(),
-          adviceExcludes.get(),
-          adviceMutators.get(),
-      ).forEach { finding ->
-        logger.warn(
-            "pitest '$suiteName': ${finding.classCount} mutated class(es) call ${finding.label} arithmetic " +
-                "(${finding.callCount} call site(s)), which the enabled mutator set cannot mutate — " +
-                "those computations are currently unmutated, not proven.\n" +
-                "  measure it: ./gradlew $adviceTrialTask -PtrialMutators=${finding.mutator}\n" +
-                "  then enable what fires (mutators = \"...,${finding.mutator}\") and record the numbers, " +
-                "or record a measured decision not to."
+      val classesDir = adviceClassesDir.get().asFile
+      // No recompiled classes means nothing was scanned, and "found nothing" would
+      // then wrongly read as "the declines have no subject left".
+      if (classesDir.isDirectory) {
+        val advice = MutatorAdvice.advise(
+            MutatorAdvice.scan(
+                classesDir,
+                adviceTargets.get(),
+                adviceExcludes.get(),
+                adviceMutators.get(),
+            ),
+            adviceMutators.get(),
+            adviceDeclined.get(),
         )
+        advice.findings.forEach { finding ->
+          logger.warn(
+              "pitest '$suiteName': ${finding.classCount} mutated class(es) call ${finding.label} arithmetic " +
+                  "(${finding.callCount} call site(s)), which the enabled mutator set cannot mutate — " +
+                  "those computations are currently unmutated, not proven.\n" +
+                  "  measure it: ./gradlew $adviceTrialTask -PtrialMutators=${finding.mutator}\n" +
+                  "  then enable what fires (mutators = \"...,${finding.mutator}\") and record the numbers, " +
+                  "or record the measured decision not to: " +
+                  "declineMutator(\"${finding.mutator}\", \"what the trial generated, and why it was not worth it\")."
+          )
+        }
+        // A suppression that has outlived its subject is worse than none: it reads as
+        // a settled decision about code that no longer exists.
+        advice.staleDeclines.forEach { stale ->
+          logger.warn(
+              "pitest '$suiteName': the recorded decline of ${stale.mutator} is stale — ${stale.why}."
+          )
+        }
       }
     }
   }
@@ -1706,8 +1725,25 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
   // A target with no seedCorpus generates no replay test, so nothing it has
   // ever found is re-run by 'check' and 'fuzz<Target>Minimize' fails when
   // reached — all of it silently, which is the one failure mode this whole
-  // replay mechanism exists to prevent. Name them instead.
-  val corpusless = hardening.fuzz.filter { it.seedCorpus.orNull == null }.map { it.name }.sorted()
+  // replay mechanism exists to prevent. Name them instead, unless the repo has
+  // recorded a measured decision (declineSeedCorpus) — a blank reason records
+  // nothing and so suppresses nothing.
+  val corpusless = hardening.fuzz
+      .filter { it.seedCorpus.orNull == null && it.declinedSeedCorpus.orNull.isNullOrBlank() }
+      .map { it.name }
+      .sorted()
+  // Declines rot too: a target that has since gained a corpus, or that records a
+  // reason-less decline, is carrying a suppression that argues for nothing.
+  val staleDeclines = hardening.fuzz.mapNotNull { target ->
+    val reason = target.declinedSeedCorpus.orNull ?: return@mapNotNull null
+    when {
+      reason.isBlank() ->
+        target.name to "it carries no reason, so it suppresses nothing — record why no corpus is needed, or drop it"
+      target.seedCorpus.orNull != null ->
+        target.name to "the target now declares a seedCorpus, so the decline contradicts it"
+      else -> null
+    }
+  }.sortedBy { it.first }
   val targets = hardening.fuzz.mapNotNull { target ->
     val corpus = target.seedCorpus.orNull?.asFile ?: return@mapNotNull null
     // A corpus under the test resources is resolved as a classpath resource — hermetic
@@ -1721,6 +1757,7 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
   }
   inputs.property("targets", targets.map { it.joinToString("|") })
   inputs.property("corpusless", corpusless.joinToString("|"))
+  inputs.property("staleCorpusDeclines", staleDeclines.joinToString("|") { "${it.first}=${it.second}" })
   doLast {
     corpusless.forEach { name ->
       logger.warn(
@@ -1728,8 +1765,13 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
               "harness finds is re-run by 'check', and 'fuzz${name.replaceFirstChar(Char::uppercase)}Minimize' " +
               "will fail when reached.\n" +
               "  fix: seedCorpus = layout.projectDirectory.dir(\"src/test/resources/fuzz/$name\") " +
-              "(a corpus under the test resources resolves hermetically), then commit at least one seed."
+              "(a corpus under the test resources resolves hermetically), then commit at least one seed.\n" +
+              "  A corpus is where a finding lands, so this holds even where a mutator reaches the format " +
+              "from scratch — if it genuinely does not, record why: declineSeedCorpus(\"...\")."
       )
+    }
+    staleDeclines.forEach { (name, why) ->
+      logger.warn("fuzz target '$name': the recorded seedCorpus decline is stale — $why.")
     }
     val dir = outputDir.get().asFile
     dir.deleteRecursively()

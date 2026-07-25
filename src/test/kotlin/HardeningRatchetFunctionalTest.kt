@@ -28,6 +28,11 @@ class HardeningRatchetFunctionalTest {
     registerFuzz: Boolean = true,
     // caps the 'codec' target when a test exercises the oversized-seed refusal
     codecMaxLen: Int? = null,
+    // adds a third target with no corpus, optionally carrying a recorded decline,
+    // for the corpus-less advice and its staleness check
+    corpusless: Boolean = false,
+    corpuslessDecline: String? = null,
+    corpuslessAlsoDeclaresCorpus: Boolean = false,
     // pin the recompile's bytecode target when a test actually runs it: the fixture
     // sets no toolchain, so the recompile runs on the daemon JDK, which this build
     // pins to 21 via gradle/gradle-daemon-jvm.properties
@@ -45,6 +50,15 @@ class HardeningRatchetFunctionalTest {
             targetClass = "com.example.OutsideFuzz"
             seedCorpus = layout.projectDirectory.dir("corpus/outside")
           }
+          ${if (corpusless) {
+            """
+            fuzz.register("bare") {
+              targetClass = "com.example.BareFuzz"
+              ${if (corpuslessAlsoDeclaresCorpus) "seedCorpus = layout.projectDirectory.dir(\"src/test/resources/fuzz/codec\")" else ""}
+              ${if (corpuslessDecline != null) "declineSeedCorpus(\"$corpuslessDecline\")" else ""}
+            }
+            """.trimIndent()
+          } else ""}
       """.trimIndent()
     } else {
       ""
@@ -758,6 +772,45 @@ $fuzzBlock
     val pathBased = generatedRoot.resolve("OutsideFuzzSeedReplayTest.java").readText()
     assertTrue(pathBased.contains("Files.isDirectory"), pathBased)
     assertTrue(pathBased.contains("assertFalse(seeds.isEmpty()"), pathBased)
+  }
+
+  @Test
+  fun `a corpus-less target is named until the decision is recorded, and the record itself expires`() {
+    // The advice fires: no corpus means a finding has nowhere to land.
+    writeFixture(corpusless = true)
+    File(fixtureDir, "src/test/resources/fuzz/codec").mkdirs()
+    File(fixtureDir, "src/test/resources/fuzz/codec/seed1").writeText("seed")
+    File(fixtureDir, "corpus/outside").mkdirs()
+    File(fixtureDir, "corpus/outside/seed1").writeText("seed")
+
+    val named = runner("generateFuzzReplayTests").build().output
+    assertTrue(named.contains("fuzz target 'bare' declares no seedCorpus"), named)
+    assertTrue(named.contains("declineSeedCorpus"), "the advice must name its own escape hatch:\n$named")
+
+    // Recorded with an argument: silent. This is the whole point -- a decision that
+    // has been made and written down stops being a question.
+    writeFixture(corpusless = true, corpuslessDecline = "trialed 2026-07-25: every prefix is valid and no finding has ever landed")
+    val declined = runner("generateFuzzReplayTests").build().output
+    assertFalse(declined.contains("fuzz target 'bare' declares no seedCorpus"), declined)
+    assertFalse(declined.contains("is stale"), declined)
+
+    // Recorded with nothing: an argument-free suppression is not one.
+    writeFixture(corpusless = true, corpuslessDecline = "   ")
+    val blank = runner("generateFuzzReplayTests").build().output
+    assertTrue(blank.contains("fuzz target 'bare' declares no seedCorpus"), blank)
+    assertTrue(blank.contains("the recorded seedCorpus decline is stale"), blank)
+    assertTrue(blank.contains("carries no reason"), blank)
+
+    // Outlived its subject: the target gained a corpus, so the decline argues for
+    // nothing and must not sit on as a fossil.
+    writeFixture(
+      corpusless = true,
+      corpuslessDecline = "trialed 2026-07-25: every prefix is valid",
+      corpuslessAlsoDeclaresCorpus = true,
+    )
+    val contradicted = runner("generateFuzzReplayTests").build().output
+    assertTrue(contradicted.contains("the recorded seedCorpus decline is stale"), contradicted)
+    assertTrue(contradicted.contains("contradicts"), contradicted)
   }
 
   @Test

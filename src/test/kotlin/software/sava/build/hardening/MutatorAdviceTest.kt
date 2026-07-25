@@ -99,6 +99,64 @@ class MutatorAdviceTest {
   }
 
   @Test
+  fun `a recorded decline suppresses its own mutator and nothing else`() {
+    val findings = MutatorAdvice.scan(classesDir, listOf(moneyGlob), emptyList(), "STRONGER")
+    val advice = MutatorAdvice.advise(
+        findings, "STRONGER", mapOf("EXPERIMENTAL_BIG_DECIMAL" to "trialed 2026-07-25: generated 0"))
+
+    assertEquals(listOf("EXPERIMENTAL_BIG_INTEGER"), advice.findings.map { it.mutator })
+    assertTrue(advice.staleDeclines.isEmpty(), "a decline with a live subject is not stale: ${advice.staleDeclines}")
+  }
+
+  @Test
+  fun `a decline without a reason suppresses nothing and is reported`() {
+    val findings = MutatorAdvice.scan(classesDir, listOf(moneyGlob), emptyList(), "STRONGER")
+    val advice = MutatorAdvice.advise(findings, "STRONGER", mapOf("EXPERIMENTAL_BIG_DECIMAL" to "   "))
+
+    assertEquals(
+        setOf("EXPERIMENTAL_BIG_DECIMAL", "EXPERIMENTAL_BIG_INTEGER"),
+        advice.findings.map { it.mutator }.toSet(),
+        "an argument-free suppression must not silence the advice"
+    )
+    assertEquals(listOf("EXPERIMENTAL_BIG_DECIMAL"), advice.staleDeclines.map { it.mutator })
+    assertTrue(advice.staleDeclines.single().why.contains("no reason"), advice.staleDeclines.single().why)
+  }
+
+  @Test
+  fun `a decline goes stale when the mutator is enabled`() {
+    val findings = MutatorAdvice.scan(classesDir, listOf(moneyGlob), emptyList(), "STRONGER,EXPERIMENTAL_BIG_DECIMAL")
+    val advice = MutatorAdvice.advise(
+        findings,
+        "STRONGER,EXPERIMENTAL_BIG_DECIMAL",
+        mapOf("EXPERIMENTAL_BIG_DECIMAL" to "trialed 2026-07-25: generated 0"),
+    )
+
+    assertEquals(listOf("EXPERIMENTAL_BIG_DECIMAL"), advice.staleDeclines.map { it.mutator })
+    assertTrue(advice.staleDeclines.single().why.contains("contradicts"), advice.staleDeclines.single().why)
+  }
+
+  @Test
+  fun `a decline goes stale when its arithmetic is gone`() {
+    // the format-only fixture gives the mutators nothing, so the scan finds nothing —
+    // the shape a decline takes on after the money math it argued about is deleted
+    val findings = MutatorAdvice.scan(
+        classesDir,
+        listOf("software.sava.build.hardening.MutatorAdviceFormatOnlyFixture"),
+        emptyList(),
+        "STRONGER",
+    )
+    val advice = MutatorAdvice.advise(
+        findings, "STRONGER", mapOf("EXPERIMENTAL_BIG_DECIMAL" to "trialed 2026-07-25: generated 0"))
+
+    assertTrue(advice.findings.isEmpty())
+    assertEquals(listOf("EXPERIMENTAL_BIG_DECIMAL"), advice.staleDeclines.map { it.mutator })
+    assertTrue(
+        advice.staleDeclines.single().why.contains("no longer suppresses anything"),
+        advice.staleDeclines.single().why
+    )
+  }
+
+  @Test
   fun `advice never throws on unreadable input`() {
     val scratch = Files.createTempDirectory("mutator-advice").toFile()
     try {
