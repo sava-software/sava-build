@@ -873,6 +873,20 @@ hardening.mutation.all {
         val droppedNotes = dropped
             .mapNotNull { row -> annotations[row]?.let { row to it } }
             .toMutableList()
+        // A dropped row carrying *no* note still has to be recognised as a line
+        // shift. The pool above is built by 'mapNotNull' over the annotations, so
+        // a bare row is invisible to the shift lookup by construction: it fell
+        // through to the '# untriaged' branch, and a legacy unlabeled row — one
+        // predating label seeding, argued in the suite README rather than on the
+        // row itself — was silently reclassified as fresh debt by any edit that
+        // moves lines, a javadoc paragraph included. 'unlabeled' and
+        // '# untriaged' are distinct states everywhere else here (the verify and
+        // debt listings count them separately), so a refresh must not convert one
+        // into the other. Only the shift is paired this way: a status flip really
+        // does change what the mutant proves, so seeding debt there is correct.
+        val droppedBare = dropped
+            .filter { annotations[it] == null }
+            .toMutableList()
         fun coordinate(row: String) = row.substringBeforeLast(',')
         fun linelessKey(row: String) = row.split(',').let { "${it[0]},${it[1]},${it[3]},${it[4]}" }
         fun rowLine(row: String) = row.split(',')[2]
@@ -886,6 +900,7 @@ hardening.mutation.all {
         val acceptedRowTexts = accepted.toSet()
         var flipped = 0
         var shifted = 0
+        var shiftedBare = 0
         var seeded = 0
         val written = current.map { row ->
           annotations[row]?.let { return@map "$row $it" }
@@ -906,6 +921,18 @@ hardening.mutation.all {
               shifted++
               return@map "$row ${shift.second}"
             }
+            // The same pairing for a note-less row. There is nothing to carry;
+            // recognising the shift is what keeps the row unlabeled rather than
+            // seeding it as debt it never was.
+            val bareShift = droppedBare.firstOrNull {
+              linelessKey(it) == linelessKey(row) && rowLine(it) != rowLine(row)
+            }
+            if (bareShift != null) {
+              freshBudget[row] = freshCopies - 1
+              droppedBare.remove(bareShift)
+              shiftedBare++
+              return@map row
+            }
           }
           // A genuinely new coordinate arrives as explicit debt, never as a bare row:
           // triage means replacing this label, so the baseline itself always says
@@ -923,7 +950,8 @@ hardening.mutation.all {
             "pitest baseline '$suiteName': wrote ${current.size} accepted entries" +
                 (if (seeded == 0) "" else " ($seeded new row(s) seeded '# untriaged')") +
                 (if (flipped == 0) "" else " ($flipped note(s) carried across a status flip — re-check them)") +
-                (if (shifted == 0) "" else " ($shifted note(s) carried across a line shift)")
+                (if (shifted == 0) "" else " ($shifted note(s) carried across a line shift)") +
+                (if (shiftedBare == 0) "" else " ($shiftedBare unlabeled row(s) kept unlabeled across a line shift)")
         )
         if (dropped.isNotEmpty()) {
           // The silent half of the refresh footgun: a full update rewrites from this one

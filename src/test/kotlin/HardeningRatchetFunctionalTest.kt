@@ -499,6 +499,46 @@ $fuzzBlock
   }
 
   @Test
+  fun `an update keeps an unlabeled row unlabeled across a pure line shift`() {
+    // A row predating label seeding carries no note at all — its argument lives in
+    // the suite README, not on the row. The shift pairing was built by mapNotNull
+    // over the annotations, so a bare row was invisible to it by construction: it
+    // fell through to the '# untriaged' branch, and any edit that moved lines (a
+    // javadoc paragraph was enough) silently reclassified settled triage as fresh
+    // debt. 'unlabeled' and '# untriaged' are counted as distinct states
+    // everywhere else, so a refresh must not convert one into the other. Line 30
+    // is here to prove the fix does not disable seeding: a genuinely new
+    // coordinate with no dropped counterpart left to pair against still arrives
+    // as explicit debt.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,13,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,30,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,13,MathMutator,SURVIVED",
+        "com.example.Codec,encode,20,MathMutator,SURVIVED",
+        "com.example.Codec,encode,30,MathMutator,SURVIVED # untriaged",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertTrue(output.contains("1 unlabeled row(s) kept unlabeled across a line shift"), output)
+    assertTrue(output.contains("1 new row(s) seeded '# untriaged'"), output)
+  }
+
+  @Test
   fun `a killed row's note does not migrate to a surviving sibling line`() {
     // The shift carry pairs dropped notes against *fresh* rows only, mirroring the
     // ratchet's shift classifier. A killed row leaves no fresh counterpart, so its
