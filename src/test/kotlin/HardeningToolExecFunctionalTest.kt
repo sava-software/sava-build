@@ -22,7 +22,13 @@ class HardeningToolExecFunctionalTest {
   private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
     .absolutePath.replace("\\", "\\\\")
 
-  private fun writeFixture() {
+  /**
+   * [moneyMath] adds a real 'com.example.Codec' whose BigDecimal/BigInteger arithmetic
+   * the blind-spot scan is meant to find — the other tests here fake PIT and never need
+   * the class to exist. [declineLines] is DSL spliced into the suite, so the recorded
+   * decline travels the same path a consuming repo's would.
+   */
+  private fun writeFixture(moneyMath: Boolean = false, declineLines: String = "") {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
         pluginManagement { includeBuild("$savaBuildRoot") }
@@ -51,6 +57,7 @@ class HardeningToolExecFunctionalTest {
           mutation.register("encoding") {
             targetClasses = listOf("com.example.Codec")
             targetTests = "com.example.*Test*"
+            $declineLines
           }
           fuzz.register("codec") {
             targetClass = "com.example.CodecFuzz"
@@ -80,6 +87,35 @@ class HardeningToolExecFunctionalTest {
       """.trimIndent() + "\n"
     )
     val srcDir = File(fixtureDir, "src/main/java/com/example").apply { mkdirs() }
+    // Real arithmetic on both candidate types, so the scan reads a genuine constant
+    // pool rather than a fixture that only claims to have money math. Both types are
+    // present because a decline must suppress its own mutator and leave the other
+    // one speaking.
+    File(srcDir, "Codec.java").let { codec ->
+      if (moneyMath) {
+        codec.writeText(
+          """
+            package com.example;
+
+            import java.math.BigDecimal;
+            import java.math.BigInteger;
+
+            public final class Codec {
+
+              public static BigDecimal fee(BigDecimal rate, BigDecimal amount) {
+                return rate.multiply(amount).subtract(BigDecimal.ONE);
+              }
+
+              public static BigInteger mask(BigInteger flags, BigInteger bits) {
+                return flags.and(bits).shiftLeft(2);
+              }
+            }
+          """.trimIndent() + "\n"
+        )
+      } else {
+        codec.delete()
+      }
+    }
     // Prints the repeated minion chatter the filter exists to collapse — split across
     // stdout and stderr, since the shared seen-set is the point — then writes the CSV
     // report the verify finalizer needs. 'fail' mode additionally leaves a partial
@@ -195,6 +231,52 @@ class HardeningToolExecFunctionalTest {
 
     runner("pitestEncoding").build()
     assertFalse(marker.exists(), "an unscoped run must clear the scoped marker")
+  }
+
+  @Test
+  fun `a recorded decline silences the blind-spot advice through a real pitest run`() {
+    // The unit tests own the policy; this owns the plumbing — that the suite's
+    // declinedMutators actually reach the advice through task configuration and the
+    // configuration cache. Without it, the feature's headline claim ("record the
+    // decision and it goes quiet") is asserted nowhere against a running build.
+    writeFixture(moneyMath = true)
+    val advised = runner("pitestEncoding").build().output
+    assertTrue(advised.contains("call BigDecimal arithmetic"), "advice did not fire:\n" + advised)
+    assertTrue(advised.contains("call BigInteger arithmetic"), advised)
+    assertTrue(advised.contains("declineMutator("), "the advice must name its own escape hatch:\n" + advised)
+
+    // Recorded with its measurement: quiet, and only for the mutator it names.
+    writeFixture(
+      moneyMath = true,
+      declineLines = """declineMutator("EXPERIMENTAL_BIG_DECIMAL", "trialed 2026-07-25: generated 0")""",
+    )
+    val declined = runner("pitestEncoding").build().output
+    assertFalse(declined.contains("call BigDecimal arithmetic"), "the decline did not reach the advice:\n" + declined)
+    assertTrue(
+      declined.contains("call BigInteger arithmetic"),
+      "a decline must suppress its own mutator only:\n" + declined
+    )
+    assertFalse(declined.contains("is stale"), "a decline with a live subject is not stale:\n" + declined)
+
+    // An argument-free decline suppresses nothing and reports itself, so it cannot be
+    // used to quiet a warning nobody investigated.
+    writeFixture(
+      moneyMath = true,
+      declineLines = """declineMutator("EXPERIMENTAL_BIG_DECIMAL", "   ")""",
+    )
+    val blank = runner("pitestEncoding").build().output
+    assertTrue(blank.contains("call BigDecimal arithmetic"), blank)
+    assertTrue(blank.contains("the recorded decline of EXPERIMENTAL_BIG_DECIMAL is stale"), blank)
+    assertTrue(blank.contains("carries no reason"), blank)
+
+    // The subject disappears (no money math left) and the decline says so rather than
+    // sitting on as a settled decision about deleted code.
+    writeFixture(
+      declineLines = """declineMutator("EXPERIMENTAL_BIG_DECIMAL", "trialed 2026-07-25: generated 0")""",
+    )
+    val subjectGone = runner("pitestEncoding").build().output
+    assertTrue(subjectGone.contains("the recorded decline of EXPERIMENTAL_BIG_DECIMAL is stale"), subjectGone)
+    assertTrue(subjectGone.contains("no longer suppresses anything"), subjectGone)
   }
 
   @Test
