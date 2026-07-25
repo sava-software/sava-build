@@ -1,5 +1,17 @@
 # Changelog
 
+## [21.5.14](https://github.com/sava-software/sava-build/compare/21.5.13...21.5.14) (2026-07-25)
+
+
+### Features
+
+* **hardening:** add comprehensive smoke tests for hardening plugin behaviors ([489b24a](https://github.com/sava-software/sava-build/commit/489b24a19129e98b897e001cc11806dc386901db))
+* **hardening:** add mutator-blindness scan and advice for BigDecimal/BigInteger math ([575d292](https://github.com/sava-software/sava-build/commit/575d2924a32962779f3a61a06b3be541d95ba5c8))
+* **hardening:** add unit tests for atomic writes and baseline parsing ([cdabf62](https://github.com/sava-software/sava-build/commit/cdabf62a7c210722b115ce21a5e75c346919a978))
+* **hardening:** enhance decline diagnostics and seed corpus handling ([9009d26](https://github.com/sava-software/sava-build/commit/9009d2673aedaf2ad0f7195e05aef91fa71b9c1c))
+* **hardening:** handle stale declines for mutators and seed corpora ([9cf324d](https://github.com/sava-software/sava-build/commit/9cf324d5c841a157e8eaf34b02412d7f63b98a21))
+* **publish:** add retryDelayMillis support for configurable retries ([8646d14](https://github.com/sava-software/sava-build/commit/8646d146d4dba54836d2b5912e7aa25c1b710ddd))
+
 ## [21.5.13](https://github.com/sava-software/sava-build/compare/21.5.12...21.5.13) (2026-07-24)
 
 
