@@ -410,6 +410,17 @@ Worked in this order, each step cheaper than the one after it:
    multi-row caller. The escape is what keeps the acceptance honest when
    the code changes underneath it.
 
+**Before step 4, ask whether the mutated line can still execute.** PIT reuses
+minion JVMs across mutants, so process-lifetime state set up by an *earlier*
+mutant's run of the same test is still there. Memoizing factories are the
+common shape: a `computeIfAbsent` over a static cache, keyed by a constant the
+test hard-codes, is populated on first use and never re-invokes the mutated
+lambda again — the mutant is unreachable by construction, and looks exactly
+like an equivalent one. The tell is that the mutated code is a cache-miss path
+whose key the test does not vary. The fix is a fixture change, not an
+acceptance: mint a fresh key per invocation so every run takes the miss path
+*(casebook: the memoizing factory that could not be killed)*.
+
 ### The recurring equivalence families
 
 Most accepted mutants fall into a handful of shapes; group the baseline by
@@ -549,7 +560,20 @@ exactly on money-handling code: `MathMutator` rewrites primitive bytecode
 arithmetic, while `BigInteger`/`BigDecimal` arithmetic is method calls those
 opcodes never touch. A fee computation on `BigInteger` is invisible to
 `STRONGER` — the suite is blind by construction, not undertested, and no
-ratchet failure will ever say so.
+ratchet failure can say so, because a mutant that is never generated cannot
+survive.
+
+Since the blind spot cannot announce itself through the ratchet, each
+`pitest<Suite>` run looks for it directly: the classes about to be mutated are
+scanned for arithmetic calls on `BigDecimal`/`BigInteger`, and when the
+matching mutator is not enabled the run warns with the trial command and the
+call-site count. The scan reads the constant pool of the recompiled classes,
+counts only the operations these mutators rewrite (`add`, `multiply`, `and`,
+`shiftLeft`, …) so that merely formatting or comparing a Big value does not
+trip it, and never fails a build. It goes quiet as soon as the mutator is
+enabled — or when you record a measured decision not to. `NAKED_RECEIVER` is
+deliberately not advised this way: fluent APIs are near-universal, so it would
+fire on almost every suite, and advice that always fires stops being read.
 
 The remedy is `EXPERIMENTAL_BIG_INTEGER` / `EXPERIMENTAL_BIG_DECIMAL`, named
 per suite (they belong to no group). Before enabling: pitest ≥ 1.25.8 on
@@ -712,7 +736,16 @@ someone remembers to fuzz is a directory of files, not a regression suite;
 feeding every seed through the harness costs milliseconds per build. The
 plugin generates the replay: every fuzz target with a `seedCorpus` gets a
 `<Harness>SeedReplayTest` in the test source set, so the corpus runs inside
-`test` — and under PIT, where the replay participates as a killer. The
+`test` — and under PIT, where the replay participates as a killer.
+
+A target that declares **no** `seedCorpus` gets none of that, and used to get
+it silently: no replay test, nothing re-run by `check`, and a
+`fuzz<Target>Minimize` that fails only when someone happens to reach for it.
+Since a fuzz target whose findings are never replayed is the exact rot the
+replay mechanism exists to prevent, `generateFuzzReplayTests` now names every
+corpus-less target and prints the one-line fix. Declaring the corpus under the
+test resources is what makes the generated test resolve it as a classpath
+resource, hermetic under any working directory. The
 generated test resolves a corpus under the test resources as a classpath
 resource (hermetic under any working directory; anything else falls back to
 its configured path), replays only regular files, and **fails on an empty

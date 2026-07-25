@@ -3,6 +3,7 @@ import software.sava.build.hardening.BaselineNotes
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
+import software.sava.build.hardening.MutatorAdvice
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.io.OutputStream
@@ -1437,6 +1438,35 @@ hardening.mutation.all {
     group = "verification"
     description = "PIT mutation testing of the '${suite.name}' classes against their tests."
     configurePitestExec()
+    // Mutator-blindness advice. A mutant that is never generated cannot
+    // survive, so a suite whose subject is BigDecimal/BigInteger math can sit
+    // green for years with that math unmutated and nothing anywhere says so.
+    // Runs after compileForPitest (a dependency of this task), reads the very
+    // classes about to be mutated, and only speaks when the matching mutator is
+    // absent — so it goes quiet the moment the gap is closed or measured.
+    // Plain values only: the configuration cache cannot serialize the script.
+    val adviceClassesDir = mutationClassesDir
+    val adviceTargets = suite.targetClasses
+    val adviceExcludes = suite.excludedClasses
+    val adviceMutators = suite.mutators
+    val adviceTrialTask = path.substringBeforeLast(':') + ":pitestMutatorTrial"
+    doFirst {
+      MutatorAdvice.scan(
+          adviceClassesDir.get().asFile,
+          adviceTargets.get(),
+          adviceExcludes.get(),
+          adviceMutators.get(),
+      ).forEach { finding ->
+        logger.warn(
+            "pitest '$suiteName': ${finding.classCount} mutated class(es) call ${finding.label} arithmetic " +
+                "(${finding.callCount} call site(s)), which the enabled mutator set cannot mutate — " +
+                "those computations are currently unmutated, not proven.\n" +
+                "  measure it: ./gradlew $adviceTrialTask -PtrialMutators=${finding.mutator}\n" +
+                "  then enable what fires (mutators = \"...,${finding.mutator}\") and record the numbers, " +
+                "or record a measured decision not to."
+        )
+      }
+    }
   }
 
   // The converge second round: same run, no ratchet finalizer, ordered after the
@@ -1673,6 +1703,11 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
   outputs.dir(outputDir)
   // configuration-time snapshot of plain values, so the configuration cache can serialize
   val testResourceDirs = sourceSets.test.get().resources.srcDirs.toList()
+  // A target with no seedCorpus generates no replay test, so nothing it has
+  // ever found is re-run by 'check' and 'fuzz<Target>Minimize' fails when
+  // reached — all of it silently, which is the one failure mode this whole
+  // replay mechanism exists to prevent. Name them instead.
+  val corpusless = hardening.fuzz.filter { it.seedCorpus.orNull == null }.map { it.name }.sorted()
   val targets = hardening.fuzz.mapNotNull { target ->
     val corpus = target.seedCorpus.orNull?.asFile ?: return@mapNotNull null
     // A corpus under the test resources is resolved as a classpath resource — hermetic
@@ -1685,7 +1720,17 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
     listOf(target.name, target.targetClass.get(), corpus.absolutePath, resourcePath ?: "")
   }
   inputs.property("targets", targets.map { it.joinToString("|") })
+  inputs.property("corpusless", corpusless.joinToString("|"))
   doLast {
+    corpusless.forEach { name ->
+      logger.warn(
+          "fuzz target '$name' declares no seedCorpus: no replay test is generated, so nothing this " +
+              "harness finds is re-run by 'check', and 'fuzz${name.replaceFirstChar(Char::uppercase)}Minimize' " +
+              "will fail when reached.\n" +
+              "  fix: seedCorpus = layout.projectDirectory.dir(\"src/test/resources/fuzz/$name\") " +
+              "(a corpus under the test resources resolves hermetically), then commit at least one seed."
+      )
+    }
     val dir = outputDir.get().asFile
     dir.deleteRecursively()
     dir.mkdirs()

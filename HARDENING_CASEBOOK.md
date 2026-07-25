@@ -160,6 +160,17 @@ because they asserted properties (round trips, monotonicity, exact
 boundaries) rather than restating implementations. Property assertions
 generalise to mutation classes that did not exist when they were written.
 
+A third repo (a vault-statistics service, on-chain fee and NAV math) trialed
+at adoption: its pricing suite grew by 43 `BigInteger` mutants (39 already
+killed, 91%) and 30 `BigDecimal` (22 killed, 73%); the other two suites fired
+zero for both, having no Big arithmetic at all. The unkilled remainder was the
+point — twelve `multiply`→`divide` and `subtract`→`add` mutants inside fee and
+NAV computations, several on leaf paths with no fixture at all. That suite had
+been reporting 66% detection and a green ratchet while its money math was
+unmutated. It is the evidence behind the per-run blind-spot advice: the gap
+was found because someone thought to run the trial, and nothing in the build
+would have suggested it.
+
 ## @Inherited is version-dependent
 
 A wandering kill count traced to `@Execution`/`@TestInstance` on an abstract
@@ -698,3 +709,28 @@ Rules: *campaign output goes to a file, never through a consumer that can
 die mid-run*; *a fuzzer that stopped printing is diagnosed by CPU delta,
 not thread state*; *crash artifacts stamped at the kill moment that replay
 clean are dump-on-death, not findings*.
+
+## The memoizing factory that could not be killed
+
+A vault-statistics service had a family of `UnsupportedReason` factories that
+memoize by public key: `computeIfAbsent(key, k -> new Reason(k, "..."))` over a
+static `ConcurrentHashMap`. Fifteen mutants sat in those factories. Every
+attempt to kill them failed, and each one read as a textbook equivalent — the
+returned reason was identical whichever branch ran.
+
+They were not equivalent; they were unreachable. PIT reuses minion JVMs across
+mutants, so the static map still held the entry an *earlier* mutant's run of
+the same test had inserted. With the test hard-coding its key, `computeIfAbsent`
+found a hit and never invoked the mutated lambda at all. The mutant's code did
+not run, so nothing could observe it — and "no test can observe this" is
+precisely the sentence that gets a row accepted as equivalent.
+
+Minting a fresh key per invocation (a counter in the test helper, so every call
+takes the cache-miss path) killed thirteen of the fifteen outright. The two
+that remained were genuinely equivalent and are accepted with that argument.
+
+The rule: an unkillable mutant on a cache-miss path is a fixture bug until
+proven otherwise. Ask whether the line can still execute before asking whether
+its effect can be seen — process-lifetime state outlives the mutant that
+created it, and a test that always supplies the same key only exercises the
+miss path once per JVM, not once per mutant.
