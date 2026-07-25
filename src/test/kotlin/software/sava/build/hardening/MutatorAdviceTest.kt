@@ -1,6 +1,7 @@
 package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.File
@@ -171,5 +172,33 @@ class MutatorAdviceTest {
     } finally {
       scratch.deleteRecursively()
     }
+  }
+
+
+  @Test
+  fun `a decline of a mutator the scan never advises is diagnosed as such`() {
+    val findings = MutatorAdvice.scan(classesDir, listOf(moneyGlob), emptyList(), "STRONGER")
+
+    // NAKED_RECEIVER is trialed by policy but deliberately not advised by this scan.
+    // Reporting it as "nothing left to mutate" would read as though its arithmetic had
+    // been deleted, and would warn forever with no way to silence it.
+    val declined = MutatorAdvice.advise(
+        findings, "STRONGER",
+        mapOf("EXPERIMENTAL_NAKED_RECEIVER" to "trialed 2026-07-25: 334 generated, 163 unkilled"))
+
+    val stale = declined.staleDeclines.single()
+    assertEquals("EXPERIMENTAL_NAKED_RECEIVER", stale.mutator)
+    assertTrue(stale.why.contains("does not advise"), stale.why)
+    assertFalse(stale.why.contains("nothing here is left"), "must not read as a deleted subject: " + stale.why)
+
+    // a misspelled candidate lands in the same arm, where "check the spelling" belongs
+    val typo = MutatorAdvice.advise(
+        findings, "STRONGER", mapOf("EXPERIMENTAL_BIG_DEICMAL" to "trialed: generated 0"))
+    assertTrue(typo.staleDeclines.single().why.contains("spelling"), typo.staleDeclines.single().why)
+
+    // and the real candidate still reports the subject-gone case
+    val gone = MutatorAdvice.advise(
+        emptyList(), "STRONGER", mapOf("EXPERIMENTAL_BIG_DECIMAL" to "trialed: generated 0"))
+    assertTrue(gone.staleDeclines.single().why.contains("nothing here is left"), gone.staleDeclines.single().why)
   }
 }

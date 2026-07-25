@@ -37,6 +37,14 @@ object MutatorAdvice {
   /// to these keeps the advice honest: a class that merely formats a
   /// `BigDecimal` has nothing for the mutator to rewrite and must not be
   /// counted, or the advice cries wolf and stops being read.
+  ///
+  /// This is a heuristic, not proof. The match is on owner plus method name,
+  /// so an overload arcmutate may not rewrite — `divide(BigDecimal, int,
+  /// RoundingMode)`, `sqrt`, `gcd` — still counts, and the advice can point at
+  /// a suite where the trial then generates nothing. That direction is the
+  /// cheap one: the answer is a recorded decline carrying the measurement,
+  /// which is a better artifact than the silence it replaces. Erring the other
+  /// way would hide exactly the money math this exists to find.
   private val ARITHMETIC = setOf(
       "add", "subtract", "multiply", "divide", "remainder", "mod", "modPow", "modInverse",
       "negate", "abs", "min", "max", "pow", "gcd", "sqrt",
@@ -84,6 +92,17 @@ object MutatorAdvice {
               "measured, or drop the decline"
         enabled.contains(mutator) ->
           "the mutator is enabled on this suite, so the decline contradicts it"
+        // Checked before the subject test below, which would otherwise report a
+        // decline of an un-advised mutator as though its arithmetic had been
+        // deleted. `NAKED_RECEIVER` is the case that matters: the policy tells you
+        // to trial it, this scan deliberately does not advise it, and a decline
+        // recorded here would warn forever with no way to silence it — while a
+        // typo would be diagnosed as a subject that never existed.
+        CANDIDATES.none { it.mutator == mutator } ->
+          "the blind-spot scan does not advise $mutator (only " +
+              CANDIDATES.joinToString(" and ") { it.mutator } +
+              "), so there is nothing here for the decline to suppress — check the spelling, and " +
+              "record trials for other mutators where the suite's numbers live, not as a decline"
         findings.none { it.mutator == mutator } ->
           "nothing here is left for it to mutate, so the decline no longer suppresses anything"
         else -> null

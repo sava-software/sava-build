@@ -757,7 +757,16 @@ someone remembers to fuzz is a directory of files, not a regression suite;
 feeding every seed through the harness costs milliseconds per build. The
 plugin generates the replay: every fuzz target with a `seedCorpus` gets a
 `<Harness>SeedReplayTest` in the test source set, so the corpus runs inside
-`test` — and under PIT, where the replay participates as a killer.
+`test` — and under PIT, where the replay participates as a killer. The
+generated test resolves a corpus under the test resources as a classpath
+resource (hermetic under any working directory; anything else falls back to
+its configured path), replays only regular files, and **fails on an empty
+corpus** — deleting every seed is exactly the rot the replay exists to
+catch, so it cannot pass silently. Repos carrying hand-written replay
+classes can delete them once nothing in them exceeds that; seed provenance
+prose (what each input pins) moves to a README **next to** the corpus
+directory — never inside it, where the file would itself be fed to the
+harness as a seed.
 
 A target that declares **no** `seedCorpus` gets none of that, and used to get
 it silently: no replay test, nothing re-run by `check`, and a
@@ -778,16 +787,7 @@ seed-plus-named-test rule above. Expect a regression corpus to change no
 mutation score; that is not what it is for. Where neither job applies, record it
 with `declineSeedCorpus("...")`, under the same terms as a declined mutator: a
 blank reason suppresses nothing, and a decline on a target that later declares a
-corpus is reported as stale. The
-generated test resolves a corpus under the test resources as a classpath
-resource (hermetic under any working directory; anything else falls back to
-its configured path), replays only regular files, and **fails on an empty
-corpus** — deleting every seed is exactly the rot the replay exists to
-catch, so it cannot pass silently. Repos carrying hand-written replay
-classes can delete them once nothing in them exceeds that; seed provenance
-prose (what each input pins) moves to a README **next to** the corpus
-directory — never inside it, where the file would itself be fed to the
-harness as a seed.
+corpus is reported as stale.
 
 **Minimize the corpus with the tool, not by hand.** `fuzz<Target>Minimize`
 wraps libFuzzer's `-merge=1`: it keeps only the inputs that add coverage,

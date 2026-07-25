@@ -1756,6 +1756,11 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
     listOf(target.name, target.targetClass.get(), corpus.absolutePath, resourcePath ?: "")
   }
   inputs.property("targets", targets.map { it.joinToString("|") })
+  // Declared as an input so adding or removing a corpus-less target re-runs this
+  // task and re-prints. The consequence is deliberate: on an unchanged incremental
+  // build the task is up to date and says nothing, so the advice lands when the
+  // configuration changes and on a fresh checkout, not on every build. A warning
+  // repeated into an unchanged build is how people learn to skim warnings.
   inputs.property("corpusless", corpusless.joinToString("|"))
   inputs.property("staleCorpusDeclines", staleDeclines.joinToString("|") { "${it.first}=${it.second}" })
   doLast {
