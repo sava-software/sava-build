@@ -1,5 +1,23 @@
 # Changelog
 
+## [21.5.16](https://github.com/sava-software/sava-build/compare/21.5.15...21.5.16) (2026-07-26)
+
+
+### Features
+
+* **test:** refactor test repo handling and argument passing ([31373b6](https://github.com/sava-software/sava-build/commit/31373b6196532247c45cb26c3bbb3490b455fd48))
+* **test:** replace includeBuild with local repo for plugin resolution ([5933ee9](https://github.com/sava-software/sava-build/commit/5933ee9b6bcf29fd3a23dbab3b11d781673b0670))
+
+
+### Bug Fixes
+
+* **test:** adjust maxParallelForks for optimal daemon reuse ([e58acc9](https://github.com/sava-software/sava-build/commit/e58acc9547ad63eee9f236d2a702af8b563f4164))
+
+
+### Documentation
+
+* **hardening:** expand guidelines on timeout-detected mutants ([ae15bcd](https://github.com/sava-software/sava-build/commit/ae15bcd991d5b8c686f0b4aa923ed39b77910625))
+
 ## [21.5.15](https://github.com/sava-software/sava-build/compare/21.5.14...21.5.15) (2026-07-26)
 
 
