@@ -22,7 +22,7 @@ class AgentsTemplateSyncFunctionalTest {
   // the '>' blockquote lines of the template section are hashed, trailing whitespace
   // stripped, first 12 hex chars of the SHA-256.
   private val expectedDigest: String = run {
-    val lines = File(System.getProperty("savaBuild.root"), "HARDENING.md").readLines()
+    val lines = File(savaBuildTestProperty("savaBuild.root"), "HARDENING.md").readLines()
     val start = lines.indexOfFirst { it.trim() == "## Agent instructions template" }
     check(start >= 0) { "HARDENING.md has no '## Agent instructions template' section" }
     val template = lines.drop(start + 1)

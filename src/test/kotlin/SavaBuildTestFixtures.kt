@@ -8,12 +8,21 @@ import java.io.File
  * build recompiles the plugin inside the first TestKit daemon and serializes parallel
  * test forks on this checkout's build locks.
  */
-val savaBuildTestRepoVersion: String = System.getProperty("savaBuild.testRepo.version")
+val savaBuildTestRepoVersion: String = savaBuildTestProperty("savaBuild.testRepo.version")
 
 val savaBuildPluginManagement: String = run {
-  val repo = File(System.getProperty("savaBuild.testRepo"))
+  val repo = File(savaBuildTestProperty("savaBuild.testRepo"))
     .absolutePath.replace("\\", "\\\\")
   "pluginManagement { repositories { maven(url = \"$repo\"); gradlePluginPortal() }; " +
     "resolutionStrategy.eachPlugin { if (requested.id.id.startsWith(\"software.sava.build\")) { " +
     "useModule(\"software.sava:sava-build:$savaBuildTestRepoVersion\") } } }"
 }
+
+/**
+ * The ':test' task supplies these; reading one straight into a non-null 'String' would
+ * fail every test in the suite with a bare 'ExceptionInInitializerError' when the class
+ * is initialized without them -- which is what running a test from the IDE's own JUnit
+ * runner, rather than delegating to Gradle, does.
+ */
+fun savaBuildTestProperty(name: String): String = System.getProperty(name)
+  ?: error("System property '$name' is not set; run the tests through Gradle (./gradlew test).")

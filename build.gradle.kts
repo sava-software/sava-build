@@ -132,24 +132,69 @@ kotlin.sourceSets["main"].kotlin.srcDir(generateHardeningTemplateDigest)
 // a published jar instead of an includeBuild of this checkout keeps the parallel test
 // forks from contending on this build's file locks, and stops the first TestKit daemon
 // from recompiling the whole plugin from source.
+val savaTestRepoPublication = "savaBuildTest"
 val savaTestRepoVersion = "0.0.0-test"
 val savaTestRepoDir = layout.buildDirectory.dir("sava-test-repo")
+// Task names Gradle derives from the publication name; kept in one place so renaming the
+// publication cannot silently detach the signing and publish-task filters below from it.
+private val savaTestRepoPublicationSuffix = savaTestRepoPublication.replaceFirstChar(Char::uppercase) + "Publication"
+val savaTestRepoSignTask = "sign$savaTestRepoPublicationSuffix"
+val savaTestRepoPublishPrefix = "publish${savaTestRepoPublicationSuffix}To"
+val savaTestRepoPublishTask = "${savaTestRepoPublishPrefix}SavaTestRepoRepository"
 
 tasks.test {
   useJUnitPlatform()
   // The fixture builds are dominated by Gradle startup and configuration latency,
   // not CPU, so spread the test classes across forks.
   maxParallelForks = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
-  // Still used by tests that read files from this checkout (e.g. HARDENING.md);
-  // no fixture consumes the checkout as an included build anymore.
-  systemProperty("savaBuild.root", layout.projectDirectory.asFile.absolutePath)
-  systemProperty("savaBuild.testRepo", savaTestRepoDir.get().asFile.absolutePath)
-  systemProperty("savaBuild.testRepo.version", savaTestRepoVersion)
-  dependsOn("publishSavaBuildTestPublicationToSavaTestRepoRepository")
-  // Re-run when the published plugin changes; maven-metadata.xml is excluded because
-  // its 'lastUpdated' timestamp changes on every publish and would defeat up-to-date
-  // checks and the build cache.
-  inputs.files(fileTree(savaTestRepoDir) { exclude("**/maven-metadata.*") })
+  dependsOn(savaTestRepoPublishTask)
+  // The paths handed to the tests are absolute, so they are passed through an argument
+  // provider that declares them as relocatable inputs instead of as 'systemProperty'
+  // values. A system property is hashed verbatim, which would pin this task's build
+  // cache key to this checkout's location and make ':test' unshareable across machines.
+  jvmArgumentProviders.add(
+    objects.newInstance<SavaBuildTestArguments>().apply {
+      // Read by AgentsTemplateSyncFunctionalTest via the 'savaBuild.root' property below;
+      // no fixture consumes the checkout as an included build anymore.
+      hardeningDoc = layout.projectDirectory.file("HARDENING.md")
+      projectRoot = layout.projectDirectory
+      // Re-run when the published plugin changes; maven-metadata.xml is excluded because
+      // its 'lastUpdated' timestamp changes on every publish and would defeat up-to-date
+      // checks and the build cache.
+      testRepoFiles.from(fileTree(savaTestRepoDir) { exclude("**/maven-metadata.*") })
+      testRepoDir = savaTestRepoDir
+      testRepoVersion = savaTestRepoVersion
+    }
+  )
+}
+
+// Passes the fixture paths to the test JVM as '-D' arguments while declaring them with
+// path sensitivity that ignores where this checkout lives: HARDENING.md is hashed by
+// content alone, and the test repo by its Maven layout relative to the repo root.
+abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
+
+  @get:InputFile
+  @get:PathSensitive(PathSensitivity.NONE)
+  abstract val hardeningDoc: RegularFileProperty
+
+  @get:InputFiles
+  @get:PathSensitive(PathSensitivity.RELATIVE)
+  abstract val testRepoFiles: ConfigurableFileCollection
+
+  @get:Input
+  abstract val testRepoVersion: Property<String>
+
+  @get:Internal
+  abstract val projectRoot: DirectoryProperty
+
+  @get:Internal
+  abstract val testRepoDir: DirectoryProperty
+
+  override fun asArguments(): Iterable<String> = listOf(
+    "-DsavaBuild.root=${projectRoot.get().asFile.absolutePath}",
+    "-DsavaBuild.testRepo=${testRepoDir.get().asFile.absolutePath}",
+    "-DsavaBuild.testRepo.version=${testRepoVersion.get()}"
+  )
 }
 
 repositories {
@@ -184,9 +229,11 @@ signing {
   useInMemoryPgpKeys(signingKey, signingPassphrase)
 }
 // The test-repo publication is never signed: the release workflow's check step runs
-// with '-Psign=true' but without the GPG environment, and 'check' publishes it.
+// with '-Psign=true' but without the GPG environment, and 'check' publishes it. The name
+// is derived from the publication so renaming it cannot silently re-enable signing --
+// which would surface only as a confusing missing-GPG-key failure during a release.
 tasks.withType<Sign>().configureEach {
-  enabled = publishSigningEnabled && name != "signSavaBuildTestPublication"
+  enabled = publishSigningEnabled && name != savaTestRepoSignTask
 }
 
 // Only publish markers for plugins that consumers request by id in a settings 'plugins {}'
@@ -203,11 +250,11 @@ tasks.named { name ->
 }.configureEach {
   enabled = false
 }
-// The 'savaBuildTest' publication only feeds the local test repo, and the test repo
-// only receives that publication.
+// The test publication only feeds the local test repo, and the test repo only receives
+// that publication.
 tasks.named { name ->
-  (name.startsWith("publishSavaBuildTestPublicationTo") && name != "publishSavaBuildTestPublicationToSavaTestRepoRepository") ||
-    (name.endsWith("ToSavaTestRepoRepository") && !name.startsWith("publishSavaBuildTestPublicationTo"))
+  (name.startsWith(savaTestRepoPublishPrefix) && name != savaTestRepoPublishTask) ||
+    (name.endsWith("ToSavaTestRepoRepository") && !name.startsWith(savaTestRepoPublishPrefix))
 }.configureEach {
   enabled = false
 }
@@ -256,7 +303,7 @@ publishing {
   publications {
     // Feeds the local repo the functional-test fixtures resolve the plugin from;
     // never published anywhere else (see the task filter above).
-    register<MavenPublication>("savaBuildTest") {
+    register<MavenPublication>(savaTestRepoPublication) {
       from(components["java"])
       version = savaTestRepoVersion
     }
