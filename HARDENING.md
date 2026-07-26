@@ -319,6 +319,14 @@ invoked it*, and the failure looks exactly like a real regression.
   with the rows, because a mutant nobody killed now reads as detected purely
   through load — do not let a refresh quietly drop it from the baseline on
   the strength of that.
+
+  "Benign" is a boundary claim, not a shrug: `KILLED` and `TIMED_OUT` are
+  both *detected*, neither is ever written to a baseline, so this flip is
+  two clocks racing — the covering test reaching a failure versus the
+  watchdog — over the same dead mutant, and no outcome of the race can move
+  a verify or hide debt. The claim is earned per suite by the mode
+  comparison above, which is what separates it from `SURVIVED -> TIMED_OUT`,
+  where the race is between detection and *no detection*.
 - **Union only rows you have observed to flip** — with
   `-PunionMutationBaseline`, which adds the run's unkilled rows in canonical
   form without dropping baseline rows that happened to be detected this run
@@ -339,6 +347,16 @@ invoked it*, and the failure looks exactly like a real regression.
   `TIMED_OUT` — detected, stable once the interior coverage is
   deterministic, and not a missing baseline row to hunt for *(casebook: the
   check-loop seam that deleted its flip insurance)*.
+
+  What a timeout-detected mutant costs, name it rather than absorb it: the
+  watchdog observed slowness, not wrongness, so for that one mutant the
+  ratchet can no longer see a **weakened covering assertion** — soften the
+  test to uselessness and the timeout keeps "detecting" regardless. The
+  compensating control is to list each suite's timed-out mutants
+  individually in its `config/pitest/README.md` with the structural cause
+  (the removed loop exit, the reversed increment, the leaked unlock), so
+  `N timed out (load-dependent)` in the summary is an audited set rather
+  than a count, and a *new* member is something a reviewer notices.
 - **Flip families do not settle while their cause remains — and "the cause
   remains" is a claim to re-measure, not a fact to record once.** Mutants
   equivalent on the wire but timing-dependent in detection (socket suites
