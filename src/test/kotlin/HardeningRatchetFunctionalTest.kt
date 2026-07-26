@@ -536,6 +536,16 @@ $fuzzBlock
     )
     assertTrue(output.contains("1 unlabeled row(s) kept unlabeled across a line shift"), output)
     assertTrue(output.contains("1 new row(s) seeded '# untriaged'"), output)
+    // The count alone would leave this pairing's one failure mode unauditable: the
+    // key is class/method/mutator/status, so a killed unlabeled row and genuinely
+    // new debt elsewhere in the method share it, and the new row would enter
+    // unlabeled. The dropped listing names which line each bare row was paired onto,
+    // exactly as it names each note's fate.
+    assertTrue(
+      output.contains("com.example.Codec,encode,12,MathMutator,SURVIVED") &&
+          output.contains("unlabeled, kept unlabeled at line 13"),
+      output
+    )
   }
 
   @Test

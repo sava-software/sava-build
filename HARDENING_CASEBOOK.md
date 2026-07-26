@@ -734,3 +734,47 @@ proven otherwise. Ask whether the line can still execute before asking whether
 its effect can be seen — process-lifetime state outlives the mutant that
 created it, and a test that always supplies the same key only exercises the
 miss path once per JVM, not once per mutant.
+
+## The unlabeled row the shift reclassified
+
+`# untriaged` seeding arrived in 21.5.12, so every baseline row written before
+it is bare: no note, its acceptance argument living in the suite README under a
+section the row itself never points at. Those rows are counted as their own
+state — the verify summary and the debt listing both print `5 unlabeled`
+separately from `13 '# untriaged'` — precisely so that settled-but-old triage
+does not read as work outstanding.
+
+A refresh converted them anyway. The line-shift carry added for *the note the
+line shift dropped* builds its pairing pool with `mapNotNull` over the
+annotations, which is exactly the set of rows that have a note; a bare row is
+invisible to the lookup by construction. So a bare row fell through the shift
+branch to the seeding branch, and any edit that moved lines — a javadoc
+paragraph above the mutated method was enough — rewrote it as `# untriaged`.
+Nothing failed and nothing was lost: the row was still accepted, still at the
+right coordinate. Only its triage state had been reset, and the debt count went
+up by rows that had been argued weeks earlier. The two prior fixes in this area
+both taught that the refresh must not lose what a row records; this was the
+same lesson at the state level rather than the note level.
+
+The fix pairs bare dropped rows against fresh rows on the same
+class/method/mutator/status key, in a second pool disjoint from the note pool,
+after the note lookup and under the same exclusions — fresh rows only, surfaced
+siblings classified out first. Only the shift is paired this way. A status flip
+is deliberately left to seed debt: it changes what the mutant proves, so an
+argument made before the flip has to be re-made.
+
+The pairing carries the note carry's ambiguity and carries it worse. The key
+cannot distinguish a moved mutant from a killed unlabeled row plus genuinely
+new debt elsewhere in the same method, and where the note pool holds only the
+argued rows, the bare pool holds *every* unlabeled dropped row. A mispairing
+here is silent in the worst way — new debt enters the baseline unlabeled, which
+is to say it enters looking like triage someone already finished. Review pushed
+the diagnostic past a bare count for that reason: the dropped-rows listing now
+names the line each bare row was paired onto, the same way it names each note's
+fate, so a wrong pairing is something you can read in the refresh output.
+
+Rules: *a refresh may move a row but must never change its triage state*; *a
+pool built by `mapNotNull` over annotations silently excludes the unannotated —
+check what the absence of a note means before keying on its presence*; *when a
+pairing can be wrong and its wrongness looks like success, print the pairing,
+not a count of them*.

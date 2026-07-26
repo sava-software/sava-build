@@ -883,7 +883,8 @@ hardening.mutation.all {
         // '# untriaged' are distinct states everywhere else here (the verify and
         // debt listings count them separately), so a refresh must not convert one
         // into the other. Only the shift is paired this way: a status flip really
-        // does change what the mutant proves, so seeding debt there is correct.
+        // does change what the mutant proves, so seeding debt there is correct
+        // (casebook: the unlabeled row the shift reclassified).
         val droppedBare = dropped
             .filter { annotations[it] == null }
             .toMutableList()
@@ -900,8 +901,17 @@ hardening.mutation.all {
         val acceptedRowTexts = accepted.toSet()
         var flipped = 0
         var shifted = 0
-        var shiftedBare = 0
         var seeded = 0
+        // Which dropped bare row was paired onto which new row. A count alone would
+        // make the one failure mode of this pairing unauditable: the key is
+        // class/method/mutator/status, so a killed unlabeled row at one line and
+        // *genuinely* new debt at another share it, and the new row then enters the
+        // baseline unlabeled instead of '# untriaged'. That is the seeding invariant
+        // being missed, and it is silent by construction — the row simply looks
+        // settled. The dropped listing already names every note's fate for the same
+        // reason; name the bare pairings there too, so a wrong one is readable in the
+        // output rather than only in a later 'why is this row unlabeled?'.
+        val bareShiftPairs = mutableListOf<Pair<String, String>>()
         val written = current.map { row ->
           annotations[row]?.let { return@map "$row $it" }
           val flip = droppedNotes.firstOrNull { coordinate(it.first) == coordinate(row) }
@@ -930,7 +940,7 @@ hardening.mutation.all {
             if (bareShift != null) {
               freshBudget[row] = freshCopies - 1
               droppedBare.remove(bareShift)
-              shiftedBare++
+              bareShiftPairs.add(bareShift to row)
               return@map row
             }
           }
@@ -951,7 +961,8 @@ hardening.mutation.all {
                 (if (seeded == 0) "" else " ($seeded new row(s) seeded '# untriaged')") +
                 (if (flipped == 0) "" else " ($flipped note(s) carried across a status flip — re-check them)") +
                 (if (shifted == 0) "" else " ($shifted note(s) carried across a line shift)") +
-                (if (shiftedBare == 0) "" else " ($shiftedBare unlabeled row(s) kept unlabeled across a line shift)")
+                (if (bareShiftPairs.isEmpty()) "" else
+                    " (${bareShiftPairs.size} unlabeled row(s) kept unlabeled across a line shift)")
         )
         if (dropped.isNotEmpty()) {
           // The silent half of the refresh footgun: a full update rewrites from this one
@@ -962,8 +973,18 @@ hardening.mutation.all {
           // because a lost note that prints identically to a carried one is still
           // silent (casebook: the note the line shift dropped).
           val lostNotes = droppedNotes.groupingBy { it.first }.eachCount().toMutableMap()
-          fun noteFate(row: String): String {
-            if (annotations[row] == null) return ""
+          val bareShiftLines = bareShiftPairs
+              .groupBy({ it.first }, { rowLine(it.second) })
+              .mapValues { (_, lines) -> lines.toMutableList() }
+          fun rowFate(row: String): String {
+            if (annotations[row] == null) {
+              // Bare rows: silent before, since there was no note whose fate to name.
+              // A pairing is the whole reason the row's replacement reads as settled
+              // triage rather than seeded debt, so it is the line worth printing.
+              val lines = bareShiftLines[row] ?: return ""
+              if (lines.isEmpty()) return ""
+              return " — unlabeled, kept unlabeled at line ${lines.removeAt(0)}"
+            }
             val lost = lostNotes[row] ?: 0
             return if (lost > 0) {
               lostNotes[row] = lost - 1
@@ -975,7 +996,7 @@ hardening.mutation.all {
           val lostCount = droppedNotes.size
           logger.lifecycle(
               "pitest baseline '$suiteName': dropped ${dropped.size} row(s) not unkilled this run:\n" +
-                  dropped.joinToString("\n") { row -> "  ${baselineLine(row)}${describe(row)}${noteFate(row)}" } +
+                  dropped.joinToString("\n") { row -> "  ${baselineLine(row)}${describe(row)}${rowFate(row)}" } +
                   (if (lostCount == 0) "" else
                       "\n  $lostCount note(s) dropped with their rows — re-home the acceptance argument by hand if it still applies") +
                   "\n  a dropped flip-insurance union (see config/pitest/README.md) must be " +

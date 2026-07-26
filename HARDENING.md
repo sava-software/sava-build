@@ -223,9 +223,13 @@ this the drop was silent and the re-append relied on someone remembering the
 README warning. And a baseline row may carry a trailing `# note` —
 `# untriaged` is the conventional label for seeded debt, and
 `-PupdateMutationBaseline` seeds it on **every genuinely new row** it
-writes, so a bare row never enters the baseline through the tooling: triage
+writes, so no *new* row enters the baseline bare: triage
 means replacing that label with a short family label (`# race-guard
-family`, `# capacity-hint`) whose full argument lives in the README. Both
+family`, `# capacity-hint`) whose full argument lives in the README. An
+already-unlabeled row is a different thing — it predates seeding (added in
+21.5.12) and its argument lives in the README rather than on the row — and a
+refresh preserves that state rather than converting it to seeded debt
+(below). Both
 refresh flags preserve notes, and the verify summary counts them **per
 label** (`38 rows — 13 '# untriaged', 20 '# race-guard family', 5
 unlabeled`; the debt task prints the same breakdown), so triage state is a
@@ -263,7 +267,23 @@ moved mutant — either way the note must not migrate onto a survivor it never
 described. A note that finds no carry target is not lost silently: the
 dropped-rows listing names each note's fate (`note carried` / `note dropped
 with the row`) and counts the losses *(casebook: the note the line shift
-dropped)*.
+dropped)*. The same pairing runs for a dropped row carrying *no* note.
+Nothing travels — recognising the shift is what keeps the row `unlabeled`
+instead of seeding it as `# untriaged` debt it never was. `unlabeled` and
+`# untriaged` are distinct states everywhere else here, counted separately by
+the verify summary and the debt listing, so a refresh must not convert one
+into the other; before this, any edit that moved lines — a javadoc paragraph
+was enough — silently reclassified settled triage as fresh debt. Only the
+shift pairs bare rows: a status flip really does change what the mutant
+proves, so seeding debt there is correct. The bare pairing inherits the note
+carry's one ambiguity, and it bites harder because the pool is every
+unlabeled dropped row rather than the few argued ones: a killed unlabeled row
+and genuinely new debt elsewhere in the same method share the
+class/method/mutator/status key, and the new row would then enter unlabeled
+instead of seeded. So the dropped-rows listing names the line each bare row
+was paired onto (`unlabeled, kept unlabeled at line 41`) — a wrong pairing is
+readable in the output rather than a row that merely looks settled
+*(casebook: the unlabeled row the shift reclassified)*.
 
 The third refresh is the only one that is always safe:
 `-PpruneMutationBaseline` drops baseline rows matching nothing this run and
