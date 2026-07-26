@@ -1,5 +1,23 @@
 # Changelog
 
+## [21.5.15](https://github.com/sava-software/sava-build/compare/21.5.14...21.5.15) (2026-07-26)
+
+
+### Features
+
+* **hardening:** add functional test for declineMutator propagation ([628de75](https://github.com/sava-software/sava-build/commit/628de75facb89aed9ed36ba44648adcb5fbf8e73))
+* **hardening:** preserve unlabeled rows across line shifts ([f5d8cd4](https://github.com/sava-software/sava-build/commit/f5d8cd4b7b6870c1e6f4b218a73318232f30ed0f))
+
+
+### Bug Fixes
+
+* **hardening:** preserve triage state of unlabeled rows during refresh ([c8464b5](https://github.com/sava-software/sava-build/commit/c8464b52eb50421484c108b28725e0080b632262))
+
+
+### Build System
+
+* **deps:** bump docker/login-action in /.github/actions/docker-setup ([#69](https://github.com/sava-software/sava-build/issues/69)) ([2736ef3](https://github.com/sava-software/sava-build/commit/2736ef39833336eb817a552ac60bc51d0ef0fcc2))
+
 ## [21.5.14](https://github.com/sava-software/sava-build/compare/21.5.13...21.5.14) (2026-07-25)
 
 
