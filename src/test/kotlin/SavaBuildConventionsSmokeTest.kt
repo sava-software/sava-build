@@ -7,8 +7,9 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.File
 
 /**
- * Smoke tests that configure a minimal consumer project against this checkout via
- * 'pluginManagement { includeBuild(...) }' — the same way consumer repositories do.
+ * Smoke tests that configure a minimal consumer project against the plugin published
+ * to the local test repo — resolving it by id and version the same way consumer
+ * repositories do.
  * They only exercise the configuration phase (no dependency resolution), so they
  * need no credentials and catch plugin wiring or Gradle API breakage before a release.
  */
@@ -17,9 +18,6 @@ class SavaBuildConventionsSmokeTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   private fun writeFixture(
     savaProperties: String? = null,
     aggregationStub: Boolean = false,
@@ -27,7 +25,7 @@ class SavaBuildConventionsSmokeTest {
   ) {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         plugins {
           id("software.sava.build")

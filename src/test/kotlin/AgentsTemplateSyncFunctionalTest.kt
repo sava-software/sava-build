@@ -18,9 +18,6 @@ class AgentsTemplateSyncFunctionalTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   // Mirrors 'generateHardeningTemplateDigest' in sava-build's build.gradle.kts: only
   // the '>' blockquote lines of the template section are hashed, trailing whitespace
   // stripped, first 12 hex chars of the SHA-256.
@@ -41,7 +38,7 @@ class AgentsTemplateSyncFunctionalTest {
   private fun writeFixture() {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "agents-template-sync-smoke-test"
       """.trimIndent() + "\n"
@@ -115,7 +112,7 @@ class AgentsTemplateSyncFunctionalTest {
   fun `a subproject's task checks the root AGENTS_md, not the subproject's own`() {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "agents-template-sync-smoke-test"
         include("lib")

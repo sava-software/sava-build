@@ -16,9 +16,6 @@ class HardeningRatchetFunctionalTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   private fun writeFixture(
     generateTestSupport: Boolean = false,
     testSupportExcludes: List<String> = emptyList(),
@@ -65,7 +62,7 @@ class HardeningRatchetFunctionalTest {
     }
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "hardening-ratchet-smoke-test"
       """.trimIndent() + "\n"

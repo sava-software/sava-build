@@ -7,7 +7,7 @@ import java.io.File
 
 /**
  * Configuration-phase smoke test for 'software.sava.build.feature.jmh': a plain
- * java consumer applies the plugin via 'pluginManagement { includeBuild(...) }'
+ * java consumer applies the plugin resolved from the local test repo
  * and lists tasks, catching plugin wiring or champeau-plugin API breakage
  * without resolving benchmark dependencies.
  */
@@ -16,14 +16,11 @@ class JmhFeatureSmokeTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   @Test
   fun `jmh feature configures benchmark task and service jvm args`() {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "jmh-smoke-test"
       """.trimIndent() + "\n"

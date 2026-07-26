@@ -23,13 +23,10 @@ class CentralPortalBundleFunctionalTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   private fun writeFixture() {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "central-smoke"
 

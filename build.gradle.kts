@@ -127,14 +127,29 @@ val generateHardeningTemplateDigest = tasks.register("generateHardeningTemplateD
 }
 kotlin.sourceSets["main"].kotlin.srcDir(generateHardeningTemplateDigest)
 
+// The smoke tests run TestKit builds of fixture projects that resolve this plugin
+// from the local Maven repo below (fed by the 'savaBuildTest' publication). Resolving
+// a published jar instead of an includeBuild of this checkout keeps the parallel test
+// forks from contending on this build's file locks, and stops the first TestKit daemon
+// from recompiling the whole plugin from source.
+val savaTestRepoVersion = "0.0.0-test"
+val savaTestRepoDir = layout.buildDirectory.dir("sava-test-repo")
+
 tasks.test {
   useJUnitPlatform()
-  // The smoke tests run TestKit builds of fixture projects that consume this
-  // checkout via 'pluginManagement { includeBuild(...) }'.
+  // The fixture builds are dominated by Gradle startup and configuration latency,
+  // not CPU, so spread the test classes across forks.
+  maxParallelForks = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+  // Still used by tests that read files from this checkout (e.g. HARDENING.md);
+  // no fixture consumes the checkout as an included build anymore.
   systemProperty("savaBuild.root", layout.projectDirectory.asFile.absolutePath)
-  // TestKit builds the convention plugins outside this build's task graph, so
-  // declare their sources as inputs to re-run tests when they change.
-  inputs.dir("src/main/kotlin")
+  systemProperty("savaBuild.testRepo", savaTestRepoDir.get().asFile.absolutePath)
+  systemProperty("savaBuild.testRepo.version", savaTestRepoVersion)
+  dependsOn("publishSavaBuildTestPublicationToSavaTestRepoRepository")
+  // Re-run when the published plugin changes; maven-metadata.xml is excluded because
+  // its 'lastUpdated' timestamp changes on every publish and would defeat up-to-date
+  // checks and the build cache.
+  inputs.files(fileTree(savaTestRepoDir) { exclude("**/maven-metadata.*") })
 }
 
 repositories {
@@ -168,7 +183,11 @@ signing {
   sign(publishing.publications)
   useInMemoryPgpKeys(signingKey, signingPassphrase)
 }
-tasks.withType<Sign>().configureEach { enabled = publishSigningEnabled }
+// The test-repo publication is never signed: the release workflow's check step runs
+// with '-Psign=true' but without the GPG environment, and 'check' publishes it.
+tasks.withType<Sign>().configureEach {
+  enabled = publishSigningEnabled && name != "signSavaBuildTestPublication"
+}
 
 // Only publish markers for plugins that consumers request by id in a settings 'plugins {}'
 // block: 'software.sava.build' (its marker task has no trailing '.', so it never matches the
@@ -181,6 +200,14 @@ val publishedMarkerTaskPrefixes = setOf(
 )
 tasks.named { name ->
   name.startsWith("publishSoftware.sava.build.") && publishedMarkerTaskPrefixes.none(name::startsWith)
+}.configureEach {
+  enabled = false
+}
+// The 'savaBuildTest' publication only feeds the local test repo, and the test repo
+// only receives that publication.
+tasks.named { name ->
+  (name.startsWith("publishSavaBuildTestPublicationTo") && name != "publishSavaBuildTestPublicationToSavaTestRepoRepository") ||
+    (name.endsWith("ToSavaTestRepoRepository") && !name.startsWith("publishSavaBuildTestPublicationTo"))
 }.configureEach {
   enabled = false
 }
@@ -220,6 +247,18 @@ publishing {
     maven {
       name = "savaCentralStaging"
       url = uri(centralStagingDir.get().asFile)
+    }
+    maven {
+      name = "savaTestRepo"
+      url = uri(savaTestRepoDir.get().asFile)
+    }
+  }
+  publications {
+    // Feeds the local repo the functional-test fixtures resolve the plugin from;
+    // never published anywhere else (see the task filter above).
+    register<MavenPublication>("savaBuildTest") {
+      from(components["java"])
+      version = savaTestRepoVersion
     }
   }
 }

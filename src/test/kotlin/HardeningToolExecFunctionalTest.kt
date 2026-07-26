@@ -19,9 +19,6 @@ class HardeningToolExecFunctionalTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   /**
    * [moneyMath] adds a real 'com.example.Codec' whose BigDecimal/BigInteger arithmetic
    * the blind-spot scan is meant to find — the other tests here fake PIT and never need
@@ -31,7 +28,7 @@ class HardeningToolExecFunctionalTest {
   private fun writeFixture(moneyMath: Boolean = false, declineLines: String = "") {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "hardening-tool-exec-smoke-test"
       """.trimIndent() + "\n"

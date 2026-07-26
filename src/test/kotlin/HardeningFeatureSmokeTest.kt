@@ -7,7 +7,7 @@ import java.io.File
 
 /**
  * Configuration-phase smoke test for 'software.sava.build.feature.hardening': a plain
- * java consumer applies the plugin via 'pluginManagement { includeBuild(...) }',
+ * java consumer applies the plugin resolved from the local test repo,
  * registers a mutation suite and a fuzz target, and verifies the generated task wiring
  * without resolving the PIT/Jazzer dependencies.
  */
@@ -16,9 +16,6 @@ class HardeningFeatureSmokeTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   private fun writeFixture(
     hardeningSettings: List<String>,
     expectedMutationRelease: Int,
@@ -26,7 +23,7 @@ class HardeningFeatureSmokeTest {
   ) {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "hardening-smoke-test"
       """.trimIndent() + "\n"

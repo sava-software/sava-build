@@ -17,16 +17,13 @@ class HardeningConvergeFunctionalTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   private val mathMutator = "org.pitest.mutationtest.engine.gregor.mutators.MathMutator"
   private val boundaryMutator = "org.pitest.mutationtest.engine.gregor.mutators.ConditionalsBoundaryMutator"
 
   private fun writeFixture() {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "hardening-converge-smoke-test"
       """.trimIndent() + "\n"

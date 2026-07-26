@@ -19,9 +19,6 @@ class AttestationsFunctionalTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private val savaBuildRoot = File(System.getProperty("savaBuild.root"))
-    .absolutePath.replace("\\", "\\\\")
-
   private fun writeFixture(apiPort: Int, extraConfig: String = "") {
     val repoDir = File(fixtureDir, "repo/software/sava/fake-lib/1.0.0")
     repoDir.mkdirs()
@@ -43,7 +40,7 @@ class AttestationsFunctionalTest {
 
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        pluginManagement { includeBuild("$savaBuildRoot") }
+        $savaBuildPluginManagement
 
         rootProject.name = "attest-smoke"
       """.trimIndent() + "\n"
@@ -150,7 +147,7 @@ class AttestationsFunctionalTest {
         .withArguments("--configuration-cache", "verifySavaAttestations")
         .build()
 
-      assertTrue(result.output.contains("sava-build.jar: VERIFIED"), result.output)
+      assertTrue(result.output.contains("sava-build-$savaBuildTestRepoVersion.jar: VERIFIED"), result.output)
       assertTrue(result.output.contains("fake-lib-1.0.0.jar: VERIFIED"), result.output)
       assertTrue(result.output.contains("verified=2 missing=0 failed=0"), result.output)
     } finally {
