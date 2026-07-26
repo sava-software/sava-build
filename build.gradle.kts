@@ -144,9 +144,13 @@ val savaTestRepoPublishTask = "${savaTestRepoPublishPrefix}SavaTestRepoRepositor
 
 tasks.test {
   useJUnitPlatform()
-  // The fixture builds are dominated by Gradle startup and configuration latency,
-  // not CPU, so spread the test classes across forks.
-  maxParallelForks = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+  // Every fork gets its own TestKit daemon, so the fork count trades daemon cold-starts
+  // against overlap and does NOT scale with cores: past a couple of forks the suite's
+  // ~30 fixture builds are split too thin for any daemon to go warm. Measured here
+  // (11 test classes), warm cache / cold cache: 1 fork 32s/82s, 2 forks 28s/75s,
+  // 4 forks 32s/-, 8 forks 45s/183s. Re-measure if the suite grows a lot -- what
+  // matters is fixture builds per daemon, not the machine.
+  maxParallelForks = 2
   dependsOn(savaTestRepoPublishTask)
   // The paths handed to the tests are absolute, so they are passed through an argument
   // provider that declares them as relocatable inputs instead of as 'systemProperty'
