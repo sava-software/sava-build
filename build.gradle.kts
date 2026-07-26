@@ -240,20 +240,13 @@ tasks.withType<Sign>().configureEach {
   enabled = publishSigningEnabled && name != savaTestRepoSignTask
 }
 
-// Only publish markers for plugins that consumers request by id in a settings 'plugins {}'
-// block: 'software.sava.build' (its marker task has no trailing '.', so it never matches the
-// filter below), 'software.sava.build.feature.jdk-provisioning', and its deprecated alias.
-// All other convention plugins are applied through those, or are resolved from the settings
-// classpath, and need no marker.
-val publishedMarkerTaskPrefixes = setOf(
-  "publishSoftware.sava.build.feature.jdk-provisioningPluginMarker",
-  "publishSoftware.sava.build.feature-jdk-provisioningPluginMarker"
-)
-tasks.named { name ->
-  name.startsWith("publishSoftware.sava.build.") && publishedMarkerTaskPrefixes.none(name::startsWith)
-}.configureEach {
-  enabled = false
-}
+// Markers are published for EVERY plugin id. A marker used to exist only for ids
+// consumers request in a settings 'plugins {}' block, on the theory that project-level
+// conventions always ride the settings classpath — but a standalone consumer build (a
+// sibling 'jmh/' directory applying 'software.sava.build.feature.jmh') resolves by
+// id + version with no settings plugin in sight, and the missing marker forced every
+// such build into a hand-written 'useModule' with its own version pin to bump each
+// release. Markers are one tiny POM each; a partial allowlist was the foot-gun.
 // The test publication only feeds the local test repo, and the test repo only receives
 // that publication.
 tasks.named { name ->
@@ -264,12 +257,15 @@ tasks.named { name ->
 }
 tasks.register("publishToGitHubPackages") {
   group = "publishing"
-  dependsOn(
-    "publishPluginMavenPublicationToSavaGithubPackagesRepository",
-    "publishSoftware.sava.buildPluginMarkerMavenPublicationToSavaGithubPackagesRepository",
-    "publishSoftware.sava.build.feature.jdk-provisioningPluginMarkerMavenPublicationToSavaGithubPackagesRepository",
-    "publishSoftware.sava.build.feature-jdk-provisioningPluginMarkerMavenPublicationToSavaGithubPackagesRepository"
-  )
+  // Every publication (module + all plugin markers) except the local-test-repo one,
+  // which its own task filter above disables everywhere but the test repo. The
+  // 'publishAllPublications' aggregate is excluded too: it would pull the disabled
+  // test-publication task (and its generate tasks) into the graph as SKIPPED noise.
+  dependsOn(tasks.named { name ->
+    name.endsWith("ToSavaGithubPackagesRepository") &&
+      !name.startsWith(savaTestRepoPublishPrefix) &&
+      !name.startsWith("publishAllPublications")
+  })
 }
 
 // Allow callers to drop selected checksum files (e.g. md5, sha1, sha256, sha512) from the

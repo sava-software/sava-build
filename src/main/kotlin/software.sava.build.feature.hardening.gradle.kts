@@ -517,6 +517,7 @@ hardening.mutation.all {
     val xmlProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.xml")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
+    val timeoutsFile = layout.projectDirectory.file("config/pitest/$suiteName-timeouts.csv").asFile
     val update = providers.gradleProperty("updateMutationBaseline").isPresent
     val union = providers.gradleProperty("unionMutationBaseline").isPresent
     val prune = providers.gradleProperty("pruneMutationBaseline").isPresent
@@ -792,6 +793,44 @@ hardening.mutation.all {
         )
       }
 
+      // The audited set. For a timed-out mutant the watchdog observed slowness, not
+      // wrongness — the ratchet cannot see a weakened covering assertion behind it,
+      // so "N timed out (load-dependent)" in the summary must be an audited
+      // membership rather than a count. 'config/pitest/<suite>-timeouts.csv' holds
+      // one 'class,method,mutator' per row ('#' comments allowed) — line-less so
+      // drift cannot churn membership; the suite README carries each member's line
+      // and structural cause. Warning-level by design: load can time out any mutant
+      // on any run and both flavours are still detection, but an unaudited newcomer
+      // is a change to stop on, not noise to absorb. Absent file, absent check —
+      // adoption is per-repo.
+      if (timeoutsFile.isFile) {
+        fun auditKey(parts: List<String>) = "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
+        val members = timeoutsFile.readLines()
+            .map { it.substringBefore('#').trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+        val unaudited = rows.filter { it[5] == "TIMED_OUT" && auditKey(it) !in members }
+        if (unaudited.isNotEmpty()) {
+          logger.warn(
+              "pitest '$suiteName': ${unaudited.size} timed-out mutant(s) not in the audited set " +
+                  "(${timeoutsFile.name}) — a new timeout hides a weakened-assertion blind spot " +
+                  "behind \"detected\"; identify the structural cause (the removed loop exit, the " +
+                  "reversed cursor), add 'class,method,mutator' to the set and the cause to " +
+                  "config/pitest/README.md:\n" +
+                  unaudited.joinToString("\n") { "  ${it[1]},${it[3]},${it[4]},${it[2].substringAfterLast('.')}" }
+          )
+        }
+        val allKeys = rows.map(::auditKey).toSet()
+        val staleMembers = members.filterNot { it in allKeys }
+        if (staleMembers.isNotEmpty()) {
+          logger.lifecycle(
+              "pitest '$suiteName': ${staleMembers.size} audited-timeout row(s) match no mutant in " +
+                  "this run's report — the code moved or the mutator set changed; retire or fix:\n" +
+                  staleMembers.sorted().joinToString("\n") { "  $it" }
+          )
+        }
+      }
+
       if (listOf(update, union, prune).count { it } > 1) {
         throw GradleException(
             "pass at most one of -PupdateMutationBaseline, -PunionMutationBaseline, " +
@@ -912,6 +951,7 @@ hardening.mutation.all {
         // reason; name the bare pairings there too, so a wrong one is readable in the
         // output rather than only in a later 'why is this row unlabeled?'.
         val bareShiftPairs = mutableListOf<Pair<String, String>>()
+        val noteShiftPairs = mutableListOf<Pair<String, String>>()
         val written = current.map { row ->
           annotations[row]?.let { return@map "$row $it" }
           val flip = droppedNotes.firstOrNull { coordinate(it.first) == coordinate(row) }
@@ -929,6 +969,7 @@ hardening.mutation.all {
               freshBudget[row] = freshCopies - 1
               droppedNotes.remove(shift)
               shifted++
+              noteShiftPairs.add(shift.first to row)
               return@map "$row ${shift.second}"
             }
             // The same pairing for a note-less row. There is nothing to carry;
@@ -964,6 +1005,36 @@ hardening.mutation.all {
                 (if (bareShiftPairs.isEmpty()) "" else
                     " (${bareShiftPairs.size} unlabeled row(s) kept unlabeled across a line shift)")
         )
+        // The shift key is class/method/mutator/status, so a killed row at one line and
+        // genuinely new debt at another share it and pair silently — the recycled row
+        // then reads as settled (labeled or legacy-unlabeled) instead of '# untriaged'.
+        // A real edit moves a class's rows by a small set of consistent deltas, while a
+        // recycling pair's delta is whatever the killed and new lines happen to differ
+        // by, so a pair moving against its class's dominant delta is the one to re-read.
+        // A warning, not a failure: distinct edit regions in one file can shift by
+        // different amounts legitimately (casebook: the killed row recycled onto new
+        // debt at the same key).
+        run {
+          fun fmtDelta(d: Int) = if (d >= 0) "+$d" else "$d"
+          val pairsByClass = (noteShiftPairs + bareShiftPairs).groupBy { it.second.substringBefore(',') }
+          for ((clazz, pairs) in pairsByClass) {
+            if (pairs.size < 2) continue
+            val deltas = pairs.map { (old, new) -> rowLine(new).toInt() - rowLine(old).toInt() }
+            val dominantEntry = deltas.groupingBy { it }.eachCount().maxByOrNull { it.value }!!
+            if (dominantEntry.value < 2) continue
+            val dominant = dominantEntry.key
+            pairs.zip(deltas)
+                .filter { (_, delta) -> delta != dominant }
+                .forEach { (pair, delta) ->
+                  logger.lifecycle(
+                      "pitest baseline '$suiteName': PAIRING OUTLIER — '${pair.first}' was paired onto " +
+                          "line ${rowLine(pair.second)} (a ${fmtDelta(delta)} move) while other '$clazz' " +
+                          "pairs moved ${fmtDelta(dominant)}: verify the same mutant moved, and not a " +
+                          "killed row recycled onto new debt at the same class/method/mutator/status"
+                  )
+                }
+          }
+        }
         if (dropped.isNotEmpty()) {
           // The silent half of the refresh footgun: a full update rewrites from this one
           // run, so a flip-insurance union (detected today, survived under other load)
@@ -1046,6 +1117,20 @@ hardening.mutation.all {
       fun rowLine(row: String) = row.split(',')[2]
       fun rowStatus(row: String) = row.substringAfterLast(',')
 
+      // Line numbers are metadata, not identity: when the per-(class, method,
+      // mutator, status) population is unchanged, no status flip happened anywhere —
+      // every fresh row is a moved copy of a stale row. Decided BEFORE per-row
+      // classification because a shift can land a row on the exact line where a
+      // same-mutator row of a different status sat in the baseline; read row-by-row
+      // that collision is indistinguishable from a status flip, and preferring the
+      // flip reading both misreports the moved row as "newly covered" and strands
+      // its real counterpart as unexplained (casebook: the drifted survivor that
+      // read as newly covered).
+      fun lineless(rowList: List<String>) = rowList
+          .map { row -> row.split(',').let { "${it[0]},${it[1]},${it[3]},${it[4]}" } }
+          .groupingBy { it }.eachCount()
+      val linelessUnchanged = lineless(current) == lineless(accepted)
+
       val unpairedStale = stale.toMutableList()
       // pair counts are tracked as lists, not maps: duplicate sibling rows may each
       // pair with their own stale counterpart, and a map would collapse them
@@ -1059,7 +1144,10 @@ hardening.mutation.all {
       val acceptedRowTexts = accepted.toSet()
       val surfacedSiblings = mutableListOf<String>()
       for (row in fresh.sorted()) {
-        val sameLine = unpairedStale.firstOrNull {
+        // With the population unchanged the flip reading is provably wrong (a real
+        // NO_COVERAGE -> SURVIVED changes both status counts), so shift pairing is
+        // the only classification offered.
+        val sameLine = if (linelessUnchanged) null else unpairedStale.firstOrNull {
           rowKey(it) == rowKey(row) && rowLine(it) == rowLine(row) && rowStatus(it) != rowStatus(row)
         }
         if (sameLine != null) {
@@ -1086,17 +1174,13 @@ hardening.mutation.all {
       val surfacedSiblingTexts = surfacedSiblings.toSet()
       val unexplained = fresh.size - shiftPairs.size - newlyCoveredPairs.size - surfacedSiblings.size
 
-      // Line numbers are metadata, not identity. When every new row is a pure line
-      // shift AND the per-(class, method, mutator, status) population is unchanged,
+      // When every new row is a pure line shift AND the population is unchanged,
       // nothing moved but text: pass with a notice instead of demanding the
       // refresh dance after every edit above a mutated method. '-PnoDriftTolerance'
       // restores the strict behaviour for certifying runs.
-      fun lineless(rowList: List<String>) = rowList
-          .map { row -> row.split(',').let { "${it[0]},${it[1]},${it[3]},${it[4]}" } }
-          .groupingBy { it }.eachCount()
       val pureShift = fresh.isNotEmpty() &&
           unexplained == 0 && newlyCoveredPairs.isEmpty() && shiftPairs.size == fresh.size
-      val populationUnchanged = pureShift && lineless(current) == lineless(accepted)
+      val populationUnchanged = pureShift && linelessUnchanged
       if (populationUnchanged && !noDriftTolerance) {
         logger.lifecycle(
             "pitest baseline '$suiteName': ${shiftPairs.size} row(s) moved line only — same mutants, same " +

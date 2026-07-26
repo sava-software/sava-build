@@ -352,11 +352,16 @@ invoked it*, and the failure looks exactly like a real regression.
   watchdog observed slowness, not wrongness, so for that one mutant the
   ratchet can no longer see a **weakened covering assertion** — soften the
   test to uselessness and the timeout keeps "detecting" regardless. The
-  compensating control is to list each suite's timed-out mutants
-  individually in its `config/pitest/README.md` with the structural cause
-  (the removed loop exit, the reversed increment, the leaked unlock), so
-  `N timed out (load-dependent)` in the summary is an audited set rather
-  than a count, and a *new* member is something a reviewer notices.
+  compensating control is the audited set: one `class,method,mutator` row
+  per member in `config/pitest/<suite>-timeouts.csv` (line-less so drift
+  cannot churn membership; `#` comments allowed), with the structural cause
+  (the removed loop exit, the reversed increment, the leaked unlock)
+  written per member in `config/pitest/README.md`. With the file present,
+  the verify warns on any timed-out mutant missing from the set — a *new*
+  member is a reviewer-stop, not load noise — and notices members matching
+  no mutant at all (retirement hygiene). Advisory only, never a failure:
+  load can time out any mutant on any run, and both flavours are still
+  detection.
 - **Flip families do not settle while their cause remains — and "the cause
   remains" is a claim to re-measure, not a fact to record once.** Mutants
   equivalent on the wire but timing-dependent in detection (socket suites

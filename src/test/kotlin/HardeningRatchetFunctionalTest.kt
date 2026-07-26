@@ -327,6 +327,48 @@ $fuzzBlock
   }
 
   @Test
+  fun `a shift landing on a stale row's line is drift, not new coverage`() {
+    // A uniform +5 shift moves a SURVIVED row onto the exact line where a
+    // NO_COVERAGE row of the same mutator sat in the baseline. Read row-by-row
+    // that collision looks like a status flip — but the per-(class, method,
+    // mutator, status) population is unchanged, which proves no flip happened:
+    // it must classify as pure drift, not report "newly covered" plus an
+    // unexplained orphan. (Casebook: the drifted survivor that read as newly
+    // covered.)
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,230,MathMutator,SURVIVED\n" +
+          "com.example.Codec,encode,235,MathMutator,NO_COVERAGE\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,235,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,240,NO_COVERAGE,none"
+      ),
+      ""
+    )
+
+    // pure drift: passes with the moved-line notice
+    val tolerated = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      tolerated.contains("2 row(s) moved line only"),
+      "collision not recognized as drift:\n$tolerated"
+    )
+
+    // and under the strict flag the classification stays factual: two shifts,
+    // no flip reading, nothing unexplained
+    val strict = runner("pitestEncodingVerify", "-PnoDriftTolerance").buildAndFail().output
+    assertTrue(
+      strict.contains("churn: 2 shifted, 0 newly covered, 0 unexplained"),
+      "collision churn tally wrong:\n$strict"
+    )
+    assertTrue(strict.contains("(shifted from line 230)"), "survivor shift pairing missing:\n$strict")
+    assertTrue(strict.contains("(shifted from line 235)"), "no-coverage shift pairing missing:\n$strict")
+    assertFalse(strict.contains("newly covered — was"), "flip reading applied to a drift collision:\n$strict")
+  }
+
+  @Test
   fun `prune drops only since-killed rows and keeps flip-protected ones`() {
     // The shrink-only refresh: rows matching this run stay (notes intact), rows whose
     // mutants are gone are dropped, and two unmatched classes are kept anyway — a
@@ -543,6 +585,96 @@ $fuzzBlock
           output.contains("unlabeled, kept unlabeled at line 13"),
       output
     )
+  }
+
+  @Test
+  fun `a shift pair moving against its class's dominant delta is flagged as an outlier`() {
+    // The recycling failure mode, made visible: a killed unlabeled row and genuinely
+    // new debt share the class/method/mutator/status key, so the refresh pairs them
+    // and the new row enters the baseline looking settled. The pairing itself cannot
+    // tell them apart — but a real edit moves a class's rows by consistent deltas,
+    // so the recycled pair's arbitrary delta stands out against the dominant one and
+    // must be called out for re-reading (casebook: the killed row recycled onto new
+    // debt at the same key).
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,150,MathMutator,SURVIVED\n" +
+          "com.example.Codec,encode,152,IncrementsMutator,SURVIVED\n" +
+          "com.example.Codec,encode,157,ConditionalsBoundaryMutator,SURVIVED\n"
+    )
+    // the file shifted +5; the MathMutator at 150 was killed and an unrelated
+    // MathMutator survivor appeared at 157 — same key, delta +7
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,157,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,encode,157,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.ConditionalsBoundaryMutator,encode,162,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertTrue(
+      output.contains("PAIRING OUTLIER") &&
+          output.contains("'com.example.Codec,encode,150,MathMutator,SURVIVED' was paired onto line 157") &&
+          output.contains("(a +7 move)") &&
+          output.contains("pairs moved +5"),
+      "outlier pairing not flagged:\n$output"
+    )
+    // the two consistent +5 pairs must not be flagged
+    assertEquals(
+      1,
+      Regex("PAIRING OUTLIER").findAll(output).count(),
+      "expected exactly one outlier:\n$output"
+    )
+  }
+
+  @Test
+  fun `the timed-out audited set warns on newcomers and notices stale members`() {
+    // TIMED_OUT is detected, but the watchdog observed slowness, not wrongness: the
+    // ratchet cannot see a weakened covering assertion behind a timeout, so the
+    // summary's load-dependent count is only trustworthy as an audited membership.
+    // A timed-out mutant missing from <suite>-timeouts.csv is a reviewer-stop
+    // warning; a member matching no mutant at all is retirement hygiene. Both are
+    // advisory — neither may fail the build, since load can time out any mutant.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText(
+      "# structural causes live in config/pitest/README.md\n" +
+          "com.example.Codec,encode,MathMutator # removed loop exit\n" +
+          "com.example.Codec,gone,MathMutator\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,encode,30,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,40,KILLED,com.example.CodecTest",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("1 timed-out mutant(s) not in the audited set (encoding-timeouts.csv)") &&
+          output.contains("com.example.Codec,encode,30,IncrementsMutator"),
+      "unaudited timeout not warned:\n$output"
+    )
+    assertFalse(
+      output.contains("com.example.Codec,encode,12,MathMutator"),
+      "audited member wrongly listed:\n$output"
+    )
+    assertTrue(
+      output.contains("1 audited-timeout row(s) match no mutant") &&
+          output.contains("com.example.Codec,gone,MathMutator"),
+      "stale member not noticed:\n$output"
+    )
+
+    // adopting repos only: without the file the report stays exactly as before
+    timeoutsFile.delete()
+    val silent = runner("pitestEncodingVerify").build().output
+    assertFalse(silent.contains("audited"), "audit output without a membership file:\n$silent")
   }
 
   @Test

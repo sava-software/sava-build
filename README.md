@@ -265,11 +265,70 @@ for unsigned artifacts, and regenerate with the same command after dependency bu
 
 ## Developing sava-build
 
-To modify and test the convention plugins against a project that uses them, insert
-`pluginManagement { includeBuild("../sava-build") }` at the top of that project's
-`settings.gradle.kts` (adjusting the relative path to your checkout), then reload the project.
-`sava-build` will show up next to the project in the IDE workspace and plugin changes apply on
-the next build.
+To drive a plugin change from a consumer project, publish this checkout to its local
+Maven test repo and point the consumer at it:
+
+```shell
+./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository
+```
+
+```shell
+(cd <consumer>; ./gradlew check -PsavaBuildLocalRepo=<sava-build>/build/sava-test-repo)
+```
+
+**The publish is not automatic**: re-run it after every sava-build edit, or the consumer
+silently keeps resolving the previously published jar. A republished `0.0.0-test` is
+picked up immediately (`file:` repositories are re-read on each resolution) — the stale
+case is only a forgotten publish, which is why the canonical snippet below prints the
+last-publish age.
+
+The canonical consumer-side block, for a `settings.gradle.kts` `pluginManagement {}`
+(copy it whole — the property belongs in `~/.gradle/gradle.properties` or on the CLI,
+never hardcoded in the file):
+
+```kotlin
+pluginManagement {
+  // Point '-PsavaBuildLocalRepo=<sava-build>/build/sava-test-repo' (or set it in
+  // ~/.gradle/gradle.properties) at a local sava-build checkout to build against an
+  // unpublished plugin change; sava-build publishes that repo with
+  //   ./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository
+  // and every id below then resolves to the 0.0.0-test module regardless of the
+  // version the plugins block requests. That publish is NOT automatic — the printed
+  // age is the tell for a forgotten one. The useModule call also bypasses plugin
+  // markers, which the test repo does not contain.
+  val savaBuildLocalRepo = providers.gradleProperty("savaBuildLocalRepo")
+    .orNull?.takeIf { it.isNotBlank() }
+  if (savaBuildLocalRepo != null) {
+    val metadata = settingsDir.resolve(savaBuildLocalRepo)
+      .resolve("software/sava/sava-build/maven-metadata.xml")
+    val age = if (metadata.isFile) {
+      val minutes = (System.currentTimeMillis() - metadata.lastModified()) / 60_000
+      "0.0.0-test published ${if (minutes < 60) "$minutes min" else "${minutes / 60} h ${minutes % 60} min"} ago"
+    } else {
+      "NO 0.0.0-test PUBLISH FOUND — run sava-build's publish task"
+    }
+    // Loud on purpose: with the property set in ~/.gradle/gradle.properties, nothing
+    // else in this file reveals that the versions in the plugins block are ignored.
+    logger.warn(
+      "sava-build: resolving 'software.sava.build*' plugins from LOCAL repo $savaBuildLocalRepo ($age)"
+    )
+    resolutionStrategy.eachPlugin {
+      if (requested.id.id.startsWith("software.sava.build")) {
+        useModule("software.sava:sava-build:0.0.0-test")
+      }
+    }
+  }
+  repositories {
+    if (savaBuildLocalRepo != null) {
+      maven(url = savaBuildLocalRepo)
+    }
+    gradlePluginPortal()
+    mavenCentral()
+  }
+}
+```
+
+When done, drop the property; the unset path is the normal published resolution.
 
 Verify changes with:
 
