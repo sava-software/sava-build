@@ -811,13 +811,16 @@ hardening.mutation.all {
             .toSet()
         val unaudited = rows.filter { it[5] == "TIMED_OUT" && auditKey(it) !in members }
         if (unaudited.isNotEmpty()) {
+          // rows print paste-ready: the membership key verbatim, the line riding in a
+          // '#' comment — pasting the printed row into the set must satisfy the check,
+          // never trip the stale-member notice
           logger.warn(
               "pitest '$suiteName': ${unaudited.size} timed-out mutant(s) not in the audited set " +
                   "(${timeoutsFile.name}) — a new timeout hides a weakened-assertion blind spot " +
                   "behind \"detected\"; identify the structural cause (the removed loop exit, the " +
-                  "reversed cursor), add 'class,method,mutator' to the set and the cause to " +
+                  "reversed cursor), add the row below to the set and the cause to " +
                   "config/pitest/README.md:\n" +
-                  unaudited.joinToString("\n") { "  ${it[1]},${it[3]},${it[4]},${it[2].substringAfterLast('.')}" }
+                  unaudited.joinToString("\n") { "  ${auditKey(it)} # line ${it[4]}" }
           )
         }
         val allKeys = rows.map(::auditKey).toSet()
@@ -1021,7 +1024,11 @@ hardening.mutation.all {
             if (pairs.size < 2) continue
             val deltas = pairs.map { (old, new) -> rowLine(new).toInt() - rowLine(old).toInt() }
             val dominantEntry = deltas.groupingBy { it }.eachCount().maxByOrNull { it.value }!!
-            if (dominantEntry.value < 2) continue
+            // strict majority, not plurality: on a tie (two edit regions moving two
+            // rows each) "dominant" would be whichever delta enumerates first, and the
+            // other region's legitimate pairs would be flagged — advisory checks stay
+            // credible only while they are quiet on genuinely ambiguous evidence
+            if (dominantEntry.value * 2 <= pairs.size) continue
             val dominant = dominantEntry.key
             pairs.zip(deltas)
                 .filter { (_, delta) -> delta != dominant }
@@ -1118,8 +1125,11 @@ hardening.mutation.all {
       fun rowStatus(row: String) = row.substringAfterLast(',')
 
       // Line numbers are metadata, not identity: when the per-(class, method,
-      // mutator, status) population is unchanged, no status flip happened anywhere —
-      // every fresh row is a moved copy of a stale row. Decided BEFORE per-row
+      // mutator, status) population is unchanged, no *net* status flip happened —
+      // every fresh row is a moved copy of a stale row. (Not quite "no flip
+      // anywhere": two same-key rows swapping SURVIVED and NO_COVERAGE preserve the
+      // multiset and read as drift here; both remain unkilled debt either way, so
+      // the tolerated reading changes no population.) Decided BEFORE per-row
       // classification because a shift can land a row on the exact line where a
       // same-mutator row of a different status sat in the baseline; read row-by-row
       // that collision is indistinguishable from a status flip, and preferring the

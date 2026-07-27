@@ -631,6 +631,39 @@ $fuzzBlock
   }
 
   @Test
+  fun `a tied delta split has no dominant move and stays quiet`() {
+    // Two edit regions in one file, each moving two rows by a different amount, is a
+    // legitimate shape — with no strict majority there is no "dominant" delta to
+    // measure against, and crowning whichever delta enumerates first would flag the
+    // other region's legitimate pairs. Advisory checks stay credible only while they
+    // are quiet on genuinely ambiguous evidence.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,110,MathMutator,SURVIVED\n" +
+          "com.example.Codec,encode,112,IncrementsMutator,SURVIVED\n" +
+          "com.example.Codec,encode,210,ConditionalsBoundaryMutator,SURVIVED\n" +
+          "com.example.Codec,encode,212,InvertNegsMutator,SURVIVED\n"
+    )
+    // region one moved +3, region two moved +9
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,113,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,encode,115,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.ConditionalsBoundaryMutator,encode,219,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.InvertNegsMutator,encode,221,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertFalse(
+      output.contains("PAIRING OUTLIER"),
+      "tied delta split wrongly flagged:\n$output"
+    )
+  }
+
+  @Test
   fun `the timed-out audited set warns on newcomers and notices stale members`() {
     // TIMED_OUT is detected, but the watchdog observed slowness, not wrongness: the
     // ratchet cannot see a weakened covering assertion behind a timeout, so the
@@ -656,19 +689,36 @@ $fuzzBlock
     )
 
     val output = runner("pitestEncodingVerify").build().output
+    // the printed row is the membership key verbatim with the line in a '#' comment
+    val printedRow = "com.example.Codec,encode,IncrementsMutator # line 30"
     assertTrue(
       output.contains("1 timed-out mutant(s) not in the audited set (encoding-timeouts.csv)") &&
-          output.contains("com.example.Codec,encode,30,IncrementsMutator"),
-      "unaudited timeout not warned:\n$output"
+          output.contains(printedRow),
+      "unaudited timeout not warned paste-ready:\n$output"
     )
     assertFalse(
-      output.contains("com.example.Codec,encode,12,MathMutator"),
+      output.contains("MathMutator # line 12"),
       "audited member wrongly listed:\n$output"
     )
     assertTrue(
       output.contains("1 audited-timeout row(s) match no mutant") &&
           output.contains("com.example.Codec,gone,MathMutator"),
       "stale member not noticed:\n$output"
+    )
+
+    // the paste round trip: the printed row, added verbatim, must satisfy the check —
+    // and must not trip the stale-member notice
+    timeoutsFile.appendText("$printedRow\n")
+    val pasted = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      pasted.contains("not in the audited set"),
+      "pasted printed row did not satisfy the audit:\n$pasted"
+    )
+    // stale members print comment-stripped and indented; the pre-existing 'gone' row
+    // still reports, so absence must be asserted for this key specifically
+    assertFalse(
+      pasted.contains("  com.example.Codec,encode,IncrementsMutator"),
+      "pasted printed row read as stale:\n$pasted"
     )
 
     // adopting repos only: without the file the report stays exactly as before
