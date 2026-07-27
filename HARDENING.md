@@ -357,7 +357,9 @@ invoked it*, and the failure looks exactly like a real regression.
   test to uselessness and the timeout keeps "detecting" regardless. The
   compensating control is the audited set: one `class,method,mutator` row
   per member in `config/pitest/<suite>-timeouts.csv` (line-less so drift
-  cannot churn membership; `#` comments allowed), with the structural cause
+  cannot churn membership; `#` comments allowed, and spacing around fields
+  is normalized away, so rows may be aligned for reading), with the
+  structural cause
   (the removed loop exit, the reversed increment, the leaked unlock)
   written per member in `config/pitest/README.md`. With the file present,
   the verify warns on any timed-out mutant missing from the set — a *new*

@@ -734,6 +734,15 @@ hardening.mutation.all {
         emptyList()
       }
       fun baselineLine(row: String) = annotations[row]?.let { "$row $it" } ?: row
+      // The 'class,method,line,mutator' coordinate, and the set of them that read
+      // TIMED_OUT this run. Shared rather than recomputed per call site: prune keeps
+      // these rows and the verify's stale-entry hint promises exactly that ("prune
+      // keeps them"), so the two must decide membership identically — a promise that
+      // holds only by coincidence when each site carries its own copy of the key
+      // shape. The drift warning below reads the same coordinate.
+      fun mutantCoordinate(parts: List<String>) =
+          "${parts[1]},${parts[3]},${parts[4]},${parts[2].substringAfterLast('.')}"
+      val timedOutCoordinatesNow = rows.filter { it[5] == "TIMED_OUT" }.map(::mutantCoordinate).toSet()
       // Per-label breakdown so triage state is a number the build prints (BaselineNotes
       // owns the label semantics: carry/flip parentheticals stripped, unlabeled rows —
       // which predate seeding — named rather than folded into a bucket).
@@ -755,8 +764,7 @@ hardening.mutation.all {
       // against the last run's statuses names each newcomer's origin.
       val statusStash = statusStashFile
       run {
-        fun coordinate(parts: List<String>) =
-            "${parts[1]},${parts[3]},${parts[4]},${parts[2].substringAfterLast('.')}"
+        val coordinate = ::mutantCoordinate
         val previous = if (statusStash.isFile) {
           statusStash.readLines().mapNotNull { line ->
             val sep = line.lastIndexOf(',')
@@ -765,7 +773,7 @@ hardening.mutation.all {
         } else {
           emptyMap()
         }
-        val nowTimedOut = rows.filter { it[5] == "TIMED_OUT" }.map(::coordinate).toSet()
+        val nowTimedOut = timedOutCoordinatesNow
         if (previous.isNotEmpty()) {
           val prevTimedOut = previous["TIMED_OUT"].orEmpty().toSet()
           val prevSurvived = previous["SURVIVED"].orEmpty().toSet()
@@ -805,8 +813,14 @@ hardening.mutation.all {
       // adoption is per-repo.
       if (timeoutsFile.isFile) {
         fun auditKey(parts: List<String>) = "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
+        // Normalize per field, not just per line: 'Codec, encode, MathMutator' is the
+        // spacing a person writes for readability, and against a key built without
+        // spaces it would match nothing — earning a permanent 'not in the audited set'
+        // warning AND a 'matches no mutant' notice, with nothing on screen naming the
+        // spaces as the cause. A membership file the tool silently disagrees with is
+        // worse than no membership file.
         val members = timeoutsFile.readLines()
-            .map { it.substringBefore('#').trim() }
+            .map { line -> line.substringBefore('#').split(',').joinToString(",") { it.trim() } }
             .filter { it.isNotEmpty() }
             .toSet()
         val unaudited = rows.filter { it[5] == "TIMED_OUT" && auditKey(it) !in members }
@@ -839,8 +853,12 @@ hardening.mutation.all {
         // the method name appearing somewhere in the README, since members carry no
         // label. Short method names match trivially; the check only catches a cause
         // that was never written at all.
+        //
+        // Live members only: a stale member is already being told to retire, and
+        // asking for the cause of a row that should be deleted is two instructions
+        // pulling opposite ways for one row.
         val readmeText = readmeFile.takeIf { it.isFile }?.readText() ?: ""
-        val undocumented = members.filter { member ->
+        val undocumented = (members - staleMembers.toSet()).filter { member ->
           member.split(',').getOrNull(1)?.let { method -> !readmeText.contains(method) } ?: false
         }
         if (undocumented.isNotEmpty()) {
@@ -870,9 +888,7 @@ hardening.mutation.all {
         // status (a coverage flip pending triage — pruning the stale side would erase
         // the pairing the newly-covered classifier explains it with).
         fun coordinate(row: String) = row.substringBeforeLast(',')
-        val timedOutCoordinates = rows.filter { it[5] == "TIMED_OUT" }
-            .map { "${it[1]},${it[3]},${it[4]},${it[2].substringAfterLast('.')}" }
-            .toSet()
+        val timedOutCoordinates = timedOutCoordinatesNow
         val unkilledCoordinates = current.map(::coordinate).toSet()
         val budget = current.groupingBy { it }.eachCount().toMutableMap()
         val kept = mutableListOf<String>()
@@ -1233,10 +1249,9 @@ hardening.mutation.all {
         // recommended a refresh that would be a no-op for it (casebook: the
         // limbsLength flapper told to prune itself). Reported separately instead,
         // and excluded from the refresh hint.
-        val timedOutNow = rows.filter { it[5] == "TIMED_OUT" }
-            .map { "${it[1]},${it[3]},${it[4]},${it[2].substringAfterLast('.')}" }
-            .toSet()
-        val (staleTimedOut, staleGone) = stale.partition { it.substringBeforeLast(',') in timedOutNow }
+        // the same set prune keeps, so this hint and prune cannot disagree
+        val (staleTimedOut, staleGone) =
+            stale.partition { it.substringBeforeLast(',') in timedOutCoordinatesNow }
         if (staleGone.isNotEmpty()) {
           // Point at prune, not update: when the only news is *fewer* survivors, the
           // shrink-only refresh is the always-safe direction — it cannot bake in a

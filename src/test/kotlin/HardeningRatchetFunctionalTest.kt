@@ -721,6 +721,31 @@ $fuzzBlock
       "pasted printed row read as stale:\n$pasted"
     )
 
+    // a member being told to retire is not simultaneously asked for its cause: the
+    // two instructions pull opposite ways for one row
+    assertFalse(
+      pasted.contains("cause? com.example.Codec,gone,MathMutator"),
+      "stale member also nagged to document itself:\n$pasted"
+    )
+
+    // fields spaced for readability are the same membership: normalizing per field
+    // (not just per line) keeps the tool from silently disagreeing with a reasonable
+    // hand edit — the alternative is a permanent 'not in the audited set' warning
+    // plus a 'matches no mutant' notice, with nothing naming the spaces as the cause
+    timeoutsFile.writeText(
+      "com.example.Codec, encode, MathMutator  # removed loop exit\n" +
+          "com.example.Codec , encode , IncrementsMutator\n"
+    )
+    val spaced = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      spaced.contains("not in the audited set"),
+      "spaced membership rows not honoured:\n$spaced"
+    )
+    assertFalse(
+      spaced.contains("match no mutant"),
+      "spaced membership rows read as stale:\n$spaced"
+    )
+
     // adopting repos only: without the file the report stays exactly as before
     timeoutsFile.delete()
     val silent = runner("pitestEncodingVerify").build().output
