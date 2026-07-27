@@ -1,5 +1,21 @@
 # Changelog
 
+## [21.5.17](https://github.com/sava-software/sava-build/compare/21.5.16...21.5.17) (2026-07-27)
+
+
+### Features
+
+* **hardening:** enhance timeout audit and baseline drift detection ([150e5b0](https://github.com/sava-software/sava-build/commit/150e5b0a35dfec74f96711f49210f8c6e47a4fed))
+* **hardening:** enhance timeout audit and baseline refresh validation ([8720da8](https://github.com/sava-software/sava-build/commit/8720da803c623cf0375661ae8230bcf88378b039))
+* **hardening:** improve handling of tied delta splits and timeout audits ([bfe11a9](https://github.com/sava-software/sava-build/commit/bfe11a93e1086894200ffc76612ad2c699322e5a))
+* **hardening:** improve timeout audit and baseline refresh handling ([798baae](https://github.com/sava-software/sava-build/commit/798baae48173a89b5d824bcd0f3982e43748dcc7))
+* **hardening:** normalize spacing in timeout audit membership rows ([83f0842](https://github.com/sava-software/sava-build/commit/83f084276dc25ca63e1b47000be9118a3d728ec0))
+
+
+### Chores
+
+* **dependabot:** update schedules with time and timezone configs ([f75a77e](https://github.com/sava-software/sava-build/commit/f75a77e30cf5576f8572acbc6a6edf72d83151ad))
+
 ## [21.5.16](https://github.com/sava-software/sava-build/compare/21.5.15...21.5.16) (2026-07-26)
 
 
