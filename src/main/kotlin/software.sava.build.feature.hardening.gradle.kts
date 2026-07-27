@@ -832,6 +832,25 @@ hardening.mutation.all {
                   staleMembers.sorted().joinToString("\n") { "  $it" }
           )
         }
+        // A member is only half audited without its cause: the row makes the set
+        // machine-checked, the README argument is what a reviewer actually reads.
+        // Mirrors the family-label rule (a label is a pointer to its README
+        // argument) at the same advisory level, and matched the same soft way — by
+        // the method name appearing somewhere in the README, since members carry no
+        // label. Short method names match trivially; the check only catches a cause
+        // that was never written at all.
+        val readmeText = readmeFile.takeIf { it.isFile }?.readText() ?: ""
+        val undocumented = members.filter { member ->
+          member.split(',').getOrNull(1)?.let { method -> !readmeText.contains(method) } ?: false
+        }
+        if (undocumented.isNotEmpty()) {
+          logger.warn(
+              "pitest '$suiteName': ${undocumented.size} audited-timeout member(s) whose method appears " +
+                  "nowhere in config/pitest/README.md — the structural cause belongs there " +
+                  "(HARDENING.md, the audited-set bullet):\n" +
+                  undocumented.sorted().joinToString("\n") { "  cause? $it" }
+          )
+        }
       }
 
       if (listOf(update, union, prune).count { it } > 1) {
@@ -1207,22 +1226,41 @@ hardening.mutation.all {
         else -> ""
       }
       if (stale.isNotEmpty()) {
-        // Point at prune, not update: when the only news is *fewer* survivors, the
-        // shrink-only refresh is the always-safe direction — it cannot bake in a
-        // coin-flip from this one run, which is exactly what recommending a full
-        // rewrite here used to invite. Update stays the answer when rows also need
-        // rewriting (a status flip), and that path is reported separately below.
-        // Only the pure-shrink case gets the prune recommendation. With new rows
-        // present the stale ones are usually their moved counterparts, and prune
-        // would drop the old line without writing the new one — leaving the shift
-        // unexplained. That case still wants update — after the new rows are
-        // triaged, since they may also be newly covered or surfaced siblings,
-        // where update-before-triage is exactly the laundering the ratchet exists
-        // to prevent.
-        val direction = if (fresh.isEmpty()) "-PpruneMutationBaseline (shrink-only; nothing new to bake in)"
-        else "-PupdateMutationBaseline after the new rows below are triaged"
-        logger.lifecycle(
-            "pitest baseline '$suiteName': ${stale.size} stale entries (since killed or moved) — refresh with $direction")
+        // A stale-looking row whose coordinate read TIMED_OUT this run is neither
+        // killed nor moved — it is the load-dependent detection the TIMED_OUT
+        // doctrine warns about, and prune deliberately keeps such rows. Counting it
+        // here both contradicted the SURVIVED -> TIMED_OUT warning printed above and
+        // recommended a refresh that would be a no-op for it (casebook: the
+        // limbsLength flapper told to prune itself). Reported separately instead,
+        // and excluded from the refresh hint.
+        val timedOutNow = rows.filter { it[5] == "TIMED_OUT" }
+            .map { "${it[1]},${it[3]},${it[4]},${it[2].substringAfterLast('.')}" }
+            .toSet()
+        val (staleTimedOut, staleGone) = stale.partition { it.substringBeforeLast(',') in timedOutNow }
+        if (staleGone.isNotEmpty()) {
+          // Point at prune, not update: when the only news is *fewer* survivors, the
+          // shrink-only refresh is the always-safe direction — it cannot bake in a
+          // coin-flip from this one run, which is exactly what recommending a full
+          // rewrite here used to invite. Update stays the answer when rows also need
+          // rewriting (a status flip), and that path is reported separately below.
+          // Only the pure-shrink case gets the prune recommendation. With new rows
+          // present the stale ones are usually their moved counterparts, and prune
+          // would drop the old line without writing the new one — leaving the shift
+          // unexplained. That case still wants update — after the new rows are
+          // triaged, since they may also be newly covered or surfaced siblings,
+          // where update-before-triage is exactly the laundering the ratchet exists
+          // to prevent.
+          val direction = if (fresh.isEmpty()) "-PpruneMutationBaseline (shrink-only; nothing new to bake in)"
+          else "-PupdateMutationBaseline after the new rows below are triaged"
+          logger.lifecycle(
+              "pitest baseline '$suiteName': ${staleGone.size} stale entries (since killed or moved) — refresh with $direction")
+        }
+        if (staleTimedOut.isNotEmpty()) {
+          logger.lifecycle(
+              "pitest baseline '$suiteName': ${staleTimedOut.size} baseline row(s) read TIMED_OUT this run — " +
+                  "load-dependent detection, not a kill; no refresh needed (prune keeps them):\n" +
+                  staleTimedOut.joinToString("\n") { "  ${baselineLine(it)}" })
+        }
       }
       if (fresh.isNotEmpty()) {
         // Split the report: the two statuses need opposite responses, and saying so

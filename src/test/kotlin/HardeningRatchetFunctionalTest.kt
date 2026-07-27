@@ -728,6 +728,74 @@ $fuzzBlock
   }
 
   @Test
+  fun `a stale baseline row that timed out this run is not killed-or-moved`() {
+    // A baseline SURVIVED row whose mutant reads TIMED_OUT this run is the
+    // load-dependent detection the TIMED_OUT doctrine warns about — prune keeps it,
+    // so counting it in "stale entries (since killed or moved)" both contradicted
+    // the drift warning and recommended a refresh that is a no-op for it. The
+    // refresh hint must count only rows that are genuinely gone.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED\n" +
+          "com.example.Codec,decode,40,MathMutator,SURVIVED\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,40,KILLED,com.example.CodecTest",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("1 stale entries (since killed or moved)"),
+      "genuinely gone row not counted:\n$output"
+    )
+    assertTrue(
+      output.contains("1 baseline row(s) read TIMED_OUT this run") &&
+          output.contains("no refresh needed (prune keeps them)") &&
+          output.contains("com.example.Codec,encode,12,MathMutator,SURVIVED"),
+      "timed-out flip not reported separately:\n$output"
+    )
+  }
+
+  @Test
+  fun `an audited-timeout member without a README cause gets a notice`() {
+    // The CSV row makes the set machine-checked; the README argument is what a
+    // reviewer actually reads. Same advisory level and same soft resolution as the
+    // family-label rule — matched by the method name appearing anywhere in the
+    // README, so it only catches a cause that was never written at all.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+      ),
+      ""
+    )
+    val readme = File(fixtureDir, "config/pitest/README.md")
+    readme.writeText("# Baseline\n\nNothing about timeouts yet.\n")
+
+    val warned = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      warned.contains("1 audited-timeout member(s) whose method appears nowhere in config/pitest/README.md") &&
+          warned.contains("cause? com.example.Codec,encode,MathMutator"),
+      "unwritten cause not noticed:\n$warned"
+    )
+
+    readme.writeText("# Baseline\n\n`Codec.encode:12` (MathMutator): the inflated estimate crawls, never fails.\n")
+    val documented = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      documented.contains("audited-timeout member(s) whose method"),
+      "documented cause still noticed:\n$documented"
+    )
+  }
+
+  @Test
   fun `a killed row's note does not migrate to a surviving sibling line`() {
     // The shift carry pairs dropped notes against *fresh* rows only, mirroring the
     // ratchet's shift classifier. A killed row leaves no fresh counterpart, so its

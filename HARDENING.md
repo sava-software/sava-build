@@ -318,7 +318,10 @@ invoked it*, and the failure looks exactly like a real regression.
   flavour and gets a one-line count; `SURVIVED -> TIMED_OUT` gets a warning
   with the rows, because a mutant nobody killed now reads as detected purely
   through load — do not let a refresh quietly drop it from the baseline on
-  the strength of that.
+  the strength of that. The verify's stale-entry hint honours this: a
+  baseline row whose coordinate read `TIMED_OUT` this run is reported as the
+  load flip it is ("no refresh needed; prune keeps them"), never counted
+  among the "since killed or moved" rows the refresh hint points at.
 
   "Benign" is a boundary claim, not a shrug: `KILLED` and `TIMED_OUT` are
   both *detected*, neither is ever written to a baseline, so this flip is
@@ -358,8 +361,11 @@ invoked it*, and the failure looks exactly like a real regression.
   (the removed loop exit, the reversed increment, the leaked unlock)
   written per member in `config/pitest/README.md`. With the file present,
   the verify warns on any timed-out mutant missing from the set — a *new*
-  member is a reviewer-stop, not load noise — and notices members matching
-  no mutant at all (retirement hygiene). Advisory only, never a failure:
+  member is a reviewer-stop, not load noise; the printed row is paste-ready,
+  with the line riding in a `#` comment — and notices members matching
+  no mutant at all (retirement hygiene) as well as members whose method
+  appears nowhere in the README (a cause that was never written; the same
+  soft pointer rule family labels follow). Advisory only, never a failure:
   load can time out any mutant on any run, and both flavours are still
   detection.
 - **Flip families do not settle while their cause remains — and "the cause
@@ -1142,6 +1148,16 @@ paste.
 >   same mutant can report `SURVIVED` alone and `TIMED_OUT` under
 >   `qualityGate`. Verify a baseline in both modes; union only rows observed to
 >   flip, never every `TIMED_OUT` row.
+> - **A new timed-out mutant is a reviewer-stop, not detection noise.** For
+>   exactly these mutants the ratchet cannot see a weakened covering
+>   assertion — a timeout keeps "detecting" whatever the test asserts — so
+>   each suite's timeouts are an audited set, not a count:
+>   `config/pitest/<suite>-timeouts.csv` holds line-less `class,method,mutator`
+>   keys, and `config/pitest/README.md` the structural cause per member (the
+>   removed loop exit, the reversed cursor, the leaked unlock). The verify
+>   warns on any timeout outside the set — paste the printed row, then write
+>   the cause — and on members matching no mutant; admit a newcomer only with
+>   its cause written.
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
 >   boundary cannot be made deterministic, accept the mutant with a written
 >   reason rather than chasing it with sleeps or spin-waits.
