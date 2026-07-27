@@ -367,7 +367,14 @@ invoked it*, and the failure looks exactly like a real regression.
   with the line riding in a `#` comment — and notices members matching
   no mutant at all (retirement hygiene) as well as members whose method
   appears nowhere in the README (a cause that was never written; the same
-  soft pointer rule family labels follow). Advisory only, never a failure:
+  soft pointer rule family labels follow). The line-less key is also the
+  check's resolution: a *new* timed-out mutant in an already-audited
+  method+mutator matches the existing member and draws no warning, so "no
+  warning" certifies no new method+mutator, not no new mutant — the price
+  of a membership drift cannot churn. The README cause should name the
+  line it argues about (the paste-ready row carries it in the `#` comment)
+  so a reviewer can notice when the code at that line is no longer what
+  the argument described. Advisory only, never a failure:
   load can time out any mutant on any run, and both flavours are still
   detection.
 - **Flip families do not settle while their cause remains — and "the cause
@@ -1159,7 +1166,9 @@ paste.
 >   removed loop exit, the reversed cursor, the leaked unlock). The verify
 >   warns on any timeout outside the set — paste the printed row, then write
 >   the cause — and on members matching no mutant; admit a newcomer only with
->   its cause written.
+>   its cause written. The key is the check's resolution: a new timed-out
+>   mutant in an already-audited method+mutator draws no warning, so name the
+>   line in the README cause and re-read it when that code changes.
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
 >   boundary cannot be made deterministic, accept the mutant with a written
 >   reason rather than chasing it with sleeps or spin-waits.

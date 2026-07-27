@@ -282,6 +282,15 @@ picked up immediately (`file:` repositories are re-read on each resolution) — 
 case is only a forgotten publish, which is why the canonical snippet below prints the
 last-publish age.
 
+One caveat on that tell: with the configuration cache enabled, the warning prints only
+when the cache entry is invalidated. Every real publish invalidates it (the plugin jar
+on the settings classpath changed), so the age line reliably follows a publish — but a
+*forgotten* publish changes nothing, the entry is reused, the settings script never
+re-executes, and no warning prints. So the absence of the line is not evidence of
+normal resolution: if consumer behaviour looks stale, check the publish age directly
+(`ls -l <sava-build>/build/sava-test-repo/software/sava/sava-build/maven-metadata.xml`)
+rather than waiting for a warning that cache reuse is suppressing.
+
 The canonical consumer-side block, for a `settings.gradle.kts` `pluginManagement {}`
 (copy it whole — the property belongs in `~/.gradle/gradle.properties` or on the CLI,
 never hardcoded in the file):
@@ -294,8 +303,11 @@ pluginManagement {
   //   ./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository
   // and every id below then resolves to the 0.0.0-test module regardless of the
   // version the plugins block requests. That publish is NOT automatic — the printed
-  // age is the tell for a forgotten one. The useModule call also bypasses plugin
-  // markers, which the test repo does not contain.
+  // age is the tell for a forgotten one, though it only prints on a configuration
+  // cache miss (every publish forces one; a forgotten publish reuses the entry
+  // silently, so check the metadata timestamp if behaviour looks stale). The
+  // useModule call also bypasses plugin markers, which the test repo does not
+  // contain.
   val savaBuildLocalRepo = providers.gradleProperty("savaBuildLocalRepo")
     .orNull?.takeIf { it.isNotBlank() }
   if (savaBuildLocalRepo != null) {

@@ -285,12 +285,15 @@ $fuzzBlock
     assertTrue(output.contains("SCOPED run"), "scoped notice missing:\n$output")
     assertTrue(output.contains("1 unkilled in scope"), "scoped listing missing:\n$output")
 
-    // and neither refresh flavour may consume it
-    val refused = runner("pitestEncodingVerify", "-PupdateMutationBaseline").buildAndFail().output
-    assertTrue(
-      refused.contains("cannot refresh the baseline"),
-      "scoped refresh was not refused:\n$refused"
-    )
+    // and no refresh flavour may consume it — prune included, which the early
+    // return would otherwise silently no-op while the user believes it ran
+    for (flag in listOf("-PupdateMutationBaseline", "-PunionMutationBaseline", "-PpruneMutationBaseline")) {
+      val refused = runner("pitestEncodingVerify", flag).buildAndFail().output
+      assertTrue(
+        refused.contains("cannot refresh the baseline"),
+        "scoped refresh was not refused for $flag:\n$refused"
+      )
+    }
   }
 
   @Test

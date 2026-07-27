@@ -700,7 +700,10 @@ hardening.mutation.all {
       val scopedMarkerFile = csv.parentFile.resolve(".scoped")
       if (scopedMarkerFile.isFile) {
         val scope = scopedMarkerFile.readText().trim()
-        if (update || union) {
+        // prune included: the early return below already keeps it from touching the
+        // baseline, but silently no-opping a requested refresh reads as a refresh
+        // that happened — refuse it the same way as the other two flavours.
+        if (update || union || prune) {
           throw GradleException(
               "pitest '$suiteName': the report was produced with -PmutateOnly=$scope — a partial " +
                   "population cannot refresh the baseline. Re-run $pitestTaskName without -PmutateOnly first."
