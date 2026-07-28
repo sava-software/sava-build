@@ -285,9 +285,10 @@ $fuzzBlock
     assertTrue(output.contains("SCOPED run"), "scoped notice missing:\n$output")
     assertTrue(output.contains("1 unkilled in scope"), "scoped listing missing:\n$output")
 
-    // and no refresh flavour may consume it — prune included, which the early
-    // return would otherwise silently no-op while the user believes it ran
-    for (flag in listOf("-PupdateMutationBaseline", "-PunionMutationBaseline", "-PpruneMutationBaseline")) {
+    // and no refresh flavour may consume it — prune and the timeout-audit seed
+    // included, which the early return would otherwise silently no-op while the
+    // user believes they ran
+    for (flag in listOf("-PupdateMutationBaseline", "-PunionMutationBaseline", "-PpruneMutationBaseline", "-PinitTimeoutAudit")) {
       val refused = runner("pitestEncodingVerify", flag).buildAndFail().output
       assertTrue(
         refused.contains("cannot refresh the baseline"),
@@ -749,10 +750,21 @@ $fuzzBlock
       "spaced membership rows read as stale:\n$spaced"
     )
 
-    // adopting repos only: without the file the report stays exactly as before
+    // without the file the audit itself is off — but a suite carrying timeouts is
+    // running with the exact blind spot the audit exists for, so the absence is
+    // nudged (advisory, naming the seed flag) rather than silent: the feature used
+    // to be discoverable only by reading HARDENING.md
     timeoutsFile.delete()
-    val silent = runner("pitestEncodingVerify").build().output
-    assertFalse(silent.contains("audited"), "audit output without a membership file:\n$silent")
+    val unadopted = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      unadopted.contains("not in the audited set"),
+      "audit warning without a membership file:\n$unadopted"
+    )
+    assertTrue(
+      unadopted.contains("2 timed-out mutant(s) and no audited set") &&
+          unadopted.contains("-PinitTimeoutAudit"),
+      "adoption hint missing:\n$unadopted"
+    )
   }
 
   @Test
@@ -793,8 +805,8 @@ $fuzzBlock
   fun `an audited-timeout member without a README cause gets a notice`() {
     // The CSV row makes the set machine-checked; the README argument is what a
     // reviewer actually reads. Same advisory level and same soft resolution as the
-    // family-label rule — matched by the method name appearing anywhere in the
-    // README, so it only catches a cause that was never written at all.
+    // family-label rule — matched by the simple class name and the method name both
+    // appearing in the README, so it only catches a cause that was never written.
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
@@ -810,7 +822,7 @@ $fuzzBlock
 
     val warned = runner("pitestEncodingVerify").build().output
     assertTrue(
-      warned.contains("1 audited-timeout member(s) whose method appears nowhere in config/pitest/README.md") &&
+      warned.contains("1 audited-timeout member(s) whose class and method appear nowhere together in config/pitest/README.md") &&
           warned.contains("cause? com.example.Codec,encode,MathMutator"),
       "unwritten cause not noticed:\n$warned"
     )
@@ -818,9 +830,244 @@ $fuzzBlock
     readme.writeText("# Baseline\n\n`Codec.encode:12` (MathMutator): the inflated estimate crawls, never fails.\n")
     val documented = runner("pitestEncodingVerify").build().output
     assertFalse(
-      documented.contains("audited-timeout member(s) whose method"),
+      documented.contains("audited-timeout member(s) whose class and method"),
       "documented cause still noticed:\n$documented"
     )
+  }
+
+  @Test
+  fun `the cause check requires the class name next to the method name`() {
+    // Method-only matching was trivially satisfied: most dispatch members are named
+    // 'handle', which appears in any README that mentions handlers at all — prose
+    // about a different class entirely passed as this member's cause.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+      ),
+      ""
+    )
+    val readme = File(fixtureDir, "config/pitest/README.md")
+    readme.writeText("# Baseline\n\nThe encode path of some other class crawls under this mutation.\n")
+
+    val methodOnly = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      methodOnly.contains("cause? com.example.Codec,encode,MathMutator"),
+      "method-name-only prose passed as a cause:\n$methodOnly"
+    )
+
+    readme.writeText("# Baseline\n\n`Codec.encode` (MathMutator): the inflated estimate crawls, never fails.\n")
+    val bothNames = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      bothNames.contains("cause? com.example.Codec"),
+      "class-and-method cause still noticed:\n$bothNames"
+    )
+  }
+
+  @Test
+  fun `a membership row with the wrong field count is named malformed, not stale`() {
+    // A two-field row used to surface as 'matches no mutant' — advice that sends the
+    // reader hunting for a moved mutant when the actual problem is the row's shape.
+    // The field normalization exists so the tool never silently disagrees with the
+    // file; diagnosing the shape finishes that job.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # well-formed, matches the mutant below\n" +
+          "com.example.Codec,encode\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("1 malformed row(s) in encoding-timeouts.csv") &&
+          output.contains("expected 'class,method,mutator'") &&
+          output.contains("com.example.Codec,encode\n"),
+      "malformed row not diagnosed by shape:\n$output"
+    )
+    assertFalse(
+      output.contains("match no mutant"),
+      "malformed row misdiagnosed as stale:\n$output"
+    )
+    assertFalse(
+      output.contains("not in the audited set"),
+      "well-formed member did not satisfy the audit:\n$output"
+    )
+  }
+
+  @Test
+  fun `-PinitTimeoutAudit seeds the audited set from the report and refuses to reseed`() {
+    // Adoption's mechanical half is derivable from the report the tool already has;
+    // hand-transcribing members from mutations.xml is exactly the kind of work
+    // '-PupdateMutationBaseline' exists to avoid for baselines. Seeding writes the
+    // rows; the cause warnings that follow drive the half that needs a person.
+    writeFixture()
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,30,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,44,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,50,KILLED,com.example.CodecTest",
+      ),
+      ""
+    )
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+
+    val seeded = runner("pitestEncodingVerify", "-PinitTimeoutAudit").build().output
+    assertTrue(
+      seeded.contains("seeded 2 audited-timeout member(s) into encoding-timeouts.csv"),
+      "seed summary missing:\n$seeded"
+    )
+    val written = timeoutsFile.readText()
+    // sibling timeouts of one member collapse to one row, both observed lines kept
+    assertTrue(
+      written.contains("com.example.Codec,encode,MathMutator # lines 12, 30") &&
+          written.contains("com.example.Codec,decode,IncrementsMutator # line 44"),
+      "seeded membership wrong:\n$written"
+    )
+    assertFalse(written.contains("KILLED") || written.contains("decode,MathMutator"), "non-timeout seeded:\n$written")
+
+    // the freshly seeded set satisfies its own audit
+    val audited = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      audited.contains("not in the audited set") || audited.contains("-PinitTimeoutAudit"),
+      "seeded set did not satisfy the audit:\n$audited"
+    )
+
+    // membership changes one reviewed row at a time after adoption: no reseeding
+    val refused = runner("pitestEncodingVerify", "-PinitTimeoutAudit").buildAndFail().output
+    assertTrue(
+      refused.contains("encoding-timeouts.csv already exists"),
+      "reseed not refused:\n$refused"
+    )
+  }
+
+  @Test
+  fun `a member that stops timing out is noticed after three quiet runs`() {
+    // Membership is validated against all mutants, so a member whose mutants exist
+    // but never time out — pasted from the wrong report, or a timeout the tests
+    // since learned to kill — was accepted forever. One quiet run is just the
+    // KILLED<->TIMED_OUT load flip; the notice waits for the flip-family retirement
+    // criterion (3 quiet cycles) and resets whenever the member times out again.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    fun report(status: String) = writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,$status," +
+            (if (status == "KILLED") "com.example.CodecTest" else "none"),
+      ),
+      ""
+    )
+
+    report("KILLED")
+    val quietNotice = "audited-timeout member(s) have not timed out in 3+"
+    repeat(2) {
+      val early = runner("pitestEncodingVerify").build().output
+      assertFalse(early.contains(quietNotice), "notice fired before the third quiet run:\n$early")
+      // a quiet member is not the stale case: its mutant is present, just detected
+      assertFalse(early.contains("match no mutant"), "quiet member misread as stale:\n$early")
+    }
+    val third = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      third.contains(quietNotice) &&
+          third.contains("com.example.Codec,encode,MathMutator (quiet for 3 runs)"),
+      "third quiet run not noticed:\n$third"
+    )
+
+    // a timeout resets the streak — the notice must go quiet again for 3 more runs
+    report("TIMED_OUT")
+    val reset = runner("pitestEncodingVerify").build().output
+    assertFalse(reset.contains(quietNotice), "timeout did not reset the quiet streak:\n$reset")
+    report("KILLED")
+    val afterReset = runner("pitestEncodingVerify").build().output
+    assertFalse(afterReset.contains(quietNotice), "streak not restarted from zero:\n$afterReset")
+  }
+
+  @Test
+  fun `-PstrictTimeoutAudit escalates unaudited newcomers to failures`() {
+    // Advisory by default (load can time out any mutant), but a certifying run
+    // exists to stop on exactly this; the -PnoDriftTolerance precedent. Hygiene
+    // findings must not be escalated with it.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,44,TIMED_OUT,none",
+      ),
+      ""
+    )
+
+    // without the flag: warns, builds
+    runner("pitestEncodingVerify").build()
+    val failed = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
+    assertTrue(
+      failed.contains("-PstrictTimeoutAudit — 1 unaudited timed-out mutant(s)"),
+      "strict run did not fail on the unaudited newcomer:\n$failed"
+    )
+
+    // a fully audited set passes strict even with hygiene findings outstanding
+    // (no README exists, so the cause check is warning on both members)
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator\ncom.example.Codec,decode,IncrementsMutator\n"
+    )
+    val strictClean = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").build().output
+    assertTrue(
+      strictClean.contains("cause?"),
+      "hygiene finding expected while README is absent:\n$strictClean"
+    )
+
+    // an unadopted timeout-carrying suite is an unaudited newcomer by definition
+    timeoutsFile.delete()
+    val unadopted = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
+    assertTrue(
+      unadopted.contains("no audited") && unadopted.contains("-PinitTimeoutAudit"),
+      "strict run did not fail on the unadopted suite:\n$unadopted"
+    )
+  }
+
+  @Test
+  fun `advisory findings are summarized at the end of the build`() {
+    // The advisories never fail the build, but across a gate a warning from one
+    // suite scrolls hundreds of lines off screen — the summary reprints one line
+    // per suite at the very end, where it cannot be missed.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("com.example.Codec,gone,MathMutator\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("hardening: 1 advisory finding(s) across 1 suite(s)") &&
+          output.contains("pitest 'encoding': 1 unaudited timeout(s)"),
+      "advisory summary missing:\n$output"
+    )
+
+    // a clean run must not print an empty summary
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    File(fixtureDir, "config/pitest/README.md")
+      .writeText("`Codec.encode` (MathMutator): the estimate crawls, never fails.\n")
+    val clean = runner("pitestEncodingVerify").build().output
+    assertFalse(clean.contains("advisory finding"), "summary printed with nothing to say:\n$clean")
   }
 
   @Test

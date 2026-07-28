@@ -1,5 +1,6 @@
 import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.BaselineNotes
+import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
@@ -107,6 +108,15 @@ val qualityGate = tasks.register("qualityGate") {
   description = "Unit tests plus every PIT suite with mutation-baseline verification."
   dependsOn(tasks.named("test"))
 }
+
+// End-of-build summary for the verify tasks' advisory findings. The advisories never
+// fail the build by design, but across a full gate a warning from the third of a dozen
+// suites sits hundreds of lines above the last output — and the gate is the only place
+// these checks run (CI's 'check' has no mutation suites). One service per build, shared
+// across projects, so the summary prints once no matter how many modules ran suites.
+val hardeningAdvisoryLog = gradle.sharedServices.registerIfAbsent(
+    "hardeningAdvisoryLog", HardeningAdvisoryLog::class
+) {}
 
 // The agent-instructions template in HARDENING.md is copied (adapted) into each
 // consuming repo's AGENTS.md, and prose copies drift silently — a template change is
@@ -523,9 +533,15 @@ hardening.mutation.all {
     val prune = providers.gradleProperty("pruneMutationBaseline").isPresent
     val listUnkilled = providers.gradleProperty("listUnkilled").isPresent
     val noDriftTolerance = providers.gradleProperty("noDriftTolerance").isPresent
+    val initTimeoutAudit = providers.gradleProperty("initTimeoutAudit").isPresent
+    val strictTimeoutAudit = providers.gradleProperty("strictTimeoutAudit").isPresent
     val statusStashFile = layout.projectDirectory.file(".pitest-history/$suiteName.statuses").asFile
+    val timeoutQuietFile = layout.projectDirectory.file(".pitest-history/$suiteName.timeout-quiet").asFile
     // captured locally so the doLast lambda does not hold the script instance
     val historyAssisted = mutationHistory
+    val advisoryLog = hardeningAdvisoryLog
+    val advisoryScope = (if (project.path == ":") "" else "${project.path} ") + "pitest '$suiteName'"
+    usesService(advisoryLog)
     // Resolved at configuration time so the scaffolding check below can ask whether a
     // mutated class is one of this project's own test sources.
     val testSourceDirs = sourceSets.test.get().java.srcDirs
@@ -700,13 +716,15 @@ hardening.mutation.all {
       val scopedMarkerFile = csv.parentFile.resolve(".scoped")
       if (scopedMarkerFile.isFile) {
         val scope = scopedMarkerFile.readText().trim()
-        // prune included: the early return below already keeps it from touching the
-        // baseline, but silently no-opping a requested refresh reads as a refresh
-        // that happened — refuse it the same way as the other two flavours.
-        if (update || union || prune) {
+        // prune and the timeout-audit seed included: the early return below already
+        // keeps them from touching anything, but silently no-opping a requested
+        // refresh (or seeding an audited set from a hand-picked subset's timeouts)
+        // reads as work that happened — refuse them the same way as update and union.
+        if (update || union || prune || initTimeoutAudit) {
           throw GradleException(
               "pitest '$suiteName': the report was produced with -PmutateOnly=$scope — a partial " +
-                  "population cannot refresh the baseline. Re-run $pitestTaskName without -PmutateOnly first."
+                  "population cannot refresh the baseline or seed the timeout audit. " +
+                  "Re-run $pitestTaskName without -PmutateOnly first."
           )
         }
         logger.lifecycle(
@@ -758,7 +776,10 @@ hardening.mutation.all {
       // its README criterion is written.
       BaselineNotes.undocumentedLabelWarning(suiteName, accepted.mapNotNull { annotations[it] }) {
         readmeFile.takeIf { it.isFile }?.readText() ?: ""
-      }?.let { logger.warn(it) }
+      }?.let {
+        logger.warn(it)
+        advisoryLog.get().record(advisoryScope, "undocumented family label(s)")
+      }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
       // benign flavour (KILLED<->TIMED_OUT under load) and the dangerous one
@@ -789,6 +810,7 @@ hardening.mutation.all {
                     "likely load-slowed tests reading as detection, not new kills; do not refresh them out:\n" +
                     fromSurvived.sorted().joinToString("\n") { "  $it" }
             )
+            advisoryLog.get().record(advisoryScope, "${fromSurvived.size} SURVIVED -> TIMED_OUT flip(s)")
           }
           if (newlyTimedOut.isNotEmpty() || resolved.isNotEmpty()) {
             logger.lifecycle(
@@ -814,18 +836,66 @@ hardening.mutation.all {
       // on any run and both flavours are still detection, but an unaudited newcomer
       // is a change to stop on, not noise to absorb. Absent file, absent check —
       // adoption is per-repo.
+      fun auditKey(parts: List<String>) = "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
+      val timedOutByAuditKey = rows.filter { it[5] == "TIMED_OUT" }.groupBy(::auditKey)
+      if (initTimeoutAudit) {
+        // Seeds the mechanical half of adoption — the membership rows — from this
+        // run's report, mirroring '-PupdateMutationBaseline' seeding '# untriaged':
+        // the tool writes what it can derive, the warnings that follow drive the half
+        // that needs a person (the causes). Refused once the file exists: a second
+        // seed would be a rewrite, and the audit's whole point is that membership
+        // changes one reviewed row at a time.
+        if (timeoutsFile.isFile) {
+          throw GradleException(
+              "pitest '$suiteName': ${timeoutsFile.name} already exists — -PinitTimeoutAudit seeds a new " +
+                  "audited set only. For a new timeout, paste the row the verify prints and write its " +
+                  "cause in config/pitest/README.md."
+          )
+        }
+        val seeded = timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
+          val lines = timedOutByAuditKey.getValue(key).map { it[4] }.distinct()
+          "$key # line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
+        }
+        timeoutsFile.parentFile.mkdirs()
+        BaselineFiles.writeAtomically(
+            timeoutsFile,
+            "# Audited TIMED_OUT set for the '$suiteName' suite (HARDENING.md, the audited-timeout\n" +
+                "# bullet): one line-less 'class,method,mutator' member per row. A timeout detects\n" +
+                "# slowness, not wrongness, so the ratchet cannot see a weakened covering assertion\n" +
+                "# behind one; each member's structural cause belongs in config/pitest/README.md.\n" +
+                (if (seeded.isEmpty()) "" else seeded + "\n")
+        )
+        logger.lifecycle(
+            "pitest '$suiteName': seeded ${timedOutByAuditKey.size} audited-timeout member(s) into " +
+                "${timeoutsFile.name} — now write each member's structural cause in config/pitest/README.md"
+        )
+      }
       if (timeoutsFile.isFile) {
-        fun auditKey(parts: List<String>) = "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
         // Normalize per field, not just per line: 'Codec, encode, MathMutator' is the
         // spacing a person writes for readability, and against a key built without
         // spaces it would match nothing — earning a permanent 'not in the audited set'
         // warning AND a 'matches no mutant' notice, with nothing on screen naming the
         // spaces as the cause. A membership file the tool silently disagrees with is
-        // worse than no membership file.
-        val members = timeoutsFile.readLines()
+        // worse than no membership file. The same doctrine names a row with the wrong
+        // field count as what it is: diagnosed as malformed and excluded from every
+        // other check, instead of surfacing as a baffling 'matches no mutant' that
+        // sends the reader hunting for a moved mutant.
+        val parsedRows = timeoutsFile.readLines()
             .map { line -> line.substringBefore('#').split(',').joinToString(",") { it.trim() } }
             .filter { it.isNotEmpty() }
-            .toSet()
+        val (wellFormed, malformed) = parsedRows.partition { row ->
+          val fields = row.split(',')
+          fields.size == 3 && fields.none { it.isEmpty() }
+        }
+        if (malformed.isNotEmpty()) {
+          logger.warn(
+              "pitest '$suiteName': ${malformed.size} malformed row(s) in ${timeoutsFile.name} — expected " +
+                  "'class,method,mutator' (three fields, '#' comments allowed); these match nothing until fixed:\n" +
+                  malformed.joinToString("\n") { "  $it" }
+          )
+          advisoryLog.get().record(advisoryScope, "${malformed.size} malformed audit row(s)")
+        }
+        val members = wellFormed.toSet()
         val unaudited = rows.filter { it[5] == "TIMED_OUT" && auditKey(it) !in members }
         if (unaudited.isNotEmpty()) {
           // rows print paste-ready: the membership key verbatim, the line riding in a
@@ -839,6 +909,7 @@ hardening.mutation.all {
                   "config/pitest/README.md:\n" +
                   unaudited.joinToString("\n") { "  ${auditKey(it)} # line ${it[4]}" }
           )
+          advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
         }
         val allKeys = rows.map(::auditKey).toSet()
         val staleMembers = members.filterNot { it in allKeys }
@@ -849,29 +920,103 @@ hardening.mutation.all {
                   staleMembers.sorted().joinToString("\n") { "  $it" }
           )
         }
+        val liveMembers = members - staleMembers.toSet()
+        // The check the set was missing: membership was validated against ALL mutants,
+        // so a member whose mutants exist but never time out — a key pasted from the
+        // wrong report, or a timeout the tests since learned to kill — was accepted
+        // forever. A single-run "did not time out" is exactly the KILLED<->TIMED_OUT
+        // load flip the line-less key exists to absorb, so the signal is consecutive
+        // quiet runs: the counter persists in .pitest-history/ (machine-local, like
+        // the status stash) and resets whenever the member times out again. Three
+        // quiet runs mirrors the flip-family retirement criterion ("3 quiet
+        // modeCompare cycles"); a member that only times out under gate load will be
+        // reset by gate runs and nagged only during long solo streaks — the notice
+        // says so rather than presuming retirement.
+        run {
+          val previousQuiet = if (timeoutQuietFile.isFile) {
+            timeoutQuietFile.readLines().mapNotNull { line ->
+              val sep = line.lastIndexOf(',')
+              if (sep < 0) null else line.substring(0, sep) to (line.substring(sep + 1).toIntOrNull() ?: 0)
+            }.toMap()
+          } else {
+            emptyMap()
+          }
+          val quietRuns = liveMembers.associateWith { member ->
+            if (member in timedOutByAuditKey) 0 else (previousQuiet[member] ?: 0) + 1
+          }
+          timeoutQuietFile.parentFile.mkdirs()
+          timeoutQuietFile.writeText(
+              quietRuns.entries.sortedBy { it.key }.joinToString("\n", postfix = "\n") { "${it.key},${it.value}" }
+          )
+          val settled = quietRuns.filterValues { it >= 3 }
+          if (settled.isNotEmpty()) {
+            logger.lifecycle(
+                "pitest '$suiteName': ${settled.size} audited-timeout member(s) have not timed out in 3+ " +
+                    "consecutive verify runs — if a member only times out under gate load this is normal " +
+                    "on solo streaks; otherwise its tests now detect the mutant outright, and the member " +
+                    "(with its README cause) can be retired:\n" +
+                    settled.entries.sortedBy { it.key }
+                        .joinToString("\n") { "  ${it.key} (quiet for ${it.value} runs)" }
+            )
+          }
+        }
         // A member is only half audited without its cause: the row makes the set
         // machine-checked, the README argument is what a reviewer actually reads.
-        // Mirrors the family-label rule (a label is a pointer to its README
-        // argument) at the same advisory level, and matched the same soft way — by
-        // the method name appearing somewhere in the README, since members carry no
-        // label. Short method names match trivially; the check only catches a cause
-        // that was never written at all.
+        // Mirrors the family-label rule (a label is a pointer to its README argument)
+        // at the same advisory level. Matched by the simple class name AND the method
+        // name appearing in the README: method-only matching was trivially satisfied
+        // — most dispatch members are named 'handle', which appears in any README
+        // that mentions handlers at all, documented or not. Nested classes match
+        // under either their source ('Outer.Inner') or binary ('Outer$Inner') name.
         //
         // Live members only: a stale member is already being told to retire, and
         // asking for the cause of a row that should be deleted is two instructions
         // pulling opposite ways for one row.
         val readmeText = readmeFile.takeIf { it.isFile }?.readText() ?: ""
-        val undocumented = (members - staleMembers.toSet()).filter { member ->
-          member.split(',').getOrNull(1)?.let { method -> !readmeText.contains(method) } ?: false
+        val undocumented = liveMembers.filter { member ->
+          val fields = member.split(',')
+          val simpleClass = fields[0].substringAfterLast('.')
+          !(readmeText.contains(fields[1]) &&
+              (readmeText.contains(simpleClass) || readmeText.contains(simpleClass.replace('$', '.'))))
         }
         if (undocumented.isNotEmpty()) {
           logger.warn(
-              "pitest '$suiteName': ${undocumented.size} audited-timeout member(s) whose method appears " +
-                  "nowhere in config/pitest/README.md — the structural cause belongs there " +
+              "pitest '$suiteName': ${undocumented.size} audited-timeout member(s) whose class and method " +
+                  "appear nowhere together in config/pitest/README.md — the structural cause belongs there " +
                   "(HARDENING.md, the audited-set bullet):\n" +
                   undocumented.sorted().joinToString("\n") { "  cause? $it" }
           )
+          advisoryLog.get().record(advisoryScope, "${undocumented.size} audited timeout(s) without a README cause")
         }
+        // Opt-in escalation for certifying runs, the '-PnoDriftTolerance' precedent:
+        // by default every audit finding is advisory (load can time out any mutant on
+        // any run), but on a run whose purpose is certification, an unaudited
+        // newcomer or a row the tool cannot parse is exactly what the run exists to
+        // stop on. Hygiene findings (stale members, missing causes, quiet streaks)
+        // stay advisory even here.
+        if (strictTimeoutAudit && (unaudited.isNotEmpty() || malformed.isNotEmpty())) {
+          throw GradleException(
+              "pitest '$suiteName': -PstrictTimeoutAudit — ${unaudited.size} unaudited timed-out mutant(s) " +
+                  "and ${malformed.size} malformed membership row(s); see the warnings above. Paste the " +
+                  "printed row(s) into ${timeoutsFile.name} and write each cause in config/pitest/README.md."
+          )
+        }
+      } else if (timedOutByAuditKey.isNotEmpty()) {
+        // A suite carrying timeouts with no audited set is running with the blind
+        // spot the audit exists for, and nothing on screen said the feature exists —
+        // it was discoverable only by reading HARDENING.md. Advisory nudge normally;
+        // under the strict flag an unadopted timeout-carrying suite is an unaudited
+        // newcomer by definition.
+        val hint =
+            "pitest '$suiteName': ${rows.count { it[5] == "TIMED_OUT" }} timed-out mutant(s) and no audited " +
+                "set — a timeout detects slowness, not wrongness, so the ratchet cannot see a weakened " +
+                "covering assertion behind one. Adopt the audit with -PinitTimeoutAudit (seeds " +
+                "config/pitest/${timeoutsFile.name} from this run), then write each member's structural " +
+                "cause in config/pitest/README.md."
+        if (strictTimeoutAudit) {
+          throw GradleException(hint)
+        }
+        logger.lifecycle(hint)
       }
 
       if (listOf(update, union, prune).count { it } > 1) {
@@ -2107,12 +2252,15 @@ tasks.register("hardeningInit") {
         |  1. register mutation suites (wildcard targets + exclusions) and fuzz targets
         |  2. pin any unseeded randomness in the test suite
         |  3. seed each baseline: ./gradlew pitest<Suite> -PupdateMutationBaseline
-        |  4. copy the agent-instructions template from HARDENING.md into AGENTS.md with:
+        |  4. for suites whose summary reports timed-out mutants, seed the audited set:
+        |       ./gradlew pitest<Suite> -PinitTimeoutAudit — then write each member's
+        |       structural cause in config/pitest/README.md (HARDENING.md, audited-timeout bullet)
+        |  5. copy the agent-instructions template from HARDENING.md into AGENTS.md with:
         |       <!-- hardening-template sha256:$digest -->
-        |  5. decide who owns the pre-release qualityGate run, and record it in AGENTS.md
-        |  6. fuzz targets with a seedCorpus get a generated replay test automatically;
+        |  6. decide who owns the pre-release qualityGate run, and record it in AGENTS.md
+        |  7. fuzz targets with a seedCorpus get a generated replay test automatically;
         |       document seed provenance in a README next to (never inside) the corpus dir
-        |  7. optional: hardening.generateTestSupport = true generates shared socket/
+        |  8. optional: hardening.generateTestSupport = true generates shared socket/
         |       scheduler/logging test helpers (HARDENING.md 'Shared test scaffolding')
         |""".trimMargin()
     )
