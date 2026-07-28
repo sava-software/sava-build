@@ -266,30 +266,34 @@ for unsigned artifacts, and regenerate with the same command after dependency bu
 ## Developing sava-build
 
 To drive a plugin change from a consumer project, publish this checkout to its local
-Maven test repo and point the consumer at it:
+Maven test repo and point the consumer at it. **The publish is not automatic**, and a
+forgotten one is invisible in the consumer's output — it just keeps resolving the
+previously published jar — so chain the two rather than remembering the first:
 
 ```shell
-./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository
+(cd <sava-build> && ./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository) \
+  && ./gradlew check -PsavaBuildLocalRepo=<sava-build>/build/sava-test-repo
 ```
 
-```shell
-(cd <consumer>; ./gradlew check -PsavaBuildLocalRepo=<sava-build>/build/sava-test-repo)
+Run from the consumer's directory. A republished `0.0.0-test` is picked up immediately
+(`file:` repositories are re-read on each resolution), so the chained form makes the
+stale case unreachable instead of merely detectable.
+
+Every build that resolves plugins from the local repo also says so, once, at the end:
+
+```
+sava-build: this build resolved every 'software.sava.build*' plugin to 0.0.0-test from
+the local repo /…/build/sava-test-repo (last publish 3 min ago), NOT the versions in
+the plugins block.
 ```
 
-**The publish is not automatic**: re-run it after every sava-build edit, or the consumer
-silently keeps resolving the previously published jar. A republished `0.0.0-test` is
-picked up immediately (`file:` repositories are re-read on each resolution) — the stale
-case is only a forgotten publish, which is why the canonical snippet below prints the
-last-publish age.
-
-One caveat on that tell: with the configuration cache enabled, the warning prints only
-when the cache entry is invalidated. Every real publish invalidates it (the plugin jar
-on the settings classpath changed), so the age line reliably follows a publish — but a
-*forgotten* publish changes nothing, the entry is reused, the settings script never
-re-executes, and no warning prints. So the absence of the line is not evidence of
-normal resolution: if consumer behaviour looks stale, check the publish age directly
-(`ls -l <sava-build>/build/sava-test-repo/software/sava/sava-build/maven-metadata.xml`)
-rather than waiting for a warning that cache reuse is suppressing.
+That notice comes from the plugin itself (`SavaBuildLocalRepoNoticePlugin`, applied by
+`software.sava.build`), as a dataflow action rather than a line in the consumer's
+settings script — a settings script is skipped on a configuration cache hit, which
+silenced the warning in exactly the cases worth warning about: a forgotten publish
+changes nothing, so the entry is reused, and switching back into local-repo mode reuses
+an existing entry too. The publish age is read when the action runs, so it is never a
+value cached from an earlier build.
 
 The canonical consumer-side block, for a `settings.gradle.kts` `pluginManagement {}`
 (copy it whole — the property belongs in `~/.gradle/gradle.properties` or on the CLI,
@@ -302,28 +306,12 @@ pluginManagement {
   // unpublished plugin change; sava-build publishes that repo with
   //   ./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository
   // and every id below then resolves to the 0.0.0-test module regardless of the
-  // version the plugins block requests. That publish is NOT automatic — the printed
-  // age is the tell for a forgotten one, though it only prints on a configuration
-  // cache miss (every publish forces one; a forgotten publish reuses the entry
-  // silently, so check the metadata timestamp if behaviour looks stale). The
-  // useModule call also bypasses plugin markers, which the test repo does not
-  // contain.
+  // version the plugins block requests — which the plugin announces at the end of
+  // each build, so this block stays silent. The useModule call also bypasses plugin
+  // markers, which the test repo does not contain.
   val savaBuildLocalRepo = providers.gradleProperty("savaBuildLocalRepo")
     .orNull?.takeIf { it.isNotBlank() }
   if (savaBuildLocalRepo != null) {
-    val metadata = settingsDir.resolve(savaBuildLocalRepo)
-      .resolve("software/sava/sava-build/maven-metadata.xml")
-    val age = if (metadata.isFile) {
-      val minutes = (System.currentTimeMillis() - metadata.lastModified()) / 60_000
-      "0.0.0-test published ${if (minutes < 60) "$minutes min" else "${minutes / 60} h ${minutes % 60} min"} ago"
-    } else {
-      "NO 0.0.0-test PUBLISH FOUND — run sava-build's publish task"
-    }
-    // Loud on purpose: with the property set in ~/.gradle/gradle.properties, nothing
-    // else in this file reveals that the versions in the plugins block are ignored.
-    logger.warn(
-      "sava-build: resolving 'software.sava.build*' plugins from LOCAL repo $savaBuildLocalRepo ($age)"
-    )
     resolutionStrategy.eachPlugin {
       if (requested.id.id.startsWith("software.sava.build")) {
         useModule("software.sava:sava-build:0.0.0-test")
