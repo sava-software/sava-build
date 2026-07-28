@@ -386,7 +386,10 @@ invoked it*, and the failure looks exactly like a real regression.
   members with no timeout in 3+ consecutive mutation runs (the flip-family
   retirement criterion); a single quiet run is just the
   `KILLED`↔`TIMED_OUT` load flip, and a gate-load-only
-  member is reset by gate runs, so the notice presumes nothing. The
+  member is reset by gate runs, so the notice presumes nothing; a stale
+  interlude drops the counter rather than freezing it — staleness means the
+  code moved, so quietness is re-measured once the mutant returns instead of
+  argued from the old method body. The
   line-less key is also the check's resolution: a *new* timed-out mutant in
   an already-audited method+mutator matches the existing member and draws
   no warning, so "no warning" certifies no new method+mutator, not no new

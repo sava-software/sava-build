@@ -1006,6 +1006,11 @@ $fuzzBlock
       "third quiet report not noticed:\n$third"
     )
 
+    // same report, re-run: the counts replay and so does the notice — like every
+    // other audit advisory it is derived from the report, not from having printed
+    val replay = runner("pitestEncodingVerify").build().output
+    assertTrue(replay.contains(quietNotice), "replayed evidence lost the notice:\n$replay")
+
     // a timeout resets the streak — the notice must go quiet again for 3 more runs
     report("TIMED_OUT")
     val reset = runner("pitestEncodingVerify").build().output
@@ -1013,6 +1018,53 @@ $fuzzBlock
     report("KILLED")
     val afterReset = runner("pitestEncodingVerify").build().output
     assertFalse(afterReset.contains(quietNotice), "streak not restarted from zero:\n$afterReset")
+  }
+
+  @Test
+  fun `a stale interlude drops the quiet streak rather than freezing it`() {
+    // A member goes stale only when its mutant left the report — the code moved, or
+    // the mutator set changed — so quiet evidence about the old method body is
+    // re-measured from zero if the mutant returns, not carried across the change.
+    // The cost is two extra runs of patience; the alternative is a retirement nudge
+    // argued from code that no longer exists.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    fun encodeReport() = writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,com.example.CodecTest",
+      ),
+      ""
+    )
+    // the member's mutant is absent entirely: the stale case, not the quiet case
+    fun staleReport() = writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,44,KILLED,com.example.CodecTest",
+      ),
+      ""
+    )
+
+    encodeReport()
+    runner("pitestEncodingVerify").build()
+    encodeReport()
+    runner("pitestEncodingVerify").build()
+
+    staleReport()
+    val stale = runner("pitestEncodingVerify").build().output
+    assertTrue(stale.contains("match no mutant"), "stale member not warned:\n$stale")
+
+    encodeReport()
+    val returned = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      returned.contains("audited-timeout member(s) have not timed out in 3+"),
+      "streak survived the stale interlude:\n$returned"
+    )
+    val stash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet").readText()
+    assertTrue(
+      stash.contains("com.example.Codec,encode,MathMutator,1"),
+      "quiet count not re-measured from zero after the stale interlude:\n$stash"
+    )
   }
 
   @Test

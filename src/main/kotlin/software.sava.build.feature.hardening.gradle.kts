@@ -956,6 +956,12 @@ hardening.mutation.all {
             val sep = line.lastIndexOf(',')
             if (sep < 0) null else line.substring(0, sep) to (line.substring(sep + 1).toIntOrNull() ?: 0)
           }.toMap()
+          // Live members only, which also means a stale member's count is dropped,
+          // not frozen: staleness says the code moved (or the mutator set changed),
+          // and quiet evidence about the old method body must be re-measured from
+          // zero if the mutant returns, not carried across the change. The cost is
+          // two extra runs of patience; the alternative is a retirement nudge argued
+          // from code that no longer exists.
           val quietRuns = liveMembers.associateWith { member ->
             when {
               member in timedOutByAuditKey -> 0
@@ -968,6 +974,9 @@ hardening.mutation.all {
               quietRuns.entries.sortedBy { it.key }
                   .joinToString("\n", prefix = "$reportFingerprint\n", postfix = "\n") { "${it.key},${it.value}" }
           )
+          // Derived from the counts, so a same-report re-run reprints it — like every
+          // other audit advisory, which are all recomputed from the report rather
+          // than remembering they already printed.
           val settled = quietRuns.filterValues { it >= 3 }
           if (settled.isNotEmpty()) {
             logger.lifecycle(
