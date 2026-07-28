@@ -277,7 +277,11 @@ previously published jar — so chain the two rather than remembering the first:
 
 Run from the consumer's directory. A republished `0.0.0-test` is picked up immediately
 (`file:` repositories are re-read on each resolution), so the chained form makes the
-stale case unreachable instead of merely detectable.
+stale case unreachable instead of merely detectable. In a composite (a `jmh/` that
+`includeBuild`s its root), prefer an absolute property value: a relative one is
+resolved against each build's own settings dir, so the builds would read two
+different repos — and the notice reports the dir the build that registered it
+resolved, which need not be the one that served the plugins.
 
 Every build that resolves plugins from the local repo also says so, once, at the end:
 

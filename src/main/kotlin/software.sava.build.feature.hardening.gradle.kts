@@ -5,6 +5,7 @@ import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
 import software.sava.build.hardening.MutatorAdvice
+import software.sava.build.hardening.TimeoutAudit
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.io.OutputStream
@@ -826,6 +827,17 @@ hardening.mutation.all {
         )
       }
 
+      // The refresh flavours answer different questions and are mutually exclusive —
+      // the audit seed included, which writes a file the same way the baseline
+      // flavours do. Checked before any of them writes (the seed below is the first),
+      // so a refused combination leaves nothing half done.
+      if (listOf(update, union, prune, initTimeoutAudit).count { it } > 1) {
+        throw GradleException(
+            "pass at most one of -PupdateMutationBaseline, -PunionMutationBaseline, " +
+                "-PpruneMutationBaseline, -PinitTimeoutAudit — they answer different questions (see HARDENING.md)."
+        )
+      }
+
       // The audited set. For a timed-out mutant the watchdog observed slowness, not
       // wrongness — the ratchet cannot see a weakened covering assertion behind it,
       // so "N timed out (load-dependent)" in the summary must be an audited
@@ -879,23 +891,16 @@ hardening.mutation.all {
         // worse than no membership file. The same doctrine names a row with the wrong
         // field count as what it is: diagnosed as malformed and excluded from every
         // other check, instead of surfacing as a baffling 'matches no mutant' that
-        // sends the reader hunting for a moved mutant.
-        val parsedRows = timeoutsFile.readLines()
-            .map { line -> line.substringBefore('#').split(',').joinToString(",") { it.trim() } }
-            .filter { it.isNotEmpty() }
-        val (wellFormed, malformed) = parsedRows.partition { row ->
-          val fields = row.split(',')
-          fields.size == 3 && fields.none { it.isEmpty() }
-        }
-        if (malformed.isNotEmpty()) {
-          logger.warn(
-              "pitest '$suiteName': ${malformed.size} malformed row(s) in ${timeoutsFile.name} — expected " +
-                  "'class,method,mutator' (three fields, '#' comments allowed); these match nothing until fixed:\n" +
-                  malformed.joinToString("\n") { "  $it" }
-          )
+        // sends the reader hunting for a moved mutant. Parsing and both static
+        // warnings live in TimeoutAudit, shared with 'Debt', so the two tasks can
+        // never disagree about what a membership file says.
+        val membership = TimeoutAudit.parse(timeoutsFile.readLines())
+        val malformed = membership.malformed
+        TimeoutAudit.malformedWarning(suiteName, timeoutsFile.name, malformed)?.let {
+          logger.warn(it)
           advisoryLog.get().record(advisoryScope, "${malformed.size} malformed audit row(s)")
         }
-        val members = wellFormed.toSet()
+        val members = membership.members
         val unaudited = rows.filter { it[5] == "TIMED_OUT" && auditKey(it) !in members }
         if (unaudited.isNotEmpty()) {
           // rows print paste-ready: the membership key verbatim, the line riding in a
@@ -914,11 +919,15 @@ hardening.mutation.all {
         val allKeys = rows.map(::auditKey).toSet()
         val staleMembers = members.filterNot { it in allKeys }
         if (staleMembers.isNotEmpty()) {
-          logger.lifecycle(
+          // Warn-level like the other membership findings: 'retire or fix' is a
+          // reviewer-stop exactly as much as a missing cause, and warn is what feeds
+          // the end-of-build advisory summary.
+          logger.warn(
               "pitest '$suiteName': ${staleMembers.size} audited-timeout row(s) match no mutant in " +
                   "this run's report — the code moved or the mutator set changed; retire or fix:\n" +
                   staleMembers.sorted().joinToString("\n") { "  $it" }
           )
+          advisoryLog.get().record(advisoryScope, "${staleMembers.size} stale audit row(s)")
         }
         val liveMembers = members - staleMembers.toSet()
         // The check the set was missing: membership was validated against ALL mutants,
@@ -933,26 +942,37 @@ hardening.mutation.all {
         // reset by gate runs and nagged only during long solo streaks — the notice
         // says so rather than presuming retirement.
         run {
-          val previousQuiet = if (timeoutQuietFile.isFile) {
-            timeoutQuietFile.readLines().mapNotNull { line ->
-              val sep = line.lastIndexOf(',')
-              if (sep < 0) null else line.substring(0, sep) to (line.substring(sep + 1).toIntOrNull() ?: 0)
-            }.toMap()
-          } else {
-            emptyMap()
-          }
+          // The counter advances per fresh report, not per invocation: the verify
+          // runs standalone against the existing report ('finalizedBy', not a
+          // dependency), so re-running it to exercise its checks would otherwise
+          // manufacture quiet evidence from a single mutation run. The stash's first
+          // line fingerprints the report; on a match the stored counts replay
+          // untouched. Timestamp over content hash on purpose — a fresh PIT run with
+          // identical results IS a fresh quiet observation.
+          val reportFingerprint = "# report ${csv.lastModified()},${csv.length()}"
+          val previousLines = if (timeoutQuietFile.isFile) timeoutQuietFile.readLines() else emptyList()
+          val sameReport = previousLines.firstOrNull() == reportFingerprint
+          val previousQuiet = previousLines.filterNot { it.startsWith("#") }.mapNotNull { line ->
+            val sep = line.lastIndexOf(',')
+            if (sep < 0) null else line.substring(0, sep) to (line.substring(sep + 1).toIntOrNull() ?: 0)
+          }.toMap()
           val quietRuns = liveMembers.associateWith { member ->
-            if (member in timedOutByAuditKey) 0 else (previousQuiet[member] ?: 0) + 1
+            when {
+              member in timedOutByAuditKey -> 0
+              sameReport -> previousQuiet[member] ?: 0
+              else -> (previousQuiet[member] ?: 0) + 1
+            }
           }
           timeoutQuietFile.parentFile.mkdirs()
           timeoutQuietFile.writeText(
-              quietRuns.entries.sortedBy { it.key }.joinToString("\n", postfix = "\n") { "${it.key},${it.value}" }
+              quietRuns.entries.sortedBy { it.key }
+                  .joinToString("\n", prefix = "$reportFingerprint\n", postfix = "\n") { "${it.key},${it.value}" }
           )
           val settled = quietRuns.filterValues { it >= 3 }
           if (settled.isNotEmpty()) {
             logger.lifecycle(
                 "pitest '$suiteName': ${settled.size} audited-timeout member(s) have not timed out in 3+ " +
-                    "consecutive verify runs — if a member only times out under gate load this is normal " +
+                    "consecutive mutation runs — if a member only times out under gate load this is normal " +
                     "on solo streaks; otherwise its tests now detect the mutant outright, and the member " +
                     "(with its README cause) can be retired:\n" +
                     settled.entries.sortedBy { it.key }
@@ -963,29 +983,17 @@ hardening.mutation.all {
         // A member is only half audited without its cause: the row makes the set
         // machine-checked, the README argument is what a reviewer actually reads.
         // Mirrors the family-label rule (a label is a pointer to its README argument)
-        // at the same advisory level. Matched by the simple class name AND the method
-        // name appearing in the README: method-only matching was trivially satisfied
-        // — most dispatch members are named 'handle', which appears in any README
-        // that mentions handlers at all, documented or not. Nested classes match
-        // under either their source ('Outer.Inner') or binary ('Outer$Inner') name.
+        // at the same advisory level; the matching rule lives in TimeoutAudit, shared
+        // with 'Debt'.
         //
         // Live members only: a stale member is already being told to retire, and
         // asking for the cause of a row that should be deleted is two instructions
         // pulling opposite ways for one row.
-        val readmeText = readmeFile.takeIf { it.isFile }?.readText() ?: ""
-        val undocumented = liveMembers.filter { member ->
-          val fields = member.split(',')
-          val simpleClass = fields[0].substringAfterLast('.')
-          !(readmeText.contains(fields[1]) &&
-              (readmeText.contains(simpleClass) || readmeText.contains(simpleClass.replace('$', '.'))))
+        val undocumented = TimeoutAudit.undocumentedCauses(liveMembers) {
+          readmeFile.takeIf { it.isFile }?.readText() ?: ""
         }
         if (undocumented.isNotEmpty()) {
-          logger.warn(
-              "pitest '$suiteName': ${undocumented.size} audited-timeout member(s) whose class and method " +
-                  "appear nowhere together in config/pitest/README.md — the structural cause belongs there " +
-                  "(HARDENING.md, the audited-set bullet):\n" +
-                  undocumented.sorted().joinToString("\n") { "  cause? $it" }
-          )
+          logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, undocumented))
           advisoryLog.get().record(advisoryScope, "${undocumented.size} audited timeout(s) without a README cause")
         }
         // Opt-in escalation for certifying runs, the '-PnoDriftTolerance' precedent:
@@ -1019,12 +1027,6 @@ hardening.mutation.all {
         logger.lifecycle(hint)
       }
 
-      if (listOf(update, union, prune).count { it } > 1) {
-        throw GradleException(
-            "pass at most one of -PupdateMutationBaseline, -PunionMutationBaseline, " +
-                "-PpruneMutationBaseline — they answer different questions (see HARDENING.md)."
-        )
-      }
       if (prune) {
         // Shrink-only refresh: drop baseline rows matching nothing this run, add or
         // rewrite nothing. This is the one direction a refresh is always safe in —
@@ -1480,7 +1482,30 @@ hardening.mutation.all {
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
+    val debtTimeoutsFile = layout.projectDirectory.file("config/pitest/$suiteName-timeouts.csv").asFile
     doLast {
+      // The audited-timeout set's static half, shared with the verify (TimeoutAudit):
+      // row shape and cause presence read committed files only, so a pasted member or
+      // a fresh README cause is confirmed here in seconds instead of after the next
+      // mutation run. The mutant-facing checks (unaudited newcomers, stale members,
+      // quiet streaks) need a report and stay in the verify — which also means no
+      // staleness is known here, so every well-formed member is asked for its cause.
+      // Before the debt tally, not after: a fully-detected suite has no debt to print
+      // (the early return below) but its audited set is exactly as checkable. Plain
+      // warnings, no advisory-log entries: the end-of-build summary exists for the
+      // gate's scroll problem, and these lines end a short interactive run.
+      if (debtTimeoutsFile.isFile) {
+        val membership = TimeoutAudit.parse(debtTimeoutsFile.readLines())
+        TimeoutAudit.malformedWarning(suiteName, debtTimeoutsFile.name, membership.malformed)
+            ?.let { logger.warn(it) }
+        val undocumented = TimeoutAudit.undocumentedCauses(membership.members) {
+          readmeFile.takeIf { it.isFile }?.readText() ?: ""
+        }
+        if (undocumented.isNotEmpty()) {
+          logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, undocumented))
+        }
+      }
+
       fun tally(pairs: List<Pair<String, String>>): Map<String, Pair<Int, Int>> = pairs
           .groupBy({ it.first }, { it.second })
           .mapValues { (_, statuses) ->

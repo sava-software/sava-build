@@ -365,13 +365,14 @@ invoked it*, and the failure looks exactly like a real regression.
   transcribed: a suite whose summary reports timeouts with no set on disk is
   pointed at `-PinitTimeoutAudit`, which writes the membership rows from the
   run's report (observed lines riding in `#` comments) and leaves only the
-  causes to a person — it refuses to reseed an existing file, and refuses a
-  `-PmutateOnly` report like every other baseline-touching flag. With the
+  causes to a person — it refuses to reseed an existing file, refuses a
+  `-PmutateOnly` report like every other baseline-touching flag, and, like
+  every other refresh flavour, combines with none of them. With the
   file present, the verify warns on any timed-out mutant missing from the
   set — a *new* member is a reviewer-stop, not load noise; the printed row
   is paste-ready, with the line riding in a `#` comment — warns on rows
   that do not parse as three fields (named malformed, never misdiagnosed as
-  a member matching no mutant), and notices members matching no mutant at
+  a member matching no mutant), and warns on members matching no mutant at
   all (retirement hygiene) as well as members whose class-and-method appear
   nowhere together in the README (a cause that was never written; the same
   soft pointer rule family labels follow — the method name alone was
@@ -380,9 +381,11 @@ invoked it*, and the failure looks exactly like a real regression.
   *all* mutants, so a key that exists but never times out — pasted from the
   wrong report, or a timeout the tests since learned to kill outright —
   would otherwise sit accepted forever. The verify keeps a per-member quiet
-  counter in `.pitest-history/` and notices members with no timeout in 3+
-  consecutive runs (the flip-family retirement criterion); a single quiet
-  run is just the `KILLED`↔`TIMED_OUT` load flip, and a gate-load-only
+  counter in `.pitest-history/`, keyed to the report's fingerprint so
+  standalone verify re-runs of one report are one observation, and notices
+  members with no timeout in 3+ consecutive mutation runs (the flip-family
+  retirement criterion); a single quiet run is just the
+  `KILLED`↔`TIMED_OUT` load flip, and a gate-load-only
   member is reset by gate runs, so the notice presumes nothing. The
   line-less key is also the check's resolution: a *new* timed-out mutant in
   an already-audited method+mutator matches the existing member and draws
@@ -393,13 +396,19 @@ invoked it*, and the failure looks exactly like a real regression.
   no longer what the argument described. Advisory only, never a failure, by
   default: load can time out any mutant on any run, and both flavours are
   still detection. For certifying runs, `-PstrictTimeoutAudit` escalates
-  exactly the two findings that mean the audit is not being kept — an
+  exactly the findings that mean the audit is not being kept — an
   unaudited newcomer, a malformed row, or a timeout-carrying suite with no
   set at all — to failures, the `-PnoDriftTolerance` precedent; hygiene
   findings (stale members, quiet streaks, missing causes) stay advisory
   even there. Because every audit finding is advisory in the default modes,
   the build ends with a one-line-per-suite summary of the advisory findings
   it printed — a reviewer-stop nobody scrolls back to is not a stop.
+  The audit's static half — row shape and cause presence — reads committed
+  files only, so `pitest<Suite>Debt` runs it too (one implementation,
+  `TimeoutAudit`, so the two tasks cannot disagree): paste a row or write a
+  cause and confirm the tool agrees in seconds, without a mutation run.
+  `Debt` knows no staleness (that needs a report), so it asks every
+  well-formed member for its cause.
 - **Flip families do not settle while their cause remains — and "the cause
   remains" is a claim to re-measure, not a fact to record once.** Mutants
   equivalent on the wire but timing-dependent in detection (socket suites

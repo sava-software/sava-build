@@ -420,6 +420,16 @@ $fuzzBlock
     val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline", "-PupdateMutationBaseline")
       .buildAndFail().output
     assertTrue(output.contains("pass at most one of"), output)
+
+    // the audit seed is a refresh flavour too — it writes a file the same way — and
+    // the refusal must land before either flag does any work
+    val seedCombo = runner("pitestEncodingVerify", "-PupdateMutationBaseline", "-PinitTimeoutAudit")
+      .buildAndFail().output
+    assertTrue(seedCombo.contains("pass at most one of"), seedCombo)
+    assertFalse(
+      File(fixtureDir, "config/pitest/encoding-timeouts.csv").exists(),
+      "refused combination still seeded the audit:\n$seedCombo"
+    )
   }
 
   @Test
@@ -972,17 +982,28 @@ $fuzzBlock
 
     report("KILLED")
     val quietNotice = "audited-timeout member(s) have not timed out in 3+"
-    repeat(2) {
-      val early = runner("pitestEncodingVerify").build().output
-      assertFalse(early.contains(quietNotice), "notice fired before the third quiet run:\n$early")
+    // a fresh PIT run rewrites the report; the content here is identical, so the test
+    // advances the timestamp explicitly rather than racing the filesystem clock
+    val reportCsv = File(fixtureDir, "build/reports/pitest/encoding/mutations.csv")
+    fun freshen() = reportCsv.setLastModified(reportCsv.lastModified() + 1_000)
+
+    // the counter is keyed to the report's fingerprint: standalone verify re-runs of
+    // one unchanged report are one observation, not manufactured quiet evidence
+    repeat(3) {
+      val rerun = runner("pitestEncodingVerify").build().output
+      assertFalse(rerun.contains(quietNotice), "an unchanged report advanced the quiet streak:\n$rerun")
       // a quiet member is not the stale case: its mutant is present, just detected
-      assertFalse(early.contains("match no mutant"), "quiet member misread as stale:\n$early")
+      assertFalse(rerun.contains("match no mutant"), "quiet member misread as stale:\n$rerun")
     }
+    freshen()
+    val second = runner("pitestEncodingVerify").build().output
+    assertFalse(second.contains(quietNotice), "notice fired before the third quiet report:\n$second")
+    freshen()
     val third = runner("pitestEncodingVerify").build().output
     assertTrue(
       third.contains(quietNotice) &&
           third.contains("com.example.Codec,encode,MathMutator (quiet for 3 runs)"),
-      "third quiet run not noticed:\n$third"
+      "third quiet report not noticed:\n$third"
     )
 
     // a timeout resets the streak — the notice must go quiet again for 3 more runs
@@ -1057,8 +1078,8 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(
-      output.contains("hardening: 1 advisory finding(s) across 1 suite(s)") &&
-          output.contains("pitest 'encoding': 1 unaudited timeout(s)"),
+      output.contains("hardening: 2 advisory finding(s) across 1 suite(s)") &&
+          output.contains("pitest 'encoding': 1 unaudited timeout(s), 1 stale audit row(s)"),
       "advisory summary missing:\n$output"
     )
 
@@ -1597,5 +1618,42 @@ $fuzzBlock
     File(fixtureDir, "config/pitest/README.md").writeText("# capacity hint\n\nGrowth arithmetic …\n")
     val quiet = runner("pitestEncodingDebt").build().output
     assertFalse(quiet.contains("label(s) with no argument"), quiet)
+  }
+
+  @Test
+  fun `the debt task runs the audit's static checks without a report`() {
+    // Row shape and cause presence read committed files only, so Debt confirms a
+    // pasted member or a fresh README cause in seconds — the alternative was a full
+    // mutation run, or hand-rolling the matching rule outside the tool (and drifting
+    // from it). Shared via TimeoutAudit, so Debt and the verify cannot disagree.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator\n" +
+          "com.example.Codec,decode\n"
+    )
+
+    // no report, no baseline: the paste-feedback case, and the early 'debt: none'
+    // return must not skip the audit
+    val output = runner("pitestEncodingDebt").build().output
+    assertTrue(output.contains("debt: none"), output)
+    assertTrue(
+      output.contains("1 malformed row(s) in encoding-timeouts.csv"),
+      "malformed row not named:\n$output"
+    )
+    assertTrue(
+      output.contains("cause? com.example.Codec,encode,MathMutator"),
+      "missing cause not named:\n$output"
+    )
+
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    File(fixtureDir, "config/pitest/README.md")
+      .writeText("`Codec.encode` (MathMutator): the estimate crawls, never fails.\n")
+    val quiet = runner("pitestEncodingDebt").build().output
+    assertFalse(
+      quiet.contains("malformed") || quiet.contains("cause?"),
+      "clean audit still warned:\n$quiet"
+    )
   }
 }
