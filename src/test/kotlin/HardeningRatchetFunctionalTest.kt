@@ -962,6 +962,30 @@ $fuzzBlock
   }
 
   @Test
+  fun `-PinitTimeoutAudit refuses a report with nothing timed out`() {
+    // An empty seed would activate the audit while telling its adopter to write
+    // causes for zero members — the flag is pointed at by a summary that reported
+    // timeouts, and a run where they vanished is load noise, not a population.
+    writeFixture()
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,50,KILLED,com.example.CodecTest",
+      ),
+      ""
+    )
+
+    val refused = runner("pitestEncodingVerify", "-PinitTimeoutAudit").buildAndFail().output
+    assertTrue(
+      refused.contains("no timed-out mutants in this run's report — nothing to seed"),
+      "empty seed not refused:\n$refused"
+    )
+    assertFalse(
+      File(fixtureDir, "config/pitest/encoding-timeouts.csv").isFile,
+      "a refused seed must write nothing"
+    )
+  }
+
+  @Test
   fun `a member that stops timing out is noticed after three quiet runs`() {
     // Membership is validated against all mutants, so a member whose mutants exist
     // but never time out — pasted from the wrong report, or a timeout the tests

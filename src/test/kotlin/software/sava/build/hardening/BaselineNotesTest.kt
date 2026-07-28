@@ -88,29 +88,33 @@ class BaselineNotesTest {
   fun `an undocumented label is named and a documented one is silent`() {
     val readme = "## Triaged\n\n# race guard\n\nThe argument for the family.\n"
 
-    assertNull(BaselineNotes.undocumentedLabelWarning("encoding", listOf("# race guard")) { readme })
+    assertEquals(emptyList<String>(), BaselineNotes.undocumentedLabels(listOf("# race guard")) { readme })
 
-    val warning = BaselineNotes.undocumentedLabelWarning("encoding", listOf("# race gaurd")) { readme }
+    val undocumented = BaselineNotes.undocumentedLabels(listOf("# race gaurd")) { readme }
+    assertEquals(
+        listOf("race gaurd"), undocumented,
+        "a typo must be named rather than silently opening a bucket of its own"
+    )
     assertEquals(
         "pitest baseline 'encoding': label(s) with no argument in config/pitest/README.md — " +
             "'# race gaurd' — document the family there, or fix the label if it is a typo",
-        warning,
-        "a typo must be named rather than silently opening a bucket of its own"
+        BaselineNotes.undocumentedLabelWarning("encoding", undocumented)
     )
 
     // several undocumented labels are named once each, in first-seen order
-    val many = BaselineNotes.undocumentedLabelWarning(
-        "encoding", listOf("# alpha", "# beta", "# alpha")) { readme }
+    val many = BaselineNotes.undocumentedLabels(listOf("# alpha", "# beta", "# alpha")) { readme }
+    assertEquals(listOf("alpha", "beta"), many)
     assertEquals(
         "pitest baseline 'encoding': label(s) with no argument in config/pitest/README.md — " +
             "'# alpha', '# beta' — document the family there, or fix the label if it is a typo",
-        many
+        BaselineNotes.undocumentedLabelWarning("encoding", many)
     )
 
     // a carried note resolves against its family's section, not its full text
-    assertNull(
-        BaselineNotes.undocumentedLabelWarning(
-            "encoding", listOf("# race guard (carried across NO_COVERAGE -> SURVIVED)")) { readme }
+    assertEquals(
+        emptyList<String>(),
+        BaselineNotes.undocumentedLabels(
+            listOf("# race guard (carried across NO_COVERAGE -> SURVIVED)")) { readme }
     )
   }
 
@@ -121,13 +125,13 @@ class BaselineNotesTest {
     var reads = 0
     val readme = { reads++; "" }
 
-    assertNull(BaselineNotes.undocumentedLabelWarning("encoding", emptyList(), readme))
+    assertEquals(emptyList<String>(), BaselineNotes.undocumentedLabels(emptyList(), readme))
     assertEquals(0, reads, "an empty baseline must not read the README")
 
-    assertNull(BaselineNotes.undocumentedLabelWarning("encoding", listOf("# untriaged"), readme))
+    assertEquals(emptyList<String>(), BaselineNotes.undocumentedLabels(listOf("# untriaged"), readme))
     assertEquals(0, reads, "seeded debt argues nothing and needs no section")
 
-    BaselineNotes.undocumentedLabelWarning("encoding", listOf("# race guard", "# other"), readme)
+    BaselineNotes.undocumentedLabels(listOf("# race guard", "# other"), readme)
     assertEquals(1, reads, "the README must be read once per call, not once per label")
   }
 }

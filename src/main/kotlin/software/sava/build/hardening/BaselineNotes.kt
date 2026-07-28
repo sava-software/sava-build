@@ -32,25 +32,27 @@ internal object BaselineNotes {
   private const val UNTRIAGED = "untriaged"
 
   /**
-   * A warning naming the family labels in [notes] with no `# <label>` mention in the
-   * module's `config/pitest/README.md`, or null when every label resolves. A label is a
-   * pointer to its argument: a typo silently opens a bucket of its own and a deleted
-   * section orphans the rows that cite it, and neither is visible in a per-label count —
-   * `3 '# race gaurd family'` reads like triage. [readme] supplies that file's text and
-   * is called only when there is a label to resolve, so a baseline of unlabeled or
-   * `# untriaged` rows costs no read. Owned here rather than at the call sites so the
-   * verify and `Debt` can never disagree about which labels resolve.
+   * The family labels in [notes] with no `# <label>` mention in the module's
+   * `config/pitest/README.md`, in first-seen order. A label is a pointer to its
+   * argument: a typo silently opens a bucket of its own and a deleted section orphans
+   * the rows that cite it, and neither is visible in a per-label count — `3 '# race
+   * gaurd family'` reads like triage. [readme] supplies that file's text and is called
+   * only when there is a label to resolve, so a baseline of unlabeled or `# untriaged`
+   * rows costs no read. Owned here rather than at the call sites so the verify and
+   * `Debt` can never disagree about which labels resolve.
    */
-  fun undocumentedLabelWarning(suiteName: String, notes: List<String>, readme: () -> String): String? {
+  fun undocumentedLabels(notes: List<String>, readme: () -> String): List<String> {
     val labels = notes.map { labelOf(it) }.distinct().filter { it != UNTRIAGED }
-    if (labels.isEmpty()) return null
+    if (labels.isEmpty()) return emptyList()
     val text = readme()
-    val undocumented = labels.filterNot { text.contains("# $it") }
-    return if (undocumented.isEmpty()) null else
+    return labels.filterNot { text.contains("# $it") }
+  }
+
+  /** The warning naming [undocumented] labels; callers pass a non-empty list. */
+  fun undocumentedLabelWarning(suiteName: String, undocumented: Collection<String>): String =
       "pitest baseline '$suiteName': label(s) with no argument in config/pitest/README.md — " +
           undocumented.joinToString(", ") { "'# $it'" } +
           " — document the family there, or fix the label if it is a typo"
-  }
 
   /**
    * A per-label count summary — `13 '# untriaged', 20 '# race guard family', 5

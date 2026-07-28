@@ -366,7 +366,10 @@ invoked it*, and the failure looks exactly like a real regression.
   pointed at `-PinitTimeoutAudit`, which writes the membership rows from the
   run's report (observed lines riding in `#` comments) and leaves only the
   causes to a person — it refuses to reseed an existing file, refuses a
-  `-PmutateOnly` report like every other baseline-touching flag, and, like
+  `-PmutateOnly` report like every other baseline-touching flag, refuses a
+  report with nothing timed out (an empty seed would activate the audit
+  with zero members to write causes for; timeouts are load-dependent, so
+  re-run under the conditions whose summary reported them), and, like
   every other refresh flavour, combines with none of them. With the
   file present, the verify warns on any timed-out mutant missing from the
   set — a *new* member is a reviewer-stop, not load noise; the printed row

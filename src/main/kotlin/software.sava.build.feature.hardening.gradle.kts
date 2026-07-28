@@ -775,11 +775,12 @@ hardening.mutation.all {
       // way). Warned rather than failed, mirroring the scaffolding check: the gap may
       // predate this check, and a fresh '-PunionModeFlips' row legitimately lands before
       // its README criterion is written.
-      BaselineNotes.undocumentedLabelWarning(suiteName, accepted.mapNotNull { annotations[it] }) {
+      val undocumentedLabels = BaselineNotes.undocumentedLabels(accepted.mapNotNull { annotations[it] }) {
         readmeFile.takeIf { it.isFile }?.readText() ?: ""
-      }?.let {
-        logger.warn(it)
-        advisoryLog.get().record(advisoryScope, "undocumented family label(s)")
+      }
+      if (undocumentedLabels.isNotEmpty()) {
+        logger.warn(BaselineNotes.undocumentedLabelWarning(suiteName, undocumentedLabels))
+        advisoryLog.get().record(advisoryScope, "${undocumentedLabels.size} undocumented family label(s)")
       }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
@@ -864,18 +865,29 @@ hardening.mutation.all {
                   "cause in config/pitest/README.md."
           )
         }
+        // Also refused with nothing timed out: an empty file would activate the audit
+        // while telling its adopter to write causes for zero members, and the flag is
+        // only ever pointed at by a summary that reported timeouts — a run where they
+        // vanished is the load-dependence the line-less key exists to absorb, not a
+        // population to certify.
+        if (timedOutByAuditKey.isEmpty()) {
+          throw GradleException(
+              "pitest '$suiteName': no timed-out mutants in this run's report — nothing to seed. " +
+                  "Timeouts are load-dependent; re-run $pitestTaskName under the conditions whose " +
+                  "summary reported them (see HARDENING.md, the audited-timeout bullet)."
+          )
+        }
         val seeded = timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
           val lines = timedOutByAuditKey.getValue(key).map { it[4] }.distinct()
           "$key # line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
         }
-        timeoutsFile.parentFile.mkdirs()
         BaselineFiles.writeAtomically(
             timeoutsFile,
             "# Audited TIMED_OUT set for the '$suiteName' suite (HARDENING.md, the audited-timeout\n" +
                 "# bullet): one line-less 'class,method,mutator' member per row. A timeout detects\n" +
                 "# slowness, not wrongness, so the ratchet cannot see a weakened covering assertion\n" +
                 "# behind one; each member's structural cause belongs in config/pitest/README.md.\n" +
-                (if (seeded.isEmpty()) "" else seeded + "\n")
+                seeded + "\n"
         )
         logger.lifecycle(
             "pitest '$suiteName': seeded ${timedOutByAuditKey.size} audited-timeout member(s) into " +
@@ -969,8 +981,8 @@ hardening.mutation.all {
               else -> (previousQuiet[member] ?: 0) + 1
             }
           }
-          timeoutQuietFile.parentFile.mkdirs()
-          timeoutQuietFile.writeText(
+          BaselineFiles.writeAtomically(
+              timeoutQuietFile,
               quietRuns.entries.sortedBy { it.key }
                   .joinToString("\n", prefix = "$reportFingerprint\n", postfix = "\n") { "${it.key},${it.value}" }
           )
@@ -1586,9 +1598,12 @@ hardening.mutation.all {
       // it: this task is where a triager reads the counts and picks the next cluster, so
       // a label resolving to nothing is named at the moment it would be acted on — a
       // count is what makes a mistyped label look like finished triage.
-      BaselineNotes.undocumentedLabelWarning(suiteName, baselineNotes) {
+      val undocumentedLabels = BaselineNotes.undocumentedLabels(baselineNotes) {
         readmeFile.takeIf { it.isFile }?.readText() ?: ""
-      }?.let { logger.warn(it) }
+      }
+      if (undocumentedLabels.isNotEmpty()) {
+        logger.warn(BaselineNotes.undocumentedLabelWarning(suiteName, undocumentedLabels))
+      }
     }
   }
 
