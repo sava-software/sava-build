@@ -366,5 +366,9 @@ application, the settings snippet, and the static half of the audit checks in se
 per repo, without mutation runs. A template-digest change therefore surfaces here as
 per-repo failures naming the marker dance the release will obligate at bump time —
 before the release, not one consumer CI at a time after. Build failures fail the
-canary; advisory findings are reprinted per repo for review. A repo that trips a
-check the fixtures missed earns a functional test reproducing its shape.
+canary; advisory findings are reprinted per repo for review. A green build must also
+print the local-repo notice, proving `0.0.0-test` actually ran: a settings snippet
+predating `-PsavaBuildLocalRepo` ignores the property and resolves the released
+plugin, so its green output canaries nothing — the canary fails that repo and points
+at the canonical snippet above. A repo that trips a check the fixtures missed earns a
+functional test reproducing its shape.

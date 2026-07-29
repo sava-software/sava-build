@@ -1153,7 +1153,9 @@ $fuzzBlock
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    // one audited member, plus a two-field row: malformed is the other finding the
+    // strict flag escalates, so it must be excluded from the advisory summary too
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\ncom.example.Codec,encode\n")
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
@@ -1166,14 +1168,15 @@ $fuzzBlock
     runner("pitestEncodingVerify").build()
     val failed = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
     assertTrue(
-      failed.contains("-PstrictTimeoutAudit — 1 unaudited timed-out mutant(s)"),
-      "strict run did not fail on the unaudited newcomer:\n$failed"
+      failed.contains("-PstrictTimeoutAudit — 1 unaudited timed-out mutant(s)") &&
+          failed.contains("1 malformed membership row(s)"),
+      "strict run did not fail on the unaudited newcomer and the malformed row:\n$failed"
     )
-    // the escalated finding is the failure, not an advisory: the end-of-build
+    // the escalated findings are the failure, not advisories: the end-of-build
     // summary opens with "none failed the build", which must stay true — only the
     // hygiene finding (the missing README cause) may appear in it
     assertFalse(
-      failed.contains("unaudited timeout(s)"),
+      failed.contains("unaudited timeout(s)") || failed.contains("malformed audit row(s)"),
       "strict-escalated finding also recorded as an advisory:\n$failed"
     )
 

@@ -12,7 +12,13 @@
 #      them with -PsavaBuildLocalRepo — Debt carries the audited-timeout set's
 #      static half (row shape, README causes) and falls back to the baseline
 #      when no report exists, so no mutation runs are needed
-#   3. reprints every hardening warning it saw, per repo, and fails if any
+#   3. verifies each green build actually resolved 0.0.0-test: a settings
+#      snippet predating -PsavaBuildLocalRepo ignores the property and resolves
+#      the RELEASED plugin — green output that canaries nothing. The 0.0.0-test
+#      settings plugin prints the local-repo notice at the end of every build it
+#      was resolved into (configuration-cache hits included), so its absence
+#      from a green build is a failure, not a maybe.
+#   4. reprints every hardening warning it saw, per repo, and fails if any
 #      consumer build failed (advisory findings are reported, never failures)
 #
 # Usage:
@@ -35,6 +41,13 @@ local_repo="$sava_build_dir/build/sava-test-repo"
 # warning it canaries'), which provokes each warning and greps a real verify's
 # output with this exact pattern — reword a message and that test names this line.
 findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding'
+
+# The resolution proof: the 0.0.0-test settings plugin's FlowAction prints this line
+# at the end of every build it was actually resolved into. Coupled to the notice's
+# wording like the filter above; pinned by LocalRepoNoticeFunctionalTest ('the fleet
+# canary resolution needle matches the notice') — reword the notice and that test
+# names this line before the canary starts flagging every healthy repo.
+resolution_notice="resolved every 'software.sava.build*' plugin to 0.0.0-test"
 
 if [ "$#" -eq 0 ]; then
   echo "usage: tools/fleet-canary.sh <consumer-repo-dir>..." >&2
@@ -80,6 +93,13 @@ agentsTemplateInSync"
     failed="$failed $repo"
     echo "fleet-canary: FAILED $repo — full output:"
     cat "$out_file"
+  elif ! grep -qF "$resolution_notice" "$out_file"; then
+    # Green, but this checkout's plugin never ran: nothing was canaried, and
+    # reporting the repo green would be the canary's own version of the false
+    # certification the strict flags refuse.
+    failed="$failed $repo"
+    echo "fleet-canary: FAILED $repo — build green but 0.0.0-test was never resolved" \
+      "(settings snippet predating -PsavaBuildLocalRepo? see README's canonical form)"
   fi
   # Reprint what a person must review: the hardening warnings, if any.
   findings=$(grep -E "$findings_pattern" "$out_file" || true)
