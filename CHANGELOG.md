@@ -1,5 +1,16 @@
 # Changelog
 
+## [21.5.18](https://github.com/sava-software/sava-build/compare/21.5.17...21.5.18) (2026-07-28)
+
+
+### Features
+
+* **hardening:** add advisory log for end-of-build hardening summary ([2b3bfea](https://github.com/sava-software/sava-build/commit/2b3bfeae1eece5311c47807e79355da564aa59e1))
+* **hardening:** add advisory log for end-of-build hardening summary ([d2e22de](https://github.com/sava-software/sava-build/commit/d2e22de56dd5180b32bd4af80ca0502f4544926d))
+* **hardening:** add fleet canary for pre-release validation ([13d6231](https://github.com/sava-software/sava-build/commit/13d6231c4d36bc03292ef7677898b3fc33548126))
+* **hardening:** handle stale members in timeout audit ([e3f708c](https://github.com/sava-software/sava-build/commit/e3f708c574d7e2d20a36e29dd4f99f42f3725d37))
+* **test:** add local repo notice and configuration cache reuse tests ([c359a9f](https://github.com/sava-software/sava-build/commit/c359a9fe6e4166ec72c9ea935b5a1cf30da21243))
+
 ## [21.5.17](https://github.com/sava-software/sava-build/compare/21.5.16...21.5.17) (2026-07-27)
 
 
