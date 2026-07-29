@@ -29,6 +29,13 @@ set -euo pipefail
 sava_build_dir=$(cd "$(dirname "$0")/.." && pwd)
 local_repo="$sava_build_dir/build/sava-test-repo"
 
+# The reprint filter: one alternation per hardening warning a person must review.
+# Deliberately string-coupled to the plugin's message texts; the coupling is pinned
+# by HardeningRatchetFunctionalTest ('the fleet canary reprint filter matches every
+# warning it canaries'), which provokes each warning and greps a real verify's
+# output with this exact pattern — reword a message and that test names this line.
+findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding'
+
 if [ "$#" -eq 0 ]; then
   echo "usage: tools/fleet-canary.sh <consumer-repo-dir>..." >&2
   exit 2
@@ -36,6 +43,9 @@ fi
 
 echo "fleet-canary: publishing 0.0.0-test from $sava_build_dir"
 (cd "$sava_build_dir" && ./gradlew --console=plain publishSavaBuildTestPublicationToSavaTestRepoRepository) > /dev/null
+
+out_file=$(mktemp)
+trap 'rm -f "$out_file"' EXIT
 
 failed=""
 warned=""
@@ -46,7 +56,7 @@ for repo in "$@"; do
   fi
   # Suite names from committed pitest config; every registered suite with a
   # baseline or an audited set has a Debt task.
-  tasks=$(find "$repo" -path '*/build/*' -prune -o \
+  tasks=$(find "$repo" -type d -name build -prune -o \
       \( -name '*-accepted.csv' -o -name '*-timeouts.csv' \) -path '*/config/pitest/*' -print \
     | sed -e 's|.*/||' -e 's|-accepted\.csv$||' -e 's|-timeouts\.csv$||' \
     | sort -u \
@@ -58,19 +68,17 @@ for repo in "$@"; do
     tasks="help"
   fi
   echo "fleet-canary: $repo — $(echo "$tasks" | tr '\n' ' ')"
-  out_file=$(mktemp)
   if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" $tasks) > "$out_file" 2>&1; then
     failed="$failed $repo"
     echo "fleet-canary: FAILED $repo — full output:"
     cat "$out_file"
   fi
   # Reprint what a person must review: the hardening warnings, if any.
-  findings=$(grep -E "malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding" "$out_file" || true)
+  findings=$(grep -E "$findings_pattern" "$out_file" || true)
   if [ -n "$findings" ]; then
     warned="$warned $repo"
     echo "$findings"
   fi
-  rm -f "$out_file"
 done
 
 echo

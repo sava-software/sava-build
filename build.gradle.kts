@@ -161,6 +161,9 @@ tasks.test {
       // Read by AgentsTemplateSyncFunctionalTest via the 'savaBuild.root' property below;
       // no fixture consumes the checkout as an included build anymore.
       hardeningDoc = layout.projectDirectory.file("HARDENING.md")
+      // Read via 'savaBuild.root' too, by the reprint-filter pin in
+      // HardeningRatchetFunctionalTest — declared so editing the script re-runs it.
+      canaryScript = layout.projectDirectory.file("tools/fleet-canary.sh")
       projectRoot = layout.projectDirectory
       // Re-run when the published plugin changes; maven-metadata.xml is excluded because
       // its 'lastUpdated' timestamp changes on every publish and would defeat up-to-date
@@ -180,6 +183,10 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)
   abstract val hardeningDoc: RegularFileProperty
+
+  @get:InputFile
+  @get:PathSensitive(PathSensitivity.NONE)
+  abstract val canaryScript: RegularFileProperty
 
   @get:InputFiles
   @get:PathSensitive(PathSensitivity.RELATIVE)

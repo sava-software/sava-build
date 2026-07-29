@@ -778,6 +778,49 @@ $fuzzBlock
   }
 
   @Test
+  fun `the fleet canary reprint filter matches every warning it canaries`() {
+    // tools/fleet-canary.sh reprints hardening warnings from consumer build output by
+    // grepping with a fixed pattern — deliberately coupled to the messages' wording,
+    // since the script cannot see log levels through Gradle's plain console. This
+    // provokes every canaried warning in one verify run and greps the output with the
+    // script's own pattern, so rewording a message fails here instead of silently
+    // dropping the warning from the canary's reprint.
+    val script = File(savaBuildTestProperty("savaBuild.root"), "tools/fleet-canary.sh").readText()
+    val pattern = Regex("(?m)^findings_pattern='([^']+)'").find(script)?.groupValues?.get(1)
+      ?: error("findings_pattern line not found in tools/fleet-canary.sh")
+
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    // an accepted row whose family label has no README section -> 'no argument in config'
+    baselineFile().writeText("com.example.Codec,decode,40,InvertNegsMutator,SURVIVED # mystery family\n")
+    File(fixtureDir, "config/pitest/encoding-timeouts.csv").writeText(
+      "com.example.Codec,encode,MathMutator\n" + // cause never written -> 'appear nowhere'
+          "com.example.Codec,gone,MathMutator\n" + // stale member -> 'match no mutant'
+          "com.example.Codec,encode\n" // two fields -> 'malformed row'
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText("# Baseline\n\nNo causes or labels yet.\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        // an unaudited timed-out newcomer -> 'not in the audited set'
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,encode,30,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.InvertNegsMutator,decode,40,SURVIVED,none",
+      ),
+      ""
+    )
+
+    // all six findings are advisory, so the run passes — and the advisory summary at
+    // the end of the build supplies the pattern's 'advisory finding' alternation
+    val output = runner("pitestEncodingVerify").build().output
+    pattern.split('|').forEach { fragment ->
+      assertTrue(
+        output.contains(fragment),
+        "canary pattern fragment '$fragment' matches nothing — reworded warning?\n$output"
+      )
+    }
+  }
+
+  @Test
   fun `a stale baseline row that timed out this run is not killed-or-moved`() {
     // A baseline SURVIVED row whose mutant reads TIMED_OUT this run is the
     // load-dependent detection the TIMED_OUT doctrine warns about — prune keeps it,
