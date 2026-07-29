@@ -406,7 +406,12 @@ invoked it*, and the failure looks exactly like a real regression.
   unaudited newcomer, a malformed row, or a timeout-carrying suite with no
   set at all — to failures, the `-PnoDriftTolerance` precedent; hygiene
   findings (stale members, quiet streaks, missing causes) stay advisory
-  even there. Because every audit finding is advisory in the default modes,
+  even there. An escalated finding is the failure, not an advisory — it is
+  left out of the end-of-build summary, whose "none failed the build"
+  framing must stay true. Both certifying flags refuse a `-PmutateOnly`
+  report outright, as the refresh flavours do: their checks are skipped
+  entirely on a scoped report, so a green run would certify nothing while
+  reading as a certification of the suite. Because every audit finding is advisory in the default modes,
   the build ends with a one-line-per-suite summary of the advisory findings
   it printed — a reviewer-stop nobody scrolls back to is not a stop.
   The audit's static half — row shape and cause presence — reads committed

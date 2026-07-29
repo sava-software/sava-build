@@ -295,6 +295,17 @@ $fuzzBlock
         "scoped refresh was not refused for $flag:\n$refused"
       )
     }
+
+    // certifying flags are refused too: their checks are skipped entirely on a
+    // scoped report, so a green run would certify nothing while reading as a
+    // certification of the suite
+    for (flag in listOf("-PstrictTimeoutAudit", "-PnoDriftTolerance")) {
+      val refused = runner("pitestEncodingVerify", flag).buildAndFail().output
+      assertTrue(
+        refused.contains("cannot be certified"),
+        "scoped certification was not refused for $flag:\n$refused"
+      )
+    }
   }
 
   @Test
@@ -1157,6 +1168,13 @@ $fuzzBlock
     assertTrue(
       failed.contains("-PstrictTimeoutAudit — 1 unaudited timed-out mutant(s)"),
       "strict run did not fail on the unaudited newcomer:\n$failed"
+    )
+    // the escalated finding is the failure, not an advisory: the end-of-build
+    // summary opens with "none failed the build", which must stay true — only the
+    // hygiene finding (the missing README cause) may appear in it
+    assertFalse(
+      failed.contains("unaudited timeout(s)"),
+      "strict-escalated finding also recorded as an advisory:\n$failed"
     )
 
     // a fully audited set passes strict even with hygiene findings outstanding

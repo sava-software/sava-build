@@ -360,8 +360,11 @@ The functional tests exercise synthetic fixtures; the checks that only fire agai
 consumer data — committed baselines, audited timeout sets, README causes, settings
 snippets — historically surfaced one new finding per release, *after* the release, one
 repo at a time. The canary publishes `0.0.0-test` and runs every repo's
-`pitest<Suite>Debt` tasks (derived from the committed `config/pitest` files) under
-`-PsavaBuildLocalRepo`, which exercises plugin application, the settings snippet, and
-the static half of the audit checks in seconds per repo, without mutation runs. Build
-failures fail the canary; advisory findings are reprinted per repo for review. A repo
-that trips a check the fixtures missed earns a functional test reproducing its shape.
+`pitest<Suite>Debt` tasks (derived from the committed `config/pitest` files) plus
+`agentsTemplateInSync` under `-PsavaBuildLocalRepo`, which exercises plugin
+application, the settings snippet, and the static half of the audit checks in seconds
+per repo, without mutation runs. A template-digest change therefore surfaces here as
+per-repo failures naming the marker dance the release will obligate at bump time —
+before the release, not one consumer CI at a time after. Build failures fail the
+canary; advisory findings are reprinted per repo for review. A repo that trips a
+check the fixtures missed earns a functional test reproducing its shape.

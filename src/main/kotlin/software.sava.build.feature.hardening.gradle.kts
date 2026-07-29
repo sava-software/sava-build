@@ -728,6 +728,17 @@ hardening.mutation.all {
                   "Re-run $pitestTaskName without -PmutateOnly first."
           )
         }
+        // Certifying flags are refused for the same reason in the other direction:
+        // the checks they strengthen are skipped entirely on a scoped report, so a
+        // green run would read as a certification of the suite when nothing was
+        // certified at all.
+        if (strictTimeoutAudit || noDriftTolerance) {
+          throw GradleException(
+              "pitest '$suiteName': the report was produced with -PmutateOnly=$scope — a partial " +
+                  "population cannot be certified, and the certifying checks are skipped on a scoped " +
+                  "report. Re-run $pitestTaskName without -PmutateOnly first."
+          )
+        }
         logger.lifecycle(
             "pitest '$suiteName': SCOPED run (-PmutateOnly=$scope) — ratchet skipped; " +
                 (if (current.isEmpty()) "nothing unkilled in scope"
@@ -908,9 +919,14 @@ hardening.mutation.all {
         // never disagree about what a membership file says.
         val membership = TimeoutAudit.parse(timeoutsFile.readLines())
         val malformed = membership.malformed
+        // Recorded as an advisory only when it stays one: under -PstrictTimeoutAudit
+        // this finding (and the unaudited newcomer below) becomes the failure itself,
+        // and the summary's "none failed the build" must stay true.
         TimeoutAudit.malformedWarning(suiteName, timeoutsFile.name, malformed)?.let {
           logger.warn(it)
-          advisoryLog.get().record(advisoryScope, "${malformed.size} malformed audit row(s)")
+          if (!strictTimeoutAudit) {
+            advisoryLog.get().record(advisoryScope, "${malformed.size} malformed audit row(s)")
+          }
         }
         val members = membership.members
         val unaudited = rows.filter { it[5] == "TIMED_OUT" && auditKey(it) !in members }
@@ -926,7 +942,9 @@ hardening.mutation.all {
                   "config/pitest/README.md:\n" +
                   unaudited.joinToString("\n") { "  ${auditKey(it)} # line ${it[4]}" }
           )
-          advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
+          if (!strictTimeoutAudit) {
+            advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
+          }
         }
         val allKeys = rows.map(::auditKey).toSet()
         val staleMembers = members.filterNot { it in allKeys }

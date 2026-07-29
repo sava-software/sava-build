@@ -66,6 +66,14 @@ for repo in "$@"; do
     # break loudest in repos with nothing else to check.
     echo "fleet-canary: $repo — no pitest baselines; plugin-resolution smoke test only"
     tasks="help"
+  else
+    # Hardening repos also check their AGENTS.md template marker against THIS
+    # checkout's digest: a template edit breaks every consumer's 'check' at
+    # bump time by design, and the canary is where that obligation should be
+    # announced — as a per-repo failure naming the marker dance — before the
+    # release creates it, not one repo at a time after.
+    tasks="$tasks
+agentsTemplateInSync"
   fi
   echo "fleet-canary: $repo — $(echo "$tasks" | tr '\n' ' ')"
   if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" $tasks) > "$out_file" 2>&1; then
