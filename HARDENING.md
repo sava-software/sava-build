@@ -370,16 +370,26 @@ invoked it*, and the failure looks exactly like a real regression.
   report with nothing timed out (an empty seed would activate the audit
   with zero members to write causes for; timeouts are load-dependent, so
   re-run under the conditions whose summary reported them), and, like
-  every other refresh flavour, combines with none of them. With the
+  every other refresh flavour, combines with none of them. Seeding is not
+  the only way in: a suite that has never produced a timeout can *arm* the
+  audit by committing a comments-only membership file — zero members is a
+  legitimate audited set, and the suite's first timeout then warns as the
+  unaudited-newcomer reviewer-stop instead of surfacing as the softer
+  adoption hint; the seeder's empty-seed refusal is about refusing to
+  fabricate evidence, not about forbidding empty sets. With the
   file present, the verify warns on any timed-out mutant missing from the
   set — a *new* member is a reviewer-stop, not load noise; the printed row
   is paste-ready, with the line riding in a `#` comment — warns on rows
   that do not parse as three fields (named malformed, never misdiagnosed as
   a member matching no mutant), and warns on members matching no mutant at
   all (retirement hygiene) as well as members whose class-and-method appear
-  nowhere together in the README (a cause that was never written; the same
-  soft pointer rule family labels follow — the method name alone was
-  trivially satisfied, since most dispatch members are named `handle`).
+  together in no single README paragraph, each matched as a whole word (a
+  cause that was never written; the same soft pointer rule family labels
+  follow — the method name alone was trivially satisfied, since most
+  dispatch members are named `handle`, and whole-file substring matching
+  stayed trivial: `run` sits inside "rerun", and a sibling member's cause
+  already names the class. One paragraph is wide enough for the house style
+  of an intro line naming `Class.method` above per-mutant bullets).
   Membership must also keep earning itself: a member is validated against
   *all* mutants, so a key that exists but never times out — pasted from the
   wrong report, or a timeout the tests since learned to kill outright —
@@ -399,13 +409,22 @@ invoked it*, and the failure looks exactly like a real regression.
   mutant — the price of a membership drift cannot churn. The README cause
   should name the line it argues about (the paste-ready row carries it in
   the `#` comment) so a reviewer can notice when the code at that line is
-  no longer what the argument described. Advisory only, never a failure, by
+  no longer what the argument described — and "notice" has a machine half:
+  the `# line` comment is parsed back, and a member whose observed timeout
+  lines are all absent from its comment is warned as line drift (the anchor
+  the cause argues about moved entirely; a *new* sibling line next to a
+  recorded one stays quiet, that being the line-less key's stated
+  resolution). Advisory only, never a failure, by
   default: load can time out any mutant on any run, and both flavours are
   still detection. For certifying runs, `-PstrictTimeoutAudit` escalates
   exactly the findings that mean the audit is not being kept — an
-  unaudited newcomer, a malformed row, or a timeout-carrying suite with no
+  unaudited newcomer, a malformed row, a member whose cause was never
+  written (the doctrine admits a newcomer only with its cause written, so a
+  cause-less member is an unfinished admission, not hygiene — row-then-cause
+  is a legitimate sequence *between* certifications, not during one), or a
+  timeout-carrying suite with no
   set at all — to failures, the `-PnoDriftTolerance` precedent; hygiene
-  findings (stale members, quiet streaks, missing causes) stay advisory
+  findings (stale members, quiet streaks, drifted lines) stay advisory
   even there. An escalated finding is the failure, not an advisory — it is
   left out of the end-of-build summary, whose "none failed the build"
   framing must stay true. Both certifying flags refuse a `-PmutateOnly`

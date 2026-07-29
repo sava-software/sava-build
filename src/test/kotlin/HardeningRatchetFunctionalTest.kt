@@ -932,6 +932,55 @@ $fuzzBlock
   }
 
   @Test
+  fun `an audited member timing out away from its recorded line is drift, not silence`() {
+    // The '# line' comment is the anchor the README cause argues about, and
+    // "re-read the cause when that code changes" was purely social: the key only
+    // goes stale when the method disappears, never when the code moves within one.
+    // The report holds the observed side, so the verify compares — disjointness
+    // only, since a new sibling line next to a recorded one is the line-less key's
+    // stated no-warning resolution.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # line 12\n")
+    fun report(vararg lines: Int) = writeReport(
+      lines.map {
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$it,TIMED_OUT,none"
+      },
+      ""
+    )
+
+    report(99)
+    val drifted = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      drifted.contains("1 audited-timeout member(s) timed out at line(s) their row's comment does not name") &&
+          drifted.contains("  com.example.Codec,encode,MathMutator # line(s) 12 -> observed 99"),
+      "drifted anchor not warned:\n$drifted"
+    )
+    assertTrue(
+      drifted.contains("1 line-drifted audit row(s)"),
+      "drift missing from the advisory summary:\n$drifted"
+    )
+
+    // a sibling line landing next to a still-live recorded one draws no warning
+    report(12, 99)
+    val sibling = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      sibling.contains("line-drifted") || sibling.contains("comment does not name"),
+      "sibling line next to the recorded anchor read as drift:\n$sibling"
+    )
+
+    // a row whose comment names no line recorded no anchor: nothing to drift from
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # removed loop exit\n")
+    report(99)
+    val anchorless = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      anchorless.contains("line-drifted") || anchorless.contains("comment does not name"),
+      "anchorless member read as drift:\n$anchorless"
+    )
+  }
+
+  @Test
   fun `a membership row with the wrong field count is named malformed, not stale`() {
     // A two-field row used to surface as 'matches no mutant' — advice that sends the
     // reader hunting for a moved mutant when the actual problem is the row's shape.
@@ -1033,6 +1082,12 @@ $fuzzBlock
       refused.contains("no timed-out mutants in this run's report — nothing to seed"),
       "empty seed not refused:\n$refused"
     )
+    // arming a never-timed-out suite is a different intent with a different
+    // mechanism; the refusal names it instead of reading as "empty sets forbidden"
+    assertTrue(
+      refused.contains("commit encoding-timeouts.csv with only '#' comment lines"),
+      "arming alternative not named:\n$refused"
+    )
     assertFalse(
       File(fixtureDir, "config/pitest/encoding-timeouts.csv").isFile,
       "a refused seed must write nothing"
@@ -1082,6 +1137,12 @@ $fuzzBlock
       third.contains(quietNotice) &&
           third.contains("com.example.Codec,encode,MathMutator (quiet for 3 runs)"),
       "third quiet report not noticed:\n$third"
+    )
+    // the retirement criterion family is one advisory tier: like its siblings the
+    // notice feeds the end-of-build summary, or a gate scrolls it off screen
+    assertTrue(
+      third.contains("1 quiet audited-timeout member(s)"),
+      "quiet streak missing from the advisory summary:\n$third"
     )
 
     // same report, re-run: the counts replay and so does the notice — like every
@@ -1173,22 +1234,37 @@ $fuzzBlock
       "strict run did not fail on the unaudited newcomer and the malformed row:\n$failed"
     )
     // the escalated findings are the failure, not advisories: the end-of-build
-    // summary opens with "none failed the build", which must stay true — only the
-    // hygiene finding (the missing README cause) may appear in it
+    // summary opens with "none failed the build", which must stay true
     assertFalse(
-      failed.contains("unaudited timeout(s)") || failed.contains("malformed audit row(s)"),
+      failed.contains("unaudited timeout(s)") || failed.contains("malformed audit row(s)") ||
+          failed.contains("audited timeout(s) without a README cause"),
       "strict-escalated finding also recorded as an advisory:\n$failed"
     )
 
-    // a fully audited set passes strict even with hygiene findings outstanding
-    // (no README exists, so the cause check is warning on both members)
+    // a member admitted without its README cause is an unfinished admission, not
+    // hygiene — the doctrine admits a newcomer only with its cause written, so the
+    // certifying run stops on it too; row-then-cause is a legitimate sequence
+    // between certifications, not during one
     timeoutsFile.writeText(
       "com.example.Codec,encode,MathMutator\ncom.example.Codec,decode,IncrementsMutator\n"
     )
+    val causeless = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
+    assertTrue(
+      causeless.contains("2 audited member(s) without a README cause"),
+      "strict run did not fail on the unwritten causes:\n$causeless"
+    )
+
+    // with the causes written, a fully audited set passes strict even with hygiene
+    // findings outstanding (the stale member below stays advisory)
+    timeoutsFile.appendText("com.example.Codec,gone,MathMutator\n")
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "`Codec.encode` (MathMutator): the inflated estimate crawls, never fails.\n\n" +
+          "`Codec.decode` (IncrementsMutator): the reversed cursor re-reads forever.\n"
+    )
     val strictClean = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").build().output
     assertTrue(
-      strictClean.contains("cause?"),
-      "hygiene finding expected while README is absent:\n$strictClean"
+      strictClean.contains("match no mutant"),
+      "hygiene finding expected for the stale member:\n$strictClean"
     )
 
     // an unadopted timeout-carrying suite is an unaudited newcomer by definition

@@ -59,6 +59,61 @@ class TimeoutAuditTest {
   }
 
   @Test
+  fun `parse keeps the lines a row's comment names, united across duplicates`() {
+    // the key is line-less on purpose, but the '# line N' the seed writes is the
+    // anchor the README cause argues about — kept per member for the drift check
+    val membership = TimeoutAudit.parse(listOf(
+      "com.example.Codec,encode,MathMutator # lines 12, 30",
+      "com.example.Codec,encode,MathMutator # line 45 — the recorded benign flapper",
+      "com.example.Codec,decode,IncrementsMutator # removed loop exit, no anchor named",
+      "com.example.Codec,strip,MathMutator",
+    ))
+    assertEquals(mapOf("com.example.Codec,encode,MathMutator" to setOf(12, 30, 45)), membership.recordedLines)
+  }
+
+  @Test
+  fun `line drift fires only when observed and recorded lines are disjoint`() {
+    val recorded = mapOf(
+      "com.example.Codec,encode,MathMutator" to setOf(12, 30),
+      "com.example.Codec,decode,IncrementsMutator" to setOf(44),
+    )
+    // overlap on 30: a new sibling line next to a recorded one is the line-less
+    // key's stated no-warning resolution
+    assertEquals(
+      emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+      TimeoutAudit.lineDrift(recorded, mapOf("com.example.Codec,encode,MathMutator" to setOf(30, 99)))
+    )
+    // fully disjoint: the anchor the cause argues about has moved
+    assertEquals(
+      mapOf("com.example.Codec,encode,MathMutator" to (setOf(12, 30) to setOf(99))),
+      TimeoutAudit.lineDrift(recorded, mapOf("com.example.Codec,encode,MathMutator" to setOf(99)))
+    )
+    // a member with no recorded anchor, or no observation this run, takes no part
+    assertEquals(
+      emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+      TimeoutAudit.lineDrift(recorded, mapOf("com.example.Codec,gone,MathMutator" to setOf(7)))
+    )
+    assertEquals(
+      emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+      TimeoutAudit.lineDrift(recorded, emptyMap())
+    )
+  }
+
+  @Test
+  fun `the drift warning prints recorded and observed lines per member`() {
+    val warning = TimeoutAudit.lineDriftWarning(
+      "encoding", "encoding-timeouts.csv",
+      mapOf("com.example.Codec,encode,MathMutator" to (setOf(30, 12) to setOf(99))),
+    )
+    assertTrue(warning.contains("1 audited-timeout member(s) timed out at line(s)"), warning)
+    assertTrue(warning.contains("encoding-timeouts.csv"), warning)
+    assertTrue(
+      warning.contains("  com.example.Codec,encode,MathMutator # line(s) 12, 30 -> observed 99"),
+      warning
+    )
+  }
+
+  @Test
   fun `malformedWarning names the file and the offending rows, or is null`() {
     assertNull(TimeoutAudit.malformedWarning("encoding", "encoding-timeouts.csv", emptyList()))
 
@@ -96,6 +151,35 @@ class TimeoutAuditTest {
     assertEquals(
       members.toList(),
       TimeoutAudit.undocumentedCauses(members) { "handle appears without either class name" }
+    )
+  }
+
+  @Test
+  fun `a cause needs the class and the method in one paragraph, as whole words`() {
+    // whole-file substring matching was trivially satisfied: 'run' sits inside
+    // "rerun", and a sibling member's cause already names the class — so a class
+    // with two audited methods passed as fully documented with one cause written
+    val members = setOf("com.example.Notifier,run,MathMutator")
+    assertEquals(
+      members.toList(),
+      TimeoutAudit.undocumentedCauses(members) {
+        "`Notifier.queueResponse`: drains the queue.\n\nRerun the suite to see it."
+      }
+    )
+    assertEquals(
+      members.toList(),
+      TimeoutAudit.undocumentedCauses(members) {
+        // class and method both present, but never in the same paragraph
+        "`Notifier.queueResponse`: drains the queue.\n\nThe run loop parks forever."
+      }
+    )
+    assertEquals(
+      emptyList<String>(),
+      TimeoutAudit.undocumentedCauses(members) {
+        // the house style: one intro line naming Class.method, bullets below in the
+        // same blank-line-delimited paragraph
+        "Both are in `Notifier.run`, the drain loop:\n- the removed exit parks the drain\n"
+      }
     )
   }
 

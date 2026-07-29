@@ -880,12 +880,17 @@ hardening.mutation.all {
         // while telling its adopter to write causes for zero members, and the flag is
         // only ever pointed at by a summary that reported timeouts — a run where they
         // vanished is the load-dependence the line-less key exists to absorb, not a
-        // population to certify.
+        // population to certify. Arming a never-timed-out suite is a different intent
+        // with a different mechanism (a hand-committed comments-only file), so the
+        // refusal names it instead of reading as "empty sets are forbidden".
         if (timedOutByAuditKey.isEmpty()) {
           throw GradleException(
               "pitest '$suiteName': no timed-out mutants in this run's report — nothing to seed. " +
                   "Timeouts are load-dependent; re-run $pitestTaskName under the conditions whose " +
-                  "summary reported them (see HARDENING.md, the audited-timeout bullet)."
+                  "summary reported them (see HARDENING.md, the audited-timeout bullet). To merely arm " +
+                  "the audit for a suite that has never timed out, commit ${timeoutsFile.name} with " +
+                  "only '#' comment lines — the suite's first timeout then warns as the reviewer-stop " +
+                  "it is."
           )
         }
         val seeded = timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
@@ -960,6 +965,24 @@ hardening.mutation.all {
           advisoryLog.get().record(advisoryScope, "${staleMembers.size} stale audit row(s)")
         }
         val liveMembers = members - staleMembers.toSet()
+        // The '# line' comment the seed writes (and the paste-ready row carries) is
+        // the anchor its README cause argues about, and the doctrine's "re-read the
+        // cause when that code changes" was purely social: the key going stale only
+        // notices a *method* disappearing, never the code moving within one. The
+        // report holds the observed side of that comparison, so make it: a member
+        // whose observed timeout lines all differ from its recorded ones is exactly
+        // the cause-vs-code divergence a reviewer should re-read. Disjointness, not
+        // inequality — a new sibling line next to a recorded one is the line-less
+        // key's stated no-warning resolution (TimeoutAudit.lineDrift).
+        val drifted = TimeoutAudit.lineDrift(
+            membership.recordedLines,
+            timedOutByAuditKey.filterKeys { it in members }
+                .mapValues { (_, timedOut) -> timedOut.mapNotNull { it[4].toIntOrNull() }.toSet() }
+        )
+        if (drifted.isNotEmpty()) {
+          logger.warn(TimeoutAudit.lineDriftWarning(suiteName, timeoutsFile.name, drifted))
+          advisoryLog.get().record(advisoryScope, "${drifted.size} line-drifted audit row(s)")
+        }
         // The check the set was missing: membership was validated against ALL mutants,
         // so a member whose mutants exist but never time out — a key pasted from the
         // wrong report, or a timeout the tests since learned to kill — was accepted
@@ -1006,10 +1029,13 @@ hardening.mutation.all {
           )
           // Derived from the counts, so a same-report re-run reprints it — like every
           // other audit advisory, which are all recomputed from the report rather
-          // than remembering they already printed.
+          // than remembering they already printed. Warn-level like its siblings
+          // (stale rows, missing causes): the retirement criterion family is one
+          // tier, and warn is what feeds the end-of-build advisory summary — a gate
+          // runs the quiet notice as many hundred lines up-screen as any other.
           val settled = quietRuns.filterValues { it >= 3 }
           if (settled.isNotEmpty()) {
-            logger.lifecycle(
+            logger.warn(
                 "pitest '$suiteName': ${settled.size} audited-timeout member(s) have not timed out in 3+ " +
                     "consecutive mutation runs — if a member only times out under gate load this is normal " +
                     "on solo streaks; otherwise its tests now detect the mutant outright, and the member " +
@@ -1017,6 +1043,7 @@ hardening.mutation.all {
                     settled.entries.sortedBy { it.key }
                         .joinToString("\n") { "  ${it.key} (quiet for ${it.value} runs)" }
             )
+            advisoryLog.get().record(advisoryScope, "${settled.size} quiet audited-timeout member(s)")
           }
         }
         // A member is only half audited without its cause: the row makes the set
@@ -1033,19 +1060,25 @@ hardening.mutation.all {
         }
         if (undocumented.isNotEmpty()) {
           logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, undocumented))
-          advisoryLog.get().record(advisoryScope, "${undocumented.size} audited timeout(s) without a README cause")
+          if (!strictTimeoutAudit) {
+            advisoryLog.get().record(advisoryScope, "${undocumented.size} audited timeout(s) without a README cause")
+          }
         }
         // Opt-in escalation for certifying runs, the '-PnoDriftTolerance' precedent:
         // by default every audit finding is advisory (load can time out any mutant on
         // any run), but on a run whose purpose is certification, an unaudited
-        // newcomer or a row the tool cannot parse is exactly what the run exists to
-        // stop on. Hygiene findings (stale members, missing causes, quiet streaks)
-        // stay advisory even here.
-        if (strictTimeoutAudit && (unaudited.isNotEmpty() || malformed.isNotEmpty())) {
+        // newcomer, a row the tool cannot parse, or a member whose cause was never
+        // written is exactly what the run exists to stop on — the doctrine admits a
+        // newcomer only with its cause written, so a cause-less member is an
+        // unfinished admission, not hygiene; row-then-cause is a legitimate sequence
+        // *between* certifications, not during one. Hygiene findings (stale members,
+        // quiet streaks, drifted lines) stay advisory even here.
+        if (strictTimeoutAudit && (unaudited.isNotEmpty() || malformed.isNotEmpty() || undocumented.isNotEmpty())) {
           throw GradleException(
-              "pitest '$suiteName': -PstrictTimeoutAudit — ${unaudited.size} unaudited timed-out mutant(s) " +
-                  "and ${malformed.size} malformed membership row(s); see the warnings above. Paste the " +
-                  "printed row(s) into ${timeoutsFile.name} and write each cause in config/pitest/README.md."
+              "pitest '$suiteName': -PstrictTimeoutAudit — ${unaudited.size} unaudited timed-out mutant(s), " +
+                  "${malformed.size} malformed membership row(s), and ${undocumented.size} audited member(s) " +
+                  "without a README cause; see the warnings above. Paste the printed row(s) into " +
+                  "${timeoutsFile.name} and write each cause in config/pitest/README.md."
           )
         }
       } else if (timedOutByAuditKey.isNotEmpty()) {
