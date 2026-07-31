@@ -891,6 +891,8 @@ $fuzzBlock
           "com.example.Codec,encode\n" // two fields -> 'malformed row'
     )
     File(fixtureDir, "config/pitest/README.md").writeText("# Baseline\n\nNo causes or labels yet.\n")
+    // a stale tool-version record -> 'written by PIT'
+    File(fixtureDir, "config/pitest/encoding-pitest-version").writeText("0.0.0-stale\n")
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
@@ -910,6 +912,53 @@ $fuzzBlock
         "canary pattern fragment '$fragment' matches nothing — reworded warning?\n$output"
       )
     }
+  }
+
+  @Test
+  fun `the tool version is part of the record`() {
+    // The mutant population is a function of PIT itself, and the default PIT version
+    // rides plugin bumps — so a baseline is only comparable to runs from the version
+    // that wrote it. A mismatch warns on a checking run (population churn may be the
+    // tool, not the code) and refuses a record-writing one: reading a possibly-
+    // divergent result is a judgment call, writing the record with one is not.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,12,MathMutator,SURVIVED\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+      ),
+      ""
+    )
+    val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
+
+    // no record yet: a refresh adopts by stamping the current version
+    val refreshed = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    assertFalse(refreshed.output.contains("written by PIT"), refreshed.output)
+    val stamped = toolVersionFile.readText().trim()
+    assertTrue(stamped.isNotEmpty() && stamped.first().isDigit(), "stamped version looks wrong: '$stamped'")
+
+    // matching record: checking and writing runs both stay quiet
+    val clean = runner("pitestEncodingVerify").build()
+    assertFalse(clean.output.contains("written by PIT"), clean.output)
+
+    toolVersionFile.writeText("0.0.0-stale\n")
+
+    // mismatch: a checking run warns but passes
+    val checked = runner("pitestEncodingVerify").build()
+    assertTrue(
+      checked.output.contains("baseline record written by PIT 0.0.0-stale, this run used PIT $stamped"),
+      "mismatch warning missing:\n" + checked.output
+    )
+
+    // mismatch: a record-writing run refuses, naming the deliberate-bump path
+    val refused = runner("pitestEncodingVerify", "-PupdateMutationBaseline").buildAndFail()
+    assertTrue(
+      refused.output.contains("refusing to rewrite the record across a tool bump") &&
+          refused.output.contains("set config/pitest/encoding-pitest-version to $stamped"),
+      "refusal missing or unactionable:\n" + refused.output
+    )
+    assertEquals("0.0.0-stale", toolVersionFile.readText().trim(), "refused run must not restamp")
   }
 
   @Test

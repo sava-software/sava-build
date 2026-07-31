@@ -135,6 +135,20 @@ mutant has exactly three legal outcomes:
    mutants *equivalent with respect to observable behavior* (e.g. a mutant
    that only over-allocates a `StringBuilder`), never for "hard to test".
 
+**The tool version is part of the record.** The mutant population is a
+function of PIT itself (whose version rides plugin bumps), so a baseline is
+only comparable to runs from the version that wrote it. The record lives at
+`config/pitest/<suite>-pitest-version` — per suite, because what it certifies
+is the suite's baseline: one shared file would lift every suite's refusal at
+the first refresh after a bump, silently certifying the rest against a
+version that never wrote them. A record-writing run stamps it (absent file:
+adopted silently on the next refresh); a version mismatch *warns* on a
+checking run and *refuses* every record-writing flag — reading a possibly
+divergent result is a judgment call, writing the record with one is not.
+Bumping deliberately means setting the suite's file to the new version and
+refreshing that suite, reading the churn as a real population diff rather
+than noise.
+
 The baseline is a ratchet: shrinking it is always an improvement, growing it
 requires a written reason. Repos may seed their first baseline with the full
 pre-existing survivor population — that is triage debt made explicit, not
@@ -161,6 +175,18 @@ principle* but unreachable through any deterministic harness. Accept it as
 **unreachable in-harness** and name what would reach it — the named escape
 hatch is what tells a later reader whether the acceptance still holds
 *(casebook: the HTTP 199 guard)*.
+
+**"The harness cannot reach this" is a claim with an expiry date.** A
+downstream adaptation of this process accepted 95 rows across two families on
+exactly that claim; it was never true, and disproving it took a single
+session (2026-07-26). So before writing an unreachable acceptance, try the
+thing: spend an hour on the harness before spending a paragraph on the
+reason. When a row really is unreachable, write the reason per row rather
+than per family and name the *specific* missing capability, because a later
+reader should be testing the claim, not inheriting it. Expect
+unreachable-acceptance families to shrink over time as harness scaffolding
+accretes — one that grows is a harness that stopped being invested in, and
+the family's age is part of what a triage pass should re-read.
 
 Every `pitest<Suite>` run prints the split without being asked:
 
@@ -672,6 +698,38 @@ new debt. Seed it, label it untriaged, work it down. Cheap lie-detector for
 an allowlist: list the module's main classes, subtract what any suite's
 patterns match, read what is left.
 
+## What the ratchet cannot see
+
+The mutant population bounds what a clean ratchet proves, and the bound has
+several independent edges. Keeping them in one named inventory — rather than
+scattered where each was learned — is what stops a green run from being read
+as more than it is. The generic edges:
+
+- **The mutator set** — a mutant that is never generated cannot survive; the
+  next section is this entry in detail, and the mutator-blindness advice is
+  its machine check.
+- **The class path** — PIT's world diverges from the module path's; the
+  "class path is PIT's world" section below is this entry in detail.
+- **Kills come only from `targetTests`.** Integration suites, live drift
+  checks, localnet-style harnesses, and anything else outside the suite's
+  test pattern are invisible: code exercised only through them reads as
+  `NO_COVERAGE` even when thoroughly tested. That is useful information — it
+  maps which logic is verifiable in seconds versus minutes — but read such a
+  row accordingly before writing a unit test that merely restates wiring.
+- **Excluded classes never enter the population.** Every `excludedClasses`
+  glob and every auto-excluded fuzz harness is a deliberate hole; the
+  excluded-production-class advisory names main-source classes a glob
+  swallows so the hole stays deliberate.
+- **Generated and reflective code.** Annotation-processor output, generated
+  sources, and behavior reached only reflectively carry their correctness on
+  their own tests, not on the ratchet.
+
+Each consuming repo should keep its own instance of this inventory (in
+`HARDENING_NOTES.md`), naming the repo-specific edges — the suites whose
+kills depend on background-thread ceilings, the feature-gated paths, the
+packages deliberately without a suite — because the generic list above
+cannot know them.
+
 ## The mutator set bounds what the ratchet can see
 
 Targeting chooses which classes are mutated; the mutator set chooses which
@@ -847,6 +905,16 @@ Fuzz targets are smoke tests at the default 60s; real exploration is longer
 runs via `-PmaxFuzzTime`. Every finding becomes two artifacts: a minimized
 input committed to the seed corpus, and a named regression unit test. A crash
 fixed without both is a crash that can return.
+
+**A finding that cannot be fixed yet still gets its regression test — a
+failing one, committed `@Disabled`.** The test asserts the *correct*
+behavior, so it fails while the bug lives; disable it with the finding's
+identifier as the reason and un-ignore it when the fix lands. The opposite
+pattern — asserting the buggy value so the suite stays green — makes the bug
+look intended and is exactly how findings rot. Keep a findings record with
+the same lifecycle rule the Rust adaptation proved out: a finding leaves the
+record only when it is fixed (delete the `@Disabled`, keep the test) or
+argued not-a-bug in writing.
 
 **Silence operator diagnostics by the logger's declaration site, not the
 class that logs.** A parser that logs each failure at ERROR with the full

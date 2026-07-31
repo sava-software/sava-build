@@ -40,7 +40,7 @@ local_repo="$sava_build_dir/build/sava-test-repo"
 # by HardeningRatchetFunctionalTest ('the fleet canary reprint filter matches every
 # warning it canaries'), which provokes each warning and greps a real verify's
 # output with this exact pattern — reword a message and that test names this line.
-findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding'
+findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding|written by PIT'
 
 # The resolution proof: the 0.0.0-test settings plugin's FlowAction prints this line
 # at the end of every build it was actually resolved into. Coupled to the notice's

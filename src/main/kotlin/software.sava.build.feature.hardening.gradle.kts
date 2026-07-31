@@ -1,5 +1,6 @@
 import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.BaselineNotes
+import software.sava.build.hardening.ExclusionAudit
 import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
@@ -587,6 +588,10 @@ hardening.mutation.all {
   // '-PupdateMutationBaseline' and documenting the reason (see HARDENING.md).
   val pitestTaskName = "pitest" + suite.name.replaceFirstChar(Char::uppercase)
   val suiteName = suite.name
+  // computed once and shared by every advisory-recording task in the suite: the
+  // end-of-build summary groups findings by this string, so two drifting copies
+  // would split one suite's findings across two scope headings
+  val suiteAdvisoryScope = (if (project.path == ":") "" else "${project.path} ") + "pitest '$suiteName'"
   val verify = tasks.register("${pitestTaskName}Verify") {
     group = "verification"
     description = "Fails when the '$suiteName' PIT run left unkilled mutants missing from config/pitest/$suiteName-accepted.csv."
@@ -604,10 +609,12 @@ hardening.mutation.all {
     val strictTimeoutAudit = providers.gradleProperty("strictTimeoutAudit").isPresent
     val statusStashFile = layout.projectDirectory.file(".pitest-history/$suiteName.statuses").asFile
     val timeoutQuietFile = layout.projectDirectory.file(".pitest-history/$suiteName.timeout-quiet").asFile
+    val toolVersionFile = layout.projectDirectory.file("config/pitest/$suiteName-pitest-version").asFile
+    val pitToolVersion = hardening.pitestVersion
     // captured locally so the doLast lambda does not hold the script instance
     val historyAssisted = mutationHistory
     val advisoryLog = hardeningAdvisoryLog
-    val advisoryScope = (if (project.path == ":") "" else "${project.path} ") + "pitest '$suiteName'"
+    val advisoryScope = suiteAdvisoryScope
     usesService(advisoryLog)
     // Resolved at configuration time so the scaffolding check below can ask whether a
     // mutated class is one of this project's own test sources.
@@ -626,6 +633,38 @@ hardening.mutation.all {
                 "above lacks the cause, the daemon log keeps the minion's stack trace: " +
                 "~/.gradle/daemon/<version>/daemon-<pid>.out.log"
         )
+      }
+      // The mutant population is a function of PIT itself (whose default version rides
+      // plugin bumps via Dependabot), so the baseline record is only comparable to runs
+      // from the version that wrote it. The recorded version lives in
+      // config/pitest/<suite>-pitest-version — per suite, because the record it certifies
+      // is per-suite: one shared file would lift every suite's refusal at the first
+      // refresh, silently certifying the rest against a version that never wrote them.
+      // Stamped by the record-writing flags; a mismatch
+      // warns on a checking run and refuses a writing one — reading a possibly-divergent
+      // result is a judgment call, writing the record with one is not. No file means a
+      // record predating this check: adopted silently by the next refresh.
+      val currentPit = pitToolVersion.get()
+      val recordedPit = toolVersionFile.takeIf { it.isFile }?.readText()?.trim()
+      val writingRecord = update || union || prune || initTimeoutAudit
+      if (recordedPit != null && recordedPit != currentPit) {
+        if (writingRecord) {
+          throw GradleException(
+              "pitest '$suiteName': the baseline record was written by PIT $recordedPit but this run used " +
+                  "PIT $currentPit — refusing to rewrite the record across a tool bump, whose population " +
+                  "churn would be indistinguishable from code churn. To bump deliberately: set " +
+                  "config/pitest/$suiteName-pitest-version to $currentPit, then refresh the suite and read the " +
+                  "resulting churn as a real population diff, not noise."
+          )
+        }
+        val versionWarning = "pitest '$suiteName': baseline record written by PIT $recordedPit, this run " +
+            "used PIT $currentPit — population differences may be the tool, not the code, and the " +
+            "record-writing flags refuse until config/pitest/$suiteName-pitest-version is updated deliberately"
+        logger.warn(versionWarning)
+        advisoryLog.get().record(advisoryScope, "baseline written by PIT $recordedPit, ran $currentPit")
+      } else if (writingRecord && recordedPit == null) {
+        // adoption: the first record-writing run stamps the file
+        BaselineFiles.writeAtomically(toolVersionFile, currentPit + "\n")
       }
       val gated = setOf("SURVIVED", "NO_COVERAGE")
       // Status is field 5 (0-based); the trailing killing-test field can itself contain
@@ -1647,7 +1686,20 @@ hardening.mutation.all {
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
     val debtTimeoutsFile = layout.projectDirectory.file("config/pitest/$suiteName-timeouts.csv").asFile
+    val debtToolVersionFile = layout.projectDirectory.file("config/pitest/$suiteName-pitest-version").asFile
+    val debtPitVersion = hardening.pitestVersion
     doLast {
+      // Committed-files-only, like the audit's static half below — which makes Debt
+      // (and therefore the fleet canary) the place a plugin release that bumps PIT
+      // surfaces per consumer repo, before anyone reads tool churn as code churn.
+      val recordedPit = debtToolVersionFile.takeIf { it.isFile }?.readText()?.trim()
+      if (recordedPit != null && recordedPit != debtPitVersion.get()) {
+        logger.warn(
+            "pitest '$suiteName': baseline record written by PIT $recordedPit, this plugin runs " +
+                "PIT ${debtPitVersion.get()} — population differences may be the tool, not the code; " +
+                "re-baseline deliberately (config/pitest/$suiteName-pitest-version, then refresh the suite)"
+        )
+      }
       // The audited-timeout set's static half, shared with the verify (TimeoutAudit):
       // row shape and cause presence read committed files only, so a pasted member or
       // a fresh README cause is confirmed here in seconds instead of after the next
@@ -1987,11 +2039,33 @@ hardening.mutation.all {
     val adviceMutators = suite.mutators
     val adviceDeclined = suite.declinedMutators
     val adviceTrialTask = path.substringBeforeLast(':') + ":pitestMutatorTrial"
+    // the mutation recompile contains the test sources too (they share the mutated
+    // packages), so the audit tells production from prey the same way the
+    // mutated-fakes warning does: by whether the source sits under a test src dir
+    val adviceTestSourceDirs = sourceSets.test.get().java.srcDirs
+    val adviceAdvisoryLog = hardeningAdvisoryLog
+    val adviceAdvisoryScope = suiteAdvisoryScope
+    usesService(adviceAdvisoryLog)
     doFirst {
       val classesDir = adviceClassesDir.get().asFile
       // No recompiled classes means nothing was scanned, and "found nothing" would
       // then wrongly read as "the declines have no subject left".
       if (classesDir.isDirectory) {
+        // The inverse of the mutated-fakes warning: a production class matched by an
+        // exclusion glob leaves the population silently — the globs and the sources
+        // they protect must define the same set.
+        val swallowed = ExclusionAudit.swallowedProductionClasses(
+            classesDir, adviceTargets.get(), adviceExcludes.get(), adviceTestSourceDirs
+        )
+        ExclusionAudit.warning(suiteName, swallowed)?.let {
+          logger.warn(it)
+          // recorded like every other warn-level advisory, so it reaches the
+          // end-of-build summary instead of scrolling past mid-build
+          adviceAdvisoryLog.get().record(
+              adviceAdvisoryScope,
+              "${swallowed.size} production class(es) swallowed by excludedClasses"
+          )
+        }
         val advice = MutatorAdvice.advise(
             MutatorAdvice.scan(
                 classesDir,
