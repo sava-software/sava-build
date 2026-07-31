@@ -159,9 +159,11 @@ class HardeningFeatureSmokeTest {
       .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
     assertFalse(without.output.contains("FAILED"), without.output)
 
+    // 'fuzzPlainExtra' must not satisfy 'fuzzPlain': word-boundary matching, so a
+    // target whose name prefixes another cannot pass on the longer name's mention
     val workflow = File(fixtureDir, ".github/workflows/fuzz.yml")
     workflow.parentFile.mkdirs()
-    workflow.writeText("run: ./gradlew --continue fuzzCodec fuzzUnset\n")
+    workflow.writeText("run: ./gradlew --continue fuzzCodec fuzzUnset fuzzPlainExtra\n")
 
     val missing = GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments("fuzzWorkflowInSync", "--stacktrace").buildAndFail()
@@ -170,7 +172,9 @@ class HardeningFeatureSmokeTest {
       "missing target not named with a paste-ready task path:\n" + missing.output
     )
 
-    workflow.appendText("#   also fuzzPlain\n")
+    // the documented escape hatch: a commented mention carrying the reason keeps a
+    // target out of the soak deliberately, and legibly
+    workflow.appendText("# fuzzPlain stays out of the soak: replay-only regression corpus\n")
     val complete = GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
     assertFalse(complete.output.contains("FAILED"), complete.output)

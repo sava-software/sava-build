@@ -545,15 +545,21 @@ val fuzzWorkflowInSync = tasks.register("fuzzWorkflowInSync") {
       return@doLast
     }
     val text = workflowFile.readText()
+    // word-boundary, not substring: 'fuzzWs' must not pass on 'fuzzWsFraming'. A
+    // mention inside a yaml comment satisfies the check deliberately — the escape
+    // hatch for a target kept out of the soak on purpose, whose comment then holds
+    // the reason next to the task list it is absent from.
     val missing = names.get().sorted()
         .map { "fuzz" + it.replaceFirstChar(Char::uppercase) }
-        .filterNot { text.contains(it) }
+        .filterNot { Regex("\\b" + Regex.escape(it) + "\\b").containsMatchIn(text) }
     if (missing.isNotEmpty()) {
       throw GradleException(
           "fuzzWorkflowInSync: $workflowFile runs a weekly soak but names ${missing.size} registered " +
               "fuzz target(s) nowhere — its corpus replays in check, but the target itself is never " +
               "fuzzed, which reads as covered while exploring nothing. Add to the soak's gradle " +
-              "invocation:\n" + missing.joinToString("\n") { "  $taskPathPrefix:$it" }
+              "invocation:\n" + missing.joinToString("\n") { "  $taskPathPrefix:$it" } +
+              "\nor, to keep a target out of the soak deliberately, name it in a yaml comment with " +
+              "the reason."
       )
     }
   }

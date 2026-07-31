@@ -975,8 +975,20 @@ the remembering; the seed replay guards inputs already found, never the code
 that changed since. The canonical workflow below (drop in as
 `.github/workflows/fuzz.yml`; swap `<N>` for the target count and the task
 list and artifact paths for the module's own) soaks every target weekly and
-uploads reproducers on failure. Three details are load-bearing, each one a
-review finding against a hand-rolled copy:
+uploads reproducers on failure.
+
+The task list is machine-checked: `fuzzWorkflowInSync` (in `check` and the
+fleet canary) fails when the workflow exists but a registered target's task
+appears nowhere in it — the register-and-forget gap where a corpus replays in
+`check` forever while the target is never fuzzed, reading as covered. The
+match is word-boundary (`fuzzWs` does not pass on `fuzzWsFraming`), and a
+mention inside a yaml comment satisfies it deliberately: that is the escape
+hatch for a target kept out of the soak on purpose, with the comment holding
+the reason next to the task list it is absent from. No workflow at all stays
+quiet — adopting the soak is the repo's call, and this section is the nudge.
+
+Three details of the workflow itself are load-bearing, each one a review
+finding against a hand-rolled copy:
 
 - **`--continue`**, or the first crashing target skips every remaining
   target — inverting the workflow's purpose on exactly the weeks it matters.
@@ -993,7 +1005,11 @@ review finding against a hand-rolled copy:
   guard is load-bearing, not decoration: bash arithmetic resolves alphabetic
   garbage as an unset variable — `abc` becomes 0 and the soak silently
   truncates to the floor — so only the guard makes a bad input fail the
-  budget step instead of shrinking the campaign.
+  budget step instead of shrinking the campaign. It requires a *positive*
+  integer with no leading zeros: `0` is libFuzzer's run-forever sentinel
+  (the step would time out mid-target against a 30-minute budget), and a
+  leading zero is octal to bash but decimal to Jazzer — the two paths agree
+  by construction because both shapes are rejected.
 
 ```yaml
 name: Fuzz
@@ -1036,7 +1052,7 @@ jobs:
         env:
           MAX_FUZZ_TIME: ${{ inputs.max-fuzz-time || '900' }}
         run: |
-          [[ "$MAX_FUZZ_TIME" =~ ^[0-9]+$ ]] || { echo "max-fuzz-time must be whole seconds: '$MAX_FUZZ_TIME'" >&2; exit 1; }
+          [[ "$MAX_FUZZ_TIME" =~ ^[1-9][0-9]*$ ]] || { echo "max-fuzz-time must be positive whole seconds, no leading zeros: '$MAX_FUZZ_TIME'" >&2; exit 1; }
           echo "timeout-minutes=$(( (<N> * MAX_FUZZ_TIME + 59) / 60 + 30 ))" >> "$GITHUB_OUTPUT"
 
       - name: Fuzz
