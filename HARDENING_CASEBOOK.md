@@ -778,3 +778,21 @@ pool built by `mapNotNull` over annotations silently excludes the unannotated �
 check what the absence of a note means before keying on its presence*; *when a
 pairing can be wrong and its wrongness looks like success, print the pairing,
 not a count of them*.
+
+## The green run against stale classes
+
+A source edit raced a concurrently running build; the next `pitestWs`
+invocation reported `compileForPitest` UP-TO-DATE, ran PIT for real — 37
+seconds, a full fresh report — against the pre-edit classes, and came back
+green with zero baseline drift. The edit had added lines that had to shift
+dozens of accepted rows, so zero drift was the tell, not the reassurance:
+editing sources while a build is running can poison Gradle's incremental
+state, and nothing downstream can notice — the report is fresh, the tasks
+ran, the ratchet compared honestly, all against the old bytecode. The next
+invocation compiled for real and told the truth (34 rows of drift).
+
+Rules: *after a source edit, an implausibly quiet mutation run is suspect
+until the log shows `compileForPitest` executed rather than UP-TO-DATE*; *a
+certification is only as fresh as its compile — "UP-TO-DATE" for a compile
+of the file you just edited is a contradiction, read it twice*; *never edit
+sources while a build that will certify them is running*.

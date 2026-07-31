@@ -505,6 +505,61 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
   }
 }
 
+// Registered fuzz harnesses live inside the packages they exercise, so a
+// package-wildcard suite would otherwise mutate the harness itself. Harness
+// mutants are categorically noise — a mutated harness weakens the fuzzer, it can
+// never be product risk — so every registered target's class (plus its nested
+// classes; lambdas compile into the class itself) is excluded from every suite in
+// the module automatically, closing the silent gap when a suite registration
+// predates the module's first harness and carries no hand-written '*Fuzz*' row.
+val fuzzHarnessExcludes = objects.listProperty<String>()
+hardening.fuzz.all {
+  // orElse keeps a misconfigured target's blast radius local: targetClass has no
+  // convention, and an absent value propagated through the zip would drop the
+  // whole --excludedClasses argument — taking every suite's own *Test* exclusions
+  // with it, so PIT would mutate the test classes and read as a debt explosion.
+  // The target's own fuzz task still fails at execution, which is where the
+  // mistake belongs.
+  fuzzHarnessExcludes.addAll(targetClass.map { listOf(it, "$it\$*") }.orElse(emptyList()))
+}
+
+// A corpus that replays in `check` but whose target never joins the weekly soak
+// reads as covered while exploring nothing new — the same silent-gap class as a
+// suite registration missing its harness exclusion. If the repo carries a fuzz
+// workflow, every registered target's task must appear in it; without one the
+// check stays quiet (adopting the soak is the repo's call, and HARDENING.md's
+// "The weekly soak" section is the nudge).
+val fuzzTargetNames = objects.setProperty<String>()
+hardening.fuzz.all {
+  fuzzTargetNames.add(name)
+}
+val fuzzWorkflowInSync = tasks.register("fuzzWorkflowInSync") {
+  group = "verification"
+  description = "Fails when a weekly fuzz workflow exists but names a registered fuzz target nowhere."
+  val workflowFile = rootProject.layout.projectDirectory.file(".github/workflows/fuzz.yml").asFile
+  val names = fuzzTargetNames
+  val taskPathPrefix = path.substringBeforeLast(':')
+  inputs.files(workflowFile)
+  doLast {
+    if (!workflowFile.isFile) {
+      return@doLast
+    }
+    val text = workflowFile.readText()
+    val missing = names.get().sorted()
+        .map { "fuzz" + it.replaceFirstChar(Char::uppercase) }
+        .filterNot { text.contains(it) }
+    if (missing.isNotEmpty()) {
+      throw GradleException(
+          "fuzzWorkflowInSync: $workflowFile runs a weekly soak but names ${missing.size} registered " +
+              "fuzz target(s) nowhere — its corpus replays in check, but the target itself is never " +
+              "fuzzed, which reads as covered while exploring nothing. Add to the soak's gradle " +
+              "invocation:\n" + missing.joinToString("\n") { "  $taskPathPrefix:$it" }
+      )
+    }
+  }
+}
+tasks.named("check") { dependsOn(fuzzWorkflowInSync) }
+
 hardening.mutation.all {
   val suite = this
   suite.mutators.convention("STRONGER")
@@ -513,6 +568,11 @@ hardening.mutation.all {
   suite.timeoutFactor.convention(1.25)
   suite.timeoutConst.convention(4000L)
   suite.excludedClasses.convention(emptyList())
+  // the registration's own exclusions plus every registered fuzz harness; feeds
+  // both the PIT argument and the mutator-blindness scan so the two cannot drift
+  val allExcludedClasses = suite.excludedClasses.zip(fuzzHarnessExcludes) { excluded, harnesses ->
+    (excluded + harnesses).distinct()
+  }
 
   // Mutation ratchet: after each 'pitest<Name>' run, diff the unkilled mutants
   // (SURVIVED and NO_COVERAGE) against the checked-in baseline at
@@ -1276,7 +1336,19 @@ hardening.mutation.all {
         // debt at the same key).
         run {
           fun fmtDelta(d: Int) = if (d >= 0) "+$d" else "$d"
-          val pairsByClass = (noteShiftPairs + bareShiftPairs).groupBy { it.second.substringBefore(',') }
+          // Within one line-less key the assignment of old to new lines is arbitrary —
+          // every permutation writes the same unlabeled rows — so a crosswise pairing
+          // of identical siblings is repaired here (both sides sorted by line and
+          // re-zipped) instead of surfacing as an outlier a human must disprove by
+          // hand. Note-carrying pairs are left alone: their assignment is observable.
+          val repairedBare = bareShiftPairs
+              .groupBy { linelessKey(it.second) }
+              .flatMap { (_, group) ->
+                if (group.size < 2) group
+                else group.map { it.first }.sortedBy { rowLine(it).toInt() }
+                    .zip(group.map { it.second }.sortedBy { rowLine(it).toInt() })
+              }
+          val pairsByClass = (noteShiftPairs + repairedBare).groupBy { it.second.substringBefore(',') }
           for ((clazz, pairs) in pairsByClass) {
             if (pairs.size < 2) continue
             val deltas = pairs.map { (old, new) -> rowLine(new).toInt() - rowLine(old).toInt() }
@@ -1287,15 +1359,29 @@ hardening.mutation.all {
             // credible only while they are quiet on genuinely ambiguous evidence
             if (dominantEntry.value * 2 <= pairs.size) continue
             val dominant = dominantEntry.key
+            // pairs moving together against the dominant delta are the signature of a
+            // second edit region, whose rows all shift by the same amount; a killed
+            // row recycled onto new debt lands at an arbitrary delta, typically alone
             pairs.zip(deltas)
                 .filter { (_, delta) -> delta != dominant }
-                .forEach { (pair, delta) ->
-                  logger.lifecycle(
-                      "pitest baseline '$suiteName': PAIRING OUTLIER — '${pair.first}' was paired onto " +
-                          "line ${rowLine(pair.second)} (a ${fmtDelta(delta)} move) while other '$clazz' " +
-                          "pairs moved ${fmtDelta(dominant)}: verify the same mutant moved, and not a " +
-                          "killed row recycled onto new debt at the same class/method/mutator/status"
-                  )
+                .groupBy({ (_, delta) -> delta }, { (pair, _) -> pair })
+                .forEach { (delta, group) ->
+                  if (group.size > 1) {
+                    logger.lifecycle(
+                        "pitest baseline '$suiteName': ${group.size} '$clazz' pair(s) moved ${fmtDelta(delta)} " +
+                            "together while the dominant delta is ${fmtDelta(dominant)} — consistent with a " +
+                            "second edit region, not a recycled row: " +
+                            group.joinToString("; ") { pair -> "'${pair.first}' -> line ${rowLine(pair.second)}" }
+                    )
+                  } else {
+                    val pair = group.first()
+                    logger.lifecycle(
+                        "pitest baseline '$suiteName': PAIRING OUTLIER — '${pair.first}' was paired onto " +
+                            "line ${rowLine(pair.second)} (a ${fmtDelta(delta)} move) while other '$clazz' " +
+                            "pairs moved ${fmtDelta(dominant)}: verify the same mutant moved, and not a " +
+                            "killed row recycled onto new debt at the same class/method/mutator/status"
+                    )
+                  }
                 }
           }
         }
@@ -1779,7 +1865,7 @@ hardening.mutation.all {
     val targetClassesArg = mutateOnly.map { "--targetClasses=$it" }
         .orElse(suite.targetClasses.map { "--targetClasses=" + it.joinToString(",") })
     // a map lambda returning null leaves the provider absent, dropping the argument
-    val excludedClassesArg = suite.excludedClasses.map { excluded ->
+    val excludedClassesArg = allExcludedClasses.map { excluded ->
       if (excluded.isEmpty()) null else "--excludedClasses=" + excluded.joinToString(",")
     }
     val targetTestsArg = suite.targetTests.map { "--targetTests=$it" }
@@ -1891,7 +1977,7 @@ hardening.mutation.all {
     // Plain values only: the configuration cache cannot serialize the script.
     val adviceClassesDir = mutationClassesDir
     val adviceTargets = suite.targetClasses
-    val adviceExcludes = suite.excludedClasses
+    val adviceExcludes = allExcludedClasses
     val adviceMutators = suite.mutators
     val adviceDeclined = suite.declinedMutators
     val adviceTrialTask = path.substringBeforeLast(':') + ":pitestMutatorTrial"

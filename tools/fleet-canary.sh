@@ -84,9 +84,13 @@ for repo in "$@"; do
     # checkout's digest: a template edit breaks every consumer's 'check' at
     # bump time by design, and the canary is where that obligation should be
     # announced — as a per-repo failure naming the marker dance — before the
-    # release creates it, not one repo at a time after.
+    # release creates it, not one repo at a time after. fuzzWorkflowInSync
+    # rides along: quiet in repos without a weekly soak, and a sub-second
+    # static check that every registered fuzz target is actually in the soak's
+    # task list where one exists.
     tasks="$tasks
-agentsTemplateInSync"
+agentsTemplateInSync
+fuzzWorkflowInSync"
   fi
   echo "fleet-canary: $repo — $(echo "$tasks" | tr '\n' ' ')"
   if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" $tasks) > "$out_file" 2>&1; then

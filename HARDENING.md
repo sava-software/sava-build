@@ -895,6 +895,21 @@ Since a fuzz target whose findings are never replayed is the exact rot the
 replay mechanism exists to prevent, `generateFuzzReplayTests` now names every
 corpus-less target and prints the one-line fix.
 
+**Landing a fuzz target in a mutated package changes the suite in the same
+build, in two directions.** The harness class itself leaves the mutant
+population automatically: every registered target's class (plus its nested
+classes) is appended to every suite's `excludedClasses`, because a mutated
+harness weakens the fuzzer and can never be product risk — no hand-written
+`*Fuzz*` exclusion row needed, and no silent gap when a suite registration
+predates the module's first harness. The generated `<Harness>SeedReplayTest`,
+though, matches the usual `*Test*` targetTests and joins the suite as a
+killer immediately — seeds reach code no hand-written test covers, so expect
+`NO_COVERAGE` rows to flip to `SURVIVED` and surface as new-unexplained churn
+on the next verify. That is the replay doing its job: the flipped rows were
+never-observed behavior, now observed and undetected. Kill or triage them
+before refreshing — the flips are precisely where a targeted test is
+cheapest to justify.
+
 **A corpus does two independent jobs, and only the first is about the input
 format.** A *bootstrap* corpus buys coverage a mutator would take too long to
 reach alone — a transaction whose header, offsets, and lengths must all agree
@@ -952,6 +967,100 @@ parsers for one config, an encode/decode round trip, a fast path beside a
 reference path: require the two to *agree* (or both to reject). Crash-only
 fuzzing cannot see a wrong answer *(casebook: the config differential
 harness)*.
+
+### The weekly soak
+
+Campaigns only run when someone remembers to run them unless a schedule does
+the remembering; the seed replay guards inputs already found, never the code
+that changed since. The canonical workflow below (drop in as
+`.github/workflows/fuzz.yml`; swap `<N>` for the target count and the task
+list and artifact paths for the module's own) soaks every target weekly and
+uploads reproducers on failure. Three details are load-bearing, each one a
+review finding against a hand-rolled copy:
+
+- **`--continue`**, or the first crashing target skips every remaining
+  target — inverting the workflow's purpose on exactly the weeks it matters.
+  The build still exits nonzero at the end, so the upload sees every
+  target's findings.
+- **The timeout lives on the step, not the job.** A job-level timeout marks
+  the job *cancelled*, `if: failure()` never fires, and the findings upload
+  is silently lost; a step-level timeout fails the step, the job fails
+  normally, and the upload runs.
+- **The budget is bash integer math in its own step, with the guard.**
+  Workflow-expression arithmetic has no rounding, so it hands the runner a
+  fractional `timeout-minutes` whenever the seconds input is not a multiple
+  of 60 — an untested shape; the bash ceiling is a tested one. The regex
+  guard is load-bearing, not decoration: bash arithmetic resolves alphabetic
+  garbage as an unset variable — `abc` becomes 0 and the soak silently
+  truncates to the floor — so only the guard makes a bad input fail the
+  budget step instead of shrinking the campaign.
+
+```yaml
+name: Fuzz
+
+on:
+  schedule:
+    # weekly soak; findings surface as workflow failures with the crash
+    # input attached — commit each one as a named seed + regression test
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      max-fuzz-time:
+        description: Seconds to run each fuzz target.
+        required: false
+        default: "900"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - id: setup
+        uses: sava-software/sava-build@main
+        with:
+          default-java-version: ${{ vars.JAVA_VERSION }}
+          jdk-src: ${{ vars.JDK_SRC }}
+          gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
+
+      # integer ceiling; <N> = number of fuzz targets in the run below. The
+      # regex guard is load-bearing: bash arithmetic resolves alphabetic
+      # garbage as an unset variable, silently budgeting 0 seconds of fuzzing
+      - id: budget
+        name: Compute fuzz time budget
+        env:
+          MAX_FUZZ_TIME: ${{ inputs.max-fuzz-time || '900' }}
+        run: |
+          [[ "$MAX_FUZZ_TIME" =~ ^[0-9]+$ ]] || { echo "max-fuzz-time must be whole seconds: '$MAX_FUZZ_TIME'" >&2; exit 1; }
+          echo "timeout-minutes=$(( (<N> * MAX_FUZZ_TIME + 59) / 60 + 30 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Fuzz
+        timeout-minutes: ${{ fromJSON(steps.budget.outputs.timeout-minutes) }}
+        run: >
+          ./gradlew --stacktrace --continue
+          -PjavaVersion=${{ steps.setup.outputs.java-version }}
+          -PmaxFuzzTime=${{ inputs.max-fuzz-time || '900' }}
+          :<module>:fuzz<TargetOne> :<module>:fuzz<TargetTwo>
+
+      - name: Upload findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings
+          # Jazzer writes crash-*/oom-*/timeout-* reproducers into the module
+          # working directory; the working corpora hold the inputs that led there
+          path: |
+            <module>/crash-*
+            <module>/oom-*
+            <module>/timeout-*
+            <module>/build/fuzz/
+          if-no-files-found: ignore
+```
 
 ## Determinism requirement
 

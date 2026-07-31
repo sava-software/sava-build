@@ -47,6 +47,8 @@ class HardeningFeatureSmokeTest {
           }
           mutation.register("tuned") {
             targetClasses = listOf("com.example.Tuned")
+            // own exclusions must survive ahead of the appended fuzz harnesses
+            excludedClasses = listOf("com.example.*Test*")
             targetTests = "com.example.*Test*"
             timeoutFactor = 2.5
             timeoutConst = 10000L
@@ -57,6 +59,10 @@ class HardeningFeatureSmokeTest {
           }
           fuzz.register("plain") {
             targetClass = "com.example.PlainFuzz"
+          }
+          // no targetClass: must contribute nothing to the suites' exclusions
+          // instead of turning the whole --excludedClasses argument absent
+          fuzz.register("unset") {
           }
         }
 
@@ -84,9 +90,15 @@ class HardeningFeatureSmokeTest {
             // PIT's own timeout defaults ride along unless the suite tunes them
             check(pit.any { it == "--timeoutFactor=1.25" }) { "timeoutFactor default: " + pit }
             check(pit.any { it == "--timeoutConst=4000" }) { "timeoutConst default: " + pit }
+            // every registered fuzz harness is auto-excluded from every suite — exact
+            // class plus its nested classes — so a package-wildcard suite never
+            // mutates the harness that exercises it
+            check(pit.any { it == "--excludedClasses=com.example.CodecFuzz,com.example.CodecFuzz$*,com.example.PlainFuzz,com.example.PlainFuzz$*" }) { "harness auto-exclusion: " + pit }
             val tuned = tunedArgs.get()
             check(tuned.any { it == "--timeoutFactor=2.5" }) { "timeoutFactor override: " + tuned }
             check(tuned.any { it == "--timeoutConst=10000" }) { "timeoutConst override: " + tuned }
+            // a suite's own exclusions come first, harnesses appended after
+            check(tuned.any { it == "--excludedClasses=com.example.*Test*,com.example.CodecFuzz,com.example.CodecFuzz$*,com.example.PlainFuzz,com.example.PlainFuzz$*" }) { "own + harness exclusions: " + tuned }
             val fuzz = fuzzArgs.get()
             check(fuzz.any { it == "--target_class=com.example.CodecFuzz" }) { "target_class: " + fuzz }
             check(fuzz.any { it == "-max_total_time=60" }) { "max_total_time: " + fuzz }
@@ -133,6 +145,35 @@ class HardeningFeatureSmokeTest {
       .withArguments("help", "-PmaxFuzzTime=15", "--stacktrace")
       .build()
     assertFalse(override.output.contains("FAILED"), override.output)
+  }
+
+  @Test
+  fun `a fuzz workflow missing a registered target fails the sync check`() {
+    // A corpus that replays in check while its target never joins the weekly soak
+    // reads as covered while exploring nothing new. No workflow at all stays quiet
+    // (adopting the soak is the repo's call); an existing workflow must name every
+    // registered target's task.
+    writeFixture(emptyList(), expectedMutationRelease = 25, expectedFuzzRelease = 25)
+
+    val without = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
+    assertFalse(without.output.contains("FAILED"), without.output)
+
+    val workflow = File(fixtureDir, ".github/workflows/fuzz.yml")
+    workflow.parentFile.mkdirs()
+    workflow.writeText("run: ./gradlew --continue fuzzCodec fuzzUnset\n")
+
+    val missing = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("fuzzWorkflowInSync", "--stacktrace").buildAndFail()
+    assertTrue(
+      missing.output.contains("names 1 registered") && missing.output.contains(":fuzzPlain"),
+      "missing target not named with a paste-ready task path:\n" + missing.output
+    )
+
+    workflow.appendText("#   also fuzzPlain\n")
+    val complete = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
+    assertFalse(complete.output.contains("FAILED"), complete.output)
   }
 
   @Test

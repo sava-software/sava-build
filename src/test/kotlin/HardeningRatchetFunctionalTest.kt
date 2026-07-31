@@ -689,6 +689,87 @@ $fuzzBlock
   }
 
   @Test
+  fun `crosswise pairing of identical siblings is repaired, not flagged`() {
+    // Two rows sharing the class/method/mutator/status key are interchangeable to the
+    // refresh — any assignment writes the same unlabeled rows — but the match order
+    // follows the baseline file, which is sorted lexicographically, so '150' precedes
+    // '96' and a uniform +5 shift pairs the siblings crosswise (-49 and +59). That
+    // shape produced two outlier warnings in production that a human had to disprove
+    // by multiset comparison; the scan now re-zips same-key pairs in line order first,
+    // so a uniform shift of identical siblings stays quiet.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,150,MathMutator,SURVIVED\n" +
+          "com.example.Codec,encode,96,MathMutator,SURVIVED\n" +
+          "com.example.Codec,encode,98,IncrementsMutator,SURVIVED\n" +
+          "com.example.Codec,encode,120,ConditionalsBoundaryMutator,SURVIVED\n" +
+          "com.example.Codec,encode,130,InvertNegsMutator,SURVIVED\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,101,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,155,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,encode,103,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.ConditionalsBoundaryMutator,encode,125,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.InvertNegsMutator,encode,135,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertFalse(
+      output.contains("PAIRING OUTLIER") || output.contains("second edit region"),
+      "repaired sibling pairing wrongly flagged:\n$output"
+    )
+    assertTrue(
+      output.contains("5 unlabeled row(s) kept unlabeled across a line shift"),
+      "expected all five rows kept unlabeled:\n$output"
+    )
+  }
+
+  @Test
+  fun `pairs moving together against the dominant delta read as a second edit region`() {
+    // A recycled killed row lands at an arbitrary delta, typically alone; several
+    // pairs sharing one non-dominant delta are the signature of a second edit region
+    // moving as a block. Flagging each of them individually made the operator
+    // re-verify a legitimate shape row by row (production: four 'close' rows at +20
+    // under a +3 dominant), so a same-delta group gets one grouped, softened line and
+    // only the singleton keeps the PAIRING OUTLIER warning.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,10,MathMutator,SURVIVED\n" +
+          "com.example.Codec,encode,12,IncrementsMutator,SURVIVED\n" +
+          "com.example.Codec,encode,14,InvertNegsMutator,SURVIVED\n" +
+          "com.example.Codec,decode,300,MathMutator,SURVIVED\n" +
+          "com.example.Codec,decode,305,IncrementsMutator,SURVIVED\n"
+    )
+    // the encode region moved +3 (the dominant), the decode region +20 as a block
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,13,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,encode,15,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.InvertNegsMutator,encode,17,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,320,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,325,SURVIVED,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertTrue(
+      output.contains("2 'com.example.Codec' pair(s) moved +20 together") &&
+          output.contains("second edit region"),
+      "grouped second-region note missing:\n$output"
+    )
+    assertFalse(
+      output.contains("PAIRING OUTLIER"),
+      "coherent group wrongly flagged as outlier:\n$output"
+    )
+  }
+
+  @Test
   fun `the timed-out audited set warns on newcomers and notices stale members`() {
     // TIMED_OUT is detected, but the watchdog observed slowness, not wrongness: the
     // ratchet cannot see a weakened covering assertion behind a timeout, so the
