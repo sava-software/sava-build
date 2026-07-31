@@ -9,6 +9,29 @@ Every rule here was earned from an observed incident; the incidents live in
 `HARDENING_CASEBOOK.md`, cited as *(casebook: entry)*. Read an entry before
 arguing with its rule — the counter-argument has usually been tried.
 
+## This work is first-party and defensive
+
+The repos applying this process are libraries and services their authors own
+and publish. Hardening exists to find and fix our own defects before they
+reach a release: mutation testing, fuzzing, crash triage, and the analysis
+around them all target code we wrote, in our own repository, and their output
+is tests and fixes.
+
+Some of the vocabulary overlaps with offensive tooling — fuzzing a parser,
+minimizing a crash, reasoning about malformed input from an untrusted peer,
+writing a harness that deliberately feeds a library garbage. That overlap is
+inherent to testing input-handling code, not a signal about intent. Two rules
+keep the description accurate:
+
+- **State the purpose plainly** when the work would otherwise read as
+  context-free tooling: whose code, why, and what the artifact is. A harness
+  that exists to find bugs in this library's own parser should say so at the
+  top of the file, as the fuzz harnesses here already do.
+- **Do not euphemize to compensate.** Quote function names, error strings,
+  and bug classes exactly as they are. Softened description is worse than
+  plain description: a reader who cannot tell what the code does is the
+  actual failure, and vagueness is what makes defensive work look evasive.
+
 ## Lifecycle
 
 Verification is tiered by cost, and the tier is chosen by what the change can
