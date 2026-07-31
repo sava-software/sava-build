@@ -640,10 +640,15 @@ hardening.mutation.all {
       // config/pitest/<suite>-pitest-version — per suite, because the record it certifies
       // is per-suite: one shared file would lift every suite's refusal at the first
       // refresh, silently certifying the rest against a version that never wrote them.
-      // Stamped by the record-writing flags; a mismatch
-      // warns on a checking run and refuses a writing one — reading a possibly-divergent
-      // result is a judgment call, writing the record with one is not. No file means a
-      // record predating this check: adopted silently by the next refresh.
+      // A mismatch warns on a checking run and refuses a writing one — reading a
+      // possibly-divergent result is a judgment call, writing the record with one is
+      // not. No file means a record predating this check, adopted when the next
+      // baseline write *succeeds*: the stamp lands with the write it describes, never
+      // ahead of it, so a refresh that dies mid-path cannot leave a stamp vouching
+      // for a record it never rewrote. -PinitTimeoutAudit is refused across a bump
+      // like the baseline flags — the timeout population is just as version-dependent
+      // — but never stamps: it writes the timeout set, not the baseline, and its
+      // stamp would silently vouch for a baseline some older PIT wrote.
       val currentPit = pitToolVersion.get()
       val recordedPit = toolVersionFile.takeIf { it.isFile }?.readText()?.trim()
       val writingRecord = update || union || prune || initTimeoutAudit
@@ -662,9 +667,15 @@ hardening.mutation.all {
             "record-writing flags refuse until config/pitest/$suiteName-pitest-version is updated deliberately"
         logger.warn(versionWarning)
         advisoryLog.get().record(advisoryScope, "baseline written by PIT $recordedPit, ran $currentPit")
-      } else if (writingRecord && recordedPit == null) {
-        // adoption: the first record-writing run stamps the file
-        BaselineFiles.writeAtomically(toolVersionFile, currentPit + "\n")
+      }
+      // Called by each baseline-writing path at its successful end. A no-op rewrite
+      // (prune dropped nothing, union added nothing) stamps too: the path just
+      // verified the committed record against a report this PIT produced, which is
+      // the comparability the stamp asserts.
+      fun stampToolVersion() {
+        if (recordedPit == null) {
+          BaselineFiles.writeAtomically(toolVersionFile, currentPit + "\n")
+        }
       }
       val gated = setOf("SURVIVED", "NO_COVERAGE")
       // Status is field 5 (0-based); the trailing killing-test field can itself contain
@@ -1251,6 +1262,7 @@ hardening.mutation.all {
                   keptDetail
           )
         }
+        stampToolVersion()
         return@doLast
       }
       if (update) {
@@ -1469,6 +1481,7 @@ hardening.mutation.all {
                   "re-added with -PunionMutationBaseline once observed to flip again"
           )
         }
+        stampToolVersion()
         return@doLast
       }
       if (union) {
@@ -1493,6 +1506,7 @@ hardening.mutation.all {
                   added.joinToString("\n") { row -> "  $row${describe(row)}" }
           )
         }
+        stampToolVersion()
         return@doLast
       }
       val fresh = multisetDiff(current, accepted)

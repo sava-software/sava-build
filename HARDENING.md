@@ -164,10 +164,16 @@ only comparable to runs from the version that wrote it. The record lives at
 `config/pitest/<suite>-pitest-version` — per suite, because what it certifies
 is the suite's baseline: one shared file would lift every suite's refusal at
 the first refresh after a bump, silently certifying the rest against a
-version that never wrote them. A record-writing run stamps it (absent file:
-adopted silently on the next refresh); a version mismatch *warns* on a
-checking run and *refuses* every record-writing flag — reading a possibly
-divergent result is a judgment call, writing the record with one is not.
+version that never wrote them. A baseline-writing run stamps it at the
+*successful end* of its rewrite (absent file: adopted by the next refresh
+that completes) — never ahead of the write, so a refresh that fails mid-path
+cannot leave a stamp vouching for a record it never rewrote. A version
+mismatch *warns* on a checking run and *refuses* every record-writing flag —
+reading a possibly divergent result is a judgment call, writing the record
+with one is not. `-PinitTimeoutAudit` is refused across a bump like the
+baseline flags, the timeout population being just as version-dependent, but
+it never stamps: it writes the timeout set, not the baseline, and its stamp
+would silently vouch for a baseline some older PIT wrote.
 Bumping deliberately means setting the suite's file to the new version and
 refreshing that suite, reading the churn as a real population diff rather
 than noise.

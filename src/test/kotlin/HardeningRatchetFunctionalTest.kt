@@ -962,6 +962,49 @@ $fuzzBlock
   }
 
   @Test
+  fun `the version stamp lands only with a successful baseline write`() {
+    // The stamp asserts "this record is comparable to runs of PIT X", so it lands at
+    // the successful end of the write it describes: a record-writing run that fails
+    // mid-path must not stamp, and '-PinitTimeoutAudit' — which writes the timeout
+    // set, not the baseline — must never stamp at all, else seeding the audit on a
+    // suite whose baseline predates a PIT bump would silence the mismatch warning
+    // for a record the current tool never wrote.
+    writeFixture()
+    val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
+
+    // a record-writing flag that fails mid-path (the empty-seed refusal) leaves no stamp
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,50,KILLED,com.example.CodecTest",
+      ),
+      ""
+    )
+    runner("pitestEncodingVerify", "-PinitTimeoutAudit").buildAndFail()
+    assertFalse(toolVersionFile.isFile, "failed record-writing run must not stamp the tool version")
+
+    // a *successful* seed still leaves no stamp: init writes the timeout set, not the baseline
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+      ),
+      ""
+    )
+    val seeded = runner("pitestEncodingVerify", "-PinitTimeoutAudit").build().output
+    assertTrue(seeded.contains("seeded 1 audited-timeout member(s)"), "seed did not run:\n$seeded")
+    assertFalse(toolVersionFile.isFile, "-PinitTimeoutAudit must not vouch for a baseline it did not write")
+
+    // yet init is still refused across a bump, like every record-writing flag:
+    // the timeout population is just as version-dependent as the baseline's
+    toolVersionFile.writeText("0.0.0-stale\n")
+    File(fixtureDir, "config/pitest/encoding-timeouts.csv").delete()
+    val refused = runner("pitestEncodingVerify", "-PinitTimeoutAudit").buildAndFail().output
+    assertTrue(
+      refused.contains("refusing to rewrite the record across a tool bump"),
+      "init not refused across a bump:\n$refused"
+    )
+  }
+
+  @Test
   fun `a stale baseline row that timed out this run is not killed-or-moved`() {
     // A baseline SURVIVED row whose mutant reads TIMED_OUT this run is the
     // load-dependent detection the TIMED_OUT doctrine warns about — prune keeps it,
