@@ -18,7 +18,8 @@ internal object TimeoutAudit {
   /**
    * Well-formed, de-duplicated `class,method,mutator` members, the rows that failed
    * to parse, and each member's recorded lines — the numbers a row's `# line 12` /
-   * `# lines 12, 30` comment names, absent when the comment names none.
+   * `# lines 12, 30` / `# lines 12/30` comment names, absent when the comment
+   * names none.
    */
   data class Membership(
     val members: Set<String>,
@@ -26,7 +27,10 @@ internal object TimeoutAudit {
     val recordedLines: Map<String, Set<Int>>,
   )
 
-  private val LINE_COMMENT = Regex("""\blines?\s+(\d+(?:\s*,\s*\d+)*)""")
+  // Comma or slash between numbers: the seed writes commas, but hand-written rows
+  // in shipped consumer files say '# lines 137/141' — a parser keeping only the
+  // first number would read the second line's timeout as false drift.
+  private val LINE_COMMENT = Regex("""\blines?\s+(\d+(?:\s*[,/]\s*\d+)*)""")
 
   /**
    * Parses membership rows: `#` comments stripped, each field trimmed (spacing is
@@ -43,7 +47,7 @@ internal object TimeoutAudit {
     val rows = lines.map { line ->
       val key = line.substringBefore('#').split(',').joinToString(",") { it.trim() }
       val recorded = LINE_COMMENT.find(line.substringAfter('#', ""))
-          ?.groupValues?.get(1)?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
+          ?.groupValues?.get(1)?.split(',', '/')?.mapNotNull { it.trim().toIntOrNull() }
           .orEmpty()
       key to recorded
     }.filter { (key, _) -> key.isNotEmpty() }
@@ -125,8 +129,8 @@ internal object TimeoutAudit {
       val fields = member.split(',')
       val simpleClass = fields[0].substringAfterLast('.')
       val classPatterns = setOf(simpleClass, simpleClass.replace('$', '.'))
-          .map { Regex("\\b${Regex.escape(it)}\\b") }
-      val methodPattern = Regex("\\b${Regex.escape(fields[1])}\\b")
+          .map { wholeWord(it) }
+      val methodPattern = wholeWord(fields[1])
       paragraphs.none { paragraph ->
         methodPattern.containsMatchIn(paragraph) &&
             classPatterns.any { it.containsMatchIn(paragraph) }
@@ -135,6 +139,16 @@ internal object TimeoutAudit {
   }
 
   private val PARAGRAPH_BREAK = Regex("""\n\s*\n""")
+
+  /**
+   * Whole-word via lookarounds, not `\b`: a word boundary exists only between a
+   * word char and a non-word char, so `\b<init>\b` demands a word char *outside*
+   * each angle bracket and can never match `Handler.<init>` in prose. Lookarounds
+   * ask the right question — no word char adjacent to the token — which behaves
+   * identically for word-edged tokens (`run` still rejects "rerun") and correctly
+   * for constructor members.
+   */
+  private fun wholeWord(token: String) = Regex("(?<!\\w)${Regex.escape(token)}(?!\\w)")
 
   /** The warning naming [undocumented] members; callers pass a non-empty list. */
   fun undocumentedCauseWarning(suiteName: String, undocumented: Collection<String>): String =

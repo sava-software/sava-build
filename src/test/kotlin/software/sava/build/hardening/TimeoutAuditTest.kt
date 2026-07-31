@@ -72,6 +72,23 @@ class TimeoutAuditTest {
   }
 
   @Test
+  fun `parse reads slash-separated line lists, the hand-written shape shipped in consumer files`() {
+    // the seed writes commas, but committed rows in the wild say '# lines 137/141';
+    // keeping only the first number would read the second line's timeout as drift
+    val membership = TimeoutAudit.parse(listOf(
+      "com.example.Codec,await,VoidMethodCallMutator # lines 137/141",
+      "com.example.Codec,call,RemoveConditionalMutator_EQUAL_IF # lines 35/39, load flip",
+    ))
+    assertEquals(
+      mapOf(
+        "com.example.Codec,await,VoidMethodCallMutator" to setOf(137, 141),
+        "com.example.Codec,call,RemoveConditionalMutator_EQUAL_IF" to setOf(35, 39),
+      ),
+      membership.recordedLines
+    )
+  }
+
+  @Test
   fun `line drift fires only when observed and recorded lines are disjoint`() {
     val recorded = mapOf(
       "com.example.Codec,encode,MathMutator" to setOf(12, 30),
@@ -179,6 +196,28 @@ class TimeoutAuditTest {
         // the house style: one intro line naming Class.method, bullets below in the
         // same blank-line-delimited paragraph
         "Both are in `Notifier.run`, the drain loop:\n- the removed exit parks the drain\n"
+      }
+    )
+  }
+
+  @Test
+  fun `a constructor member's cause resolves despite word boundaries failing at angle brackets`() {
+    // '\b<init>\b' can never match 'Handler.<init>' in prose: a word boundary needs
+    // a word char adjacent to each angle bracket, and '.' or a space is not one —
+    // whole-word matching must use lookarounds, or every constructor member in a
+    // shipped audit set reads as cause-less and fails certification
+    val members = setOf("com.example.ExponentialBackoffErrorHandler,<init>,ConditionalsBoundaryMutator")
+    assertEquals(
+      emptyList<String>(),
+      TimeoutAudit.undocumentedCauses(members) {
+        "`ExponentialBackoffErrorHandler.<init>:14` — the measured load flip; the\nconstructor hang is only observable as a timeout.\n"
+      }
+    )
+    // still whole-word: 'init' alone must not satisfy '<init>'
+    assertEquals(
+      members.toList(),
+      TimeoutAudit.undocumentedCauses(members) {
+        "`ExponentialBackoffErrorHandler` init logic crawls under load.\n"
       }
     )
   }
