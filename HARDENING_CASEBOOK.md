@@ -556,7 +556,7 @@ did*.
 
 ## The baseline truncated mid-write
 
-During glam-sdk-java's adoption (2026-07-23), an agent started a redundant
+During a downstream repo's adoption (2026-07-23), an agent started a redundant
 `-PupdateMutationBaseline` run, realized the answer it wanted was already in
 the previous run's diff, and stopped the task — landing the kill mid-write
 and leaving a one-byte `sdk-accepted.csv`. The next verify read an empty
