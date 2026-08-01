@@ -1,5 +1,19 @@
 # Changelog
 
+## [21.5.20](https://github.com/sava-software/sava-build/compare/21.5.19...21.5.20) (2026-08-01)
+
+
+### Features
+
+* **hardening:** add deliberate exclusion audit and partition handling ([7484702](https://github.com/sava-software/sava-build/commit/74847028e20017776be04936f36b80c89479ad7d))
+* **hardening:** handle sibling flips and version stamp retirement ([0d244c0](https://github.com/sava-software/sava-build/commit/0d244c07f25817c04b659da2c08f10f34f1e3c0a))
+* **hardening:** retire lines from accepted-baseline identity ([2ec8875](https://github.com/sava-software/sava-build/commit/2ec88754178e09e2f0e2914bb5284d83aa7a69a4))
+
+
+### Documentation
+
+* **hardening:** carry GitHub Packages credentials in the canonical fuzz workflow ([d03de83](https://github.com/sava-software/sava-build/commit/d03de8328e237fbd19e93890f9aa4531d68dabee))
+
 ## [21.5.19](https://github.com/sava-software/sava-build/compare/21.5.18...21.5.19) (2026-08-01)
 
 
