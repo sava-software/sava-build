@@ -1,5 +1,35 @@
 # Changelog
 
+## [21.5.19](https://github.com/sava-software/sava-build/compare/21.5.18...21.5.19) (2026-08-01)
+
+
+### Features
+
+* **hardening:** audit excluded production classes and enforce PIT version checks ([f02048a](https://github.com/sava-software/sava-build/commit/f02048a32f98d4732a89cfdeee4a63f1a26fda7b))
+* **hardening:** automate fuzz exclusions and workflow sync checks ([850e938](https://github.com/sava-software/sava-build/commit/850e9385c95bb7561a4c19e9b56bbd25b057d6b1))
+* **hardening:** close the timeout audit's cause-keeping gaps ([627a084](https://github.com/sava-software/sava-build/commit/627a08421a3d0296a06048655c32934e349814df))
+* **hardening:** improve workflow validation and fuzz target exclusions ([0dfa8b0](https://github.com/sava-software/sava-build/commit/0dfa8b0c5ed51fa47688e73e1748edee1dc0858a))
+* **hardening:** refine version stamping for PIT baseline writes ([698c036](https://github.com/sava-software/sava-build/commit/698c036535b9457389809d9b9bc76d3354f6a6f6))
+
+
+### Bug Fixes
+
+* **hardening:** match constructor causes and slash-separated line anchors ([6dba861](https://github.com/sava-software/sava-build/commit/6dba861bf551523d6fbe0bbcad1d57bc22089f3c))
+* **hardening:** resolve timeout causes at section granularity, not paragraph ([c0c2d8e](https://github.com/sava-software/sava-build/commit/c0c2d8e4a4eb6eabcdd0fd27b38848c17d99b6eb))
+
+
+### Build System
+
+* **deps:** bump actions/attest from 4.2.0 to 4.2.1 ([#79](https://github.com/sava-software/sava-build/issues/79)) ([e977712](https://github.com/sava-software/sava-build/commit/e97771223edfaa39a9ee3dd747b60f7ea661052b))
+* **deps:** bump com.autonomousapps:dependency-analysis-gradle-plugin ([#76](https://github.com/sava-software/sava-build/issues/76)) ([ba109d0](https://github.com/sava-software/sava-build/commit/ba109d0b1cf6508bb8c6b6eb307a60aadc10c832))
+* **deps:** bump docker/login-action in /.github/actions/docker-setup ([#80](https://github.com/sava-software/sava-build/issues/80)) ([0018267](https://github.com/sava-software/sava-build/commit/00182672bbddc2ed720bfac9918b108fe573a8b1))
+
+
+### Documentation
+
+* **hardening:** clarify redundant task example in baseline adoption section ([8498e64](https://github.com/sava-software/sava-build/commit/8498e64e9c6ec4e2c3292e1747fe0805f724ceb3))
+* **hardening:** state the work's first-party, defensive purpose ([f43de3a](https://github.com/sava-software/sava-build/commit/f43de3a9010f9e78cc67bf257d2426973c0745b4))
+
 ## [21.5.18](https://github.com/sava-software/sava-build/compare/21.5.17...21.5.18) (2026-07-28)
 
 
