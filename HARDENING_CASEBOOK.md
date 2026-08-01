@@ -554,6 +554,12 @@ the refresh, not bookkeeping*; *notes travel across both refresh
 relationships — marked when the status flipped, verbatim when only the line
 did*.
 
+*Postscript (line-less keys):* the shift relationship no longer exists — a
+row whose mutant only moved lines IS its accepted row, so there is nothing
+to carry and nothing to drop. The rule's surviving half is the fate listing:
+within a key, rows are assigned by line affinity, and a note that drops still
+drops loudly, named per row.
+
 ## The baseline truncated mid-write
 
 During a downstream repo's adoption (2026-07-23), an agent started a redundant
@@ -779,6 +785,40 @@ check what the absence of a note means before keying on its presence*; *when a
 pairing can be wrong and its wrongness looks like success, print the pairing,
 not a count of them*.
 
+*Postscript (line-less keys):* the bare-shift pairing this entry hardened is
+retired with the shift itself — an unlabeled row now keeps its state because
+its key never churns, not because a pairing recognized the move. The
+`mapNotNull` rule outlived the machinery: it is why baselines now parse as
+ordered (key, note, lines) rows everywhere.
+
+## The killed row recycled onto new debt at the same key
+
+The line-full refresh paired dropped and fresh rows by
+class/method/mutator/status to carry notes across line shifts, and the
+pairing had one unauditable failure mode: a killed unlabeled row at one line
+and genuinely new debt at another share that key, so the refresh paired them
+and the new mutant entered the baseline looking settled. The compensating
+heuristic scanned each class's pairings for a delta moving against the
+strict-majority dominant one (`PAIRING OUTLIER`), softened same-delta groups
+into a second-edit-region note, and re-zipped identical siblings in line
+order after crosswise pairings produced two outlier warnings in production
+that a human had to disprove by multiset comparison — a heuristic accreting
+exceptions is a heuristic describing the wrong invariant.
+
+Line-less keys dissolved the machinery and kept the hole: with no shift to
+pair, a same-key kill-and-replace is simply invisible to the multiset, and
+the doctrine now names it as the format's one deliberate blind spot instead
+of half-covering it. The compensating control moved to metadata: every
+refresh writes `# line` tags, and the drift advisory — row-level when every
+row is tagged and counts match — fires whenever a mutant sits at a line no
+tag names, which is more often than the outlier scan ever fired truthfully.
+
+Rules: *a heuristic that accretes exceptions is describing an invariant the
+design does not actually have — name the hole instead*; *when identity
+churns, the machinery compensating for the churn inherits its failure
+modes*; *a documented blind spot with a cheap tripwire beats an undocumented
+one behind a scan that cries wolf*.
+
 ## The green run against stale classes
 
 A source edit raced a concurrently running build; the next `pitestWs`
@@ -796,3 +836,20 @@ until the log shows `compileForPitest` executed rather than UP-TO-DATE*; *a
 certification is only as fresh as its compile — "UP-TO-DATE" for a compile
 of the file you just edited is a contradiction, read it twice*; *never edit
 sources while a build that will certify them is running*.
+
+## The union write that deduped siblings
+
+`pitestModeCompare -PunionModeFlips` parsed the baseline into a `Set` for its
+insurance-membership checks — reasonable for membership, wrong for the write
+that followed: rewriting the file from that set silently collapsed duplicate
+sibling rows, a baseline shrink outside prune's rules that no output named.
+Found not by a failure but by porting the parser to the shared pair-list
+form and asking why the old one could not represent duplicates. The doctrine
+already said the comparison is a multiset and the file keeps one row per
+mutant; the code path that wrote the file was never held to it.
+
+Rules: *every baseline reader uses the shared parser, because a private parse
+is where a format invariant quietly dies*; *a data structure chosen for one
+operation (membership) must not leak into another (rewrite) whose invariants
+it cannot represent*; *when doctrine says multiset, grep every `.toSet()`
+between a baseline read and a baseline write*.

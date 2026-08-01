@@ -13,24 +13,132 @@ import org.junit.jupiter.api.Test
 class BaselineNotesTest {
 
   @Test
-  fun `a note begins at the first hash and the row is what precedes it`() {
-    assertNull(BaselineNotes.noteOf("com.example.Codec,encode,12,MathMutator,SURVIVED"))
-    assertEquals("com.example.Codec,encode,12,MathMutator,SURVIVED",
-        BaselineNotes.rowOf("com.example.Codec,encode,12,MathMutator,SURVIVED"))
+  fun `a note begins at the first hash and the key is what precedes it`() {
+    val bare = BaselineNotes.parse("com.example.Codec,encode,MathMutator,SURVIVED")
+    assertEquals("com.example.Codec,encode,MathMutator,SURVIVED", bare.key)
+    assertNull(bare.note)
+    assertEquals(emptyList<Int>(), bare.recordedLines)
 
-    val line = "com.example.Codec,encode,12,MathMutator,SURVIVED # race guard"
-    assertEquals("# race guard", BaselineNotes.noteOf(line))
-    assertEquals("com.example.Codec,encode,12,MathMutator,SURVIVED", BaselineNotes.rowOf(line))
+    val noted = BaselineNotes.parse("com.example.Codec,encode,MathMutator,SURVIVED # race guard")
+    assertEquals("com.example.Codec,encode,MathMutator,SURVIVED", noted.key)
+    assertEquals("# race guard", noted.note)
 
     // surrounding whitespace is not part of either half; internal spacing survives,
     // and labelOf normalizes it away downstream
-    assertEquals("#   race guard", BaselineNotes.noteOf("  row   #   race guard   "))
-    assertEquals("row", BaselineNotes.rowOf("  row   #   race guard   "))
-    assertEquals("race guard", BaselineNotes.labelOf("#   race guard"))
+    val spaced = BaselineNotes.parse("  a,b,c,d   #   race guard   ")
+    assertEquals("a,b,c,d", spaced.key)
+    assertEquals("#   race guard", spaced.note)
+    assertEquals("race guard", BaselineNotes.labelOf(spaced.note!!))
 
-    // only the FIRST hash splits: a note may contain further hashes
-    assertEquals("# see #42 for the argument", BaselineNotes.noteOf("row # see #42 for the argument"))
-    assertEquals("row", BaselineNotes.rowOf("row # see #42 for the argument"))
+    // only the FIRST hash splits key from note: a note may contain further hashes
+    val inner = BaselineNotes.parse("a,b,c,d # see #42 for the argument")
+    assertEquals("a,b,c,d", inner.key)
+    assertEquals("# see #42 for the argument", inner.note)
+
+    // per-field spacing is readability, not identity
+    assertEquals("a,b,c,d", BaselineNotes.parse("a, b,  c , d").key)
+  }
+
+  @Test
+  fun `a trailing line tag is metadata, split off the note`() {
+    val tagged = BaselineNotes.parse("a,b,MathMutator,SURVIVED # race guard # line 45")
+    assertEquals("a,b,MathMutator,SURVIVED", tagged.key)
+    assertEquals("# race guard", tagged.note)
+    assertEquals(listOf(45), tagged.recordedLines)
+
+    // plural, comma- or slash-separated — the audited-timeout comment conventions
+    assertEquals(listOf(61, 93), BaselineNotes.parse("a,b,c,d # lines 61, 93").recordedLines)
+    assertEquals(listOf(137, 141), BaselineNotes.parse("a,b,c,d # lines 137/141").recordedLines)
+
+    // a tag with no label note: the note stays null rather than reading '# line…'
+    val tagOnly = BaselineNotes.parse("a,b,c,d # line 12")
+    assertNull(tagOnly.note)
+    assertEquals(listOf(12), tagOnly.recordedLines)
+
+    // the tag is anchored to the end: 'line' inside a note is prose, not a tag
+    val prose = BaselineNotes.parse("a,b,c,d # line 12 moved the guard")
+    assertEquals("# line 12 moved the guard", prose.note)
+    assertEquals(emptyList<Int>(), prose.recordedLines)
+  }
+
+  @Test
+  fun `a legacy five-field row normalizes to its line-less key`() {
+    val legacy = BaselineNotes.parse("com.example.Codec,encode,12,MathMutator,SURVIVED # race guard")
+    assertEquals("com.example.Codec,encode,MathMutator,SURVIVED", legacy.key)
+    assertEquals("# race guard", legacy.note)
+    assertEquals(listOf(12), legacy.recordedLines, "the legacy line field demotes to metadata")
+
+    // recognition is by shape — five fields, numeric third; nothing else normalizes
+    assertEquals("a,b,notaline,d,e", BaselineNotes.parse("a,b,notaline,d,e").key)
+  }
+
+  @Test
+  fun `render writes key, note, then line tag, and round-trips through parse`() {
+    assertEquals("a,b,c,SURVIVED", BaselineNotes.render("a,b,c,SURVIVED", null, emptyList()))
+    assertEquals("a,b,c,SURVIVED # race guard", BaselineNotes.render("a,b,c,SURVIVED", "# race guard", emptyList()))
+    assertEquals("a,b,c,SURVIVED # race guard # line 45",
+        BaselineNotes.render("a,b,c,SURVIVED", "# race guard", listOf(45)))
+    assertEquals("a,b,c,SURVIVED # lines 45, 61",
+        BaselineNotes.render("a,b,c,SURVIVED", null, listOf(61, 45)))
+
+    val rendered = BaselineNotes.render("a,b,c,SURVIVED", "# race guard", listOf(45))
+    val reparsed = BaselineNotes.parse(rendered)
+    assertEquals("a,b,c,SURVIVED", reparsed.key)
+    assertEquals("# race guard", reparsed.note)
+    assertEquals(listOf(45), reparsed.recordedLines)
+
+    // a legacy row re-rendered IS the migration: line field becomes a tag
+    val migrated = BaselineNotes.parse("com.example.Codec,encode,12,MathMutator,SURVIVED # race guard")
+    assertEquals("com.example.Codec,encode,MathMutator,SURVIVED # race guard # line 12",
+        BaselineNotes.render(migrated))
+  }
+
+  @Test
+  fun `line drift is row-level when every row is tagged and counts match`() {
+    fun row(key: String, line: Int?) =
+        BaselineNotes.Row(key, null, line?.let { listOf(it) } ?: emptyList())
+    val key = "a,b,MathMutator,SURVIVED"
+
+    // two tagged siblings, one observed at an unrecorded line: the multiset already
+    // fails a NEW sibling as a count change, so under matched counts an unrecorded
+    // line is a moved anchor or a same-key swap — reported even though the other
+    // observed line matches (the case key-level disjointness kept quiet)
+    val drifted = BaselineNotes.lineDrift(
+        listOf(row(key, 53), row(key, 92)),
+        mapOf(key to listOf(53, 157)))
+    assertEquals(mapOf(key to (setOf(53, 92) to setOf(157))), drifted)
+
+    // fully recorded: quiet
+    assertEquals(
+        emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+        BaselineNotes.lineDrift(listOf(row(key, 53), row(key, 92)), mapOf(key to listOf(92, 53))))
+
+    // a key with no recorded lines never takes part
+    assertEquals(
+        emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+        BaselineNotes.lineDrift(listOf(row(key, null)), mapOf(key to listOf(157))))
+  }
+
+  @Test
+  fun `line drift falls back to key-level disjointness on partial tags or count skew`() {
+    fun row(key: String, line: Int?) =
+        BaselineNotes.Row(key, null, line?.let { listOf(it) } ?: emptyList())
+    val key = "a,b,MathMutator,SURVIVED"
+
+    // one sibling untagged: the row-level reading has no data for it, so only full
+    // disjointness reports — one matching line keeps the key quiet
+    assertEquals(
+        emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+        BaselineNotes.lineDrift(listOf(row(key, 53), row(key, null)), mapOf(key to listOf(53, 157))))
+
+    // count skew (an extra observed sibling): the multiset failure already owns the
+    // story; drift only reports when nothing matches at all
+    assertEquals(
+        emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+        BaselineNotes.lineDrift(listOf(row(key, 53)), mapOf(key to listOf(53, 157))))
+    assertEquals(
+        mapOf(key to (setOf(53) to setOf(157, 160))),
+        BaselineNotes.lineDrift(listOf(row(key, 53)), mapOf(key to listOf(157, 160))))
   }
 
   @Test

@@ -91,9 +91,18 @@ internal object TimeoutAudit {
     observed: Map<String, Set<Int>>,
   ): Map<String, Pair<Set<Int>, Set<Int>>> = observed.entries.mapNotNull { (member, observedLines) ->
     val recordedLines = recorded[member] ?: return@mapNotNull null
-    if (observedLines.any { it in recordedLines }) null
-    else member to (recordedLines to observedLines)
+    val unmatched = disjointDrift(recordedLines, observedLines)
+    if (unmatched.isEmpty()) null else member to (recordedLines to unmatched)
   }.toMap()
+
+  /**
+   * The key-level disjointness decision, shared with [BaselineNotes.lineDrift]'s
+   * partial-tag/count-skew fallback so the two advisories can never disagree about
+   * what "drifted" means at this resolution: the observed lines report only when
+   * none of them matches a recorded one — the anchor moved entirely.
+   */
+  fun disjointDrift(recordedLines: Set<Int>, observedLines: Set<Int>): Set<Int> =
+      if (observedLines.any { it in recordedLines }) emptySet() else observedLines
 
   /** The line-drift warning; callers pass a non-empty [drifted] from [lineDrift]. */
   fun lineDriftWarning(

@@ -233,42 +233,42 @@ are *not* counted as detected — there PIT is more generous and the counts
 genuinely diverge; the split names them so the dip is explainable (see the
 transient-failures section).
 
-Baseline keys include line numbers, which churn when a mutated file is
-edited: the verify task then reports stale entries alongside "new" ones and
-classifies each pairing, because two situations produce paired rows and call
-for **opposite** responses:
+Baseline keys are **line-less** — `class,method,mutator,STATUS` — because line
+numbers churn whenever a mutated file is edited, and identity that churns
+makes the ratchet police text moves instead of behavior. Lines still appear
+on rows, demoted to metadata: every refresh writes each row's observed line
+as a trailing `# line N` tag (the audited-timeout convention), kept for
+triage pointers and the line-drift advisory below. Editing above a mutated
+method therefore changes *nothing* the comparison sees. Two situations still
+produce paired stale + "new" rows, and they call for **opposite** responses:
 
-- `(shifted from line N)` — same status, different line. The mutant moved.
-  When the *whole* run is this — every new row a shift, populations
-  unchanged — the verify passes on its own (see the line-drift section) and
-  no immediate action is needed. Shifts mixed with anything else still fail:
-  confirm the pairings, then refresh with `-PupdateMutationBaseline`.
-- `(newly covered — was NO_COVERAGE at this line; triage, not a refresh)` —
-  same line, different status. A test now *reaches* the mutant, which is a
-  triage item: kill it, or accept it with a written reason. Refreshing here
-  launders a fresh survivor into the baseline, which is precisely what the
-  ratchet exists to prevent.
+- `(newly covered — was NO_COVERAGE; triage, not a refresh)` — same
+  class/method/mutator, different status. A test now *reaches* the mutant,
+  which is a triage item: kill it, or accept it with a written reason.
+  Refreshing here launders a fresh survivor into the baseline, which is
+  precisely what the ratchet exists to prevent.
+- `(shares an accepted key — sibling debt surfaced, or a NEW mutant at that
+  key; check the line)` — a "new" row identical to an accepted row: the key
+  now holds more unkilled mutants than the baseline has rows. Either
+  pre-existing sibling debt made visible (a set-based baseline upgraded, a
+  compound condition's operands) or a genuinely new mutant landing at an
+  accepted key — the report's line numbers say which; read them before
+  accepting.
 
 A stale row is consumed once it pairs, so several new rows cannot all claim
 the same counterpart and report churn that did not happen. The failure closes
-with the whole-set accounting the per-row hints cannot give — `churn: 3
-shifted, 1 newly covered, 0 unexplained (of 4 new; 5 stale)` — and only calls
-it line churn when nothing was newly covered and nothing is unexplained. A
-non-zero *unexplained* count is the real thing: neither moved nor newly
-reached. Pairing is greedy, so a method holding several mutants of one
-mutator can leave a small residue unpaired even when the whole set is churn —
-read a handful of unexplained rows against a heavily edited file as "check
-these", not as proof of a regression. An extract-method refactor also lands
-in *unexplained* deliberately: pairing keys on the method, so a mutant that
-moved into a new method is not a shift — it needs re-triage at its new home,
-where the covering tests may differ, not a refresh *(casebook: the
-check-loop seam that deleted its flip insurance — its one unexplained row
-was the relocated `unlock()`, and it became the family's one written
-acceptance)*.
+with the whole-set accounting the per-row hints cannot give — `churn: 1
+newly covered, 1 surfaced sibling(s), 0 unexplained (of 2 new; 1 stale)`. A
+non-zero *unexplained* count is the real thing: a genuinely new key. An
+extract-method refactor lands in *unexplained* deliberately: the key names
+the method, so a mutant that moved into a new method needs re-triage at its
+new home, where the covering tests may differ *(casebook: the check-loop
+seam that deleted its flip insurance — its one unexplained row was the
+relocated `unlock()`, and it became the family's one written acceptance)*.
 Two flags help triage without re-running: `-PlistUnkilled` prints every
-unkilled row annotated with PIT's mutation description (which sub-condition
-of a line, which direction a conditional was forced — the CSV omits it, the
-XML report carries it), and the ratchet-failure listing carries the same
+unkilled row annotated with PIT's mutation description prefixed with its
+line (`line 41: removed conditional…` — the key no longer carries the line,
+so the description does), and the ratchet-failure listing carries the same
 annotations.
 
 Refreshes are kept honest in both directions. `-PupdateMutationBaseline`
@@ -278,67 +278,48 @@ this the drop was silent and the re-append relied on someone remembering the
 README warning. And a baseline row may carry a trailing `# note` —
 `# untriaged` is the conventional label for seeded debt, and
 `-PupdateMutationBaseline` seeds it on **every genuinely new row** it
-writes, so no *new* row enters the baseline bare: triage
+writes — a new sibling at an accepted key included, since the twin's
+argument was written for the mutants it had, not for one more — so no new
+row enters the baseline bare: triage
 means replacing that label with a short family label (`# race-guard
 family`, `# capacity-hint`) whose full argument lives in the README. An
 already-unlabeled row is a different thing — it predates seeding (added in
 21.5.12) and its argument lives in the README rather than on the row — and a
-refresh preserves that state rather than converting it to seeded debt
-(below). Both
+refresh preserves that state rather than converting it to seeded debt. Both
 refresh flags preserve notes, and the verify summary counts them **per
 label** (`38 rows — 13 '# untriaged', 20 '# race-guard family', 5
 unlabeled`; the debt task prints the same breakdown), so triage state is a
 number the build prints rather than prose that drifts from the CSV it
-describes — and prose line numbers rot on the first edit, while a label
-rides its row through every shift and refresh. Rows that predate seeding
+describes. Rows that predate seeding
 print as `unlabeled`; label them when touched. A label is also a pointer to
 its argument: the verify *and* the debt listing warn when a family label has
 no `# <label>` mention in `config/pitest/README.md`, so a typo'd label or an
 orphaned argument surfaces instead of silently opening a new bucket — and it
 surfaces in the listing where the counts are read, since a count is exactly
 what makes a mistyped label read as finished triage
-(`# untriaged` is exempt — seeded debt needs no section). Surfaced siblings are never
-auto-labeled: notes are keyed by row text, and a second label on a
-duplicate row would collide with its twin's on reload. All baseline
+(`# untriaged` is exempt — seeded debt needs no section). Rows parse as an
+ordered list, so duplicate sibling rows each keep their **own** note — the
+note map keyed by row text that used to collapse them is gone, which is what
+lets two siblings of one key carry two different family labels. All baseline
 rewrites land atomically (a sibling temp file moved over the target), so an
 interrupted refresh — a stopped task, a killed daemon — leaves the previous
 baseline intact instead of a truncated file the next verify reads as an
 empty ratchet *(casebook: the baseline truncated mid-write)*. Preservation extends across a
 status flip: when a refresh rewrites a coordinate whose status changed (a
-`NO_COVERAGE` row whose line a test now reaches), the dropped row's note is
+`NO_COVERAGE` row whose method a test now reaches), the dropped row's note is
 carried onto the new row annotated `(carried across NO_COVERAGE ->
 SURVIVED)` and the summary counts the carries — the acceptance argument
 travels, but flagged for re-reading, because a reason written for an
 unreached mutant is not automatically a reason once its behaviour is
-observable *(casebook: the status-blind prune)*. Preservation also extends
-across a pure line shift: when a source edit moves a mutated method, the
-refresh pairs the dropped row's note with the *fresh* row at the new line —
-same class, method, mutator and status, exactly as the ratchet's shift
-classifier pairs them, surfaced siblings classified out first — and carries
-it verbatim, since nothing about the mutant changed. Both exclusions are the
-safety half of the carry: a killed row has no fresh counterpart, and a fresh
-row that duplicates an accepted row is pre-existing sibling debt, not a
-moved mutant — either way the note must not migrate onto a survivor it never
-described. A note that finds no carry target is not lost silently: the
-dropped-rows listing names each note's fate (`note carried` / `note dropped
-with the row`) and counts the losses *(casebook: the note the line shift
-dropped)*. The same pairing runs for a dropped row carrying *no* note.
-Nothing travels — recognising the shift is what keeps the row `unlabeled`
-instead of seeding it as `# untriaged` debt it never was. `unlabeled` and
-`# untriaged` are distinct states everywhere else here, counted separately by
-the verify summary and the debt listing, so a refresh must not convert one
-into the other; before this, any edit that moved lines — a javadoc paragraph
-was enough — silently reclassified settled triage as fresh debt. Only the
-shift pairs bare rows: a status flip really does change what the mutant
-proves, so seeding debt there is correct. The bare pairing inherits the note
-carry's one ambiguity, and it bites harder because the pool is every
-unlabeled dropped row rather than the few argued ones: a killed unlabeled row
-and genuinely new debt elsewhere in the same method share the
-class/method/mutator/status key, and the new row would then enter unlabeled
-instead of seeded. So the dropped-rows listing names the line each bare row
-was paired onto (`unlabeled, kept unlabeled at line 41`) — a wrong pairing is
-readable in the output rather than a row that merely looks settled
-*(casebook: the unlabeled row the shift reclassified)*.
+observable *(casebook: the status-blind prune)*. Within one key, accepted
+rows are assigned to the run's mutants by **line affinity** first — a pair
+whose `# line` tag names a mutant's observed line is that mutant's row —
+then by file order. So when a noted sibling was killed, the note that drops
+is its own, named loudly in the dropped listing (`note carried` / `note
+dropped with the row`, losses counted) *(casebook: the note the line shift
+dropped — the carry apparatus that entry describes is retired; affinity plus
+the fate listing is what replaced it)*. Without line evidence the assignment
+is arbitrary, which is the same-key blind spot below, not a bug to police.
 
 The third refresh is the only one that is always safe:
 `-PpruneMutationBaseline` drops baseline rows matching nothing this run and
@@ -376,7 +357,7 @@ invoked it*, and the failure looks exactly like a real regression.
   the strength of that. The verify's stale-entry hint honours this: a
   baseline row whose coordinate read `TIMED_OUT` this run is reported as the
   load flip it is ("no refresh needed; prune keeps them"), never counted
-  among the "since killed or moved" rows the refresh hint points at.
+  among the "since killed" rows the refresh hint points at.
 
   "Benign" is a boundary claim, not a shrug: `KILLED` and `TIMED_OUT` are
   both *detected*, neither is ever written to a baseline, so this flip is
@@ -385,11 +366,16 @@ invoked it*, and the failure looks exactly like a real regression.
   a verify or hide debt. The claim is earned per suite by the mode
   comparison above, which is what separates it from `SURVIVED -> TIMED_OUT`,
   where the race is between detection and *no detection*.
-- **Union only rows you have observed to flip** — with
-  `-PunionMutationBaseline`, which adds the run's unkilled rows in canonical
-  form without dropping baseline rows that happened to be detected this run
-  (a full `-PupdateMutationBaseline` there bakes in the run's coin-flips and
-  starts refresh ping-pong). Bulk-adding every `TIMED_OUT` row "to be safe"
+- **Union only rows you have observed to flip** — and prefer the
+  `pitestModeCompare -PunionModeFlips` path, which writes the observation
+  *into* the row as a `# flip insurance (<per-mode statuses>)` note a later
+  reader can re-measure. The verify-side `-PunionMutationBaseline` remains
+  as the escape hatch for a directly witnessed flip: it adds the run's
+  unkilled rows in canonical form without dropping baseline rows that
+  happened to be detected this run (a full `-PupdateMutationBaseline` there
+  bakes in the run's coin-flips and starts refresh ping-pong) — but it lands
+  bare rows, so a hand union owes the evidence note by hand or the insurance
+  is an unargued acceptance. Bulk-adding every `TIMED_OUT` row "to be safe"
   accepts mutants that are reliably detected today and silently stops the
   ratchet noticing if a later edit makes them genuinely survive.
 - **Prefer removing the cause**: a fake collaborator that turns a would-be
@@ -481,7 +467,7 @@ invoked it*, and the failure looks exactly like a real regression.
   cause-less member is an unfinished admission, not hygiene — row-then-cause
   is a legitimate sequence *between* certifications, not during one), or a
   timeout-carrying suite with no
-  set at all — to failures, the `-PnoDriftTolerance` precedent; hygiene
+  set at all — to failures; hygiene
   findings (stale members, quiet streaks, drifted lines) stay advisory
   even there. An escalated finding is the failure, not an advisory — it is
   left out of the end-of-build summary, whose "none failed the build"
@@ -521,7 +507,7 @@ invoked it*, and the failure looks exactly like a real regression.
 
 - **Status is part of the row.** A `NO_COVERAGE -> SURVIVED` flip is two
   different rows at one coordinate. A script that matches baseline rows by
-  `class,method,line,mutator` alone — say, to prune since-killed entries —
+  `class,method,mutator` alone — say, to prune since-killed entries —
   lets the stale row sitting earlier in the file consume the surviving
   mutant's match and deletes the acceptance instead, leaving a baseline the
   verify rightly fails one command after it was correct. Match on the full
@@ -529,33 +515,61 @@ invoked it*, and the failure looks exactly like a real regression.
   status-blind prune)*.
 - **Duplicate rows are sibling mutants, not noise.** A compound condition
   (`a == null || b == null`) yields several mutants with identical
-  `class,method,line,mutator` coordinates — one per operand or branch
-  direction — and the baseline keeps one row per mutant, so identical lines
-  legitimately repeat. The comparison is a *multiset* comparison: if two
+  `class,method,mutator,STATUS` keys — one per operand, branch direction, or
+  occurrence in the method — and the baseline keeps one row per mutant, so
+  identical keys legitimately repeat (their `# line` tags telling them
+  apart for a reader). The comparison is a *multiset* comparison: if two
   siblings are accepted and a third appears (or a killed sibling regresses),
   the count mismatch is flagged even though the row text already exists.
-  Never hand-dedupe the file. Upgrading a baseline written under the old
-  set-based comparison materializes the collapsed copies; the verify names
-  each one `(sibling of an accepted identical row — surfaced by the multiset
-  comparison)` and counts them in the churn tally — pre-existing debt made
-  visible, to accept into its documented family or kill, not a regression.
+  Never hand-dedupe the file. The verify names each extra copy `(shares an
+  accepted key — sibling debt surfaced, or a NEW mutant at that key; check
+  the line)` and counts it in the churn tally.
 - **Hand-edited rows can silently never match.** The canonical mutator name
   strips the `org.pitest.…gregor.mutators.` package *and* the `returns.`
   sub-package; a row spelled `returns.NullReturnValsMutator` matches nothing
   and reports new forever. Prefer `-PupdateMutationBaseline`, which writes
   the canonical form; hand-edit only to union a known flip.
 
-### Line numbers are metadata; pure drift passes on its own
+### Line numbers are metadata, and the one hole that buys
 
-Editing anything above a mutated method used to demand a baseline refresh for
-rows that only moved. The verify now treats that case as metadata: when every
-new row is a same-status line shift of a stale one *and* the
-per-`(class, method, mutator, status)` population is unchanged, it passes with
-a notice and the refresh can wait for a convenient moment. Anything else — a
-newly covered row, an unexplained row, or a changed population (kills mixed
-into the drift) — still fails and still wants the full triage-then-refresh
-treatment. `-PnoDriftTolerance` restores strict behaviour; certifying runs
-should use it alongside `-PnoMutationHistory`.
+Lines left baseline identity entirely (they had already left the audited
+timeout sets, for the same reason): editing above a mutated method changes
+nothing the ratchet sees, so the drift classifier, the pure-drift tolerated
+pass, the pairing-outlier scan and `-PnoDriftTolerance` are all retired —
+there is no drift left to tolerate. What remains of lines is metadata and one
+advisory: every refresh writes each row's observed line as a `# line N` tag,
+and a key unkilled *only* at lines its tags do not name draws a **line-drift
+advisory** — the code the acceptance argues about has moved, or a new
+mutant sits under an old acceptance; re-read the README argument, then let
+the next refresh rewrite the tag. The check is row-level where the data
+supports it: when every row of a key carries a tag and the observed count
+matches the row count, *any* unrecorded line is reported — the baseline's
+multiset already fails a genuinely new sibling as a count change, so unlike
+the audited timeout sets there is no new-sibling quiet case to preserve.
+Partial tags or skewed counts fall back to the audit's key-level
+disjointness (the skew is already failing the build or printing the stale
+hint). Legacy five-field rows (`class,method,<line>,mutator,STATUS`) still
+parse — the line field demotes to recorded-line metadata — and any refresh
+migrates the file; `migrateMutationBaselines` respells every suite's file
+without a mutation run (parse/re-render, comments preserved, identity
+untouched by construction), which is the fleet migration path: the refresh
+flags need a green run, and update needs a *solo* one or it drops
+flip-insurance rows reading `TIMED_OUT` under load.
+
+The price, named because it is paid deliberately: **a same-key swap is
+invisible.** Kill one mutant and introduce a new one at the same
+`class,method,mutator,STATUS` in one change and the multiset is unchanged —
+the new mutant inherits the old row's acceptance, and the only trace is the
+line-drift advisory — which, being row-level under matched counts, fires
+whenever the new mutant sits at any line no tag names, not only when every
+anchor moved. The line-full
+design did not close this hole either; it covered it with a dominant-delta
+heuristic (`PAIRING OUTLIER`) that produced its own false alarms *(casebook:
+the killed row recycled onto new debt at the same key — the scan that entry
+motivated is retired with the churn it policed)*. A documented hole that an
+advisory sometimes lights up beats a heuristic that must be argued with:
+when the advisory names a key whose argument you cannot re-derive from the
+current code, treat it as the swap until shown otherwise.
 
 ### When a mutant won't die — a decision tree
 
@@ -1255,8 +1269,10 @@ PIT, so an uncleared second run compares a file to itself. It refuses a
 partial report set (a suite would be diffed against its absence) and a
 history-assisted report (a reused status is not an observation of the
 mode). `pitestModeCompare` then diffs **per-mutant status** across every
-stashed label, keyed on `(class, method, line, mutator)` — strictly
-stronger than sub-totals, and it names which mutant moved:
+stashed label, keyed line-lessly on `(class, method, mutator)` with statuses
+compared as sorted multisets per key — the baseline's own key shape, so an
+insurance row written here is a row the verify's comparison recognizes —
+strictly stronger than sub-totals, and it names which key moved:
 
     ./gradlew <every pitest suite> pitestModeSnapshot -PpitestMode=solo -PnoMutationHistory
     ./gradlew qualityGate pitestModeSnapshot -PpitestMode=gate -PnoMutationHistory
@@ -1267,7 +1283,10 @@ crossing the unkilled boundary is exactly the row the `TIMED_OUT` section
 says belongs in the baseline: the compare fails naming each one unless it is
 already insured there, and `-PunionModeFlips` writes the union — append-only,
 each row annotated `# flip insurance (<per-mode statuses>)` so the note
-carries its own evidence and a later reader can re-measure it. Two runs can
+carries its own evidence and a later reader can re-measure it, and tagged
+with the `# line` observed in the snapshots so the verify's row-level drift
+advisory covers it (an untagged row would drop its whole key to the
+partial-tag fallback, weakening the check for its siblings too). Two runs can
 match in total while disagreeing about which mutants died; the headline
 number is not the check.
 
@@ -1423,10 +1442,12 @@ paste.
 >   replacing that label, so the baseline always says which rows are argued
 >   and which are debt. Never run `-PupdateMutationBaseline` just to make the
 >   build pass.
-> - Pure line drift — every new baseline entry a same-status shift of a stale
->   one, populations unchanged — passes on its own with a notice; refresh at a
->   convenient moment. Anything mixed in (newly covered, unexplained, changed
->   counts) still fails and is triage first, refresh after.
+> - Baseline keys are line-less (`class,method,mutator,STATUS`) — editing
+>   above a mutated method churns nothing, and `# line` tags are metadata a
+>   refresh rewrites. The trade is one documented hole: a new mutant replacing
+>   a killed one at the same key inherits its acceptance silently, so when the
+>   line-drift advisory names a key whose argument no longer reads against the
+>   code, treat it as that swap until shown otherwise.
 > - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
 >   seconds instead of the full suite — then re-run unscoped before any
 >   refresh; the tooling refuses to let a scoped report touch the baseline.

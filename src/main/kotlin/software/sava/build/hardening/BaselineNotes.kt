@@ -1,27 +1,111 @@
 package software.sava.build.hardening
 
 /**
- * The single place that knows a baseline row's `# note` format, so the accepted-row
- * parser and the verify / `Debt` per-label breakdowns can never drift on where a note
- * begins or how a family label is read out of one.
+ * The single place that knows a baseline row's format, so the accepted-row parser, the
+ * verify / `Debt` per-label breakdowns, and `pitestModeCompare`'s insurance writes can
+ * never drift on where a note begins, how a family label is read out of one, or which
+ * key a row compares by.
  *
- * A baseline line is `<coordinate> [# <label> [(<carry/flip detail>)]]`. The note
- * begins at the first `#`; the family label is that note with the leading `#` and any
- * trailing parenthetical stripped, so `# race guard (carried across …)` reads as
- * `race guard` — the parenthetical is a carry marker, not part of the label.
+ * A baseline line is `<key> [# <label> [(<carry/flip detail>)]] [# line <N>[, <M>...]]`
+ * where the key is the line-less `class,method,mutator,STATUS`. Line numbers are
+ * metadata, not identity — the trailing `# line` comment is a triage pointer kept for
+ * the line-drift advisory, exactly the audited-timeout convention — so editing above a
+ * mutated method can never churn the ratchet. The note begins at the first `#`; the
+ * family label is that note with the leading `#` and any trailing parenthetical
+ * stripped, so `# race guard (carried across …)` reads as `race guard`.
+ *
+ * Legacy five-field rows (`class,method,<line>,mutator,STATUS`, the pre-line-less
+ * format) still parse: the numeric line field is demoted to recorded-line metadata and
+ * the row compares by its line-less key. Any baseline write emits the current format,
+ * so a legacy file migrates on its next refresh.
  */
 internal object BaselineNotes {
 
-  /** The note portion of a line (leading `#` included, trimmed), or null if unlabeled. */
-  fun noteOf(line: String): String? {
-    val hash = line.indexOf('#')
-    return if (hash < 0) null else line.substring(hash).trim()
+  /** One parsed baseline row: its line-less key, its note, and its recorded lines. */
+  data class Row(val key: String, val note: String?, val recordedLines: List<Int>)
+
+  // Trailing '# line 61' / '# lines 61, 93' / '# lines 61/93' comment. Anchored to the
+  // end of the line so a label containing the word 'line' cannot be misread as a tag.
+  private val LINE_TAG = Regex("""#\s*lines?\s+\d+(?:\s*[,/]\s*\d+)*\s*$""")
+
+  /** Parses one non-comment baseline line into its [Row]. */
+  fun parse(line: String): Row {
+    val tagMatch = LINE_TAG.find(line)
+    val beforeTag = if (tagMatch == null) line else line.substring(0, tagMatch.range.first)
+    val tagLines = tagMatch?.value?.let { tag ->
+      Regex("""\d+""").findAll(tag).map { it.value.toInt() }.toList()
+    }.orEmpty()
+    val hash = beforeTag.indexOf('#')
+    val rawKey = (if (hash < 0) beforeTag else beforeTag.substring(0, hash)).trim()
+    val note = if (hash < 0) null else beforeTag.substring(hash).trim().ifEmpty { null }
+    val (key, legacyLine) = normalize(rawKey)
+    return Row(key, note, legacyLine?.let { listOf(it) } ?: tagLines)
   }
 
-  /** The coordinate portion of a line, with any note stripped. */
-  fun rowOf(line: String): String {
-    val hash = line.indexOf('#')
-    return (if (hash < 0) line else line.substring(0, hash)).trim()
+  /**
+   * The line-less key a raw row coordinate compares by, plus the legacy row's line
+   * field when the coordinate carries one. Legacy rows are recognized by shape — five
+   * fields with a numeric third — which no line-less row can have (a method name is
+   * never numeric); anything else compares as written, spacing normalized per field.
+   */
+  fun normalize(rawKey: String): Pair<String, Int?> {
+    val fields = rawKey.split(',').map { it.trim() }
+    val legacyLine = if (fields.size == 5) fields[2].toIntOrNull() else null
+    return if (legacyLine != null) {
+      "${fields[0]},${fields[1]},${fields[3]},${fields[4]}" to legacyLine
+    } else {
+      fields.joinToString(",") to null
+    }
+  }
+
+  /** The trailing `# line` tag for [lines], or the empty string for none. */
+  fun renderLineTag(lines: Collection<Int>): String {
+    if (lines.isEmpty()) return ""
+    val sorted = lines.toSortedSet()
+    return " # line${if (sorted.size > 1) "s" else ""} ${sorted.joinToString(", ")}"
+  }
+
+  /** The written form of a row: key, note, line tag — the current format. */
+  fun render(key: String, note: String?, lines: Collection<Int>): String =
+      key + (note?.let { " $it" } ?: "") + renderLineTag(lines)
+
+  fun render(row: Row): String = render(row.key, row.note, row.recordedLines)
+
+  /**
+   * The line-drift check, row-level where the data supports it: for each key in
+   * [observed] (its unkilled mutants' lines, one entry per mutant), the recorded
+   * side is the union of that key's rows' `# line` tags. When every row of the key
+   * carries a tag AND the observed count equals the row count, any observed line
+   * outside the recorded set is reported — the baseline's multiset already fails a
+   * genuinely new sibling as a count change, so the timeout audit's
+   * quiet-on-new-sibling resolution is not needed here, and an unrecorded line
+   * under matched counts is exactly a moved anchor or a same-key swap. With
+   * partial tags or skewed counts the check falls back to the audit's key-level
+   * disjointness (the count skew is already failing the build or printing the
+   * stale hint; double-reporting it as drift would misname it).
+   *
+   * Returns key -> (recorded lines, unmatched observed lines); keys with no
+   * recorded lines never take part.
+   */
+  fun lineDrift(
+    rows: List<Row>,
+    observed: Map<String, List<Int>>,
+  ): Map<String, Pair<Set<Int>, Set<Int>>> {
+    val byKey = rows.groupBy { it.key }
+    return observed.entries.mapNotNull { (key, observedLines) ->
+      val keyRows = byKey[key] ?: return@mapNotNull null
+      val recorded = keyRows.flatMap { it.recordedLines }.toSet()
+      if (recorded.isEmpty() || observedLines.isEmpty()) return@mapNotNull null
+      val rowLevel = keyRows.all { it.recordedLines.isNotEmpty() } && observedLines.size == keyRows.size
+      val unmatched = if (rowLevel) {
+        observedLines.filterNot { it in recorded }.toSet()
+      } else {
+        // the audited-timeout resolution, literally shared so the two advisories
+        // cannot drift apart on what this fallback means
+        TimeoutAudit.disjointDrift(recorded, observedLines.toSet())
+      }
+      if (unmatched.isEmpty()) null else key to (recorded to unmatched)
+    }.toMap()
   }
 
   /** The family label of a note: `# race guard (carried across …)` -> `race guard`. */

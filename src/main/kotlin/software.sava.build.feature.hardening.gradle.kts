@@ -217,7 +217,10 @@ val pitestConverge = tasks.register("pitestConverge") {
   doLast {
     val gated = setOf("SURVIVED", "NO_COVERAGE")
     // Rows can share a (class,method,line,mutator) key, so statuses are compared as
-    // sorted multisets per key rather than single values.
+    // sorted multisets per key rather than single values. Converge deliberately KEEPS
+    // the line in its key while the baseline and modeCompare dropped it: both rounds
+    // run identical code, so lines cannot churn here, and the finer key localizes a
+    // flip to the exact mutant instead of a sibling group.
     fun statuses(csv: File): Map<String, List<String>> = csv.readLines()
         .mapNotNull { line ->
           val parts = line.split(',')
@@ -390,11 +393,14 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
               "then under qualityGate as 'gate'."
       )
     }
+    // Line-less keys, like the baseline itself: the two modes ran the same code, so
+    // per-key status multisets compare cleanly without lines, and an insurance row
+    // written here is a row the verify's comparison must recognize.
     fun statuses(csv: File): Map<String, List<String>> = csv.readLines()
         .mapNotNull { line ->
           val parts = line.split(',')
           if (parts.size < 6) null
-          else listOf(parts[1], parts[3], parts[4], parts[2].substringAfterLast('.')).joinToString(",") to parts[5]
+          else listOf(parts[1], parts[3], parts[2].substringAfterLast('.')).joinToString(",") to parts[5]
         }
         .groupBy({ it.first }, { it.second })
         .mapValues { (_, statusList) -> statusList.sorted() }
@@ -414,26 +420,31 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
         }
         statuses(csv)
       }
-      // Baseline rows + notes: insurance checks, union writes, and the dead-row sweep
-      // all preserve the trailing '# note' convention.
+      // Baseline rows parsed as an ordered LIST (BaselineNotes, both formats): a
+      // duplicate key is a sibling mutant, and the set this used to collapse into
+      // silently deduped siblings on the union write — a shrink outside prune's rules.
       val baselineFile = baselineDir.file("$suiteName-accepted.csv").asFile
-      val annotations = mutableMapOf<String, String>()
-      val accepted = if (baselineFile.isFile) {
+      val acceptedRows: MutableList<BaselineNotes.Row> = if (baselineFile.isFile) {
         baselineFile.readLines()
             .filter { it.isNotBlank() && !it.startsWith("#") }
-            .map { line ->
-              val hash = line.indexOf('#')
-              if (hash < 0) line.trim()
-              else {
-                val row = line.substring(0, hash).trim()
-                annotations[row] = line.substring(hash).trim()
-                row
-              }
-            }
-            .toMutableSet()
+            .map { BaselineNotes.parse(it) }
+            .toMutableList()
       } else {
-        mutableSetOf()
+        mutableListOf()
       }
+      val accepted: MutableSet<String> = acceptedRows.map { it.key }.toMutableSet()
+      // Observed lines per gated row across every mode's snapshot, so an insurance
+      // row lands carrying the '# line' tag the verify's drift advisory reads —
+      // an untagged row would put its whole key on the advisory's partial-tag
+      // fallback path, weakening the row-level check for its siblings too.
+      val rowLines: Map<String, Set<Int>> = if (!unionFlips) emptyMap() else modes.flatMap { label ->
+        snapshotRoot.get().asFile.resolve("$label/$suiteName.csv").readLines().mapNotNull { line ->
+          val parts = line.split(',')
+          if (parts.size < 6 || parts[5] !in gated) null
+          else listOf(parts[1], parts[3], parts[2].substringAfterLast('.'), parts[5])
+              .joinToString(",") to parts[4].toIntOrNull()
+        }
+      }.groupBy({ it.first }, { it.second }).mapValues { (_, l) -> l.filterNotNull().toSet() }
       var unionedHere = false
       val keys = perMode.values.flatMap { it.keys }.toSortedSet()
       keys.forEach { key ->
@@ -458,7 +469,8 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
               unionFlips -> {
                 gatedRows.filter { it !in accepted }.forEach { row ->
                   accepted.add(row)
-                  annotations[row] = "# flip insurance ($detail)"
+                  acceptedRows.add(
+                      BaselineNotes.Row(row, "# flip insurance ($detail)", rowLines[row].orEmpty().sorted()))
                   unionedNow.add("$suiteName: $row")
                 }
                 unionedHere = true
@@ -470,9 +482,11 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
         }
       }
       if (unionedHere) {
-        BaselineFiles.writeAtomically(baselineFile, accepted.toSortedSet().joinToString("\n", postfix = "\n") { row ->
-          annotations[row]?.let { "$row $it" } ?: row
-        })
+        // every pre-existing row rewritten verbatim (duplicates included), the added
+        // insurance rows appended in key order
+        BaselineFiles.writeAtomically(
+            baselineFile,
+            acceptedRows.sortedBy { it.key }.joinToString("\n", postfix = "\n") { BaselineNotes.render(it) })
       }
       // HARDENING.md's sweep: accepted rows unkilled in *no* snapshotted mode are
       // widening the gate for nothing. Report only — removal is a judgment call, and
@@ -480,8 +494,8 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       val unkilledAnywhere = perMode.values.flatMap { modeStatuses ->
         modeStatuses.flatMap { (key, statusList) -> statusList.filter { it in gated }.map { "$key,$it" } }
       }.toSet()
-      (accepted - unkilledAnywhere).sorted().forEach { row ->
-        deadRows.add("$suiteName: $row${annotations[row]?.let { " $it" } ?: ""}")
+      acceptedRows.filter { it.key !in unkilledAnywhere }.sortedBy { it.key }.forEach { row ->
+        deadRows.add("$suiteName: ${BaselineNotes.render(row.key, row.note, emptyList())}")
       }
     }
     if (deadRows.isNotEmpty()) {
@@ -503,6 +517,51 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       )
     }
     logger.lifecycle(summary)
+  }
+}
+
+// Format-only baseline migration: parse each suite's accepted baseline and
+// re-render it in the current row format — legacy five-field rows become
+// line-less keys with '# line' tags. No report, no PIT run, no stamping:
+// identity is preserved by construction (parse/render round-trips the key,
+// note and recorded lines), so this cannot change what any verify compares —
+// it only respells the record. The refresh flags migrate too, but they need a
+// green mutation run, and update needs a *solo* run or it drops flip-insurance
+// rows reading TIMED_OUT under load; this task removes that hazard from fleet
+// migration entirely. Comment and blank lines pass through verbatim.
+val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
+  group = "verification"
+  description = "Re-renders every suite's accepted baseline in the current line-less row format; needs no mutation run."
+  val names = convergeSuiteNames
+  val baselineDir = layout.projectDirectory.dir("config/pitest")
+  doLast {
+    names.forEach { suiteName ->
+      val file = baselineDir.file("$suiteName-accepted.csv").asFile
+      if (!file.isFile) {
+        return@forEach
+      }
+      val original = file.readText()
+      var migrated = 0
+      val rendered = original.split("\n").map { line ->
+        if (line.isBlank() || line.trimStart().startsWith("#")) {
+          line
+        } else {
+          val out = BaselineNotes.render(BaselineNotes.parse(line))
+          if (out != line) migrated++
+          out
+        }
+      }
+      // reassemble exactly (split preserves a trailing empty segment for the
+      // final newline), so an already-current file is byte-identical and skipped
+      val content = rendered.joinToString("\n")
+      if (content == original) {
+        logger.lifecycle("pitest baseline '$suiteName': already in the current format")
+      } else {
+        BaselineFiles.writeAtomically(file, content)
+        logger.lifecycle(
+            "pitest baseline '$suiteName': migrated $migrated row(s) to the line-less format")
+      }
+    }
   }
 }
 
@@ -604,7 +663,6 @@ hardening.mutation.all {
     val union = providers.gradleProperty("unionMutationBaseline").isPresent
     val prune = providers.gradleProperty("pruneMutationBaseline").isPresent
     val listUnkilled = providers.gradleProperty("listUnkilled").isPresent
-    val noDriftTolerance = providers.gradleProperty("noDriftTolerance").isPresent
     val initTimeoutAudit = providers.gradleProperty("initTimeoutAudit").isPresent
     val strictTimeoutAudit = providers.gradleProperty("strictTimeoutAudit").isPresent
     val statusStashFile = layout.projectDirectory.file(".pitest-history/$suiteName.statuses").asFile
@@ -738,7 +796,9 @@ hardening.mutation.all {
 
       // PIT's CSV omits the mutation description — which sub-condition of a line was hit,
       // which direction a conditional was forced — and triaging an unkilled row keeps
-      // needing exactly that. The XML report carries it; keyed like the baseline rows.
+      // needing exactly that. The XML report carries it; keyed like the baseline rows
+      // (line-less), with each mutant's line folded into the description text, since
+      // the key no longer carries it.
       val descriptions: Map<String, String> by lazy {
         val xml = xmlProvider.get().asFile
         if (!xml.isFile) return@lazy emptyMap()
@@ -750,10 +810,10 @@ hardening.mutation.all {
           val mutation = mutations.item(i) as org.w3c.dom.Element
           fun text(tag: String) = mutation.getElementsByTagName(tag).item(0)?.textContent ?: ""
           val key = listOf(
-              text("mutatedClass"), text("mutatedMethod"), text("lineNumber"),
+              text("mutatedClass"), text("mutatedMethod"),
               text("mutator").substringAfterLast('.')
           ).joinToString(",")
-          val description = text("description")
+          val description = "line ${text("lineNumber")}: ${text("description")}"
           // keyed both with and without status, so a row still annotates when its
           // status differs from the XML the descriptions came from
           collected.getOrPut("$key,${mutation.getAttribute("status")}") { mutableListOf() }.add(description)
@@ -765,19 +825,27 @@ hardening.mutation.all {
           (descriptions[row] ?: descriptions[row.substringBeforeLast(',')])?.let { " — $it" } ?: ""
 
       // Kept as a LIST, not a set: a compound condition yields several mutants with
-      // identical (class, method, line, mutator) coordinates — one per operand or
-      // branch direction. Collapsing them to a set once let a killed sibling regress
-      // to SURVIVED invisibly, absorbed by its already-accepted twin's row. All
-      // comparisons below are multiset comparisons for the same reason.
-      val current = rows.mapNotNull { parts ->
+      // identical (class, method, mutator, status) keys — one per operand, branch
+      // direction, or occurrence in the method. Collapsing them to a set once let a
+      // killed sibling regress to SURVIVED invisibly, absorbed by its already-accepted
+      // twin's row. All comparisons below are multiset comparisons for the same reason.
+      //
+      // The key is line-less on purpose — line numbers are metadata, not identity
+      // (the audited-timeout convention, extended to the baseline): editing above a
+      // mutated method can never churn the ratchet, at the documented price that a
+      // new mutant of an already-accepted key is visible only as a count change.
+      // Observed lines ride alongside for line tags, sibling hints, and the
+      // line-drift advisory.
+      val currentWithLines = rows.mapNotNull { parts ->
         if (parts[5] !in gated) {
           null
         } else {
-          // class,method,line,mutator,status — line numbers churn on refactors;
-          // refresh the baseline when they do
-          "${parts[1]},${parts[3]},${parts[4]},${parts[2].substringAfterLast('.')},${parts[5]}"
+          "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')},${parts[5]}" to parts[4]
         }
-      }.sorted()
+      }
+      val current = currentWithLines.map { it.first }.sorted()
+      val currentLines: Map<String, List<String>> =
+          currentWithLines.groupBy({ it.first }, { it.second })
       fun multisetDiff(a: List<String>, b: List<String>): List<String> {
         val remaining = b.groupingBy { it }.eachCount().toMutableMap()
         return a.filter { row ->
@@ -809,10 +877,14 @@ hardening.mutation.all {
               }
           )
       fun siblingHint(row: String): String {
+        // the row's key is line-less, but the survivor's own observed lines are in the
+        // report — the hint stays per-line, since that is where the disambiguation lives
         if (!row.endsWith(",SURVIVED")) return ""
         val parts = row.split(',')
-        val siblings = detectedSiblings["${parts[0]},${parts[1]},${parts[2]},${mutatorFamily(parts[3])}"]
-            ?: return ""
+        val siblings = currentLines[row].orEmpty().distinct().flatMap { line ->
+          detectedSiblings["${parts[0]},${parts[1]},$line,${mutatorFamily(parts[2])}"].orEmpty()
+        }
+        if (siblings.isEmpty()) return ""
         return " [detected sibling at this line: ${siblings.distinct().joinToString("; ")}]"
       }
       if (listUnkilled && current.isNotEmpty()) {
@@ -847,8 +919,9 @@ hardening.mutation.all {
         // Certifying flags are refused for the same reason in the other direction:
         // the checks they strengthen are skipped entirely on a scoped report, so a
         // green run would read as a certification of the suite when nothing was
-        // certified at all.
-        if (strictTimeoutAudit || noDriftTolerance) {
+        // certified at all. (-PnoDriftTolerance used to sit beside this flag; the
+        // line-less key retired it — there is no drift tolerance left to disable.)
+        if (strictTimeoutAudit) {
           throw GradleException(
               "pitest '$suiteName': the report was produced with -PmutateOnly=$scope — a partial " +
                   "population cannot be certified, and the certifying checks are skipped on a scoped " +
@@ -864,45 +937,41 @@ hardening.mutation.all {
         return@doLast
       }
       // A baseline row may carry a trailing '# note' ('# untriaged' is the conventional
-      // label for seeded debt; refreshes seed it on every new row). Notes are stripped
-      // for comparison, preserved across both refresh flags, and counted per label — so
-      // triage state lives on the row it describes and stays a number the build
-      // reports, not prose that drifts.
-      val annotations = mutableMapOf<String, String>()
-      // a list, preserving duplicate rows: identical coordinates hold one row per
-      // sibling mutant (see the multiset note above)
-      val accepted: List<String> = if (baselineFile.exists()) {
+      // label for seeded debt; refreshes seed it on every new row) and a trailing
+      // '# line' tag (metadata for triage and the line-drift advisory, never identity).
+      // Notes are stripped for comparison, preserved across the refresh flags, and
+      // counted per label — so triage state lives on the row it describes and stays a
+      // number the build reports, not prose that drifts. Rows are parsed as an ordered
+      // LIST of (key, note, lines): duplicate keys are sibling mutants and each keeps
+      // its own note, which a note map keyed by row text used to collapse.
+      val acceptedRows: List<BaselineNotes.Row> = if (baselineFile.exists()) {
         baselineFile.readLines()
             .filter { it.isNotBlank() && !it.startsWith("#") }
-            .map { line ->
-              val row = BaselineNotes.rowOf(line)
-              BaselineNotes.noteOf(line)?.let { annotations[row] = it }
-              row
-            }
+            .map { BaselineNotes.parse(it) }
       } else {
         emptyList()
       }
-      fun baselineLine(row: String) = annotations[row]?.let { "$row $it" } ?: row
-      // The 'class,method,line,mutator' coordinate, and the set of them that read
-      // TIMED_OUT this run. Shared rather than recomputed per call site: prune keeps
-      // these rows and the verify's stale-entry hint promises exactly that ("prune
-      // keeps them"), so the two must decide membership identically — a promise that
-      // holds only by coincidence when each site carries its own copy of the key
-      // shape. The drift warning below reads the same coordinate.
+      val accepted: List<String> = acceptedRows.map { it.key }
+      // The line-less 'class,method,mutator' coordinate — the audited-timeout key —
+      // and the set of them that read TIMED_OUT this run. Shared rather than
+      // recomputed per call site: prune keeps these rows and the verify's stale-entry
+      // hint promises exactly that ("prune keeps them"), so the two must decide
+      // membership identically — a promise that holds only by coincidence when each
+      // site carries its own copy of the key shape.
       fun mutantCoordinate(parts: List<String>) =
-          "${parts[1]},${parts[3]},${parts[4]},${parts[2].substringAfterLast('.')}"
+          "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
       val timedOutCoordinatesNow = rows.filter { it[5] == "TIMED_OUT" }.map(::mutantCoordinate).toSet()
       // Per-label breakdown so triage state is a number the build prints (BaselineNotes
       // owns the label semantics: carry/flip parentheticals stripped, unlabeled rows —
       // which predate seeding — named rather than folded into a bucket).
-      BaselineNotes.summarize(accepted.mapNotNull { annotations[it] }, accepted.count { annotations[it] == null })
+      BaselineNotes.summarize(acceptedRows.mapNotNull { it.note }, acceptedRows.count { it.note == null })
           ?.let { logger.lifecycle("pitest baseline '$suiteName': ${accepted.size} rows — $it") }
       // A family label is a pointer to its argument in config/pitest/README.md (the rule
       // and its message live in BaselineNotes, so this and 'Debt' resolve labels the same
       // way). Warned rather than failed, mirroring the scaffolding check: the gap may
       // predate this check, and a fresh '-PunionModeFlips' row legitimately lands before
       // its README criterion is written.
-      val undocumentedLabels = BaselineNotes.undocumentedLabels(accepted.mapNotNull { annotations[it] }) {
+      val undocumentedLabels = BaselineNotes.undocumentedLabels(acceptedRows.mapNotNull { it.note }) {
         readmeFile.takeIf { it.isFile }?.readText() ?: ""
       }
       if (undocumentedLabels.isNotEmpty()) {
@@ -1180,7 +1249,7 @@ hardening.mutation.all {
             advisoryLog.get().record(advisoryScope, "${undocumented.size} audited timeout(s) without a README cause")
           }
         }
-        // Opt-in escalation for certifying runs, the '-PnoDriftTolerance' precedent:
+        // Opt-in escalation for certifying runs:
         // by default every audit finding is advisory (load can time out any mutant on
         // any run), but on a run whose purpose is certification, an unaudited
         // newcomer, a row the tool cannot parse, or a member whose cause was never
@@ -1225,22 +1294,22 @@ hardening.mutation.all {
         // and rows whose coordinate still holds an unkilled mutant at a different
         // status (a coverage flip pending triage — pruning the stale side would erase
         // the pairing the newly-covered classifier explains it with).
-        fun coordinate(row: String) = row.substringBeforeLast(',')
+        fun coordinate(key: String) = key.substringBeforeLast(',')
         val timedOutCoordinates = timedOutCoordinatesNow
         val unkilledCoordinates = current.map(::coordinate).toSet()
         val budget = current.groupingBy { it }.eachCount().toMutableMap()
-        val kept = mutableListOf<String>()
-        val keptUnmatched = mutableListOf<Pair<String, String>>()
-        val droppedRows = mutableListOf<String>()
-        for (row in accepted) {
-          val remaining = budget[row] ?: 0
+        val kept = mutableListOf<BaselineNotes.Row>()
+        val keptUnmatched = mutableListOf<Pair<BaselineNotes.Row, String>>()
+        val droppedRows = mutableListOf<BaselineNotes.Row>()
+        for (row in acceptedRows) {
+          val remaining = budget[row.key] ?: 0
           if (remaining > 0) {
-            budget[row] = remaining - 1
+            budget[row.key] = remaining - 1
             kept.add(row)
-          } else if (coordinate(row) in timedOutCoordinates) {
+          } else if (coordinate(row.key) in timedOutCoordinates) {
             kept.add(row)
             keptUnmatched.add(row to "TIMED_OUT this run (load-dependent)")
-          } else if (coordinate(row) in unkilledCoordinates) {
+          } else if (coordinate(row.key) in unkilledCoordinates) {
             kept.add(row)
             keptUnmatched.add(row to "coordinate unkilled at another status (flip pending triage)")
           } else {
@@ -1249,16 +1318,27 @@ hardening.mutation.all {
         }
         val keptDetail = if (keptUnmatched.isEmpty()) "" else
           "\n  kept ${keptUnmatched.size} unmatched row(s):\n" +
-              keptUnmatched.joinToString("\n") { (row, why) -> "  ${baselineLine(row)} — $why" }
+              keptUnmatched.joinToString("\n") { (row, why) -> "  ${BaselineNotes.render(row)} — $why" }
         if (droppedRows.isEmpty()) {
           logger.lifecycle(
               "pitest baseline '$suiteName': prune dropped nothing — every row matches this run$keptDetail")
-        } else {
-          BaselineFiles.writeAtomically(baselineFile, kept.joinToString("\n", postfix = "\n") { baselineLine(it) })
+        } else if (kept.isEmpty()) {
+          // every row dropped: remove the file rather than leave a one-newline
+          // husk — no record and an empty record must read the same way
+          baselineFile.delete()
           logger.lifecycle(
-              "pitest baseline '$suiteName': prune dropped ${droppedRows.size} row(s) since killed or moved " +
+              "pitest baseline '$suiteName': prune dropped every row since killed — baseline file removed:\n" +
+                  droppedRows.joinToString("\n") { row -> "  ${BaselineNotes.render(row)}${describe(row.key)}" }
+          )
+        } else {
+          // kept rows are re-rendered, which also migrates a legacy five-field file to
+          // the line-less format (the legacy line field becomes a '# line' tag)
+          BaselineFiles.writeAtomically(
+              baselineFile, kept.joinToString("\n", postfix = "\n") { BaselineNotes.render(it) })
+          logger.lifecycle(
+              "pitest baseline '$suiteName': prune dropped ${droppedRows.size} row(s) since killed " +
                   "(baseline now ${kept.size}):\n" +
-                  droppedRows.joinToString("\n") { row -> "  ${baselineLine(row)}${describe(row)}" } +
+                  droppedRows.joinToString("\n") { row -> "  ${BaselineNotes.render(row)}${describe(row.key)}" } +
                   keptDetail
           )
         }
@@ -1266,215 +1346,124 @@ hardening.mutation.all {
         return@doLast
       }
       if (update) {
-        val dropped = multisetDiff(accepted, current)
-        val freshRows = multisetDiff(current, accepted)
-        // A rewrite drops rows and writes replacements, and a dropped row's '# note'
-        // used to vanish with it. Two relationships let the note travel:
+        // Full rewrite from this run's report. A dropped row's '# note' must not
+        // vanish silently; with line-less keys only one relationship needs a carry:
         //
-        //   status flip  — same coordinate, different status (NO_COVERAGE -> SURVIVED
-        //                  once a test reaches the line). Carried marked for
-        //                  re-reading: a reason written for an unreached mutant is not
-        //                  automatically a reason once a test can observe it.
-        //   line shift   — same class, method, mutator and status, only the line
-        //                  moved. Paired against *fresh, non-surfaced-sibling* rows
-        //                  only, exactly as the ratchet's shift classifier pairs them
-        //                  (surfaced siblings classified out first), so a killed row's
-        //                  note can never migrate onto an unrelated pre-existing row.
-        //                  Carried verbatim: nothing about the mutant changed, so
-        //                  unlike a flip there is nothing to re-read
-        //                  (casebook: the note the line shift dropped).
+        //   status flip — same class,method,mutator, different status (NO_COVERAGE ->
+        //                 SURVIVED once a test reaches the method). Carried marked for
+        //                 re-reading: a reason written for an unreached mutant is not
+        //                 automatically a reason once a test can observe it.
         //
-        // The two lookups are disjoint — a flip differs in status, a shift matches on
-        // it — but both consume from one (row, note) pool so no note is written twice.
-        val droppedNotes = dropped
-            .mapNotNull { row -> annotations[row]?.let { row to it } }
-            .toMutableList()
-        // A dropped row carrying *no* note still has to be recognised as a line
-        // shift. The pool above is built by 'mapNotNull' over the annotations, so
-        // a bare row is invisible to the shift lookup by construction: it fell
-        // through to the '# untriaged' branch, and a legacy unlabeled row — one
-        // predating label seeding, argued in the suite README rather than on the
-        // row itself — was silently reclassified as fresh debt by any edit that
-        // moves lines, a javadoc paragraph included. 'unlabeled' and
-        // '# untriaged' are distinct states everywhere else here (the verify and
-        // debt listings count them separately), so a refresh must not convert one
-        // into the other. Only the shift is paired this way: a status flip really
-        // does change what the mutant proves, so seeding debt there is correct
-        // (casebook: the unlabeled row the shift reclassified).
-        val droppedBare = dropped
-            .filter { annotations[it] == null }
-            .toMutableList()
-        fun coordinate(row: String) = row.substringBeforeLast(',')
-        fun linelessKey(row: String) = row.split(',').let { "${it[0]},${it[1]},${it[3]},${it[4]}" }
-        fun rowLine(row: String) = row.split(',')[2]
-        val freshBudget = freshRows.groupingBy { it }.eachCount().toMutableMap()
-        // A fresh row that exactly duplicates an accepted row is a surfaced sibling, not
-        // a shift target — the multiset comparison exposing pre-existing debt, not a moved
-        // mutant. The ratchet's classifier pulls it out before its shift check for exactly
-        // this reason; do the same here, or a dropped note (possibly from a killed row that
-        // still reads SURVIVED in the baseline) rides the shared class/method/mutator/status
-        // key onto the duplicate — the migration the shift carry exists to prevent.
-        val acceptedRowTexts = accepted.toSet()
+        // Line shifts no longer exist as churn — lines are metadata, so an edit above
+        // a mutated method changes nothing here but the '# line' tags, and the
+        // shift-pairing, bare-row-pairing and pairing-outlier machinery that used to
+        // police that carry is gone with the churn it policed.
+        //
+        // Within a key, accepted rows are assigned to this run's mutants by LINE
+        // AFFINITY first — a pair whose '# line' tag names the mutant's observed line
+        // is its row — then by file order. So when a noted sibling was killed, the
+        // note that drops is its own, not whichever row came first; without line
+        // evidence the assignment is arbitrary, which is the documented same-key
+        // blind spot, not a bug to police.
+        val pairIdxByKey = HashMap<String, MutableList<Int>>()
+        acceptedRows.forEachIndexed { idx, row -> pairIdxByKey.getOrPut(row.key) { mutableListOf() }.add(idx) }
+        val chosenIdx = mutableSetOf<Int>()
+        // per copy of each key: the observed line (null when unparsable) and the
+        // assigned accepted row, filled by the two passes below
+        class Copy(val key: String, val line: Int?) {
+          var pair: Int? = null
+        }
+        val copies = currentLines.keys.sorted().flatMap { key ->
+          currentLines.getValue(key).map { it.toIntOrNull() }.sortedWith(nullsLast(naturalOrder()))
+              .map { Copy(key, it) }
+        }
+        for (copy in copies) {
+          val pairs = pairIdxByKey[copy.key] ?: continue
+          val line = copy.line ?: continue
+          val hit = pairs.firstOrNull { line in acceptedRows[it].recordedLines }
+          if (hit != null) {
+            copy.pair = hit
+            chosenIdx.add(hit)
+            pairs.remove(hit)
+          }
+        }
+        for (copy in copies) {
+          if (copy.pair != null) continue
+          val pairs = pairIdxByKey[copy.key] ?: continue
+          if (pairs.isEmpty()) continue
+          val idx = pairs.removeAt(0)
+          copy.pair = idx
+          chosenIdx.add(idx)
+        }
+        val droppedIdx = acceptedRows.indices.filter { it !in chosenIdx }
+        // note-carrying flip pool: dropped rows that carry a note, each consumed at
+        // most once, matched by coordinate (key minus status)
+        val flipPool = droppedIdx.filter { acceptedRows[it].note != null }.toMutableList()
+        val carriedIdx = mutableSetOf<Int>()
         var flipped = 0
-        var shifted = 0
         var seeded = 0
-        // Which dropped bare row was paired onto which new row. A count alone would
-        // make the one failure mode of this pairing unauditable: the key is
-        // class/method/mutator/status, so a killed unlabeled row at one line and
-        // *genuinely* new debt at another share it, and the new row then enters the
-        // baseline unlabeled instead of '# untriaged'. That is the seeding invariant
-        // being missed, and it is silent by construction — the row simply looks
-        // settled. The dropped listing already names every note's fate for the same
-        // reason; name the bare pairings there too, so a wrong one is readable in the
-        // output rather than only in a later 'why is this row unlabeled?'.
-        val bareShiftPairs = mutableListOf<Pair<String, String>>()
-        val noteShiftPairs = mutableListOf<Pair<String, String>>()
-        val written = current.map { row ->
-          annotations[row]?.let { return@map "$row $it" }
-          val flip = droppedNotes.firstOrNull { coordinate(it.first) == coordinate(row) }
+        val written = copies.map { copy ->
+          val lineTag = copy.line?.let { listOf(it) } ?: emptyList()
+          val match = copy.pair
+          if (match != null) {
+            return@map BaselineNotes.render(copy.key, acceptedRows[match].note, lineTag)
+          }
+          val coordinate = copy.key.substringBeforeLast(',')
+          val flip = flipPool.firstOrNull { acceptedRows[it].key.substringBeforeLast(',') == coordinate }
           if (flip != null) {
-            droppedNotes.remove(flip)
+            flipPool.remove(flip)
+            carriedIdx.add(flip)
             flipped++
-            return@map "$row ${flip.second} (carried across ${flip.first.substringAfterLast(',')} -> ${row.substringAfterLast(',')})"
+            val from = acceptedRows[flip].key.substringAfterLast(',')
+            val to = copy.key.substringAfterLast(',')
+            return@map BaselineNotes.render(
+                copy.key, "${acceptedRows[flip].note} (carried across $from -> $to)", lineTag)
           }
-          val freshCopies = freshBudget[row] ?: 0
-          if (freshCopies > 0 && row !in acceptedRowTexts) {
-            val shift = droppedNotes.firstOrNull {
-              linelessKey(it.first) == linelessKey(row) && rowLine(it.first) != rowLine(row)
-            }
-            if (shift != null) {
-              freshBudget[row] = freshCopies - 1
-              droppedNotes.remove(shift)
-              shifted++
-              noteShiftPairs.add(shift.first to row)
-              return@map "$row ${shift.second}"
-            }
-            // The same pairing for a note-less row. There is nothing to carry;
-            // recognising the shift is what keeps the row unlabeled rather than
-            // seeding it as debt it never was.
-            val bareShift = droppedBare.firstOrNull {
-              linelessKey(it) == linelessKey(row) && rowLine(it) != rowLine(row)
-            }
-            if (bareShift != null) {
-              freshBudget[row] = freshCopies - 1
-              droppedBare.remove(bareShift)
-              bareShiftPairs.add(bareShift to row)
-              return@map row
-            }
-          }
-          // A genuinely new coordinate arrives as explicit debt, never as a bare row:
-          // triage means replacing this label, so the baseline itself always says
-          // which rows are argued and which are waiting. Surfaced siblings (row text
-          // already accepted) are excluded — notes are keyed by row text, and a
-          // second label on a duplicate row would collide with its twin's on reload.
-          if (row !in acceptedRowTexts) {
-            seeded++
-            return@map "$row # untriaged"
-          }
-          row
+          // A genuinely new key — or a new sibling mutant at an accepted key — arrives
+          // as explicit debt, never as a bare row: triage means replacing this label,
+          // so the baseline itself always says which rows are argued and which are
+          // waiting. A surfaced sibling seeds '# untriaged' too: its twin's argument
+          // was written for the mutants it had, not for one more.
+          seeded++
+          BaselineNotes.render(copy.key, "# untriaged", lineTag)
         }
-        BaselineFiles.writeAtomically(baselineFile, written.joinToString("\n", postfix = "\n"))
-        logger.lifecycle(
-            "pitest baseline '$suiteName': wrote ${current.size} accepted entries" +
-                (if (seeded == 0) "" else " ($seeded new row(s) seeded '# untriaged')") +
-                (if (flipped == 0) "" else " ($flipped note(s) carried across a status flip — re-check them)") +
-                (if (shifted == 0) "" else " ($shifted note(s) carried across a line shift)") +
-                (if (bareShiftPairs.isEmpty()) "" else
-                    " (${bareShiftPairs.size} unlabeled row(s) kept unlabeled across a line shift)")
-        )
-        // The shift key is class/method/mutator/status, so a killed row at one line and
-        // genuinely new debt at another share it and pair silently — the recycled row
-        // then reads as settled (labeled or legacy-unlabeled) instead of '# untriaged'.
-        // A real edit moves a class's rows by a small set of consistent deltas, while a
-        // recycling pair's delta is whatever the killed and new lines happen to differ
-        // by, so a pair moving against its class's dominant delta is the one to re-read.
-        // A warning, not a failure: distinct edit regions in one file can shift by
-        // different amounts legitimately (casebook: the killed row recycled onto new
-        // debt at the same key).
-        run {
-          fun fmtDelta(d: Int) = if (d >= 0) "+$d" else "$d"
-          // Within one line-less key the assignment of old to new lines is arbitrary —
-          // every permutation writes the same unlabeled rows — so a crosswise pairing
-          // of identical siblings is repaired here (both sides sorted by line and
-          // re-zipped) instead of surfacing as an outlier a human must disprove by
-          // hand. Note-carrying pairs are left alone: their assignment is observable.
-          val repairedBare = bareShiftPairs
-              .groupBy { linelessKey(it.second) }
-              .flatMap { (_, group) ->
-                if (group.size < 2) group
-                else group.map { it.first }.sortedBy { rowLine(it).toInt() }
-                    .zip(group.map { it.second }.sortedBy { rowLine(it).toInt() })
-              }
-          val pairsByClass = (noteShiftPairs + repairedBare).groupBy { it.second.substringBefore(',') }
-          for ((clazz, pairs) in pairsByClass) {
-            if (pairs.size < 2) continue
-            val deltas = pairs.map { (old, new) -> rowLine(new).toInt() - rowLine(old).toInt() }
-            val dominantEntry = deltas.groupingBy { it }.eachCount().maxByOrNull { it.value }!!
-            // strict majority, not plurality: on a tie (two edit regions moving two
-            // rows each) "dominant" would be whichever delta enumerates first, and the
-            // other region's legitimate pairs would be flagged — advisory checks stay
-            // credible only while they are quiet on genuinely ambiguous evidence
-            if (dominantEntry.value * 2 <= pairs.size) continue
-            val dominant = dominantEntry.key
-            // pairs moving together against the dominant delta are the signature of a
-            // second edit region, whose rows all shift by the same amount; a killed
-            // row recycled onto new debt lands at an arbitrary delta, typically alone
-            pairs.zip(deltas)
-                .filter { (_, delta) -> delta != dominant }
-                .groupBy({ (_, delta) -> delta }, { (pair, _) -> pair })
-                .forEach { (delta, group) ->
-                  if (group.size > 1) {
-                    logger.lifecycle(
-                        "pitest baseline '$suiteName': ${group.size} '$clazz' pair(s) moved ${fmtDelta(delta)} " +
-                            "together while the dominant delta is ${fmtDelta(dominant)} — consistent with a " +
-                            "second edit region, not a recycled row: " +
-                            group.joinToString("; ") { pair -> "'${pair.first}' -> line ${rowLine(pair.second)}" }
-                    )
-                  } else {
-                    val pair = group.first()
-                    logger.lifecycle(
-                        "pitest baseline '$suiteName': PAIRING OUTLIER — '${pair.first}' was paired onto " +
-                            "line ${rowLine(pair.second)} (a ${fmtDelta(delta)} move) while other '$clazz' " +
-                            "pairs moved ${fmtDelta(dominant)}: verify the same mutant moved, and not a " +
-                            "killed row recycled onto new debt at the same class/method/mutator/status"
-                    )
-                  }
-                }
+        // A refresh with nothing unkilled writes no record: an empty (or newly
+        // created, one-newline) baseline file reads as an armed-but-empty record
+        // where there is no record at all, and clutters fully-detected suites.
+        if (copies.isEmpty()) {
+          if (baselineFile.isFile) {
+            baselineFile.delete()
+            logger.lifecycle("pitest baseline '$suiteName': nothing unkilled — baseline file removed")
+          } else {
+            logger.lifecycle("pitest baseline '$suiteName': nothing unkilled — no baseline to write")
           }
+        } else {
+          BaselineFiles.writeAtomically(baselineFile, written.joinToString("\n", postfix = "\n"))
+          logger.lifecycle(
+              "pitest baseline '$suiteName': wrote ${copies.size} accepted entries" +
+                  (if (seeded == 0) "" else " ($seeded new row(s) seeded '# untriaged')") +
+                  (if (flipped == 0) "" else " ($flipped note(s) carried across a status flip — re-check them)")
+          )
         }
-        if (dropped.isNotEmpty()) {
+        if (droppedIdx.isNotEmpty()) {
           // The silent half of the refresh footgun: a full update rewrites from this one
           // run, so a flip-insurance union (detected today, survived under other load)
           // vanishes without a trace unless it is named here. Notes get the same
-          // treatment: whatever the carry pool still holds after the rewrite is an
+          // treatment: a note still in the carry pool after the rewrite is an
           // acceptance argument that just left the baseline — name its fate per row,
           // because a lost note that prints identically to a carried one is still
           // silent (casebook: the note the line shift dropped).
-          val lostNotes = droppedNotes.groupingBy { it.first }.eachCount().toMutableMap()
-          val bareShiftLines = bareShiftPairs
-              .groupBy({ it.first }, { rowLine(it.second) })
-              .mapValues { (_, lines) -> lines.toMutableList() }
-          fun rowFate(row: String): String {
-            if (annotations[row] == null) {
-              // Bare rows: silent before, since there was no note whose fate to name.
-              // A pairing is the whole reason the row's replacement reads as settled
-              // triage rather than seeded debt, so it is the line worth printing.
-              val lines = bareShiftLines[row] ?: return ""
-              if (lines.isEmpty()) return ""
-              return " — unlabeled, kept unlabeled at line ${lines.removeAt(0)}"
-            }
-            val lost = lostNotes[row] ?: 0
-            return if (lost > 0) {
-              lostNotes[row] = lost - 1
-              " — note dropped with the row"
-            } else {
-              " — note carried"
-            }
+          fun rowFate(idx: Int): String = when {
+            acceptedRows[idx].note == null -> ""
+            idx in carriedIdx -> " — note carried"
+            else -> " — note dropped with the row"
           }
-          val lostCount = droppedNotes.size
+          val lostCount = droppedIdx.count { acceptedRows[it].note != null && it !in carriedIdx }
           logger.lifecycle(
-              "pitest baseline '$suiteName': dropped ${dropped.size} row(s) not unkilled this run:\n" +
-                  dropped.joinToString("\n") { row -> "  ${baselineLine(row)}${describe(row)}${rowFate(row)}" } +
+              "pitest baseline '$suiteName': dropped ${droppedIdx.size} row(s) not unkilled this run:\n" +
+                  droppedIdx.joinToString("\n") { idx ->
+                    "  ${BaselineNotes.render(acceptedRows[idx])}${describe(acceptedRows[idx].key)}${rowFate(idx)}"
+                  } +
                   (if (lostCount == 0) "" else
                       "\n  $lostCount note(s) dropped with their rows — re-home the acceptance argument by hand if it still applies") +
                   "\n  a dropped flip-insurance union (see config/pitest/README.md) must be " +
@@ -1494,15 +1483,30 @@ hardening.mutation.all {
         if (added.isEmpty()) {
           logger.lifecycle("pitest baseline '$suiteName': union added nothing new")
         } else {
-          // multiset union: per coordinate, the larger of the two occurrence counts
-          val acceptedCounts = accepted.groupingBy { it }.eachCount()
+          // multiset union: per key, the larger of the two occurrence counts —
+          // existing rows keep their notes and line tags verbatim, added copies land
+          // bare with this run's observed line
+          val pairsByKey = acceptedRows.groupBy { it.key }
           val currentCounts = current.groupingBy { it }.eachCount()
-          val merged = (acceptedCounts.keys + currentCounts.keys).sorted().flatMap { row ->
-            List(maxOf(acceptedCounts[row] ?: 0, currentCounts[row] ?: 0)) { row }
+          val linePool = HashMap<String, ArrayDeque<Int>>()
+          currentLines.forEach { (key, lines) ->
+            linePool[key] = ArrayDeque(lines.mapNotNull { it.toIntOrNull() }.sorted())
           }
-          BaselineFiles.writeAtomically(baselineFile, merged.joinToString("\n", postfix = "\n") { baselineLine(it) })
+          var total = 0
+          val merged = (pairsByKey.keys + currentCounts.keys).sorted().flatMap { key ->
+            val existing = pairsByKey[key].orEmpty()
+            val extra = maxOf(0, (currentCounts[key] ?: 0) - existing.size)
+            existing.forEach { linePool[key]?.removeFirstOrNull() }
+            total += existing.size + extra
+            existing.map { BaselineNotes.render(it) } +
+                List(extra) {
+                  BaselineNotes.render(
+                      key, null, linePool[key]?.removeFirstOrNull()?.let { listOf(it) } ?: emptyList())
+                }
+          }
+          BaselineFiles.writeAtomically(baselineFile, merged.joinToString("\n", postfix = "\n"))
           logger.lifecycle(
-              "pitest baseline '$suiteName': union added ${added.size} entries (baseline now ${merged.size}):\n" +
+              "pitest baseline '$suiteName': union added ${added.size} entries (baseline now $total):\n" +
                   added.joinToString("\n") { row -> "  $row${describe(row)}" }
           )
         }
@@ -1511,103 +1515,85 @@ hardening.mutation.all {
       }
       val fresh = multisetDiff(current, accepted)
       val stale = multisetDiff(accepted, current)
-      // Two situations produce paired stale + "new" rows and look alike in a raw diff,
-      // but call for opposite responses, so they are classified rather than lumped:
+      // Line-drift advisory: an unkilled mutant at a line no row's '# line' tag
+      // names is a population the acceptance argument may no longer describe —
+      // either the anchor moved, or a same-key swap slid a new mutant under an old
+      // acceptance. Row-level where the data supports it (every row of the key
+      // tagged, observed count matching the row count): the baseline's multiset
+      // already fails a genuinely new sibling as a count change, so unlike the
+      // audited-timeout sets there is no new-sibling quiet case to preserve, and
+      // any unrecorded line under matched counts is worth a re-read. Partial tags
+      // or skewed counts fall back to the audit's key-level disjointness. Advisory
+      // only, never a failure: lines are metadata, and the next refresh rewrites
+      // the tags (BaselineNotes.lineDrift owns the semantics).
+      run {
+        val observed = currentLines
+            .mapValues { (_, lines) -> lines.mapNotNull { it.toIntOrNull() } }
+        val drifted = BaselineNotes.lineDrift(acceptedRows, observed)
+        if (drifted.isNotEmpty()) {
+          logger.warn(
+              "pitest baseline '$suiteName': ${drifted.size} accepted key(s) unkilled at line(s) " +
+                  "no row's '# line' tag names — the code the acceptance argues about has moved, or a " +
+                  "new mutant sits under an old acceptance (the same-key swap); re-read the README " +
+                  "argument, then let the next refresh rewrite the tag:\n" +
+                  drifted.entries.sortedBy { it.key }.joinToString("\n") { (key, lines) ->
+                    val (recordedLines, observedLines) = lines
+                    "  $key # line(s) ${recordedLines.sorted().joinToString(", ")} -> " +
+                        "unrecorded ${observedLines.sorted().joinToString(", ")}"
+                  }
+          )
+          advisoryLog.get().record(advisoryScope, "${drifted.size} line-drifted baseline key(s)")
+        }
+      }
+      // Two situations produce paired stale + "new" rows and are classified rather
+      // than lumped, because they call for different responses:
       //
-      //   shifted        — same status, different line: editing a mutated file moved it.
-      //                    Confirm the pairings and refresh.
-      //   newly covered  — same line, different status (typically NO_COVERAGE ->
-      //                    SURVIVED): a test newly reached the mutant. That is a triage
-      //                    item — kill it or accept it with a reason — never a refresh.
+      //   newly covered     — same class,method,mutator, different status (typically
+      //                       NO_COVERAGE -> SURVIVED): a test newly reached the
+      //                       mutant. A triage item — kill it or accept it with a
+      //                       reason — never a refresh.
+      //   surfaced sibling  — a "new" row identical to an accepted row: the key now
+      //                       holds more unkilled sibling mutants than the baseline
+      //                       has rows. Either pre-existing debt made visible (a
+      //                       set-based baseline upgraded, a compound condition's
+      //                       operands) or a genuinely NEW mutant landing at an
+      //                       accepted key — the one shape the line-less key cannot
+      //                       tell apart (HARDENING.md names this blind spot); the
+      //                       report's line numbers say which.
       //
-      // A stale row is consumed once it pairs, so several new rows cannot all claim the
-      // same counterpart and report a churn that did not happen.
-      fun rowKey(row: String) = row.split(',').let { Triple(it[0], it[1], it[3]) }
-      fun rowLine(row: String) = row.split(',')[2]
-      fun rowStatus(row: String) = row.substringAfterLast(',')
-
-      // Line numbers are metadata, not identity: when the per-(class, method,
-      // mutator, status) population is unchanged, no *net* status flip happened —
-      // every fresh row is a moved copy of a stale row. (Not quite "no flip
-      // anywhere": two same-key rows swapping SURVIVED and NO_COVERAGE preserve the
-      // multiset and read as drift here; both remain unkilled debt either way, so
-      // the tolerated reading changes no population.) Decided BEFORE per-row
-      // classification because a shift can land a row on the exact line where a
-      // same-mutator row of a different status sat in the baseline; read row-by-row
-      // that collision is indistinguishable from a status flip, and preferring the
-      // flip reading both misreports the moved row as "newly covered" and strands
-      // its real counterpart as unexplained (casebook: the drifted survivor that
-      // read as newly covered).
-      fun lineless(rowList: List<String>) = rowList
-          .map { row -> row.split(',').let { "${it[0]},${it[1]},${it[3]},${it[4]}" } }
-          .groupingBy { it }.eachCount()
-      val linelessUnchanged = lineless(current) == lineless(accepted)
-
-      val unpairedStale = stale.toMutableList()
-      // pair counts are tracked as lists, not maps: duplicate sibling rows may each
-      // pair with their own stale counterpart, and a map would collapse them
-      val shiftPairs = mutableListOf<Pair<String, String>>()
-      val newlyCoveredPairs = mutableListOf<Pair<String, String>>()
-      // A "new" row identical to an accepted row is not new code and not churn: the
-      // coordinate holds more sibling mutants than the baseline has rows, which is
-      // what upgrading a set-based (pre-multiset) baseline materializes — pre-existing
-      // debt made visible, not a regression. Classified so the upgrade does not read
-      // as unexplained (casebook: the sibling absorbed by its accepted twin).
+      // A stale row is consumed once it pairs, so several new rows cannot all claim
+      // the same counterpart and report a churn that did not happen. Line shifts no
+      // longer exist as a category: lines are not identity, so editing above a
+      // mutated method produces no fresh rows at all.
       val acceptedRowTexts = accepted.toSet()
+      val unpairedStale = stale.toMutableList()
+      val newlyCoveredPairs = mutableListOf<Pair<String, String>>()
       val surfacedSiblings = mutableListOf<String>()
       for (row in fresh.sorted()) {
-        // With the population unchanged the flip reading is provably wrong (a real
-        // NO_COVERAGE -> SURVIVED changes both status counts), so shift pairing is
-        // the only classification offered.
-        val sameLine = if (linelessUnchanged) null else unpairedStale.firstOrNull {
-          rowKey(it) == rowKey(row) && rowLine(it) == rowLine(row) && rowStatus(it) != rowStatus(row)
+        val flip = unpairedStale.firstOrNull {
+          it.substringBeforeLast(',') == row.substringBeforeLast(',') && it != row
         }
-        if (sameLine != null) {
-          // a same-coordinate status flip outranks the sibling reading: with a stale
-          // row to pair, "newly covered" explains both rows; "sibling" explains one
-          unpairedStale.remove(sameLine)
-          newlyCoveredPairs.add(row to sameLine)
+        if (flip != null) {
+          unpairedStale.remove(flip)
+          newlyCoveredPairs.add(row to flip)
           continue
         }
         if (row in acceptedRowTexts) {
           surfacedSiblings.add(row)
-          continue
-        }
-        val moved = unpairedStale.firstOrNull {
-          rowKey(it) == rowKey(row) && rowLine(it) != rowLine(row) && rowStatus(it) == rowStatus(row)
-        }
-        if (moved != null) {
-          unpairedStale.remove(moved)
-          shiftPairs.add(row to moved)
         }
       }
-      val shiftedFrom = shiftPairs.toMap(mutableMapOf())
       val newlyCoveredFrom = newlyCoveredPairs.toMap(mutableMapOf())
       val surfacedSiblingTexts = surfacedSiblings.toSet()
-      val unexplained = fresh.size - shiftPairs.size - newlyCoveredPairs.size - surfacedSiblings.size
-
-      // When every new row is a pure line shift AND the population is unchanged,
-      // nothing moved but text: pass with a notice instead of demanding the
-      // refresh dance after every edit above a mutated method. '-PnoDriftTolerance'
-      // restores the strict behaviour for certifying runs.
-      val pureShift = fresh.isNotEmpty() &&
-          unexplained == 0 && newlyCoveredPairs.isEmpty() && shiftPairs.size == fresh.size
-      val populationUnchanged = pureShift && linelessUnchanged
-      if (populationUnchanged && !noDriftTolerance) {
-        logger.lifecycle(
-            "pitest baseline '$suiteName': ${shiftPairs.size} row(s) moved line only — same mutants, same " +
-                "statuses, same counts per method. Passing; refresh with -PupdateMutationBaseline when convenient."
-        )
-        return@doLast
-      }
-      fun shiftHint(row: String): String = when {
+      val unexplained = fresh.size - newlyCoveredPairs.size - surfacedSiblings.size
+      fun freshHint(row: String): String = when {
         row in surfacedSiblingTexts ->
-          " (sibling of an accepted identical row — surfaced by the multiset comparison; pre-existing debt, not a regression)"
-        shiftedFrom.containsKey(row) -> " (shifted from line ${rowLine(shiftedFrom.getValue(row))})"
+          " (shares an accepted key — sibling debt surfaced, or a NEW mutant at that key; check the line)"
         newlyCoveredFrom.containsKey(row) ->
-          " (newly covered — was ${rowStatus(newlyCoveredFrom.getValue(row))} at this line; triage, not a refresh)"
+          " (newly covered — was ${newlyCoveredFrom.getValue(row).substringAfterLast(',')}; triage, not a refresh)"
         else -> ""
       }
+      // representative note per key, for listings that print baseline rows
+      val noteByKey = acceptedRows.filter { it.note != null }.associateBy({ it.key }, { it.note })
       if (stale.isNotEmpty()) {
         // A stale-looking row whose coordinate read TIMED_OUT this run is neither
         // killed nor moved — it is the load-dependent detection the TIMED_OUT
@@ -1623,25 +1609,22 @@ hardening.mutation.all {
           // Point at prune, not update: when the only news is *fewer* survivors, the
           // shrink-only refresh is the always-safe direction — it cannot bake in a
           // coin-flip from this one run, which is exactly what recommending a full
-          // rewrite here used to invite. Update stays the answer when rows also need
-          // rewriting (a status flip), and that path is reported separately below.
-          // Only the pure-shrink case gets the prune recommendation. With new rows
-          // present the stale ones are usually their moved counterparts, and prune
-          // would drop the old line without writing the new one — leaving the shift
-          // unexplained. That case still wants update — after the new rows are
-          // triaged, since they may also be newly covered or surfaced siblings,
-          // where update-before-triage is exactly the laundering the ratchet exists
-          // to prevent.
+          // rewrite here used to invite. With new rows present that case still wants
+          // update — after the new rows are triaged, since they may be newly covered
+          // or surfaced siblings, where update-before-triage is exactly the
+          // laundering the ratchet exists to prevent.
           val direction = if (fresh.isEmpty()) "-PpruneMutationBaseline (shrink-only; nothing new to bake in)"
           else "-PupdateMutationBaseline after the new rows below are triaged"
           logger.lifecycle(
-              "pitest baseline '$suiteName': ${staleGone.size} stale entries (since killed or moved) — refresh with $direction")
+              "pitest baseline '$suiteName': ${staleGone.size} stale entries (since killed) — refresh with $direction")
         }
         if (staleTimedOut.isNotEmpty()) {
           logger.lifecycle(
               "pitest baseline '$suiteName': ${staleTimedOut.size} baseline row(s) read TIMED_OUT this run — " +
                   "load-dependent detection, not a kill; no refresh needed (prune keeps them):\n" +
-                  staleTimedOut.joinToString("\n") { "  ${baselineLine(it)}" })
+                  staleTimedOut.joinToString("\n") {
+                    "  ${BaselineNotes.render(it, noteByKey[it], emptyList())}"
+                  })
         }
       }
       if (fresh.isNotEmpty()) {
@@ -1652,35 +1635,28 @@ hardening.mutation.all {
           freshByStatus["NO_COVERAGE"]?.let {
             append("\n  ${it.size} NO_COVERAGE — no test reaches these; mechanical work, ")
             append("and never acceptable as \"equivalent\" since the behaviour was never observed:\n")
-            append(it.joinToString("\n") { row -> "    $row${shiftHint(row)}${describe(row)}" })
+            append(it.joinToString("\n") { row -> "    $row${freshHint(row)}${describe(row)}" })
           }
           freshByStatus["SURVIVED"]?.let {
             append("\n  ${it.size} SURVIVED — a test ran these and could not tell the difference; ")
             append("strengthen the assertion or triage for equivalence:\n")
-            append(it.joinToString("\n") { row -> "    $row${shiftHint(row)}${describe(row)}${siblingHint(row)}" })
+            append(it.joinToString("\n") { row -> "    $row${freshHint(row)}${describe(row)}${siblingHint(row)}" })
           }
           // The churn tally answers the question the per-row hints cannot: is the whole
           // set accounted for? Refreshing is only safe when nothing is unexplained and
           // nothing was newly covered.
-          append("\n  churn: ${shiftPairs.size} shifted, ${newlyCoveredPairs.size} newly covered, ")
+          append("\n  churn: ${newlyCoveredPairs.size} newly covered, ")
           if (surfacedSiblings.isNotEmpty()) append("${surfacedSiblings.size} surfaced sibling(s), ")
           append("$unexplained unexplained (of ${fresh.size} new; ${stale.size} stale)")
-          if (populationUnchanged) {
-            append("\n  every new row is a shifted counterpart and nothing is unexplained — pure line churn, ")
-            append("failing only because -PnoDriftTolerance is active; confirm the pairings above, then ")
-            append("refresh with -PupdateMutationBaseline")
-          } else if (unexplained == 0 && newlyCoveredPairs.isEmpty() && shiftPairs.isNotEmpty()) {
-            append("\n  every new row is a shifted counterpart and nothing is unexplained, but the per-method ")
-            append("population changed — kills mixed with drift; confirm the pairings above, then refresh ")
-            append("with -PupdateMutationBaseline")
-          } else if (newlyCoveredPairs.isNotEmpty()) {
-            append("\n  ${newlyCoveredPairs.size} row(s) are newly covered rather than moved: a test now reaches ")
-            append("them, so they are triage (kill or accept with a reason), not a refresh")
+          if (newlyCoveredPairs.isNotEmpty()) {
+            append("\n  ${newlyCoveredPairs.size} row(s) are newly covered rather than new code: a test now ")
+            append("reaches them, so they are triage (kill or accept with a reason), not a refresh")
           }
           if (surfacedSiblings.isNotEmpty()) {
-            append("\n  ${surfacedSiblings.size} row(s) are sibling mutants of accepted identical rows, surfaced ")
-            append("by the multiset comparison (upgrading a set-based baseline materializes these): pre-existing ")
-            append("debt made visible — kill, or accept into the documented family")
+            append("\n  ${surfacedSiblings.size} row(s) share an accepted key: pre-existing sibling debt ")
+            append("surfaced by the multiset comparison, or a genuinely new mutant landing at an accepted ")
+            append("key — the line-less key's documented blind spot; read the report's line numbers before ")
+            append("accepting")
           }
         }
         throw GradleException(
@@ -1742,12 +1718,13 @@ hardening.mutation.all {
             statuses.count { it == "SURVIVED" } to statuses.count { it == "NO_COVERAGE" }
           }
 
+      // BaselineNotes handles both formats: line-less rows and legacy five-field ones
       val baselinePairs = if (baselineFile.exists()) {
         baselineFile.readLines()
             .filter { it.isNotBlank() && !it.startsWith("#") }
-            .map { line -> line.substringBefore('#').trim().split(',') }
-            .filter { it.size >= 5 }
-            .map { it[0] to it[4] }
+            .map { BaselineNotes.parse(it).key.split(',') }
+            .filter { it.size >= 4 }
+            .map { it[0] to it.last() }
       } else {
         emptyList()
       }
@@ -1796,7 +1773,7 @@ hardening.mutation.all {
       // and unlabeled rows predate seeding.
       val baselineRows = if (!baselineFile.exists()) emptyList()
       else baselineFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }
-      val baselineNotes = baselineRows.mapNotNull { BaselineNotes.noteOf(it) }
+      val baselineNotes = baselineRows.mapNotNull { BaselineNotes.parse(it).note }
       val labelBreakdown = BaselineNotes.summarize(baselineNotes, baselineRows.size - baselineNotes.size)
           ?.let { "\n  baseline labels: $it" } ?: ""
       logger.lifecycle(
@@ -2481,22 +2458,24 @@ tasks.register("hardeningInit") {
           |Each `pitest<Suite>` run is finalized by `pitest<Suite>Verify`, which diffs the
           |run's unkilled mutants (`SURVIVED` and `NO_COVERAGE`) against the accepted
           |baseline in `<suite>-accepted.csv` and **fails on anything new**. Baseline row
-          |format: `class,method,line,mutator,status`. Full policy — the three legal
-          |outcomes for a new survivor, determinism requirements, targeting rules —
-          |lives in sava-build's `HARDENING.md`.
+          |format: `class,method,mutator,STATUS` — line numbers are metadata, carried as
+          |a trailing `# line N` tag every refresh rewrites, so editing above a mutated
+          |method churns nothing. Full policy — the three legal outcomes for a new
+          |survivor, determinism requirements, targeting rules — lives in sava-build's
+          |`HARDENING.md`.
           |
           |Never refresh with `-PupdateMutationBaseline` just to make the build pass:
           |kill the mutant, refactor it out of existence, or record its equivalence
-          |reason below. Pure line drift (every new row a same-status shift of a
-          |stale one, populations unchanged) passes on its own with a notice —
-          |refresh at a convenient moment. Anything else fails with a per-row
-          |classification (`shifted` vs `newly covered` vs unexplained) and a churn
-          |tally: a newly covered row is triage, not churn, and identical rows are
-          |sibling mutants of one compound condition — the comparison is a
-          |multiset, so never hand-dedupe the CSV.
+          |reason below. A failure classifies each new row (`newly covered` vs shares an
+          |accepted key vs unexplained) and closes with a churn tally: a newly covered
+          |row is triage, not a refresh, and identical rows are sibling mutants of one
+          |compound condition — the comparison is a multiset, so never hand-dedupe the
+          |CSV. A row sharing an accepted key may also be a genuinely new mutant
+          |inheriting the key's acceptance (the line-less key's documented blind spot);
+          |read the report's line numbers before accepting.
           |
-          |A baseline row may carry a trailing `# note` — `# untriaged` is the
-          |conventional label for seeded debt. Notes are preserved across
+          |A baseline row may carry a `# note` before its line tag — `# untriaged` is
+          |the conventional label for seeded debt. Notes are preserved across
           |`-PupdateMutationBaseline` / `-PunionMutationBaseline` rewrites, and the
           |verify task counts rows marked `# untriaged` so the debt stays a printed
           |number, not prose.
