@@ -1162,6 +1162,12 @@ jobs:
           -PjavaVersion=${{ steps.setup.outputs.java-version }}
           -PmaxFuzzTime=${{ inputs.max-fuzz-time || '900' }}
           :<module>:fuzz<TargetOne> :<module>:fuzz<TargetTwo>
+        # standalone Gradle invocations resolve dependencies themselves, so the
+        # credentials the reusable check workflow injects must be repeated here —
+        # a copy without them fails at configuration, before any fuzzing runs
+        env:
+          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
 
       - name: Upload findings
         if: failure()
