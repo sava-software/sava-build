@@ -650,6 +650,14 @@ val fuzzWorkflowInSync = tasks.register("fuzzWorkflowInSync") {
 }
 tasks.named("check") { dependsOn(fuzzWorkflowInSync) }
 
+// Every suite's mutation scope, keyed by suite name: each suite's exclusion
+// audit subtracts the classes its siblings actually mutate, so the targeting
+// policy's "owned by another suite" handoffs read as ownership rather than
+// swallowed production classes *(casebook: the partition the audit called a
+// hole)*. Values are providers; by execution time every suite is registered.
+val suiteTargetGlobs = objects.mapProperty<String, List<String>>()
+val suiteExcludedGlobs = objects.mapProperty<String, List<String>>()
+
 hardening.mutation.all {
   val suite = this
   suite.mutators.convention("STRONGER")
@@ -663,6 +671,8 @@ hardening.mutation.all {
   val allExcludedClasses = suite.excludedClasses.zip(fuzzHarnessExcludes) { excluded, harnesses ->
     (excluded + harnesses).distinct()
   }
+  suiteTargetGlobs.put(suite.name, suite.targetClasses)
+  suiteExcludedGlobs.put(suite.name, allExcludedClasses)
 
   // Mutation ratchet: after each 'pitest<Name>' run, diff the unkilled mutants
   // (SURVIVED and NO_COVERAGE) against the checked-in baseline at
@@ -1716,6 +1726,13 @@ hardening.mutation.all {
     val debtTimeoutsFile = layout.projectDirectory.file("config/pitest/$suiteName-timeouts.csv").asFile
     val debtToolVersionFile = layout.projectDirectory.file("config/pitest/$suiteName-pitest-version").asFile
     val debtPitVersion = hardening.pitestVersion
+    val debtClassesDir = mutationClassesDir
+    val debtTargets = suite.targetClasses
+    val debtExcludes = allExcludedClasses
+    val debtTestSourceDirs = sourceSets.test.get().java.srcDirs
+    val debtSiblingTargets = suiteTargetGlobs
+    val debtSiblingExcludes = suiteExcludedGlobs
+    val debtDeclinedExclusions = suite.declinedExclusionAudits
     doLast {
       // Committed-files-only, like the audit's static half below — which makes Debt
       // (and therefore the fleet canary) the place a plugin release that bumps PIT
@@ -1748,6 +1765,33 @@ hardening.mutation.all {
         if (undocumented.isNotEmpty()) {
           logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, undocumented))
         }
+      }
+
+      // The exclusion audit's static half, mirroring the timeout audit's: the
+      // policy is pure given recompiled classes, so when a prior run left
+      // build/mutation-classes behind it is checkable here without a mutation
+      // run — which is what puts it in front of the fleet canary, whose Debt
+      // runs are where a plugin release meets real consumer globs. Its in-run
+      // half only fired inside a real 'pitest<Suite>' execution, which the
+      // canary never does, and that blind spot shipped a release *(casebook:
+      // the partition the audit called a hole)*. Absent classes stay silent:
+      // nothing was scanned, and silence means "unscanned", never "clean" —
+      // and like the report above, the classes may be stale; both caveats ride
+      // the same rerun hint.
+      val debtClasses = debtClassesDir.get().asFile
+      if (debtClasses.isDirectory) {
+        val siblingScopes = debtSiblingTargets.get()
+            .filterKeys { it != suiteName }
+            .map { (sibling, targets) ->
+              ExclusionAudit.SuiteScope(targets, debtSiblingExcludes.get()[sibling].orEmpty())
+            }
+        val swallowed = ExclusionAudit.swallowedProductionClasses(
+            debtClasses, debtTargets.get(), debtExcludes.get(), debtTestSourceDirs, siblingScopes
+        )
+        val declined = ExclusionAudit.applyDeclines(swallowed, debtDeclinedExclusions.get())
+        ExclusionAudit.warning(suiteName, declined.reported)?.let { logger.warn(it) }
+        ExclusionAudit.staleDeclineWarning(suiteName, declined.staleGlobs)?.let { logger.warn(it) }
+        ExclusionAudit.blankDeclineWarning(suiteName, declined.blankGlobs)?.let { logger.warn(it) }
       }
 
       fun tally(pairs: List<Pair<String, String>>): Map<String, Pair<Int, Int>> = pairs
@@ -2072,6 +2116,9 @@ hardening.mutation.all {
     // packages), so the audit tells production from prey the same way the
     // mutated-fakes warning does: by whether the source sits under a test src dir
     val adviceTestSourceDirs = sourceSets.test.get().java.srcDirs
+    val adviceSiblingTargets = suiteTargetGlobs
+    val adviceSiblingExcludes = suiteExcludedGlobs
+    val adviceDeclinedExclusions = suite.declinedExclusionAudits
     val adviceAdvisoryLog = hardeningAdvisoryLog
     val adviceAdvisoryScope = suiteAdvisoryScope
     usesService(adviceAdvisoryLog)
@@ -2083,17 +2130,38 @@ hardening.mutation.all {
         // The inverse of the mutated-fakes warning: a production class matched by an
         // exclusion glob leaves the population silently — the globs and the sources
         // they protect must define the same set.
+        val siblingScopes = adviceSiblingTargets.get()
+            .filterKeys { it != suiteName }
+            .map { (sibling, targets) ->
+              ExclusionAudit.SuiteScope(targets, adviceSiblingExcludes.get()[sibling].orEmpty())
+            }
         val swallowed = ExclusionAudit.swallowedProductionClasses(
-            classesDir, adviceTargets.get(), adviceExcludes.get(), adviceTestSourceDirs
+            classesDir, adviceTargets.get(), adviceExcludes.get(), adviceTestSourceDirs, siblingScopes
         )
-        ExclusionAudit.warning(suiteName, swallowed)?.let {
+        // Deliberate opt-outs are the one exclusion category the scan cannot derive
+        // — "generated bindings" is a judgment, not a property of the globs — so a
+        // suite argues them with declineExclusionAudit and they leave the report.
+        // The records keep earning themselves: a blank reason suppresses nothing and
+        // is named, and one that stops matching is named as deletable.
+        val declined = ExclusionAudit.applyDeclines(swallowed, adviceDeclinedExclusions.get())
+        ExclusionAudit.warning(suiteName, declined.reported)?.let {
           logger.warn(it)
           // recorded like every other warn-level advisory, so it reaches the
           // end-of-build summary instead of scrolling past mid-build
           adviceAdvisoryLog.get().record(
               adviceAdvisoryScope,
-              "${swallowed.size} production class(es) swallowed by excludedClasses"
+              "${declined.reported.size} production class(es) swallowed by excludedClasses"
           )
+        }
+        ExclusionAudit.staleDeclineWarning(suiteName, declined.staleGlobs)?.let {
+          logger.warn(it)
+          adviceAdvisoryLog.get().record(
+              adviceAdvisoryScope, "${declined.staleGlobs.size} stale exclusion decline(s)")
+        }
+        ExclusionAudit.blankDeclineWarning(suiteName, declined.blankGlobs)?.let {
+          logger.warn(it)
+          adviceAdvisoryLog.get().record(
+              adviceAdvisoryScope, "${declined.blankGlobs.size} exclusion decline(s) without a reason")
         }
         val advice = MutatorAdvice.advise(
             MutatorAdvice.scan(

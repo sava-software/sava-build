@@ -30,8 +30,9 @@ class ExclusionAuditTest {
   private fun audit(
     targetGlobs: List<String>,
     excludedGlobs: List<String>,
+    siblingScopes: List<ExclusionAudit.SuiteScope> = emptyList(),
   ): List<ExclusionAudit.Swallowed> = ExclusionAudit.swallowedProductionClasses(
-    classesDir, targetGlobs, excludedGlobs, listOf(testSrcDir)
+    classesDir, targetGlobs, excludedGlobs, listOf(testSrcDir), siblingScopes
   )
 
   @Test
@@ -152,5 +153,147 @@ class ExclusionAuditTest {
       excludedGlobs = listOf("com.example.Foo\$*"),
     )
     assertTrue(dollar.none { it.binaryName == "com.example.FooBar" }, dollar.toString())
+  }
+  @Test
+  fun `an argued decline takes its classes out of the report`() {
+    // the deliberate-opt-out category: "generated bindings" is a judgment the scan
+    // cannot derive from the globs, so it is written down instead
+    val swallowed = listOf(
+      ExclusionAudit.Swallowed("com.example.gen.Foo", "com.example.gen.*"),
+      ExclusionAudit.Swallowed("com.example.gen.Bar", "com.example.gen.*"),
+      ExclusionAudit.Swallowed("com.example.Orphan", "com.example.Orphan"),
+    )
+
+    val declined = ExclusionAudit.applyDeclines(
+      swallowed, mapOf("com.example.gen.*" to "generated bindings; the generator's own suites cover them"))
+
+    assertEquals(
+      listOf(ExclusionAudit.Swallowed("com.example.Orphan", "com.example.Orphan")),
+      declined.reported,
+      "an undeclined glob must still be reported"
+    )
+    assertEquals(emptyList<String>(), declined.staleGlobs)
+    assertEquals(emptyList<String>(), declined.blankGlobs)
+    assertNull(ExclusionAudit.staleDeclineWarning("encoding", declined.staleGlobs))
+    assertNull(ExclusionAudit.blankDeclineWarning("encoding", declined.blankGlobs))
+  }
+
+  @Test
+  fun `a blank reason suppresses nothing and is named`() {
+    // the declineMutator contract: a record made to quiet a warning nobody
+    // investigated reads as settled to everyone after, so it must not work
+    val swallowed = listOf(ExclusionAudit.Swallowed("com.example.gen.Foo", "com.example.gen.*"))
+
+    val declined = ExclusionAudit.applyDeclines(swallowed, mapOf("com.example.gen.*" to "   "))
+
+    assertEquals(swallowed, declined.reported, "a blank reason must suppress nothing")
+    assertEquals(listOf("com.example.gen.*"), declined.blankGlobs)
+    assertEquals(emptyList<String>(), declined.staleGlobs, "a blank decline still matched a class")
+    assertTrue(
+      ExclusionAudit.blankDeclineWarning("encoding", declined.blankGlobs)!!
+        .contains("suppress nothing"),
+      "the empty decline must be named"
+    )
+  }
+
+  @Test
+  fun `a decline that matches nothing is reported as deletable`() {
+    // declines go stale like baseline rows: the exclusion it argued about is gone
+    val declined = ExclusionAudit.applyDeclines(
+      listOf(ExclusionAudit.Swallowed("com.example.gen.Foo", "com.example.gen.*")),
+      mapOf(
+        "com.example.gen.*" to "generated bindings",
+        "com.example.retired.*" to "a glob that no longer swallows anything",
+      )
+    )
+
+    assertEquals(emptyList<ExclusionAudit.Swallowed>(), declined.reported)
+    assertEquals(listOf("com.example.retired.*"), declined.staleGlobs)
+    assertTrue(
+      ExclusionAudit.staleDeclineWarning("encoding", declined.staleGlobs)!!.contains("delete them"),
+      "a stale decline must be named as deletable"
+    )
+  }
+
+  @Test
+  fun `declines key on the glob as written, not on the classes it swallows`() {
+    // the record argues about an exclusion, so a glob that swallows fifty classes is
+    // one decision, not fifty — and a decline naming a class rather than the glob
+    // that swallowed it matches nothing and says so
+    val swallowed = List(50) { i -> ExclusionAudit.Swallowed("com.example.gen.C$i", "com.example.gen.*") }
+
+    val byGlob = ExclusionAudit.applyDeclines(swallowed, mapOf("com.example.gen.*" to "generated"))
+    assertEquals(emptyList<ExclusionAudit.Swallowed>(), byGlob.reported)
+
+    val byClass = ExclusionAudit.applyDeclines(swallowed, mapOf("com.example.gen.C0" to "generated"))
+    assertEquals(50, byClass.reported.size, "a class-keyed record must not suppress its glob")
+    assertEquals(listOf("com.example.gen.C0"), byClass.staleGlobs)
+  }
+
+  @Test
+  fun `a class a sibling suite mutates is the partition working, not a finding`() {
+    // the targeting policy excludes "classes owned by another suite"; the audit
+    // must read that handoff as ownership, or a partitioned repo drowns in
+    // advisories naming its own deliberate structure
+    writeClass("com.example.decoding.Decoder")
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.decoding.*"),
+      siblingScopes = listOf(
+        ExclusionAudit.SuiteScope(
+          targetGlobs = listOf("com.example.decoding.*"),
+          excludedGlobs = listOf("com.example.*Test*"),
+        )
+      ),
+    )
+
+    assertTrue(swallowed.isEmpty(), swallowed.toString())
+  }
+
+  @Test
+  fun `a class every suite excludes has no owner and stays a finding`() {
+    // ownership must be effective: a sibling whose targets match but whose own
+    // exclusions also swallow the class is not mutating it either, and the class
+    // sits outside the ratchet everywhere
+    writeClass("com.example.decoding.LegacyDecoder")
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.decoding.*"),
+      siblingScopes = listOf(
+        ExclusionAudit.SuiteScope(
+          targetGlobs = listOf("com.example.decoding.*"),
+          excludedGlobs = listOf("com.example.decoding.Legacy*"),
+        )
+      ),
+    )
+
+    assertEquals(
+      listOf(ExclusionAudit.Swallowed("com.example.decoding.LegacyDecoder", "com.example.decoding.*")),
+      swallowed
+    )
+  }
+
+  @Test
+  fun `sibling ownership uses PIT glob semantics like every other match here`() {
+    // the sibling's targets are the same glob language as the suite's own: star
+    // spans package separators, so a sibling targeting an Impl-star family owns
+    // the class and its star-matched variants
+    writeClass("com.example.ManagerImpl")
+    writeClass("com.example.ManagerImplState")
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.ManagerImpl*"),
+      siblingScopes = listOf(
+        ExclusionAudit.SuiteScope(
+          targetGlobs = listOf("com.example.ManagerImpl*"),
+          excludedGlobs = emptyList(),
+        )
+      ),
+    )
+
+    assertTrue(swallowed.isEmpty(), swallowed.toString())
   }
 }

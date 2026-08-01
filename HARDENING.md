@@ -773,7 +773,38 @@ as more than it is. The generic edges:
 - **Excluded classes never enter the population.** Every `excludedClasses`
   glob and every auto-excluded fuzz harness is a deliberate hole; the
   excluded-production-class advisory names main-source classes a glob
-  swallows so the hole stays deliberate.
+  swallows so the hole stays deliberate. Suite-partition handoffs are not
+  findings: a class some sibling suite actually mutates — its targets match,
+  its own exclusions do not — is owned, and the advisory subtracts it; a
+  class every suite excludes has no owner and is named in each suite that
+  swallows it *(casebook: the partition the audit called a hole)*. The check
+  runs inside each real `pitest<Suite>` execution and, statically, in
+  `pitest<Suite>Debt` whenever a prior run left recompiled classes behind —
+  the Debt half is what the fleet canary sees.
+
+  The targeting policy endorses a third exclusion category the scan cannot
+  derive: **deliberate opt-outs** — generated bindings, vendored code, a main
+  that needs live credentials. "Generated" is a judgment about what the
+  classes *are*, indistinguishable from a forgotten glob by inspecting globs,
+  so it is written down instead:
+
+  ```kotlin
+  mutation.register("clients") {
+    excludedClasses = listOf("com.example.clients.*.gen.*", …)
+    declineExclusionAudit(
+        "com.example.clients.*.gen.*",
+        "generated IDL bindings; correctness rides on the generator's own suites",
+    )
+  }
+  ```
+
+  The record is keyed by the glob exactly as written, so a glob swallowing
+  fifty classes is one decision rather than fifty rows, and it keeps earning
+  itself on the `declineMutator` terms: a blank reason suppresses nothing and
+  is itself reported, and a record whose glob stops swallowing anything is
+  reported as deletable rather than fossilising. Reach for it only when the
+  exclusion is genuinely a category the ratchet should not cover — a hole you
+  have not argued is still a hole, and the advisory is how you find it.
 - **Generated and reflective code.** Annotation-processor output, generated
   sources, and behavior reached only reflectively carry their correctness on
   their own tests, not on the ratchet.

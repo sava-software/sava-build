@@ -33,7 +33,12 @@ class HardeningRatchetFunctionalTest {
     // pin the recompile's bytecode target when a test actually runs it: the fixture
     // sets no toolchain, so the recompile runs on the daemon JDK, which this build
     // pins to 21 via gradle/gradle-daemon-jvm.properties
-    bytecodeRelease: Int? = null
+    bytecodeRelease: Int? = null,
+    // the exclusion-audit tests widen the 'encoding' suite and give it globs to
+    // swallow with; extraSuites appends sibling registrations verbatim
+    encodingTargets: List<String> = listOf("com.example.Codec"),
+    encodingExcludes: List<String> = emptyList(),
+    extraSuites: String = ""
   ) {
     val releaseLine = if (bytecodeRelease != null) "bytecodeRelease = $bytecodeRelease" else ""
     val fuzzBlock = if (registerFuzz) {
@@ -84,9 +89,11 @@ class HardeningRatchetFunctionalTest {
           testSupportExcludes = listOf(${testSupportExcludes.joinToString(", ") { "\"$it\"" }})
           recompileExcludes = listOf(${recompileExcludes.joinToString(", ") { "\"$it\"" }})
           mutation.register("encoding") {
-            targetClasses = listOf("com.example.Codec")
+            targetClasses = listOf(${encodingTargets.joinToString(", ") { "\"$it\"" }})
+            ${if (encodingExcludes.isEmpty()) "" else "excludedClasses = listOf(${encodingExcludes.joinToString(", ") { "\"$it\"" }})"}
             targetTests = "com.example.*Test*"
           }
+$extraSuites
 $fuzzBlock
         }
       """.trimIndent() + "\n"
@@ -748,7 +755,28 @@ $fuzzBlock
     val pattern = Regex("(?m)^findings_pattern='([^']+)'").find(script)?.groupValues?.get(1)
       ?: error("findings_pattern line not found in tools/fleet-canary.sh")
 
-    writeFixture()
+    // targets widened and given a glob to swallow with: a production class the
+    // exclusion drops -> 'swallowed by excludedClasses', from the Debt task's
+    // static half (the audit reads class-file names, not bytecode)
+    writeFixture(
+      encodingTargets = listOf("com.example.*"),
+      encodingExcludes = listOf("com.example.Swallowed*"),
+      // a record that argues for nothing -> 'match no swallowed', and one with no
+      // reason -> 'suppress nothing' (which also leaves its class in the report)
+      extraSuites = """
+          mutation.register("declines") {
+            targetClasses = listOf("com.example.*")
+            excludedClasses = listOf("com.example.Swallowed*")
+            targetTests = "com.example.*Test*"
+            declineExclusionAudit("com.example.Retired*", "a glob that swallows nothing")
+            declineExclusionAudit("com.example.Swallowed*", "")
+          }
+      """.trimIndent()
+    )
+    File(fixtureDir, "build/mutation-classes/com/example/SwallowedHelper.class").also {
+      it.parentFile.mkdirs()
+      it.writeBytes(byteArrayOf(1))
+    }
     baselineFile().parentFile.mkdirs()
     // an accepted row whose family label has no README section -> 'no argument in config'
     baselineFile().writeText("com.example.Codec,decode,40,InvertNegsMutator,SURVIVED # mystery family\n")
@@ -770,15 +798,117 @@ $fuzzBlock
       ""
     )
 
-    // all six findings are advisory, so the run passes — and the advisory summary at
-    // the end of the build supplies the pattern's 'advisory finding' alternation
-    val output = runner("pitestEncodingVerify").build().output
+    // all seven findings are advisory, so the run passes — the advisory summary at
+    // the end of the build supplies the pattern's 'advisory finding' alternation,
+    // and the Debt task rides along for the fragments only its static halves emit
+    val output = runner("pitestEncodingVerify", "pitestEncodingDebt", "pitestDeclinesDebt").build().output
     pattern.split('|').forEach { fragment ->
       assertTrue(
         output.contains(fragment),
         "canary pattern fragment '$fragment' matches nothing — reworded warning?\n$output"
       )
     }
+  }
+
+  @Test
+  fun `the exclusion audit reads partition handoffs as ownership, statically in Debt`() {
+    // Two suites partition com.example.*: 'encoding' hands decoding.* to its
+    // sibling, which is ownership, not a swallow — while a glob nothing else
+    // targets ('Legacy*') is a genuine hole and must stay a finding. Exercised
+    // through the Debt task because that is the fleet canary's whole view of
+    // consumer globs: the audit's in-run half only fires inside a real pitest
+    // execution, which the canary never performs (casebook: the partition the
+    // audit called a hole). Fabricated empty class files are a scanned
+    // population — the audit reads names, never bytecode.
+    writeFixture(
+      encodingTargets = listOf("com.example.*"),
+      encodingExcludes = listOf("com.example.decoding.*", "com.example.Legacy*"),
+      extraSuites = """
+          mutation.register("decoding") {
+            targetClasses = listOf("com.example.decoding.*")
+            targetTests = "com.example.*Test*"
+          }
+      """.trimIndent()
+    )
+    listOf("com/example/decoding/Decoder", "com/example/LegacyCodec").forEach { path ->
+      File(fixtureDir, "build/mutation-classes/$path.class").also {
+        it.parentFile.mkdirs()
+        it.writeBytes(byteArrayOf(1))
+      }
+    }
+
+    val output = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      output.contains("com.example.LegacyCodec (glob 'com.example.Legacy*')"),
+      "orphaned exclusion not reported:\n$output"
+    )
+    assertFalse(
+      output.contains("com.example.decoding.Decoder"),
+      "sibling-owned class reported as swallowed:\n$output"
+    )
+
+    // the sibling's own Debt sees no finding either: it mutates decoding.*, and
+    // the class it does not target is not its problem
+    val sibling = runner("pitestDecodingDebt").build().output
+    assertFalse(
+      sibling.contains("swallowed by excludedClasses"),
+      "sibling suite reported a finding it does not own:\n$sibling"
+    )
+  }
+
+  @Test
+  fun `a declined exclusion argues its opt-out away, and the record keeps earning itself`() {
+    // The third exclusion category the targeting policy endorses and the scan cannot
+    // derive: generated bindings, vendored code, a live-credential main. Measured
+    // across the fleet, leaving it underivable meant ~1600 advisory lines from one
+    // suite's generated package every run — the corrosion the audit's own casebook
+    // entry warns about, one category over. Exercised through Debt because that is
+    // the half the fleet canary can execute.
+    writeFixture(
+      encodingTargets = listOf("com.example.*"),
+      encodingExcludes = listOf("com.example.gen.*", "com.example.Legacy*"),
+      extraSuites = """
+          mutation.register("declining") {
+            targetClasses = listOf("com.example.*")
+            excludedClasses = listOf("com.example.gen.*", "com.example.Legacy*", "com.example.Codec")
+            targetTests = "com.example.*Test*"
+            declineExclusionAudit(
+              "com.example.gen.*",
+              "generated bindings; their generator's own suites carry them"
+            )
+            declineExclusionAudit("com.example.retired.*", "a glob that swallows nothing here")
+          }
+      """.trimIndent()
+    )
+    listOf("com/example/gen/Binding", "com/example/LegacyCodec").forEach { path ->
+      File(fixtureDir, "build/mutation-classes/$path.class").also {
+        it.parentFile.mkdirs()
+        it.writeBytes(byteArrayOf(1))
+      }
+    }
+
+    // the undeclining suite reports both; the declining one reports only the
+    // orphan, and is told its unused record is deletable
+    val undeclined = runner("pitestEncodingDebt").build().output
+    assertTrue(undeclined.contains("com.example.gen.Binding"), undeclined)
+    assertTrue(undeclined.contains("com.example.LegacyCodec"), undeclined)
+
+    val declined = runner("pitestDecliningDebt").build().output
+    assertFalse(
+      declined.contains("com.example.gen.Binding"),
+      "an argued decline must take its classes out of the report:\n$declined"
+    )
+    assertTrue(
+      declined.contains("com.example.LegacyCodec"),
+      "an undeclined glob must still be reported:\n$declined"
+    )
+    assertTrue(
+      declined.contains("declineExclusionAudit record(s) match no swallowed") &&
+          declined.contains("com.example.retired.*"),
+      "the unused record must be named as deletable:\n$declined"
+    )
+    // the remedy list names the mechanism, so the advisory teaches its own escape
+    assertTrue(declined.contains("declineExclusionAudit(\"<glob>\""), declined)
   }
 
   @Test

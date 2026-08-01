@@ -10,8 +10,10 @@
 #   2. per consumer repo, derives every pitest<Suite>Debt task from the
 #      committed config/pitest/*-accepted.csv / *-timeouts.csv files and runs
 #      them with -PsavaBuildLocalRepo — Debt carries the audited-timeout set's
-#      static half (row shape, README causes) and falls back to the baseline
-#      when no report exists, so no mutation runs are needed
+#      static half (row shape, README causes), the exclusion audit's static
+#      half (when a prior run left build/mutation-classes behind), and falls
+#      back to the baseline when no report exists, so no mutation runs are
+#      needed
 #   3. verifies each green build actually resolved 0.0.0-test: a settings
 #      snippet predating -PsavaBuildLocalRepo ignores the property and resolves
 #      the RELEASED plugin — green output that canaries nothing. The 0.0.0-test
@@ -40,7 +42,7 @@ local_repo="$sava_build_dir/build/sava-test-repo"
 # by HardeningRatchetFunctionalTest ('the fleet canary reprint filter matches every
 # warning it canaries'), which provokes each warning and greps a real verify's
 # output with this exact pattern — reword a message and that test names this line.
-findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding|written by PIT'
+findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding|written by PIT|swallowed by excludedClasses|match no swallowed|suppress nothing'
 
 # The resolution proof: the 0.0.0-test settings plugin's FlowAction prints this line
 # at the end of every build it was actually resolved into. Coupled to the notice's

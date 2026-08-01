@@ -853,3 +853,62 @@ is where a format invariant quietly dies*; *a data structure chosen for one
 operation (membership) must not leak into another (rewrite) whose invariants
 it cannot represent*; *when doctrine says multiset, grep every `.toSet()`
 between a baseline read and a baseline write*.
+
+## The partition the audit called a hole
+
+The excluded-production-class advisory shipped in 21.5.19 and met its first
+partitioned consumer the same week: a repo whose suites split one package
+tree for inner-loop speed, each suite excluding the classes its siblings
+target — the targeting policy's own "classes owned by another suite"
+category. The audit knew only its own suite's globs, so a dry-run port of
+its policy predicted ~80 advisory lines per real run, every one naming the
+repo's deliberate structure. None of the advisory's remedies (rename, narrow
+the glob, `recompileExcludes`) applied, and a permanent advisory is worse
+than a wrong one: it trains readers to skim the channel every real finding
+prints on. The release had also passed the fleet canary clean — the audit's
+only trigger sat inside a real `pitest<Suite>` execution, which the canary
+never performs, so the canary was structurally blind to the one check most
+sensitive to real consumer globs. Fixed in both directions: sibling-suite
+scopes are subtracted (ownership must be effective — a sibling whose targets
+match but whose own exclusions also swallow the class is not an owner, so a
+class excluded everywhere stays a finding in every suite that swallows it),
+and the audit grew a static half in `pitest<Suite>Debt`, gated on recompiled
+classes a prior run left behind, which puts it where the canary already
+looks.
+
+Rules: *a check must recognize every exclusion category the doctrine
+endorses, or it will flag the doctrine*; *an advisory that fires on a repo's
+deliberate structure every run is not noise but corrosion — it teaches
+readers to skim the channel*; *every advisory needs a half the fleet canary
+can execute, because a check that only fires inside a real mutation run
+ships unvalidated against real consumer data*.
+
+## The advisory that named two thousand deliberate exclusions
+
+The pre-release fleet canary for the partition fix answered a question the fix
+itself had not asked: with sibling handoffs subtracted, what does the
+excluded-production-class advisory still print against real consumer globs?
+About two thousand lines across five repos — 1602 from a single suite, every
+one of them a generated program binding under one `*.gen.*` exclusion, plus
+253, 59, 46 and 41 from the same shape elsewhere. The partition fix had halved
+the problem and left its larger half standing.
+
+The targeting policy endorses three exclusion categories; the audit could
+derive two. Test sources are found by source root and sibling ownership by
+comparing suite scopes, but "these are generated bindings" is a judgment about
+what classes *are*, and nothing in the globs distinguishes it from a forgotten
+exclusion. None of the advisory's three remedies applied either — you cannot
+rename generated code, narrowing the glob does not change what it swallows,
+and `recompileExcludes` would drop sources the mutated code compiles against.
+So the category was written down instead, on the `declineMutator` contract
+already in the plugin: `declineExclusionAudit(glob, reason)`, keyed by the
+glob so fifty swallowed classes are one decision, with a blank reason
+suppressing nothing and a record that stops matching reported as deletable.
+Trialled on the worst repo, one record took 1602 lines to 5 — and those five
+were git-ignored integration mains, the same category needing their own line.
+
+Rules: *when a check flags a category the doctrine endorses, the fix is a
+channel to argue the category, not a quieter check*; *measure an advisory
+against the whole fleet before shipping it — synthetic fixtures cannot
+enumerate what real globs exclude*; *a remedy list that omits the remedy the
+reader needs is how an advisory teaches skimming*.

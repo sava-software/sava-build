@@ -137,6 +137,36 @@ abstract class MutationSuite @Inject constructor(private val name: String) : Nam
   fun declineMutator(mutator: String, reason: String) {
     declinedMutators.put(mutator, reason)
   }
+
+  /**
+   * Exclusion globs whose swallowed production classes are a deliberate opt-out
+   * rather than a hole, keyed by the glob exactly as written in [excludedClasses],
+   * with the reason. Set through [declineExclusionAudit].
+   */
+  abstract val declinedExclusionAudits: MapProperty<String, String>
+
+  /**
+   * Records that [glob] excludes production classes **on purpose**, silencing the
+   * excluded-production-class advisory for the classes it swallows.
+   *
+   * The targeting policy endorses three exclusion categories; the audit derives two
+   * of them and cannot derive this one. Test and fixture sources are found by source
+   * root, and classes owned by a sibling suite are found by comparing suite scopes —
+   * but "generated bindings", "vendored code", "an integration main that needs live
+   * credentials" is a *judgment*, indistinguishable from a forgotten glob by
+   * inspection of the globs alone. So it is written down instead: [reason] says what
+   * the classes are and what carries their correctness instead of the ratchet, which
+   * is the same argument an accepted baseline row owes.
+   *
+   * A blank [reason] suppresses nothing and is itself reported — a decline recorded
+   * to quiet a warning nobody investigated reads as settled to everyone after, which
+   * is the failure this mechanism exists to surface. Declines go stale like baseline
+   * rows: when [glob] stops swallowing any production class, it is reported as
+   * deletable rather than fossilising.
+   */
+  fun declineExclusionAudit(glob: String, reason: String) {
+    declinedExclusionAudits.put(glob, reason)
+  }
 }
 
 /** One Jazzer entry point: a class with 'public static void fuzzerTestOneInput(byte[])'.
