@@ -172,7 +172,7 @@ class TimeoutAuditTest {
   }
 
   @Test
-  fun `a cause needs the class and the method in one paragraph, as whole words`() {
+  fun `a cause needs the class and the method in one section, as whole words`() {
     // whole-file substring matching was trivially satisfied: 'run' sits inside
     // "rerun", and a sibling member's cause already names the class — so a class
     // with two audited methods passed as fully documented with one cause written
@@ -186,16 +186,26 @@ class TimeoutAuditTest {
     assertEquals(
       members.toList(),
       TimeoutAudit.undocumentedCauses(members) {
-        // class and method both present, but never in the same paragraph
-        "`Notifier.queueResponse`: drains the queue.\n\nThe run loop parks forever."
+        // class and method both present, but under different headings — the class
+        // mention belongs to another member's section, the whole-file leak in small
+        "## Notifier queueing\n`Notifier.queueResponse`: drains the queue.\n\n" +
+            "## Scheduling\nThe run loop parks forever."
       }
     )
     assertEquals(
       emptyList<String>(),
       TimeoutAudit.undocumentedCauses(members) {
-        // the house style: one intro line naming Class.method, bullets below in the
-        // same blank-line-delimited paragraph
+        // one house style: an intro line naming Class.method, bullets in the same block
         "Both are in `Notifier.run`, the drain loop:\n- the removed exit parks the drain\n"
+      }
+    )
+    assertEquals(
+      emptyList<String>(),
+      TimeoutAudit.undocumentedCauses(members) {
+        // the other measured house style: the section intro names the class, each
+        // method argued in its own paragraph below — one section, several paragraphs
+        "## Notifier pass\n\n`Notifier` drains on a worker thread.\n\n" +
+            "**run** — the removed exit parks the drain loop forever.\n"
       }
     )
   }
@@ -218,6 +228,14 @@ class TimeoutAuditTest {
       members.toList(),
       TimeoutAudit.undocumentedCauses(members) {
         "`ExponentialBackoffErrorHandler` init logic crawls under load.\n"
+      }
+    )
+    // stricter than '\b' on purpose: a word char glued to the bracket is not a
+    // mention — '\b' would have accepted 'pre<init>' (word->non-word is a boundary)
+    assertEquals(
+      members.toList(),
+      TimeoutAudit.undocumentedCauses(members) {
+        "`ExponentialBackoffErrorHandler` pre<init> staging crawls under load.\n"
       }
     )
   }

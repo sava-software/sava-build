@@ -112,33 +112,38 @@ internal object TimeoutAudit {
 
   /**
    * The [members] whose structural cause was never written: matched by the simple
-   * class name AND the method name appearing together in one README paragraph, each
+   * class name AND the method name appearing together in one README section, each
    * as a whole word. Method-only matching was trivially satisfied, since most
    * dispatch members are named `handle` — and substring matching over the whole file
    * kept it so (`run` is inside "rerun", and the class name is present wherever a
-   * *sibling* member's cause names it). A paragraph is a blank-line-delimited block,
-   * wide enough for the house style of one intro line naming `Class.method` above
-   * per-mutant bullets. Nested classes match under either their source
-   * (`Outer.Inner`) or binary (`Outer$Inner`) name. [readme] is called only when
-   * there is a member to resolve.
+   * *sibling* member's cause names it). A section is a markdown-heading-delimited
+   * block (a headingless README is one section): measured against the fleet's 172
+   * audited members, blank-line paragraphs false-flagged 41 documented causes —
+   * one consumer's house style names the class in a section's intro and argues each
+   * method in its own paragraph below — while heading blocks resolved all 172 and
+   * still deny the whole-file leak of a sibling cause in a distant section. Nested
+   * classes match under either their source (`Outer.Inner`) or binary
+   * (`Outer$Inner`) name. [readme] is called only when there is a member to resolve.
    */
   fun undocumentedCauses(members: Collection<String>, readme: () -> String): List<String> {
     if (members.isEmpty()) return emptyList()
-    val paragraphs = readme().split(PARAGRAPH_BREAK)
+    val sections = readme().split(SECTION_BREAK)
     return members.filter { member ->
       val fields = member.split(',')
       val simpleClass = fields[0].substringAfterLast('.')
       val classPatterns = setOf(simpleClass, simpleClass.replace('$', '.'))
           .map { wholeWord(it) }
       val methodPattern = wholeWord(fields[1])
-      paragraphs.none { paragraph ->
-        methodPattern.containsMatchIn(paragraph) &&
-            classPatterns.any { it.containsMatchIn(paragraph) }
+      sections.none { section ->
+        methodPattern.containsMatchIn(section) &&
+            classPatterns.any { it.containsMatchIn(section) }
       }
     }
   }
 
-  private val PARAGRAPH_BREAK = Regex("""\n\s*\n""")
+  // split at the heading marker, keeping the heading text with the block it
+  // introduces — a section titled after its class documents that class
+  private val SECTION_BREAK = Regex("""(?m)^#{1,6}\s""")
 
   /**
    * Whole-word via lookarounds, not `\b`: a word boundary exists only between a
@@ -146,7 +151,12 @@ internal object TimeoutAudit {
    * each angle bracket and can never match `Handler.<init>` in prose. Lookarounds
    * ask the right question — no word char adjacent to the token — which behaves
    * identically for word-edged tokens (`run` still rejects "rerun") and correctly
-   * for constructor members.
+   * for constructor members. For tokens with non-word edges this is deliberately
+   * stricter than `\b`: `pre<init>` is not a mention of `<init>`.
+   *
+   * Never called with an empty token — `(?<!\w)(?!\w)` would match between any two
+   * non-word chars — because members reach [undocumentedCauses] only via [parse],
+   * which splits rows with a blank field off as malformed.
    */
   private fun wholeWord(token: String) = Regex("(?<!\\w)${Regex.escape(token)}(?!\\w)")
 

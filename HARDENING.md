@@ -438,13 +438,16 @@ invoked it*, and the failure looks exactly like a real regression.
   that do not parse as three fields (named malformed, never misdiagnosed as
   a member matching no mutant), and warns on members matching no mutant at
   all (retirement hygiene) as well as members whose class-and-method appear
-  together in no single README paragraph, each matched as a whole word (a
+  together in no single README section, each matched as a whole word (a
   cause that was never written; the same soft pointer rule family labels
   follow — the method name alone was trivially satisfied, since most
   dispatch members are named `handle`, and whole-file substring matching
   stayed trivial: `run` sits inside "rerun", and a sibling member's cause
-  already names the class. One paragraph is wide enough for the house style
-  of an intro line naming `Class.method` above per-mutant bullets).
+  already names the class. The unit is a markdown-heading block, not a
+  blank-line paragraph — measured against the fleet's 172 audited members,
+  paragraphs false-flagged 41 documented causes in the house style that
+  names the class in a section's intro and argues each method in its own
+  paragraph below, while sections resolved all 172).
   Membership must also keep earning itself: a member is validated against
   *all* mutants, so a key that exists but never times out — pasted from the
   wrong report, or a timeout the tests since learned to kill outright —
