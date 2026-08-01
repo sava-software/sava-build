@@ -554,7 +554,15 @@ migrates the file; `migrateMutationBaselines` respells every suite's file
 without a mutation run (parse/re-render, comments preserved, identity
 untouched by construction), which is the fleet migration path: the refresh
 flags need a green run, and update needs a *solo* one or it drops
-flip-insurance rows reading `TIMED_OUT` under load.
+flip-insurance rows reading `TIMED_OUT` under load. Migration is one-way:
+a pre-line-less plugin reads a migrated file as every-row-stale plus
+every-mutant-new (and its debt listing silently drops every row), so bump
+**every** pin that resolves the plugin — root settings *and* any
+composite/jmh build-file pins — before committing migrated CSVs, and expect
+a wave of line-drift advisories on the first runs after migrating: legacy
+line fields commonly lag the code (pure drift used to pass with a notice),
+and promoting them to `# line` tags surfaces that lag as re-read prompts,
+not regressions.
 
 The price, named because it is paid deliberately: **a same-key swap is
 invisible.** Kill one mutant and introduce a new one at the same
@@ -1281,7 +1289,10 @@ strictly stronger than sub-totals, and it names which key moved:
 Benign flips (`KILLED` <-> `TIMED_OUT`) are counted and tolerated. A flip
 crossing the unkilled boundary is exactly the row the `TIMED_OUT` section
 says belongs in the baseline: the compare fails naming each one unless it is
-already insured there, and `-PunionModeFlips` writes the union — append-only,
+already insured there — counting siblings, since the verify's comparison is
+a multiset: per gated status a key needs as many rows as the widest mode
+observed, and one row cannot insure two flipped siblings — and
+`-PunionModeFlips` writes the union — append-only,
 each row annotated `# flip insurance (<per-mode statuses>)` so the note
 carries its own evidence and a later reader can re-measure it, and tagged
 with the `# line` observed in the snapshots so the verify's row-level drift
@@ -1447,7 +1458,10 @@ paste.
 >   refresh rewrites. The trade is one documented hole: a new mutant replacing
 >   a killed one at the same key inherits its acceptance silently, so when the
 >   line-drift advisory names a key whose argument no longer reads against the
->   code, treat it as that swap until shown otherwise.
+>   code, treat it as that swap until shown otherwise. Legacy five-field files
+>   migrate on any refresh, or all at once with `migrateMutationBaselines` (no
+>   mutation run needed) — but only after every pin resolving the plugin is
+>   bumped, because pre-line-less plugin versions cannot read a migrated file.
 > - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
 >   seconds instead of the full suite — then re-run unscoped before any
 >   refresh; the tooling refuses to let a scoped report touch the baseline.

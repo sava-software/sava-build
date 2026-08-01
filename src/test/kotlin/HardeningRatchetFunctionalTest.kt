@@ -1490,6 +1490,106 @@ $fuzzBlock
   }
 
   @Test
+  fun `flip insurance counts siblings — one row cannot insure two flipped twins`() {
+    // Two sibling mutants share the line-less key and flip together under load. The
+    // verify compares multisets, so per gated status the baseline needs as many rows
+    // as the widest mode observed: reading a single existing row as "already
+    // insured" would fail the next gate verify on the surfaced twin — the same
+    // set-shaped reasoning the union write was cured of (casebook: the union write
+    // that deduped siblings), in the decision rather than the write.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,MathMutator,SURVIVED # earlier insurance # line 12\n")
+
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,com.example.CodecTest",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,40,KILLED,com.example.CodecTest",
+      ),
+      ""
+    )
+    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,40,SURVIVED,none",
+      ),
+      ""
+    )
+    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+
+    // one accepted row, two flipped siblings: NOT insured
+    val compare = runner("pitestModeCompare").buildAndFail()
+    assertTrue(compare.output.contains("1 uninsured boundary flip(s)"), compare.output)
+    assertFalse(compare.output.contains("(already insured in the baseline)"), compare.output)
+
+    // the union writes exactly the shortfall, keeping the existing row verbatim
+    val union = runner("pitestModeCompare", "-PunionModeFlips").build()
+    assertTrue(union.output.contains("flip insurance written"), union.output)
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,MathMutator,SURVIVED # earlier insurance # line 12",
+        "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=SURVIVED/SURVIVED, solo=KILLED/KILLED) # lines 12, 40",
+      ),
+      baselineFile().readLines(),
+      "union must top the key up to the widest mode's sibling count"
+    )
+
+    // and with counts matched, the same snapshots read as insured
+    val insuredNow = runner("pitestModeCompare").build()
+    assertTrue(insuredNow.output.contains("already insured in the baseline"), insuredNow.output)
+    assertTrue(insuredNow.output.contains("0 uninsured boundary flip(s)"), insuredNow.output)
+  }
+
+  @Test
+  fun `a sibling flip beside an always-surviving twin crosses the boundary`() {
+    // One sibling flips KILLED (solo) -> SURVIVED (gate) while its twin survives in
+    // both modes. Gated PRESENCE is identical across modes, so a presence-based
+    // crossing check read this as benign — but the gated sub-multiset went 1 -> 2,
+    // and the gate verify fails on the second copy against a one-row baseline.
+    // Under line-full keys these were two keys and each crossed on its own; the
+    // line-less merge made crossing a count question, like insurance.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,MathMutator,SURVIVED # the always-surviving twin # line 40\n")
+
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,com.example.CodecTest",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,40,SURVIVED,none",
+      ),
+      ""
+    )
+    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,40,SURVIVED,none",
+      ),
+      ""
+    )
+    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+
+    val compare = runner("pitestModeCompare").buildAndFail()
+    assertTrue(compare.output.contains("1 uninsured boundary flip(s)"), compare.output)
+    assertFalse(
+      compare.output.contains("benign — cannot move the ratchet"),
+      "a gated count change must not read as benign:\n" + compare.output
+    )
+
+    val union = runner("pitestModeCompare", "-PunionModeFlips").build()
+    assertTrue(union.output.contains("flip insurance written"), union.output)
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,MathMutator,SURVIVED # the always-surviving twin # line 40",
+        "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=SURVIVED/SURVIVED, solo=KILLED/SURVIVED) # lines 12, 40",
+      ),
+      baselineFile().readLines(),
+      "union must top the key up to the gate mode's sibling count"
+    )
+  }
+
+  @Test
   fun `mode snapshot refuses partial, unlabeled, or history-assisted reports`() {
     writeFixture()
     val unlabeled = runner("pitestModeSnapshot").buildAndFail()
@@ -1813,6 +1913,59 @@ $fuzzBlock
     val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
     assertTrue(pruned.contains("prune dropped every row since killed — baseline file removed"), pruned)
     assertFalse(baselineFile().exists(), "prune must remove an emptied baseline")
+
+    // and none of these no-record runs may leave a version stamp behind
+    assertFalse(
+      File(fixtureDir, "config/pitest/encoding-pitest-version").isFile,
+      "a refresh that ends with no record must not stamp"
+    )
+  }
+
+  @Test
+  fun `the version stamp retires with the record unless an audited set remains`() {
+    // The stamp certifies the records in config/pitest. When a refresh ends with no
+    // baseline file and no audited timeout set, an orphan stamp would refuse a
+    // future first refresh across a PIT bump citing a baseline that no longer
+    // exists — "no record and an empty record must read the same way" extends to
+    // the stamp. An audited timeout set is still a record, so the stamp stays.
+    writeFixture()
+    val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    baselineFile().parentFile.mkdirs()
+
+    // a real write lands the stamp with the record
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
+      ""
+    )
+    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    assertTrue(baselineFile().isFile && toolVersionFile.isFile, "stamp must land with the write")
+
+    // the suite goes fully detected: the baseline is removed and the stamp with it
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,KILLED,com.example.CodecTest"),
+      ""
+    )
+    val retired = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertTrue(retired.contains("nothing unkilled — baseline file removed"), retired)
+    assertTrue(retired.contains("encoding-pitest-version removed with the record it certified"), retired)
+    assertFalse(toolVersionFile.isFile, "orphan stamp left behind an emptied record")
+
+    // with an audited timeout set present, the stamp still has a record to certify
+    File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+      .writeText("com.example.Codec,encode,MathMutator # line 12\n")
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
+      ""
+    )
+    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    assertTrue(toolVersionFile.isFile, "stamp must land with the write")
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,KILLED,com.example.CodecTest"),
+      ""
+    )
+    val kept = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertTrue(kept.contains("nothing unkilled — baseline file removed"), kept)
+    assertTrue(toolVersionFile.isFile, "the audited timeout set is a record; its stamp must stay")
   }
 
   @Test

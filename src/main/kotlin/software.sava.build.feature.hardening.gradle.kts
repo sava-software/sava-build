@@ -432,7 +432,12 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       } else {
         mutableListOf()
       }
-      val accepted: MutableSet<String> = acceptedRows.map { it.key }.toMutableSet()
+      // Counts, not membership: sibling mutants share the line-less key, and the
+      // verify compares multisets — insurance must match its arithmetic or a key
+      // "already insured" by one row still fails the next gate verify on the
+      // surfaced twin.
+      val acceptedCounts: MutableMap<String, Int> = mutableMapOf()
+      acceptedRows.forEach { acceptedCounts.merge(it.key, 1, Int::plus) }
       // Observed lines per gated row across every mode's snapshot, so an insurance
       // row lands carrying the '# line' tag the verify's drift advisory reads —
       // an untagged row would put its whole key on the advisory's partial-tag
@@ -450,7 +455,15 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       keys.forEach { key ->
         val byMode = perMode.mapValues { (_, m) -> m[key] ?: emptyList() }
         if (byMode.values.distinct().size > 1) {
-          val crossed = byMode.values.map { statusList -> statusList.any { it in gated } }.distinct().size > 1
+          // Crossing is a count question, not a presence question, for the same
+          // reason insurance is: siblings share the line-less key, so one sibling
+          // flipping KILLED -> SURVIVED beside an always-surviving twin changes the
+          // gated sub-multiset (1 -> 2) without changing gated presence — and the
+          // gate verify fails on the second copy. Presence-based crossing read
+          // exactly that as "benign — cannot move the ratchet".
+          val crossed = byMode.values
+              .map { statusList -> statusList.filter { it in gated }.sorted() }
+              .distinct().size > 1
           val detail = modes.joinToString(", ") { label ->
             "$label=${byMode.getValue(label).ifEmpty { listOf("absent") }.joinToString("/")}"
           }
@@ -458,20 +471,31 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
             benignFlips++
             logger.lifecycle("pitestModeCompare '$suiteName': $key — $detail (benign — cannot move the ratchet)")
           } else {
-            // one canonical baseline row per gated status this key was observed with
-            val gatedRows = byMode.values.flatten().filter { it in gated }.distinct().sorted()
-                .map { status -> "$key,$status" }
+            // Per gated status the baseline needs as many rows as the widest mode
+            // observed: a compound condition's siblings flip together under load,
+            // and one row cannot insure two of them (casebook: the union write that
+            // deduped siblings — the same set-shaped reasoning, in the decision
+            // rather than the write).
+            val neededRows = byMode.values
+                .map { statusList -> statusList.filter { it in gated }.groupingBy { it }.eachCount() }
+                .flatMap { it.entries }
+                .groupBy({ it.key }, { it.value })
+                .mapValues { (_, counts) -> counts.max() }
+                .toSortedMap()
+                .map { (status, needed) -> "$key,$status" to needed }
             when {
-              gatedRows.all { it in accepted } -> {
+              neededRows.all { (row, needed) -> (acceptedCounts[row] ?: 0) >= needed } -> {
                 insuredFlips++
                 logger.lifecycle("pitestModeCompare '$suiteName': $key — $detail (already insured in the baseline)")
               }
               unionFlips -> {
-                gatedRows.filter { it !in accepted }.forEach { row ->
-                  accepted.add(row)
-                  acceptedRows.add(
-                      BaselineNotes.Row(row, "# flip insurance ($detail)", rowLines[row].orEmpty().sorted()))
-                  unionedNow.add("$suiteName: $row")
+                neededRows.forEach { (row, needed) ->
+                  repeat(needed - (acceptedCounts[row] ?: 0)) {
+                    acceptedCounts.merge(row, 1, Int::plus)
+                    acceptedRows.add(
+                        BaselineNotes.Row(row, "# flip insurance ($detail)", rowLines[row].orEmpty().sorted()))
+                    unionedNow.add("$suiteName: $row")
+                  }
                 }
                 unionedHere = true
                 logger.lifecycle("pitestModeCompare '$suiteName': $key — $detail (flip insurance written)")
@@ -733,6 +757,20 @@ hardening.mutation.all {
       fun stampToolVersion() {
         if (recordedPit == null) {
           BaselineFiles.writeAtomically(toolVersionFile, currentPit + "\n")
+        }
+      }
+      // The delete-side counterpart, for a refresh path that ends with no baseline
+      // file: unless an audited timeout set remains for the stamp to certify, it is
+      // retired with the record — "no record and an empty record must read the same
+      // way" extends to the stamp, and an orphan stamp would refuse a future first
+      // refresh across a PIT bump citing a baseline that no longer exists.
+      fun stampOrRetireToolVersion() {
+        if (timeoutsFile.isFile) {
+          stampToolVersion()
+        } else if (toolVersionFile.isFile) {
+          toolVersionFile.delete()
+          logger.lifecycle(
+              "pitest baseline '$suiteName': ${toolVersionFile.name} removed with the record it certified")
         }
       }
       val gated = setOf("SURVIVED", "NO_COVERAGE")
@@ -1342,7 +1380,7 @@ hardening.mutation.all {
                   keptDetail
           )
         }
-        stampToolVersion()
+        if (baselineFile.isFile) stampToolVersion() else stampOrRetireToolVersion()
         return@doLast
       }
       if (update) {
@@ -1470,7 +1508,7 @@ hardening.mutation.all {
                   "re-added with -PunionMutationBaseline once observed to flip again"
           )
         }
-        stampToolVersion()
+        if (baselineFile.isFile) stampToolVersion() else stampOrRetireToolVersion()
         return@doLast
       }
       if (union) {
@@ -1510,7 +1548,7 @@ hardening.mutation.all {
                   added.joinToString("\n") { row -> "  $row${describe(row)}" }
           )
         }
-        stampToolVersion()
+        if (baselineFile.isFile) stampToolVersion() else stampOrRetireToolVersion()
         return@doLast
       }
       val fresh = multisetDiff(current, accepted)
