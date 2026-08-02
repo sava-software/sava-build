@@ -1046,14 +1046,29 @@ hardening.mutation.all {
         fun tally(pairs: List<Pair<String, String>>): Map<String, Map<String, Int>> = pairs
             .groupBy({ it.first }, { it.second })
             .mapValues { (_, statuses) -> statuses.groupingBy { it }.eachCount() }
-        val previous = if (statusStash.isFile) {
-          tally(statusStash.readLines().mapNotNull { line ->
+        // A stash written by a pre-line-less plugin carries five-field entries
+        // (class,method,line,mutator,STATUS); read against the four-field coordinate,
+        // nothing matches, and every comparison silently degenerates — each current
+        // timeout reads "newly timed out", each old entry "no longer", none of it
+        // real. Announce the reset instead: a migration that silences (or garbles) a
+        // check for exactly one run hides its own regression from the person doing
+        // the migration (casebook: the flip that fired forever).
+        val stashEntries = if (statusStash.isFile) {
+          statusStash.readLines().mapNotNull { line ->
             val sep = line.lastIndexOf(',')
             if (sep < 0) null else line.substring(0, sep) to line.substring(sep + 1)
-          })
+          }
         } else {
-          emptyMap()
+          emptyList()
         }
+        val staleFormat = stashEntries.any { (coord, _) -> coord.count { it == ',' } != 2 }
+        if (staleFormat) {
+          logger.lifecycle(
+              "pitest '$suiteName': status stash predates the line-less coordinate format — " +
+                  "run-to-run drift comparison resets this run and resumes on the next"
+          )
+        }
+        val previous = if (staleFormat) emptyMap() else tally(stashEntries)
         val stashRows = rows.filter { it[5] == "TIMED_OUT" || it[5] == "SURVIVED" }
         val current = tally(stashRows.map { coordinate(it) to it[5] })
         if (previous.isNotEmpty()) {

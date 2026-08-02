@@ -24,7 +24,17 @@
 #      consumer build failed (advisory findings are reported, never failures)
 #
 # Usage:
-#   tools/fleet-canary.sh <consumer-repo-dir>...
+#   tools/fleet-canary.sh <consumer-repo-dir>[:<pitestSuiteTask>]...
+#
+# The optional :<pitestSuiteTask> (e.g. json-iterator:pitestUtil) is the deep
+# leg: the named suite runs TWICE as a real mutation run, then its verify.
+# Static checks cannot see the state the verify cycles between runs — the
+# machine-local status stash is written by run N and read by run N+1, and both
+# post-21.5.20 escapes lived exactly there (a flip advisory that false-fired
+# from the second run on, and a format boundary that garbled the first
+# comparison after a bump). One repo carrying the deep leg with its cheapest
+# suite covers the class; name it on the repo whose baselines are richest in
+# same-key siblings.
 #
 # Notes earned the hard way:
 #   - Debt tasks are invoked by NAME, not project path: nested module
@@ -43,6 +53,11 @@ local_repo="$sava_build_dir/build/sava-test-repo"
 # warning it canaries'), which provokes each warning and greps a real verify's
 # output with this exact pattern — reword a message and that test names this line.
 findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding|written by PIT|swallowed by excludedClasses|match no swallowed|suppress nothing'
+
+# The stash-cycle messages only the deep leg's two consecutive real runs can
+# provoke, pinned on the same terms by 'the deep leg filter matches every
+# stash-cycle message' — reword one and that test names this line.
+deep_pattern='flipped SURVIVED -> TIMED_OUT|timed-out drift vs previous run|predates the line-less'
 
 # The resolution proof: the 0.0.0-test settings plugin's FlowAction prints this line
 # at the end of every build it was actually resolved into. Coupled to the notice's
@@ -64,7 +79,10 @@ trap 'rm -f "$out_file"' EXIT
 
 failed=""
 warned=""
-for repo in "$@"; do
+for arg in "$@"; do
+  repo="${arg%%:*}"
+  deep_task=""
+  case "$arg" in *:*) deep_task="${arg#*:}" ;; esac
   if [ ! -f "$repo/gradlew" ]; then
     echo "fleet-canary: SKIP $repo — no gradlew" >&2
     continue
@@ -112,6 +130,38 @@ fuzzWorkflowInSync"
   if [ -n "$findings" ]; then
     warned="$warned $repo"
     echo "$findings"
+  fi
+
+  # Deep leg: two real runs of one suite so the verify compares against a stash
+  # THIS checkout's plugin wrote, both rounds' verify output held to the same
+  # review — round 1 owns the boundary messages (a stash-format reset prints
+  # once and rewrites), round 2 the first real comparison. --rerun-tasks on
+  # BOTH rounds: an up-to-date pitest task reuses a prior report and the stash
+  # never cycles at all.
+  if [ -n "$deep_task" ]; then
+    echo "fleet-canary: $repo — deep leg: $deep_task twice (real mutation runs)"
+    deep_findings=""
+    for round in 1 2; do
+      if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" \
+          --rerun-tasks "$deep_task") > "$out_file" 2>&1; then
+        failed="$failed $repo(deep$round)"
+        echo "fleet-canary: FAILED $repo — deep leg round $round; full output:"
+        cat "$out_file"
+        break
+      fi
+      # drift/flip/reset lines are exactly what the deep leg exists to surface;
+      # they are load-judgment for a person, never failures. Grepped per round —
+      # the stash-format reset notice prints on round 1 only, and a shared output
+      # file would let round 2 overwrite it before a single grep saw it.
+      round_findings=$(grep -E "$findings_pattern|$deep_pattern" "$out_file" || true)
+      if [ -n "$round_findings" ]; then
+        deep_findings="$deep_findings$round_findings"$'\n'
+      fi
+    done
+    if [ -n "$deep_findings" ]; then
+      warned="$warned $repo(deep)"
+      printf '%s' "$deep_findings"
+    fi
   fi
 done
 

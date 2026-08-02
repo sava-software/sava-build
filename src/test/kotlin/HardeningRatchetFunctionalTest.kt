@@ -1305,6 +1305,97 @@ $fuzzBlock
   }
 
   @Test
+  fun `a legacy line-full stash resets the drift comparison with a notice`() {
+    // A stash written by a pre-line-less plugin keys entries as
+    // class,method,line,mutator. Read against the line-less coordinate nothing
+    // matches, and without the reset every current timeout reads "newly timed out"
+    // and every old entry "no longer" — a drift line describing churn that never
+    // happened, on exactly the run where the operator is judging the upgrade.
+    writeFixture()
+    val stash = File(fixtureDir, ".pitest-history/encoding.statuses")
+    stash.parentFile.mkdirs()
+    stash.writeText(
+      "com.example.Codec,encode,12,MathMutator,TIMED_OUT\n" +
+          "com.example.Codec,encode,20,MathMutator,SURVIVED\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,SURVIVED,none",
+      ),
+      ""
+    )
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,MathMutator,SURVIVED # line 20\n")
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("status stash predates the line-less coordinate format"),
+      "format reset not announced:\n$output"
+    )
+    assertFalse(output.contains("timed-out drift vs previous run"), "phantom drift reported:\n$output")
+    assertFalse(output.contains("flipped SURVIVED -> TIMED_OUT"), "phantom flip reported:\n$output")
+
+    // the stash is rewritten line-lessly, so the next run compares for real —
+    // quietly, since nothing moved
+    val second = runner("pitestEncodingVerify").build().output
+    assertFalse(second.contains("predates the line-less"), "reset announced twice:\n$second")
+    assertFalse(second.contains("timed-out drift vs previous run"), "settled run reported drift:\n$second")
+  }
+
+  @Test
+  fun `the deep leg filter matches every stash-cycle message`() {
+    // The canary's deep leg greps run output with deep_pattern — message-text
+    // coupling on the same terms as findings_pattern, but for the stash-cycle
+    // lines only two consecutive real runs can provoke, so the reprint-filter
+    // test cannot cover them in its single run. Provokes all three across two
+    // verify runs (the reset notice only prints against a legacy stash, which
+    // that run then cannot also compare) and holds the script's own pattern to
+    // the combined output — reword one of the messages and this names the line.
+    val script = File(savaBuildTestProperty("savaBuild.root"), "tools/fleet-canary.sh").readText()
+    val pattern = Regex("(?m)^deep_pattern='([^']+)'").find(script)?.groupValues?.get(1)
+      ?: error("deep_pattern line not found in tools/fleet-canary.sh")
+
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n" +
+          "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 40\n"
+    )
+    val stash = File(fixtureDir, ".pitest-history/encoding.statuses")
+    stash.parentFile.mkdirs()
+    stash.writeText("com.example.Codec,encode,10,MathMutator,SURVIVED\n")
+    fun mutant(method: String, mutator: String, line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.$mutator,$method,$line,$status,none"
+    // run 1: the legacy stash provokes the reset notice
+    writeReport(
+      listOf(
+        mutant("encode", "MathMutator", 10, "SURVIVED"),
+        mutant("decode", "IncrementsMutator", 40, "SURVIVED"),
+      ),
+      ""
+    )
+    val first = runner("pitestEncodingVerify").build().output
+    // run 2: the encode survivor became a timeout (the flip warning), and a fresh
+    // key timed out with its survivors intact (the drift line)
+    writeReport(
+      listOf(
+        mutant("encode", "MathMutator", 10, "TIMED_OUT"),
+        mutant("decode", "IncrementsMutator", 40, "SURVIVED"),
+        mutant("decode", "InvertNegsMutator", 44, "TIMED_OUT"),
+      ),
+      ""
+    )
+    val combined = first + runner("pitestEncodingVerify").build().output
+    pattern.split('|').forEach { fragment ->
+      assertTrue(
+        combined.contains(fragment),
+        "deep pattern fragment '$fragment' matches nothing — reworded message?\n$combined"
+      )
+    }
+  }
+
+  @Test
   fun `a coordinate holding both a survivor and a timeout is not a flip every run`() {
     // The status stash is keyed line-lessly, so an accepted survivor and an audited
     // timeout routinely share one coordinate. Set logic ("timed out now, survived
