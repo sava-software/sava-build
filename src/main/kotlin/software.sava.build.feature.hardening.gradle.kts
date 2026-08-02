@@ -1169,8 +1169,8 @@ hardening.mutation.all {
             )
           }
         }
-        statusStash.parentFile.mkdirs()
-        statusStash.writeText(
+        BaselineFiles.writeAtomically(
+            statusStash,
             rows.joinToString("\n", prefix = "$stashFormatHeader\n", postfix = "\n") {
               "${coordinate(it)},${it[5]}"
             }

@@ -59,6 +59,26 @@ findings_pattern='malformed row|not in the audited set|appear nowhere|match no m
 # stash-cycle message' — reword one and that test names this line.
 deep_pattern='flipped SURVIVED -> TIMED_OUT|flipped NO_COVERAGE -> TIMED_OUT|timed-out drift vs previous run|predates the current stash format'
 
+# Reprint matching lines WITH their payload: the plugin prints listings as a
+# header line followed by two-space-indented rows (paste-ready member rows,
+# flipped coordinates, per-suite advisory details), and a line-based grep kept
+# the header while dropping exactly the rows the header tells a person to act
+# on — the unaudited-set warning reads "add the row below" and the reprint had
+# no row below. Indented lines ride along only while they directly follow a
+# match, so unrelated indented output (Gradle's own, stack traces) stays out.
+# The two-space contract is pinned on the same terms as the patterns above, by
+# 'the fleet canary reprint filter matches every warning it canaries': it
+# replays this indent rule over a real verify's output and demands the payload
+# rows the headers promise — change the rule here or a listing's indentation
+# in the plugin and that test names this line.
+reprint_findings() {
+  awk -v pat="$1" '
+    $0 ~ pat { print; keep = 1; next }
+    keep == 1 && /^  / { print; next }
+    { keep = 0 }
+  ' "$2"
+}
+
 # The resolution proof: the 0.0.0-test settings plugin's FlowAction prints this line
 # at the end of every build it was actually resolved into. Coupled to the notice's
 # wording like the filter above; pinned by LocalRepoNoticeFunctionalTest ('the fleet
@@ -131,7 +151,7 @@ fuzzWorkflowInSync"
       "(settings snippet predating -PsavaBuildLocalRepo? see README's canonical form)"
   fi
   # Reprint what a person must review: the hardening warnings, if any.
-  findings=$(grep -E "$findings_pattern" "$out_file" || true)
+  findings=$(reprint_findings "$findings_pattern" "$out_file" || true)
   if [ -n "$findings" ]; then
     warned="$warned $repo"
     echo "$findings"
@@ -155,10 +175,10 @@ fuzzWorkflowInSync"
         break
       fi
       # drift/flip/reset lines are exactly what the deep leg exists to surface;
-      # they are load-judgment for a person, never failures. Grepped per round —
+      # they are load-judgment for a person, never failures. Filtered per round —
       # the stash-format reset notice prints on round 1 only, and a shared output
-      # file would let round 2 overwrite it before a single grep saw it.
-      round_findings=$(grep -E "$findings_pattern|$deep_pattern" "$out_file" || true)
+      # file would let round 2 overwrite it before a single filter saw it.
+      round_findings=$(reprint_findings "$findings_pattern|$deep_pattern" "$out_file" || true)
       if [ -n "$round_findings" ]; then
         deep_findings="$deep_findings$round_findings"$'\n'
       fi

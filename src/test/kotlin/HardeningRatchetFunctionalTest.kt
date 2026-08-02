@@ -1143,6 +1143,40 @@ $fuzzBlock
         "canary pattern fragment '$fragment' matches nothing — reworded warning?\n$output"
       )
     }
+
+    // The canary's reprint_findings rides two-space-indented payload rows along
+    // with their matched header — the paste-ready member rows and marker lines
+    // the headers tell a person to act on. Pin both sides of that contract: the
+    // script's indent rule verbatim (edit the awk and this names the line), and
+    // the plugin's listing indentation, by replaying the same rule over this
+    // run's real output and finding the rows the headers promise.
+    assertTrue(
+      script.contains("keep == 1 && /^  / { print; next }"),
+      "fleet-canary.sh's reprint indent rule moved — update this pin and the replay below together"
+    )
+    val reprint = buildString {
+      var keep = false
+      val headerRegex = Regex(pattern)
+      output.lineSequence().forEach { line ->
+        when {
+          headerRegex.containsMatchIn(line) -> {
+            appendLine(line)
+            keep = true
+          }
+          keep && line.startsWith("  ") -> appendLine(line)
+          else -> keep = false
+        }
+      }
+    }
+    assertTrue(
+      reprint.contains("\n  com.example.Codec,encode,IncrementsMutator # line 30"),
+      "the unaudited-set warning's paste-ready row no longer rides the reprint — " +
+          "listing indentation changed from two spaces?\n$reprint"
+    )
+    assertTrue(
+      reprint.contains("\n  <!-- hardening-template sha256:"),
+      "the marker-dance payload line no longer rides the reprint:\n$reprint"
+    )
   }
 
   @Test
