@@ -427,6 +427,77 @@ $fuzzBlock
   }
 
   @Test
+  fun `a flip-insured key is kept by prune and excluded from the stale hint`() {
+    // Flip-insurance rows record an OBSERVED flap: on a run where the mutant reads
+    // killed, the row is not stale — pruning it would fail the next solo run with an
+    // unexplained survivor, and the stale hint used to recommend exactly that. The
+    // marker rides in the note or its parenthetical ('flip insurance', the wording
+    // -PunionModeFlips writes), and the row leaves by its written removal criterion,
+    // never by refresh.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # handled-flag family (flip insurance: gate=KILLED, solo=SURVIVED) # line 10\n" +
+          "com.example.Codec,decode,MathMutator,SURVIVED # since killed # line 30\n"
+    )
+    fun mutant(method: String, line: Int) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,$method,$line,KILLED,com.example.CodecTest"
+    writeReport(listOf(mutant("encode", 10), mutant("decode", 30)), "")
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("1 stale entries (since killed) — refresh with -PpruneMutationBaseline"),
+      "the genuinely killed row must still be hinted:\n$output"
+    )
+    assertTrue(
+      output.contains("1 flip-insured row(s) read killed this run") &&
+          output.contains("com.example.Codec,encode,MathMutator,SURVIVED # handled-flag family"),
+      "insured flap not reported as such:\n$output"
+    )
+
+    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,SURVIVED # handled-flag family (flip insurance: gate=KILLED, solo=SURVIVED) # line 10"),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertTrue(pruned.contains("flip insurance at this key"), pruned)
+    assertTrue(pruned.contains("prune dropped 1 row(s)"), pruned)
+
+    // with only the insured row left, the run reports the flap alone — no refresh hint
+    val settled = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      settled.contains("refresh with -PpruneMutationBaseline"),
+      "an insured flap alone must not recommend a refresh:\n$settled"
+    )
+    assertTrue(settled.contains("1 flip-insured row(s) read killed this run"), settled)
+  }
+
+  @Test
+  fun `insurance at a key covers its uninsured siblings`() {
+    // A flappy compound condition flaps as a family, and which sibling reads killed
+    // on a given run is itself load-dependent — so the marker is key-level: one
+    // insured row keeps its bare twin from being pruned on the twin's unlucky run.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # handled-flag family # line 10\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # handled-flag family (flip insurance: gate=KILLED, solo=SURVIVED) # line 20\n"
+    )
+    fun mutant(line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant(10, "KILLED"), mutant(20, "SURVIVED")), "")
+
+    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      2,
+      baselineFile().readLines().filter { it.isNotBlank() }.size,
+      "the bare twin of an insured key was pruned:\n$pruned"
+    )
+    assertTrue(pruned.contains("flip insurance at this key"), pruned)
+  }
+
+  @Test
   fun `prune shrinks a key with killed siblings and drops the killed line's row`() {
     // The verify's stale count is a multiset comparison, so a key holding three
     // accepted rows against two unkilled mutants has one stale row — and the stale
@@ -813,6 +884,27 @@ $fuzzBlock
       unadopted.contains("2 timed-out mutant(s) and no audited set") &&
           unadopted.contains("-PinitTimeoutAudit"),
       "adoption hint missing:\n$unadopted"
+    )
+    // the nudge prints the member rows paste-ready: a load-dependent timeout may not
+    // reproduce for a later -PinitTimeoutAudit run, and without the rows here the
+    // coordinate that timed out is recoverable only from the daemon log
+    assertTrue(
+      unadopted.contains("  com.example.Codec,encode,MathMutator # line 12") &&
+          unadopted.contains("  com.example.Codec,encode,IncrementsMutator # line 30"),
+      "adoption hint rows not paste-ready:\n$unadopted"
+    )
+
+    // the paste round trip: the nudged rows, written as the membership file, must arm
+    // the audit — no adoption nudge, no unaudited-newcomer warning, no stale notice
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # line 12\n" +
+          "com.example.Codec,encode,IncrementsMutator # line 30\n"
+    )
+    val adopted = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      adopted.contains("no audited set") || adopted.contains("not in the audited set") ||
+          adopted.contains("match no mutant"),
+      "pasted nudge rows did not arm the audit cleanly:\n$adopted"
     )
   }
 

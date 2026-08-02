@@ -395,7 +395,16 @@ invoked it*, and the failure looks exactly like a real regression.
   *(casebook: the flip that fired forever)*. The verify's stale-entry hint honours this: a
   baseline row whose coordinate read `TIMED_OUT` this run is reported as the
   load flip it is ("no refresh needed; prune keeps them"), never counted
-  among the "since killed" rows the refresh hint points at.
+  among the "since killed" rows the refresh hint points at. A stale-looking
+  row at a *flip-insured key* — any row of the key carrying a
+  `# flip insurance` note, machine-written by `-PunionModeFlips` or riding
+  in a hand annotation's parenthetical — gets the same honour: it is
+  reported as the flap its insurance records, excluded from the refresh
+  hint, and kept by prune, so following the hint can never drop a row whose
+  absence would fail the next solo run with an unexplained survivor. Both
+  the keep and the hint are key-level, because which member of a flappy
+  family reads killed on a given run is itself load-dependent; the row
+  leaves by the union's written removal criterion, never by refresh.
 
   "Benign" is a boundary claim, not a shrug: `KILLED` and `TIMED_OUT` are
   both *detected*, neither is ever written to a baseline, so this flip is
@@ -444,7 +453,12 @@ invoked it*, and the failure looks exactly like a real regression.
   transcribed: a suite whose summary reports timeouts with no set on disk is
   pointed at `-PinitTimeoutAudit`, which writes the membership rows from the
   run's report (observed lines riding in `#` comments) and leaves only the
-  causes to a person — it refuses to reseed an existing file, refuses a
+  causes to a person. The nudge also prints the would-be member rows
+  paste-ready alongside the flag: timeouts are load-dependent, so the run
+  that prompted the nudge may be the only one holding them — a later
+  seeding run against a clean report is rightly refused, and without the
+  printed rows the coordinate that timed out is recoverable only from the
+  daemon log. The seeder refuses to reseed an existing file, refuses a
   `-PmutateOnly` report like every other baseline-touching flag, refuses a
   report with nothing timed out (an empty seed would activate the audit
   with zero members to write causes for; timeouts are load-dependent, so

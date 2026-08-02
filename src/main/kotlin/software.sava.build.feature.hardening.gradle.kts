@@ -1135,6 +1135,13 @@ hardening.mutation.all {
       // adoption is per-repo.
       fun auditKey(parts: List<String>) = "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
       val timedOutByAuditKey = rows.filter { it[5] == "TIMED_OUT" }.groupBy(::auditKey)
+      // One membership row per key, sibling lines collapsed into the '# line' comment —
+      // the shape the seeder writes, the unaudited warning prints, and a hand paste must
+      // satisfy verbatim. Every surface that offers a row to paste renders it here.
+      fun pasteReadyMemberRows(indent: String) = timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
+        val lines = timedOutByAuditKey.getValue(key).map { it[4] }.distinct()
+        "$indent$key # line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
+      }
       if (initTimeoutAudit) {
         // Seeds the mechanical half of adoption — the membership rows — from this
         // run's report, mirroring '-PupdateMutationBaseline' seeding '# untriaged':
@@ -1166,10 +1173,7 @@ hardening.mutation.all {
                   "it is."
           )
         }
-        val seeded = timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
-          val lines = timedOutByAuditKey.getValue(key).map { it[4] }.distinct()
-          "$key # line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
-        }
+        val seeded = pasteReadyMemberRows("")
         BaselineFiles.writeAtomically(
             timeoutsFile,
             "# Audited TIMED_OUT set for the '$suiteName' suite (HARDENING.md, the audited-timeout\n" +
@@ -1360,12 +1364,18 @@ hardening.mutation.all {
         // it was discoverable only by reading HARDENING.md. Advisory nudge normally;
         // under the strict flag an unadopted timeout-carrying suite is an unaudited
         // newcomer by definition.
+        // The rows print paste-ready alongside the flag: a timeout is load-dependent, so
+        // by the time anyone acts on this nudge the next run may hold a clean report —
+        // -PinitTimeoutAudit then rightly refuses to seed from it, and without the rows
+        // here the coordinate that timed out is recoverable only from the daemon log.
         val hint =
             "pitest '$suiteName': ${rows.count { it[5] == "TIMED_OUT" }} timed-out mutant(s) and no audited " +
                 "set — a timeout detects slowness, not wrongness, so the ratchet cannot see a weakened " +
                 "covering assertion behind one. Adopt the audit with -PinitTimeoutAudit (seeds " +
-                "config/pitest/${timeoutsFile.name} from this run), then write each member's structural " +
-                "cause in config/pitest/README.md."
+                "config/pitest/${timeoutsFile.name} from this run), or paste the row(s) below — " +
+                "load-dependent timeouts may not reproduce for a later seeding run:\n" +
+                pasteReadyMemberRows("  ") + "\n" +
+                "then write each member's structural cause in config/pitest/README.md."
         if (strictTimeoutAudit) {
           throw GradleException(hint)
         }
@@ -1433,6 +1443,16 @@ hardening.mutation.all {
             --remaining
           }
         }
+        // A third unmatched class kept anyway: rows at a flip-insured key. Insurance
+        // rows exist because the coordinate was OBSERVED flapping — a run where the
+        // mutant reads killed is the flap the note records, and pruning it makes the
+        // next solo run fail the ratchet with an unexplained survivor. The marker is
+        // key-level (any row of the key noting 'flip insurance' insures its siblings:
+        // which member of a flappy family flips is itself load-dependent), and the
+        // row leaves by the union's written removal criterion, never by refresh.
+        val flipInsuredKeys = acceptedRows
+            .filter { it.note?.contains("flip insurance") == true }
+            .mapTo(HashSet()) { it.key }
         val kept = mutableListOf<BaselineNotes.Row>()
         val keptUnmatched = mutableListOf<Pair<BaselineNotes.Row, String>>()
         val droppedRows = mutableListOf<BaselineNotes.Row>()
@@ -1446,6 +1466,9 @@ hardening.mutation.all {
           } else if (claimFlipCounterpart(coordinate(row.key), rowStatus)) {
             kept.add(row)
             keptUnmatched.add(row to "coordinate unkilled at another status (flip pending triage)")
+          } else if (row.key in flipInsuredKeys) {
+            kept.add(row)
+            keptUnmatched.add(row to "flip insurance at this key (remove by its written criterion, not a refresh)")
           } else {
             droppedRows.add(row)
           }
@@ -1736,9 +1759,21 @@ hardening.mutation.all {
         // recommended a refresh that would be a no-op for it (casebook: the
         // limbsLength flapper told to prune itself). Reported separately instead,
         // and excluded from the refresh hint.
-        // the same set prune keeps, so this hint and prune cannot disagree
-        val (staleTimedOut, staleGone) =
+        // the same sets prune keeps (TIMED_OUT coordinates, flip-insured keys), so
+        // this hint and prune cannot disagree
+        val (staleTimedOut, staleUntimed) =
             stale.partition { it.substringBeforeLast(',') in timedOutCoordinatesNow }
+        // A stale-looking row at a flip-insured key is the flap its insurance note
+        // records: the mutant reads killed on this run and survives on another. The
+        // prune hint used to name it with the rest — and prune then dropped it,
+        // failing the next solo run with an unexplained survivor. Reported as what
+        // it is instead, excluded from the refresh hint, and kept by prune; the row
+        // leaves by the union's written removal criterion. Key-level like prune's
+        // keep: which member of a flappy family flips is itself load-dependent.
+        val flipInsuredKeys = acceptedRows
+            .filter { it.note?.contains("flip insurance") == true }
+            .mapTo(HashSet()) { it.key }
+        val (staleInsured, staleGone) = staleUntimed.partition { it in flipInsuredKeys }
         if (staleGone.isNotEmpty()) {
           // Point at prune, not update: when the only news is *fewer* survivors, the
           // shrink-only refresh is the always-safe direction — it cannot bake in a
@@ -1751,6 +1786,15 @@ hardening.mutation.all {
           else "-PupdateMutationBaseline after the new rows below are triaged"
           logger.lifecycle(
               "pitest baseline '$suiteName': ${staleGone.size} stale entries (since killed) — refresh with $direction")
+        }
+        if (staleInsured.isNotEmpty()) {
+          logger.lifecycle(
+              "pitest baseline '$suiteName': ${staleInsured.size} flip-insured row(s) read killed this run — " +
+                  "the flap the insurance records, not staleness; no refresh needed (prune keeps them), " +
+                  "and the row leaves by its written removal criterion:\n" +
+                  staleInsured.joinToString("\n") {
+                    "  ${BaselineNotes.render(it, noteByKey[it], emptyList())}"
+                  })
         }
         if (staleTimedOut.isNotEmpty()) {
           logger.lifecycle(
