@@ -364,8 +364,12 @@ repo at a time. The canary publishes `0.0.0-test` and runs every repo's
 `agentsTemplateInSync` under `-PsavaBuildLocalRepo`, which exercises plugin
 application, the settings snippet, and the static half of the audit checks in seconds
 per repo, without mutation runs. A template-digest change therefore surfaces here as
-per-repo failures naming the marker dance the release will obligate at bump time —
-before the release, not one consumer CI at a time after. Build failures fail the
+per-repo *advisories* naming the marker dance the release will obligate at bump time —
+before the release, not one consumer CI at a time after. Advisory, not a failure:
+under `-PsavaBuildLocalRepo` a stale marker is the expected state (the repo
+acknowledges a released digest; this checkout's has not shipped), and failing here
+forced repos to pre-acknowledge unreleased digests, wedging their `check` against
+every published plugin until the release landed. Build failures fail the
 canary; advisory findings are reprinted per repo for review. A green build must also
 print the local-repo notice, proving `0.0.0-test` actually ran: a settings snippet
 predating `-PsavaBuildLocalRepo` ignores the property and resolves the released

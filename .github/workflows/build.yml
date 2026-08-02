@@ -12,6 +12,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Under pull_request_target, actions/checkout resolves the BASE branch: the
+      # job would rebuild main on every PR, never compile the PR's changes, and
+      # expose inherited secrets to fork PRs. Refusing INSIDE this job (rather
+      # than from a sibling guard job) makes the 'check' context itself fail — a
+      # skipped job satisfies a required status check, so a guard-job shape lets
+      # a protected branch merge the very misconfiguration it guards against.
+      - name: Refuse pull_request_target
+        if: github.event_name == 'pull_request_target'
+        run: |
+          echo "::error::build.yml was invoked from a pull_request_target event: checkout resolves the base branch, so the PR's changes are never built, and 'secrets: inherit' is exposed to fork PRs. Trigger on pull_request and call check-pr.yml instead."
+          exit 1
       - id: setup
         uses: sava-software/sava-build@main
         with:

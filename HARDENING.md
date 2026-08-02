@@ -359,7 +359,15 @@ anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
 (load-dependent detection, not a kill), and rows with an *unmatched*
 different-status counterpart at their coordinate (a coverage flip the ratchet
 must triage first — a same-status sibling is never that, and neither is a
-mutant already matched by a row of its own key).
+mutant already matched by a row of its own key). Both keeps are **budgets,
+not statuses**: at most as many rows per coordinate as mutants actually
+timed out (or flipped) there, line affinity deciding which rows hold the
+timeout budget — one audited permanent timeout cannot vouch for an unbounded
+pile of genuinely killed siblings. Flip-insured rows are kept
+unconditionally and decided *before* the timeout budget, so an insured row
+never spends the budget its uninsured sibling needs. Prune and the stale
+hint read one row-level keep plan, so the hint's "prune keeps them" and
+"refresh with prune" name exactly the rows prune keeps and drops.
 Reach for prune after a pass that killed baseline rows —
 never for a hand-rolled cleanup script, which is how the status-blind prune
 happened. The three flags are mutually exclusive; the build refuses a
@@ -380,18 +388,29 @@ invoked it*, and the failure looks exactly like a real regression.
   the wandering-kill-count section) diff the two modes per mutant and write
   the observed-flip unions with `-PunionModeFlips`.
 - **Run-to-run drift is announced automatically.** The verify stashes each
-  run's `TIMED_OUT` and `SURVIVED` coordinates
-  (`.pitest-history/<suite>.statuses`, machine-local) and names each
-  newcomer's origin on the next run. `KILLED -> TIMED_OUT` is the benign
-  flavour and gets a one-line count; `SURVIVED -> TIMED_OUT` gets a warning
-  with the rows, because a mutant nobody killed now reads as detected purely
-  through load — do not let a refresh quietly drop it from the baseline on
-  the strength of that. The two runs are compared as per-coordinate
+  run's per-status coordinates — every status, `KILLED` included
+  (`.pitest-history/<suite>.statuses`, machine-local, a `# stash format`
+  header naming its format) — and names each newcomer's origin on the next
+  run. `KILLED -> TIMED_OUT` is the benign flavour and gets a one-line
+  count; `SURVIVED -> TIMED_OUT` gets a warning with the rows, because a
+  mutant nobody killed now reads as detected purely through load — do not
+  let a refresh quietly drop it from the baseline on the strength of that.
+  `NO_COVERAGE -> TIMED_OUT` gets the same warning: the mutant was never
+  even reached, and the test that newly covers it hangs instead of killing
+  it. An origin the stash omits is one the comparison silently misreads —
+  `NO_COVERAGE` omitted read the dangerous flip as benign, `KILLED` omitted
+  read the benign flap as novelty — which is why every status is stashed
+  and a stash written by an earlier format (headerless or five-field)
+  resets the comparison for one announced run instead of comparing blind.
+  A timeout with no prior *detected* read at its key — a new coordinate, a
+  new sibling at a gated-only key, or a key whose only prior reads were
+  PIT's not-counted-as-detected statuses — is named as a first observation,
+  never as "previously detected". The two runs are compared as per-coordinate
   **counts**, not as sets of coordinates: the coordinate is line-less, so one
   key routinely holds an accepted survivor *and* an audited timeout at the
   same time, and asking a set "is this key timed out now and was it survived
   before" answers yes on every run including the ones where nothing moved. A
-  flip is a key whose timeout count rose *and* whose survivor count fell
+  flip is a key whose timeout count rose *and* whose unkilled count fell
   *(casebook: the flip that fired forever)*. The verify's stale-entry hint honours this: a
   baseline row whose coordinate read `TIMED_OUT` this run is reported as the
   load flip it is ("no refresh needed; prune keeps them"), never counted
@@ -399,8 +418,10 @@ invoked it*, and the failure looks exactly like a real regression.
   row at a *flip-insured key* — any row of the key carrying a
   `# flip insurance` note, machine-written by `-PunionModeFlips` or riding
   in a hand annotation's parenthetical — gets the same honour: it is
-  reported as the flap its insurance records, excluded from the refresh
-  hint, and kept by prune, so following the hint can never drop a row whose
+  reported as the flap its insurance records (or, when its coordinate is
+  alive at another status, as the newly-covered move the failure detail
+  names), excluded from the refresh hint, and kept by prune, so following
+  the hint can never drop a row whose
   absence would fail the next solo run with an unexplained survivor. Both
   the keep and the hint are key-level, because which member of a flappy
   family reads killed on a given run is itself load-dependent; the row
@@ -1536,7 +1557,10 @@ re-diffing the block against the template and syncing or **acting on** each
 changed bullet — a new requirement may mean new code, not just new prose;
 that is how sava's corpus-replay gap went unnoticed until an unrelated
 repo's agent tripped over it. The failure message prints the digest to
-paste.
+paste. One softening: under `-PsavaBuildLocalRepo` (the fleet canary, or any
+build validating an unreleased checkout) a stale marker warns instead of
+failing — the repo acknowledges a *released* digest and the checkout's has
+not shipped, so the marker dance lands with the release, never before it.
 
 > - **Scale verification to the change.** Iterate with the module's `test`
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated

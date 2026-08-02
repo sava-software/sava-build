@@ -8,14 +8,27 @@ on:
         required: false
 
 jobs:
+  # pull_request_target is let THROUGH the condition so the first step can fail
+  # the 'check' context itself: a skipped job satisfies a required status check,
+  # so skipping (the old shape) or a sibling guard job would let a protected
+  # branch merge the very misconfiguration being guarded against — checkout
+  # resolving the BASE branch and inherited secrets reaching fork PRs. Bot
+  # authors (release-please, dependabot) still skip under either event, so a
+  # bot-authored PR cannot surface the misconfiguration — the guard fires on
+  # the first human PR, and the dangerous fork case always has a human author.
   check:
     if: >
-      github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
       github.event.pull_request.user.login != 'sava-release-please[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
 
     steps:
+      - name: Refuse pull_request_target
+        if: github.event_name == 'pull_request_target'
+        run: |
+          echo "::error::check-pr.yml was invoked from a pull_request_target event: checkout resolves the base branch, so the PR's changes are never built, and 'secrets: inherit' is exposed to fork PRs. Trigger on pull_request instead."
+          exit 1
       - id: setup
         uses: sava-software/sava-build@main
         with:

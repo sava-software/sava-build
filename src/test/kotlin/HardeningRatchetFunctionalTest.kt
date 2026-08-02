@@ -450,7 +450,7 @@ $fuzzBlock
       "the genuinely killed row must still be hinted:\n$output"
     )
     assertTrue(
-      output.contains("1 flip-insured row(s) read killed this run") &&
+      output.contains("1 flip-insured row(s) unmatched at their own status this run") &&
           output.contains("com.example.Codec,encode,MathMutator,SURVIVED # handled-flag family"),
       "insured flap not reported as such:\n$output"
     )
@@ -469,7 +469,7 @@ $fuzzBlock
       settled.contains("refresh with -PpruneMutationBaseline"),
       "an insured flap alone must not recommend a refresh:\n$settled"
     )
-    assertTrue(settled.contains("1 flip-insured row(s) read killed this run"), settled)
+    assertTrue(settled.contains("1 flip-insured row(s) unmatched at their own status this run"), settled)
   }
 
   @Test
@@ -568,6 +568,170 @@ $fuzzBlock
     assertTrue(output.contains("prune dropped 1 row(s)"), output)
     assertTrue(output.contains("# since killed # line 10"), output)
     assertFalse(output.contains("flip pending triage"), "a matched mutant vouched for a killed sibling:\n$output")
+  }
+
+  @Test
+  fun `one timed-out sibling cannot vouch for two killed rows at its coordinate`() {
+    // The TIMED_OUT keep is a budget, not a status: N mutants timed out at a
+    // coordinate can hide at most N rows behind the watchdog. A presence check
+    // kept every unmatched row at the coordinate — one audited permanent timeout
+    // vouched for arbitrarily many genuinely killed acceptances, prune reported
+    // "dropped nothing", and dead rows accumulated (the same hole-shape the
+    // pending-flip keep one branch below was refitted for).
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # first # line 20\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # second # line 24\n"
+    )
+    fun mutant(line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant(12, "TIMED_OUT"), mutant(20, "KILLED"), mutant(24, "KILLED")), "")
+
+    // the stale hint budgets identically: one stale entry reads TIMED_OUT-kept,
+    // the excess is since-killed and earns the refresh hint — hint and prune agree
+    val hinted = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      hinted.contains("1 stale entries (since killed) — refresh with -PpruneMutationBaseline"),
+      "the excess row must be hinted since-killed:\n$hinted"
+    )
+    assertTrue(hinted.contains("1 baseline row(s) read TIMED_OUT this run"), hinted)
+
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,SURVIVED # first # line 20"),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "one timeout budget must keep exactly one row:\n$output"
+    )
+    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("kept 1 unmatched row(s)"), output)
+    assertTrue(output.contains("TIMED_OUT this run (load-dependent)"), output)
+  }
+
+  @Test
+  fun `the timeout budget keeps the row whose line tag actually timed out`() {
+    // Which rows hold the timeout budget follows line affinity, the survivor
+    // budget's own assignment rule: with the killed mutant's row first in the
+    // file, file order alone would keep the killed row and leave its tag naming
+    // a killed line, while the row that actually sits behind the watchdog drops.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # since killed # line 20\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # slow guard # line 24\n"
+    )
+    fun mutant(line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant(20, "KILLED"), mutant(24, "TIMED_OUT")), "")
+
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,SURVIVED # slow guard # line 24"),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "the budget must follow the timed-out line, not file order:\n$output"
+    )
+    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("# since killed # line 20"), output)
+  }
+
+  @Test
+  fun `the stale hint names the same rows prune keeps at a cross-status coordinate`() {
+    // The hint and prune read one keep plan. Two independent allocators disagreed
+    // exactly here: the hint budgeted the coordinate's timeout in baseline-file
+    // order over key strings while prune budgeted affinity-first over rows — so
+    // with the affine row second in the file, the hint promised "prune keeps
+    // them" about the first row, and prune kept the second.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # a # line 20\n" +
+          "com.example.Codec,encode,MathMutator,NO_COVERAGE # b # line 24\n"
+    )
+    fun mutant(line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant(20, "KILLED"), mutant(24, "TIMED_OUT")), "")
+
+    val hinted = runner("pitestEncodingVerify").build().output
+    val timedOutHint = hinted.lineSequence()
+      .dropWhile { !it.contains("read TIMED_OUT this run") }.take(2).joinToString("\n")
+    assertTrue(
+      timedOutHint.contains("com.example.Codec,encode,MathMutator,NO_COVERAGE # b # line 24"),
+      "the hint must name the affine row as kept:\n$hinted"
+    )
+    assertTrue(
+      hinted.contains("1 stale entries (since killed)"),
+      "the killed row must be hinted since-killed:\n$hinted"
+    )
+
+    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,NO_COVERAGE # b # line 24"),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "prune must keep the row the hint named:\n$pruned"
+    )
+  }
+
+  @Test
+  fun `a tag naming a killed line demotes its row for the timeout budget`() {
+    // The mirror of line affinity: a row whose '# line' tag names a line KILLED
+    // this run is provably the killed mutant's row, so it takes the timeout
+    // budget last — file order alone handed it the budget (it sat first) and
+    // dropped the bare sibling whose mutant was the one actually hanging.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # since killed # line 20\n" +
+          "com.example.Codec,encode,MathMutator,NO_COVERAGE # newly hung\n"
+    )
+    fun mutant(line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant(20, "KILLED"), mutant(50, "TIMED_OUT")), "")
+
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,NO_COVERAGE # newly hung"),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "the killed-line row must not outrank the bare row for the timeout budget:\n$output"
+    )
+    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("# since killed # line 20"), output)
+  }
+
+  @Test
+  fun `an insured row does not spend the timeout budget its sibling needs`() {
+    // The insurance keep is unconditional, so it must not consume the timeout
+    // budget: greedily assigning the coordinate's only timeout to the insured
+    // row (file order, no usable tags) vouched for nobody — the insured row was
+    // kept anyway — and pushed the different-status sibling, the one row that
+    // timeout could actually be hiding, past the budget and into a drop the old
+    // presence check never made.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=KILLED, solo=SURVIVED)\n" +
+          "com.example.Codec,encode,MathMutator,NO_COVERAGE # unreachable claim\n"
+    )
+    fun mutant(line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant(20, "KILLED"), mutant(50, "TIMED_OUT")), "")
+
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=KILLED, solo=SURVIVED)",
+        "com.example.Codec,encode,MathMutator,NO_COVERAGE # unreachable claim",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "the timeout budget must reach the uninsured sibling:\n$output"
+    )
+    assertTrue(output.contains("prune dropped nothing"), output)
+    assertTrue(output.contains("flip insurance at this key"), output)
+    assertTrue(output.contains("TIMED_OUT this run (load-dependent)"), output)
   }
 
   @Test
@@ -953,6 +1117,8 @@ $fuzzBlock
     File(fixtureDir, "config/pitest/README.md").writeText("# Baseline\n\nNo causes or labels yet.\n")
     // a stale tool-version record -> 'written by PIT'
     File(fixtureDir, "config/pitest/encoding-pitest-version").writeText("0.0.0-stale\n")
+    // a stale template marker under the canary's own local-repo flag -> 'marker dance'
+    File(fixtureDir, "AGENTS.md").writeText("# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n")
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
@@ -963,10 +1129,14 @@ $fuzzBlock
       ""
     )
 
-    // all seven findings are advisory, so the run passes — the advisory summary at
-    // the end of the build supplies the pattern's 'advisory finding' alternation,
-    // and the Debt task rides along for the fragments only its static halves emit
-    val output = runner("pitestEncodingVerify", "pitestEncodingDebt", "pitestDeclinesDebt").build().output
+    // every finding is advisory, so the run passes — the advisory summary at the
+    // end of the build supplies the pattern's 'advisory finding' alternation, the
+    // Debt task rides along for the fragments only its static halves emit, and
+    // agentsTemplateInSync runs under the canary's flag for the marker-dance one
+    val output = runner(
+      "pitestEncodingVerify", "pitestEncodingDebt", "pitestDeclinesDebt",
+      "agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout"
+    ).build().output
     pattern.split('|').forEach { fragment ->
       assertTrue(
         output.contains(fragment),
@@ -1455,17 +1625,87 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(
-      output.contains("status stash predates the line-less coordinate format"),
+      output.contains("status stash predates the current stash format"),
       "format reset not announced:\n$output"
     )
     assertFalse(output.contains("timed-out drift vs previous run"), "phantom drift reported:\n$output")
     assertFalse(output.contains("flipped SURVIVED -> TIMED_OUT"), "phantom flip reported:\n$output")
 
-    // the stash is rewritten line-lessly, so the next run compares for real —
-    // quietly, since nothing moved
+    // the stash is rewritten in the current format, so the next run compares for
+    // real — quietly, since nothing moved
     val second = runner("pitestEncodingVerify").build().output
-    assertFalse(second.contains("predates the line-less"), "reset announced twice:\n$second")
+    assertFalse(second.contains("predates the current stash format"), "reset announced twice:\n$second")
     assertFalse(second.contains("timed-out drift vs previous run"), "settled run reported drift:\n$second")
+  }
+
+  @Test
+  fun `a headerless stash from the released plugin resets instead of comparing blind`() {
+    // The 21.5.21 stash is already line-less but carries only TIMED_OUT and
+    // SURVIVED entries — no NO_COVERAGE, no KILLED. Compared as-is, a
+    // NO_COVERAGE -> TIMED_OUT flip on the first run after the upgrade reads
+    // benign ("previously detected") — the exact claim the flip warning exists
+    // to forbid — with no sign anything degenerated. The format header is the
+    // stash's identity: headerless means an earlier plugin wrote it, and the
+    // comparison resets with the same notice the line-less migration earned.
+    writeFixture()
+    val stash = File(fixtureDir, ".pitest-history/encoding.statuses")
+    stash.parentFile.mkdirs()
+    stash.writeText("com.example.Codec,encode,MathMutator,SURVIVED\n")
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n" +
+          "com.example.Codec,encode,IncrementsMutator,NO_COVERAGE # line 24\n"
+    )
+    fun mutant(mutator: String, line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.$mutator,encode,$line,$status,none"
+    writeReport(
+      listOf(mutant("MathMutator", 10, "SURVIVED"), mutant("IncrementsMutator", 24, "TIMED_OUT")),
+      ""
+    )
+
+    val first = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      first.contains("status stash predates the current stash format"),
+      "headerless stash did not reset:\n$first"
+    )
+    assertFalse(
+      first.contains("previously detected") || first.contains("first observed"),
+      "the blind window compared anyway:\n$first"
+    )
+    assertFalse(first.contains("flipped"), "reset run reported a flip:\n$first")
+
+    // the rewritten stash carries the header and every status; the next
+    // identical run compares for real, quietly
+    val second = runner("pitestEncodingVerify").build().output
+    assertFalse(second.contains("predates the current stash format"), "reset announced twice:\n$second")
+    assertFalse(second.contains("timed-out drift vs previous run"), "settled run reported drift:\n$second")
+  }
+
+  @Test
+  fun `a timeout at a fully-killed key is previously detected, not a first observation`() {
+    // KILLED is stashed too: a key whose mutants were all killed last run is the
+    // most common home of the benign KILLED<->TIMED_OUT flap, and without KILLED
+    // entries it is indistinguishable from a coordinate the suite never had —
+    // which the drift line then mislabels a first observation, run after run.
+    writeFixture()
+    fun report(status: String) = writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,$status," +
+            (if (status == "KILLED") "com.example.CodecTest" else "none"),
+      ),
+      ""
+    )
+
+    report("KILLED")
+    runner("pitestEncodingVerify").build()
+
+    report("TIMED_OUT")
+    val flapped = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      flapped.contains("1 newly timed out (previously detected), 0 first observed"),
+      "benign KILLED flap not named as previously detected:\n$flapped"
+    )
+    assertFalse(flapped.contains("flipped"), "benign flap read as a dangerous flip:\n$flapped")
   }
 
   @Test
@@ -1473,7 +1713,7 @@ $fuzzBlock
     // The canary's deep leg greps run output with deep_pattern — message-text
     // coupling on the same terms as findings_pattern, but for the stash-cycle
     // lines only two consecutive real runs can provoke, so the reprint-filter
-    // test cannot cover them in its single run. Provokes all three across two
+    // test cannot cover them in its single run. Provokes all four across two
     // verify runs (the reset notice only prints against a legacy stash, which
     // that run then cannot also compare) and holds the script's own pattern to
     // the combined output — reword one of the messages and this names the line.
@@ -1485,6 +1725,7 @@ $fuzzBlock
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText(
       "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n" +
+          "com.example.Codec,encode,IncrementsMutator,NO_COVERAGE # line 15\n" +
           "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 40\n"
     )
     val stash = File(fixtureDir, ".pitest-history/encoding.statuses")
@@ -1496,16 +1737,19 @@ $fuzzBlock
     writeReport(
       listOf(
         mutant("encode", "MathMutator", 10, "SURVIVED"),
+        mutant("encode", "IncrementsMutator", 15, "NO_COVERAGE"),
         mutant("decode", "IncrementsMutator", 40, "SURVIVED"),
       ),
       ""
     )
     val first = runner("pitestEncodingVerify").build().output
-    // run 2: the encode survivor became a timeout (the flip warning), and a fresh
-    // key timed out with its survivors intact (the drift line)
+    // run 2: the encode survivor became a timeout (the flip warning), the
+    // never-reached mutant became one too (the NO_COVERAGE flip warning), and a
+    // fresh key timed out with its survivors intact (the drift line)
     writeReport(
       listOf(
         mutant("encode", "MathMutator", 10, "TIMED_OUT"),
+        mutant("encode", "IncrementsMutator", 15, "TIMED_OUT"),
         mutant("decode", "IncrementsMutator", 40, "SURVIVED"),
         mutant("decode", "InvertNegsMutator", 44, "TIMED_OUT"),
       ),
@@ -1518,6 +1762,104 @@ $fuzzBlock
         "deep pattern fragment '$fragment' matches nothing — reworded message?\n$combined"
       )
     }
+  }
+
+  @Test
+  fun `a NO_COVERAGE mutant that times out is a dangerous flip, not prior detection`() {
+    // The stash carries every gated status: a mutant no test had reached that now
+    // reads TIMED_OUT slid behind the watchdog exactly like a survivor — but with
+    // only SURVIVED stashed, the comparison read it as the benign KILLED flavour
+    // and printed "previously detected" for a mutant that never was.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,MathMutator,NO_COVERAGE # unreachable claim # line 50\n")
+    fun report(status: String) = writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,50,$status,none"),
+      ""
+    )
+
+    report("NO_COVERAGE")
+    runner("pitestEncodingVerify").build()
+
+    report("TIMED_OUT")
+    val flipped = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      flipped.contains("1 coordinate(s) flipped NO_COVERAGE -> TIMED_OUT"),
+      "the never-reached origin must be the dangerous flavour:\n$flipped"
+    )
+    assertFalse(flipped.contains("previously detected"), "a never-detected mutant claimed as detected:\n$flipped")
+    assertFalse(flipped.contains("flipped SURVIVED"), flipped)
+    assertTrue(flipped.contains("NO_COVERAGE -> TIMED_OUT flip(s)"), "advisory summary missing:\n$flipped")
+  }
+
+  @Test
+  fun `union tags an added smaller-line sibling with its own line`() {
+    // Blind oldest-first pool consumption handed the existing row the new
+    // sibling's smaller line: the appended row was tagged with the existing
+    // mutant's line, the sibling's real line was recorded nowhere, and the next
+    // verify raised the same-key-swap advisory against a file union itself wrote.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText("com.example.Codec,encode,MathMutator,SURVIVED # race guard # line 40\n")
+    fun mutant(line: Int) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,SURVIVED,none"
+    writeReport(listOf(mutant(10), mutant(40)), "")
+
+    val union = runner("pitestEncodingVerify", "-PunionMutationBaseline").build()
+    assertTrue(union.output.contains("union added 1 entries"), union.output)
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,MathMutator,SURVIVED # race guard # line 40",
+        "com.example.Codec,encode,MathMutator,SURVIVED # line 10",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "the existing row must consume its own tagged line; the added row takes the unclaimed one"
+    )
+
+    // the rewritten file describes this run completely: no drift advisory
+    val settled = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      settled.contains("no row's '# line' tag names"),
+      "union armed the same-key-swap advisory it exists to avoid:\n$settled"
+    )
+  }
+
+  @Test
+  fun `a multi-line insurance tag cannot steal the only copy of a sibling's exact line`() {
+    // Flip-insurance rows name every line their family was observed at, so a
+    // greedy first-match walk let the insurance row consume the single pool copy
+    // of a line its sibling tags exactly — the robbed sibling fell to blind
+    // oldest-first consumption, ate the genuinely new smallest line, and the
+    // appended row was tagged with an old mutant's line while the new line went
+    // recorded nowhere. Fewest-live-options-first assignment gives the exact tag
+    // its line and leaves the insurance row its other anchor.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=SURVIVED, solo=KILLED) # lines 20, 40\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # line 20\n"
+    )
+    fun mutant(line: Int) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,SURVIVED,none"
+    writeReport(listOf(mutant(10), mutant(20), mutant(40)), "")
+
+    val union = runner("pitestEncodingVerify", "-PunionMutationBaseline").build()
+    assertTrue(union.output.contains("union added 1 entries"), union.output)
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=SURVIVED, solo=KILLED) # lines 20, 40",
+        "com.example.Codec,encode,MathMutator,SURVIVED # line 20",
+        "com.example.Codec,encode,MathMutator,SURVIVED # line 10",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "the appended row must take the genuinely unclaimed line"
+    )
+
+    val settled = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      settled.contains("no row's '# line' tag names"),
+      "union armed the same-key-swap advisory it exists to avoid:\n$settled"
+    )
   }
 
   @Test

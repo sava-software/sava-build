@@ -52,12 +52,12 @@ local_repo="$sava_build_dir/build/sava-test-repo"
 # by HardeningRatchetFunctionalTest ('the fleet canary reprint filter matches every
 # warning it canaries'), which provokes each warning and greps a real verify's
 # output with this exact pattern — reword a message and that test names this line.
-findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding|written by PIT|swallowed by excludedClasses|match no swallowed|suppress nothing'
+findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding|written by PIT|swallowed by excludedClasses|match no swallowed|suppress nothing|marker dance'
 
 # The stash-cycle messages only the deep leg's two consecutive real runs can
 # provoke, pinned on the same terms by 'the deep leg filter matches every
 # stash-cycle message' — reword one and that test names this line.
-deep_pattern='flipped SURVIVED -> TIMED_OUT|timed-out drift vs previous run|predates the line-less'
+deep_pattern='flipped SURVIVED -> TIMED_OUT|flipped NO_COVERAGE -> TIMED_OUT|timed-out drift vs previous run|predates the current stash format'
 
 # The resolution proof: the 0.0.0-test settings plugin's FlowAction prints this line
 # at the end of every build it was actually resolved into. Coupled to the notice's
@@ -103,8 +103,13 @@ for arg in "$@"; do
     # Hardening repos also check their AGENTS.md template marker against THIS
     # checkout's digest: a template edit breaks every consumer's 'check' at
     # bump time by design, and the canary is where that obligation should be
-    # announced — as a per-repo failure naming the marker dance — before the
-    # release creates it, not one repo at a time after. fuzzWorkflowInSync
+    # announced — as a per-repo ADVISORY naming the marker dance (matched by
+    # the reprint filter above) — before the release creates it, not one repo
+    # at a time after. Advisory, not a failure: under -PsavaBuildLocalRepo a
+    # stale marker is the expected state — the repo acknowledges a released
+    # digest, and this checkout's has not shipped. Failing here forced repos
+    # to acknowledge unreleased digests, which wedged their 'check' against
+    # every published plugin until the release landed. fuzzWorkflowInSync
     # rides along: quiet in repos without a weekly soak, and a sub-second
     # static check that every registered fuzz target is actually in the soak's
     # task list where one exists.

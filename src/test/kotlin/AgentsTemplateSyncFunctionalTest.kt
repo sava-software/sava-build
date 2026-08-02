@@ -92,6 +92,32 @@ class AgentsTemplateSyncFunctionalTest {
   }
 
   @Test
+  fun `a stale acknowledgment warns instead of failing when validating an unreleased checkout`() {
+    // The fleet canary builds consumers against this checkout via
+    // -PsavaBuildLocalRepo, and this checkout's digest has not shipped: a marker
+    // acknowledging the released digest is the expected state there, not a defect.
+    // Failing forced repos to acknowledge unreleased digests ahead of the release,
+    // which wedged their 'check' against every published plugin until the release
+    // landed and the pin was bumped.
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+    agentsDoc.writeText("# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n")
+
+    val advisory = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout").build()
+    assertTrue(
+      advisory.output.contains("the marker dance lands with the release that ships this digest"),
+      "a stale marker under the canary flag must warn, not fail:\n" + advisory.output
+    )
+    assertTrue(advisory.output.contains("sha256:$expectedDigest"), advisory.output)
+
+    // a marker-less AGENTS.md is an unadopted repo, not a pending marker dance —
+    // the flag does not soften that failure
+    agentsDoc.writeText("# Agents\n\nNo marker.\n")
+    val unmarked = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout").buildAndFail()
+    assertTrue(unmarked.output.contains("has no 'hardening-template' marker"), unmarked.output)
+  }
+
+  @Test
   fun `a current acknowledgment passes and the check gates both verification entry points`() {
     writeFixture()
     File(fixtureDir, "AGENTS.md").writeText(

@@ -134,8 +134,16 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   description = "Fails when AGENTS.md has not acknowledged the current agent-instructions template in HARDENING.md."
   val agentsDoc = rootProject.layout.projectDirectory.file("AGENTS.md").asFile
   val expected = HardeningTemplateDigest.SHA256_12
+  // Set when a build resolves an unreleased sava-build checkout (the fleet canary's
+  // '-PsavaBuildLocalRepo'). A stale marker under that flag is the expected state,
+  // not a defect: the repo acknowledges the digest of a RELEASED plugin, and this
+  // checkout's digest has not shipped yet. Failing here forced repos to acknowledge
+  // unreleased digests ahead of the release — which then wedged their 'check'
+  // against every published plugin until the release landed and the pin was bumped.
+  val validatingUnreleased = providers.gradleProperty("savaBuildLocalRepo").isPresent
   inputs.files(agentsDoc)
   inputs.property("templateDigest", expected)
+  inputs.property("validatingUnreleased", validatingUnreleased)
   doLast {
     if (!agentsDoc.isFile) {
       logger.warn(
@@ -150,6 +158,16 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
       return@doLast
     }
     val stale = Regex("hardening-template sha256:([0-9a-f]+)").find(doc)
+    if (stale != null && validatingUnreleased) {
+      logger.warn(
+          "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.groupValues[1]}; this " +
+              "unreleased checkout's is $expected — the marker dance lands with the release that ships " +
+              "this digest, not before it. When bumping the plugin past that release, re-diff the " +
+              "AGENTS.md hardening block against HARDENING.md's template, then update the marker to:\n" +
+              "  <!-- hardening-template sha256:$expected -->"
+      )
+      return@doLast
+    }
     throw GradleException(
         if (stale == null) {
           "AGENTS.md has no 'hardening-template' marker. Diff its hardening block against the " +
@@ -1000,15 +1018,15 @@ hardening.mutation.all {
         emptyList()
       }
       val accepted: List<String> = acceptedRows.map { it.key }
-      // The line-less 'class,method,mutator' coordinate — the audited-timeout key —
-      // and the set of them that read TIMED_OUT this run. Shared rather than
-      // recomputed per call site: prune keeps these rows and the verify's stale-entry
-      // hint promises exactly that ("prune keeps them"), so the two must decide
-      // membership identically — a promise that holds only by coincidence when each
+      // The line-less 'class,method,mutator' coordinate — the audited-timeout key.
+      // Shared rather than recomputed per call site: prune's TIMED_OUT keep and the
+      // verify's stale-entry hint both budget from 'timedOutByAuditKey' below —
+      // prune keeps at most that many unmatched rows per coordinate and the hint
+      // promises exactly that ("prune keeps them") — so the two must decide
+      // membership identically, a promise that holds only by coincidence when each
       // site carries its own copy of the key shape.
       fun mutantCoordinate(parts: List<String>) =
           "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
-      val timedOutCoordinatesNow = rows.filter { it[5] == "TIMED_OUT" }.map(::mutantCoordinate).toSet()
       // Per-label breakdown so triage state is a number the build prints (BaselineNotes
       // owns the label semantics: carry/flip parentheticals stripped, unlabeled rows —
       // which predate seeding — named rather than folded into a bucket).
@@ -1028,10 +1046,15 @@ hardening.mutation.all {
       }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
-      // benign flavour (KILLED<->TIMED_OUT under load) and the dangerous one
+      // benign flavour (KILLED<->TIMED_OUT under load) and the dangerous ones
       // (SURVIVED->TIMED_OUT: a mutant nobody killed now reads as detected purely
-      // because its tests ran slowly) look identical in a single report. Comparing
-      // against the last run's statuses names each newcomer's origin.
+      // because its tests ran slowly; NO_COVERAGE->TIMED_OUT: a mutant no test had
+      // even reached reads as detected because a newly covering test hangs) look
+      // identical in a single report. Comparing against the last run's statuses
+      // names each newcomer's origin — so the stash must carry every status, not
+      // just SURVIVED: an origin the stash omits is an origin the comparison
+      // silently misreads (NO_COVERAGE omitted -> dangerous read as benign; KILLED
+      // omitted -> benign read as a first observation).
       //
       // Compared as per-coordinate *counts*, never as sets of coordinates. The
       // coordinate is line-less, so one key routinely holds several mutants at once —
@@ -1053,41 +1076,71 @@ hardening.mutation.all {
         // real. Announce the reset instead: a migration that silences (or garbles) a
         // check for exactly one run hides its own regression from the person doing
         // the migration (casebook: the flip that fired forever).
-        val stashEntries = if (statusStash.isFile) {
-          statusStash.readLines().mapNotNull { line ->
-            val sep = line.lastIndexOf(',')
-            if (sep < 0) null else line.substring(0, sep) to line.substring(sep + 1)
-          }
-        } else {
-          emptyList()
-        }
-        val staleFormat = stashEntries.any { (coord, _) -> coord.count { it == ',' } != 2 }
+        // Format 2 stashes EVERY status: an origin the stash omits is an origin
+        // the comparison silently misreads. NO_COVERAGE omitted read the dangerous
+        // never-reached flip as benign; KILLED omitted made a benign flap at a
+        // fully-killed key read as a coordinate "first observed". The header line
+        // is the format's identity — a headerless stash (or a five-field one) was
+        // written by an earlier plugin, and its comparison would silently
+        // degenerate exactly one way or another, so it resets with a notice
+        // instead.
+        val stashFormatHeader = "# stash format 2"
+        val stashLines = if (statusStash.isFile) statusStash.readLines() else emptyList()
+        val stashEntries = stashLines
+            .filter { it.isNotBlank() && !it.startsWith("#") }
+            .mapNotNull { line ->
+              val sep = line.lastIndexOf(',')
+              if (sep < 0) null else line.substring(0, sep) to line.substring(sep + 1)
+            }
+        val staleFormat = stashEntries.isNotEmpty() &&
+            (stashLines.firstOrNull() != stashFormatHeader ||
+                stashEntries.any { (coord, _) -> coord.count { it == ',' } != 2 })
         if (staleFormat) {
           logger.lifecycle(
-              "pitest '$suiteName': status stash predates the line-less coordinate format — " +
+              "pitest '$suiteName': status stash predates the current stash format — " +
                   "run-to-run drift comparison resets this run and resumes on the next"
           )
         }
         val previous = if (staleFormat) emptyMap() else tally(stashEntries)
-        val stashRows = rows.filter { it[5] == "TIMED_OUT" || it[5] == "SURVIVED" }
-        val current = tally(stashRows.map { coordinate(it) to it[5] })
+        val current = tally(rows.map { coordinate(it) to it[5] })
         if (previous.isNotEmpty()) {
           fun delta(key: String, status: String) =
               (current[key]?.get(status) ?: 0) - (previous[key]?.get(status) ?: 0)
           val fromSurvived = mutableListOf<String>()
+          val fromNoCoverage = mutableListOf<String>()
           var newlyTimedOut = 0
+          var firstObserved = 0
           var resolved = 0
           for (key in previous.keys + current.keys) {
             val timedOut = delta(key, "TIMED_OUT")
-            when {
-              // gained a timeout and lost a survivor: the one flavour that can hide
-              // an unkilled mutant behind the watchdog
-              timedOut > 0 && delta(key, "SURVIVED") < 0 -> fromSurvived += key
-              // gained timeouts with its survivors intact — the extra timeouts came
-              // from mutants that were already detected (KILLED<->TIMED_OUT); summed
-              // so the drift line counts mutants, not keys
-              timedOut > 0 -> newlyTimedOut += timedOut
-              timedOut < 0 -> resolved -= timedOut
+            if (timedOut > 0) {
+              // gained a timeout and lost an unkilled: a mutant nobody killed now
+              // hides behind the watchdog — the survived and never-reached
+              // origins are both dangerous and each named (a key can lose both)
+              val survivedDrop = delta(key, "SURVIVED") < 0
+              val noCoverageDrop = delta(key, "NO_COVERAGE") < 0
+              when {
+                survivedDrop || noCoverageDrop -> {
+                  if (survivedDrop) fromSurvived += key
+                  if (noCoverageDrop) fromNoCoverage += key
+                }
+                // gained timeouts with its unkilled population intact at a key
+                // whose stash held a DETECTED read (KILLED or TIMED_OUT; KILLED
+                // is stashed, so a fully-killed key lands here) — the benign
+                // KILLED<->TIMED_OUT flavour; summed so the drift line counts
+                // mutants, not keys
+                key in previous &&
+                    previous.getValue(key).keys.any { it == "KILLED" || it == "TIMED_OUT" } ->
+                  newlyTimedOut += timedOut
+                // no prior detected read to have come from: a new coordinate, a
+                // new sibling at a gated-only key, or a key whose only prior
+                // reads were PIT's not-counted-as-detected statuses (NON_VIABLE,
+                // RUN_ERROR, MEMORY_ERROR) — "previously detected" would be a
+                // false claim for every one of these
+                else -> firstObserved += timedOut
+              }
+            } else if (timedOut < 0) {
+              resolved -= timedOut
             }
           }
           if (fromSurvived.isNotEmpty()) {
@@ -1099,16 +1152,28 @@ hardening.mutation.all {
             )
             advisoryLog.get().record(advisoryScope, "${fromSurvived.size} SURVIVED -> TIMED_OUT flip(s)")
           }
-          if (newlyTimedOut > 0 || resolved > 0) {
+          if (fromNoCoverage.isNotEmpty()) {
+            logger.warn(
+                "pitest '$suiteName': ${fromNoCoverage.size} coordinate(s) flipped NO_COVERAGE -> TIMED_OUT — " +
+                    "a mutant no test had reached now reads as detected because a newly covering test " +
+                    "hangs on it; kill it with a fast test or audit the timeout, do not refresh it out:\n" +
+                    fromNoCoverage.sorted().joinToString("\n") { "  $it" }
+            )
+            advisoryLog.get().record(advisoryScope, "${fromNoCoverage.size} NO_COVERAGE -> TIMED_OUT flip(s)")
+          }
+          if (newlyTimedOut > 0 || firstObserved > 0 || resolved > 0) {
             logger.lifecycle(
                 "pitest '$suiteName': timed-out drift vs previous run — " +
-                    "$newlyTimedOut newly timed out (previously detected), $resolved no longer; load-dependent"
+                    "$newlyTimedOut newly timed out (previously detected), $firstObserved first observed " +
+                    "(no prior detected read), $resolved no longer; load-dependent"
             )
           }
         }
         statusStash.parentFile.mkdirs()
         statusStash.writeText(
-            stashRows.joinToString("\n", postfix = "\n") { "${coordinate(it)},${it[5]}" }
+            rows.joinToString("\n", prefix = "$stashFormatHeader\n", postfix = "\n") {
+              "${coordinate(it)},${it[5]}"
+            }
         )
       }
 
@@ -1382,55 +1447,46 @@ hardening.mutation.all {
         logger.lifecycle(hint)
       }
 
-      if (prune) {
-        // Shrink-only refresh: drop baseline rows matching nothing this run, add or
-        // rewrite nothing. This is the one direction a refresh is always safe in —
-        // shrinking the baseline is an improvement, and no coin-flip from this run can
-        // be baked in. "Matching" is the verify's own multiset comparison: a key
-        // holding more rows than this run's unkilled mutants has excess rows to drop,
-        // exactly the rows the stale hint counted (before this, the excess fell into
-        // the cross-status keep below — its same-status siblings satisfied a
-        // coordinate-level check — and the hint named a flag that then dropped
-        // nothing). Two classes of unmatched row are kept anyway: rows whose
-        // coordinate TIMED_OUT this run (load-dependent detection, not a kill —
-        // pruning it starts the refresh ping-pong the TIMED_OUT doctrine warns about),
-        // and rows with a flip counterpart — an unkilled mutant at the same
-        // coordinate whose different status is matched by no row of its own key,
-        // i.e. the pairing the verify classifies as "newly covered"; pruning the
-        // stale side would erase it. The counterpart must be *unmatched* and is
-        // consumed per kept row: a coordinate-level status check let a mutant
-        // already matched by its own row vouch for a genuinely killed sibling at a
-        // status-heterogeneous key, and the stale hint again named a flag that then
-        // dropped nothing.
+      // Row-level keep plan, computed once and read by BOTH prune and the check
+      // path's stale hint: each surface prints row identities, so deciding from
+      // two allocators (the hint used to budget in baseline-file order over key
+      // strings while prune budgeted affinity-first over rows) let the hint
+      // promise "prune keeps them" about a row prune then dropped. One plan, per
+      // accepted row, in this order:
+      //   matched — holds part of its key's surviving budget: line affinity first
+      //             (a row whose '# line' tag names an observed unkilled line is
+      //             that mutant's row), then file order, the update refresh's own
+      //             assignment rule. File order alone drops whichever row sat
+      //             last: a noted row could die for its bare sibling's kill.
+      //   insured — a row at a flip-insured key. Insurance rows exist because the
+      //             coordinate was OBSERVED flapping — a run where the mutant
+      //             reads killed is the flap the note records, and pruning it
+      //             fails the next solo run with an unexplained survivor. The
+      //             marker is key-level (any row of the key noting 'flip
+      //             insurance' insures its siblings), the row leaves by the
+      //             union's written removal criterion, never by refresh — and
+      //             because the keep is unconditional it is decided BEFORE the
+      //             timeout budget: an insured row spending that budget vouched
+      //             for nobody and pushed the sibling the timeout could actually
+      //             be hiding past the budget.
+      //   timeout — holds part of its coordinate's timeout budget: at most as
+      //             many rows as mutants actually timed out there (a presence
+      //             check let one audited permanent timeout vouch for arbitrarily
+      //             many genuinely killed siblings), line affinity first — a
+      //             '# line' tag naming a timed-out line — then file order.
+      //   flip    — consumed an *unmatched* different-status counterpart at its
+      //             coordinate (the pairing the verify classifies as "newly
+      //             covered"); a triage item, not a refresh. Consumed once per
+      //             row: a coordinate-level status check let a mutant already
+      //             matched by its own row vouch for a killed sibling.
+      //   drop    — matches nothing: since killed.
+      val keepPlan: List<String> = run {
         fun coordinate(key: String) = key.substringBeforeLast(',')
-        val timedOutCoordinates = timedOutCoordinatesNow
-        val rowsPerKey = acceptedRows.groupingBy { it.key }.eachCount()
-        val flipCounterparts = HashMap<String, MutableMap<String, Int>>()
-        for ((key, lines) in currentLines) {
-          val excess = lines.size - (rowsPerKey[key] ?: 0)
-          if (excess > 0) {
-            flipCounterparts.getOrPut(coordinate(key)) { HashMap() }[key.substringAfterLast(',')] = excess
-          }
-        }
-        fun claimFlipCounterpart(coord: String, rowStatus: String): Boolean {
-          val byStatus = flipCounterparts[coord] ?: return false
-          val status = byStatus.keys.sorted().firstOrNull { it != rowStatus && byStatus.getValue(it) > 0 }
-              ?: return false
-          val n = byStatus.getValue(status)
-          if (n == 1) byStatus.remove(status) else byStatus[status] = n - 1
-          return true
-        }
-        // Which rows hold a shrinking key's budget is decided by line affinity first
-        // — a row whose '# line' tag names an observed unkilled line is that mutant's
-        // row — then by file order, the update refresh's own assignment rule. File
-        // order alone drops whichever row sat last: a noted row could die for its
-        // bare sibling's kill, and a kept row's tag could keep naming the killed
-        // line, drawing a spurious line-drift advisory on the next verify.
-        val budgetHolders = HashSet<Int>()
+        val dispositions = arrayOfNulls<String>(acceptedRows.size)
         for ((key, keyIndices) in acceptedRows.indices.groupBy { acceptedRows[it].key }) {
           var remaining = currentLines[key].orEmpty().size
           if (remaining >= keyIndices.size) {
-            budgetHolders.addAll(keyIndices)
+            keyIndices.forEach { dispositions[it] = "matched" }
             continue
           }
           val liveLines = currentLines[key].orEmpty().toSet()
@@ -1439,38 +1495,96 @@ hardening.mutation.all {
           }
           for (index in affine + bare) {
             if (remaining == 0) break
-            budgetHolders.add(index)
+            dispositions[index] = "matched"
             --remaining
           }
         }
-        // A third unmatched class kept anyway: rows at a flip-insured key. Insurance
-        // rows exist because the coordinate was OBSERVED flapping — a run where the
-        // mutant reads killed is the flap the note records, and pruning it makes the
-        // next solo run fail the ratchet with an unexplained survivor. The marker is
-        // key-level (any row of the key noting 'flip insurance' insures its siblings:
-        // which member of a flappy family flips is itself load-dependent), and the
-        // row leaves by the union's written removal criterion, never by refresh.
         val flipInsuredKeys = acceptedRows
             .filter { it.note?.contains("flip insurance") == true }
             .mapTo(HashSet()) { it.key }
+        for (index in acceptedRows.indices) {
+          if (dispositions[index] == null && acceptedRows[index].key in flipInsuredKeys) {
+            dispositions[index] = "insured"
+          }
+        }
+        // Timeout budget order: affine rows (tag names a timed-out line — the row
+        // behind the watchdog), then bare rows in file order, then anti-affine
+        // rows last (tag names a line KILLED this run — provably the killed
+        // mutant's row, the mirror of the survivor budget's affinity rule).
+        // Between bare rows nothing can decide — no tag, no information — so
+        // file order picks, and a wrong pick is loud: the live mutant resurfaces
+        // as a fresh row next run and the ratchet fails naming it, where the old
+        // presence keep was silently wrong forever in the other direction.
+        val killedLinesByCoordinate = rows.filter { it[5] == "KILLED" }
+            .groupBy(::mutantCoordinate) { it[4].toIntOrNull() }
+        for ((coord, keyIndices) in acceptedRows.indices
+            .filter { dispositions[it] == null }
+            .groupBy { coordinate(acceptedRows[it].key) }) {
+          val timedOutHere = timedOutByAuditKey[coord] ?: continue
+          var remaining = timedOutHere.size
+          val timedOutLines = timedOutHere.mapNotNull { it[4].toIntOrNull() }.toSet()
+          val killedLines = killedLinesByCoordinate[coord].orEmpty().filterNotNull().toSet()
+          val (affine, rest) = keyIndices.partition { index ->
+            acceptedRows[index].recordedLines.any { it in timedOutLines }
+          }
+          val (antiAffine, bare) = rest.partition { index ->
+            acceptedRows[index].recordedLines.any { it in killedLines }
+          }
+          for (index in affine + bare + antiAffine) {
+            if (remaining == 0) break
+            dispositions[index] = "timeout"
+            --remaining
+          }
+        }
+        val rowsPerKey = acceptedRows.groupingBy { it.key }.eachCount()
+        val flipCounterparts = HashMap<String, MutableMap<String, Int>>()
+        for ((key, lines) in currentLines) {
+          val excess = lines.size - (rowsPerKey[key] ?: 0)
+          if (excess > 0) {
+            flipCounterparts.getOrPut(coordinate(key)) { HashMap() }[key.substringAfterLast(',')] = excess
+          }
+        }
+        for (index in acceptedRows.indices) {
+          if (dispositions[index] != null) continue
+          val coord = coordinate(acceptedRows[index].key)
+          val rowStatus = acceptedRows[index].key.substringAfterLast(',')
+          val byStatus = flipCounterparts[coord]
+          val status = byStatus?.keys?.sorted()?.firstOrNull { it != rowStatus && byStatus.getValue(it) > 0 }
+          if (status != null) {
+            val n = byStatus.getValue(status)
+            if (n == 1) byStatus.remove(status) else byStatus[status] = n - 1
+            dispositions[index] = "flip"
+          } else {
+            dispositions[index] = "drop"
+          }
+        }
+        dispositions.map { checkNotNull(it) }
+      }
+      if (prune) {
+        // Shrink-only refresh: drop baseline rows matching nothing this run, add or
+        // rewrite nothing. This is the one direction a refresh is always safe in —
+        // shrinking the baseline is an improvement, and no coin-flip from this run can
+        // be baked in. What is kept and what drops is the keep plan above, verbatim —
+        // the stale hint reads the same plan, so the two cannot disagree.
         val kept = mutableListOf<BaselineNotes.Row>()
         val keptUnmatched = mutableListOf<Pair<BaselineNotes.Row, String>>()
         val droppedRows = mutableListOf<BaselineNotes.Row>()
         for ((rowIndex, row) in acceptedRows.withIndex()) {
-          val rowStatus = row.key.substringAfterLast(',')
-          if (rowIndex in budgetHolders) {
-            kept.add(row)
-          } else if (coordinate(row.key) in timedOutCoordinates) {
-            kept.add(row)
-            keptUnmatched.add(row to "TIMED_OUT this run (load-dependent)")
-          } else if (claimFlipCounterpart(coordinate(row.key), rowStatus)) {
-            kept.add(row)
-            keptUnmatched.add(row to "coordinate unkilled at another status (flip pending triage)")
-          } else if (row.key in flipInsuredKeys) {
-            kept.add(row)
-            keptUnmatched.add(row to "flip insurance at this key (remove by its written criterion, not a refresh)")
-          } else {
-            droppedRows.add(row)
+          when (keepPlan[rowIndex]) {
+            "matched" -> kept.add(row)
+            "timeout" -> {
+              kept.add(row)
+              keptUnmatched.add(row to "TIMED_OUT this run (load-dependent)")
+            }
+            "flip" -> {
+              kept.add(row)
+              keptUnmatched.add(row to "coordinate unkilled at another status (flip pending triage)")
+            }
+            "insured" -> {
+              kept.add(row)
+              keptUnmatched.add(row to "flip insurance at this key (remove by its written criterion, not a refresh)")
+            }
+            else -> droppedRows.add(row)
           }
         }
         val keptDetail = if (keptUnmatched.isEmpty()) "" else
@@ -1653,7 +1767,30 @@ hardening.mutation.all {
           val merged = (pairsByKey.keys + currentCounts.keys).sorted().flatMap { key ->
             val existing = pairsByKey[key].orEmpty()
             val extra = maxOf(0, (currentCounts[key] ?: 0) - existing.size)
-            existing.forEach { linePool[key]?.removeFirstOrNull() }
+            // Existing rows consume their own tagged lines from the pool, so the
+            // added copies below receive the genuinely unclaimed ones. Blind
+            // oldest-first consumption handed an existing row the new sibling's
+            // smaller line, tagged the appended row with the existing mutant's
+            // line, and armed the next verify's same-key-swap advisory against a
+            // file this write produced. Rows with the fewest live tagged lines
+            // claim first: a multi-line tag (a flip-insurance row names every
+            // line its family was observed at) must not steal the only copy of a
+            // line a sibling row tags exactly. Rows without a live tagged line
+            // consume oldest-first — the documented same-key blind spot.
+            linePool[key]?.let { pool ->
+              val pending = existing.toMutableList()
+              var blind = 0
+              while (pending.isNotEmpty()) {
+                val next = checkNotNull(pending.minByOrNull { row ->
+                  val live = row.recordedLines.count { pool.contains(it) }
+                  if (live == 0) Int.MAX_VALUE else live
+                })
+                pending.remove(next)
+                val claimed = next.recordedLines.firstOrNull { pool.contains(it) }
+                if (claimed != null) pool.remove(claimed) else ++blind
+              }
+              repeat(blind) { pool.removeFirstOrNull() }
+            }
             total += existing.size + extra
             existing.map { BaselineNotes.render(it) } +
                 List(extra) {
@@ -1749,31 +1886,27 @@ hardening.mutation.all {
           " (newly covered — was ${newlyCoveredFrom.getValue(row).substringAfterLast(',')}; triage, not a refresh)"
         else -> ""
       }
-      // representative note per key, for listings that print baseline rows
-      val noteByKey = acceptedRows.filter { it.note != null }.associateBy({ it.key }, { it.note })
       if (stale.isNotEmpty()) {
-        // A stale-looking row whose coordinate read TIMED_OUT this run is neither
-        // killed nor moved — it is the load-dependent detection the TIMED_OUT
-        // doctrine warns about, and prune deliberately keeps such rows. Counting it
-        // here both contradicted the SURVIVED -> TIMED_OUT warning printed above and
-        // recommended a refresh that would be a no-op for it (casebook: the
-        // limbsLength flapper told to prune itself). Reported separately instead,
-        // and excluded from the refresh hint.
-        // the same sets prune keeps (TIMED_OUT coordinates, flip-insured keys), so
-        // this hint and prune cannot disagree
-        val (staleTimedOut, staleUntimed) =
-            stale.partition { it.substringBeforeLast(',') in timedOutCoordinatesNow }
-        // A stale-looking row at a flip-insured key is the flap its insurance note
-        // records: the mutant reads killed on this run and survives on another. The
-        // prune hint used to name it with the rest — and prune then dropped it,
-        // failing the next solo run with an unexplained survivor. Reported as what
-        // it is instead, excluded from the refresh hint, and kept by prune; the row
-        // leaves by the union's written removal criterion. Key-level like prune's
-        // keep: which member of a flappy family flips is itself load-dependent.
-        val flipInsuredKeys = acceptedRows
-            .filter { it.note?.contains("flip insurance") == true }
-            .mapTo(HashSet()) { it.key }
-        val (staleInsured, staleGone) = staleUntimed.partition { it in flipInsuredKeys }
+        // The stale entries classified from the keep plan — the SAME row-level
+        // assignment prune executes, so the hint's "prune keeps them" and "refresh
+        // with prune" name exactly the rows prune keeps and drops (two independent
+        // allocators disagreed at cross-status coordinates: the hint budgeted in
+        // file order over key strings, prune affinity-first over rows, and the
+        // hint promised a keep prune then reneged on — casebook: the stale hint
+        // that named the wrong flag). Rows a flip counterpart explains are neither
+        // hinted since-killed nor claimed kept: the fresh side's "newly covered"
+        // pairing already names them as triage.
+        //   timeout — the load-dependent detection the TIMED_OUT doctrine warns
+        //             about; counting it as since-killed contradicted the
+        //             SURVIVED -> TIMED_OUT warning printed above (casebook: the
+        //             limbsLength flapper told to prune itself)
+        //   insured — the flap its insurance note records: the mutant reads
+        //             killed on this run and survives on another; the hint used
+        //             to name it and prune then dropped it, failing the next solo
+        //             run with an unexplained survivor
+        val staleTimedOut = acceptedRows.indices.filter { keepPlan[it] == "timeout" }
+        val staleInsured = acceptedRows.indices.filter { keepPlan[it] == "insured" }
+        val staleGone = acceptedRows.indices.filter { keepPlan[it] == "drop" }
         if (staleGone.isNotEmpty()) {
           // Point at prune, not update: when the only news is *fewer* survivors, the
           // shrink-only refresh is the always-safe direction — it cannot bake in a
@@ -1788,12 +1921,18 @@ hardening.mutation.all {
               "pitest baseline '$suiteName': ${staleGone.size} stale entries (since killed) — refresh with $direction")
         }
         if (staleInsured.isNotEmpty()) {
+          // "unmatched at their own status", not "read killed": the insured
+          // disposition precedes the flip step, so a row here may also have a
+          // live different-status mutant at its coordinate — that one did not
+          // read killed, it moved (newly covered), and the concurrent ratchet
+          // failure names it as exactly that.
           logger.lifecycle(
-              "pitest baseline '$suiteName': ${staleInsured.size} flip-insured row(s) read killed this run — " +
-                  "the flap the insurance records, not staleness; no refresh needed (prune keeps them), " +
-                  "and the row leaves by its written removal criterion:\n" +
+              "pitest baseline '$suiteName': ${staleInsured.size} flip-insured row(s) unmatched at their " +
+                  "own status this run — a killed read is the flap the insurance records, a " +
+                  "different-status read is newly covered (named in the failure detail); either way no " +
+                  "refresh: prune keeps them, and the row leaves by its written removal criterion:\n" +
                   staleInsured.joinToString("\n") {
-                    "  ${BaselineNotes.render(it, noteByKey[it], emptyList())}"
+                    "  ${BaselineNotes.render(acceptedRows[it])}"
                   })
         }
         if (staleTimedOut.isNotEmpty()) {
@@ -1801,7 +1940,7 @@ hardening.mutation.all {
               "pitest baseline '$suiteName': ${staleTimedOut.size} baseline row(s) read TIMED_OUT this run — " +
                   "load-dependent detection, not a kill; no refresh needed (prune keeps them):\n" +
                   staleTimedOut.joinToString("\n") {
-                    "  ${BaselineNotes.render(it, noteByKey[it], emptyList())}"
+                    "  ${BaselineNotes.render(acceptedRows[it])}"
                   })
         }
       }
