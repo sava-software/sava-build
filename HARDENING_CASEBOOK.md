@@ -1020,12 +1020,20 @@ a key whose siblings share identity, and a partial kill at such a key is the
 — reached for precisely because the always-safe flag could not do the job it
 was recommended for.
 
-Two fixes travelled together: the cross-status keep now requires a
-*different* status at the coordinate (a same-status sibling is never a
-flip), and which sibling is dropped follows line affinity before file order
-— the row whose `# line` tag names no live line is the killed mutant's row —
-so a noted row is not dropped for its bare sibling's kill, and no kept tag
-is left pointing at the killed line for the drift advisory to flag.
+Two fixes travelled together: the cross-status keep now requires an
+*unmatched* counterpart — an unkilled mutant at the coordinate whose
+different status no row of its own key accounts for, consumed one per kept
+row, which is the verify's newly-covered pairing rather than an
+approximation of it — and which sibling is dropped follows line affinity
+before file order — the row whose `# line` tag names no live line is the
+killed mutant's row — so a noted row is not dropped for its bare sibling's
+kill, and no kept tag is left pointing at the killed line for the drift
+advisory to flag. The unmatched requirement was the second dig at the same
+spot: a coordinate-level *status* check fixed the same-status case but let a
+mutant already matched by its own row vouch for a killed sibling at a
+status-heterogeneous key (a `SURVIVED` row beside a `NO_COVERAGE` row —
+three such keys existed in the fleet when this was written), reopening
+"prune dropped nothing" against a hint that named it.
 
 Rules: *two mechanisms that share a definition must share the code that
 computes it — the verify counted stale rows one way and prune matched them

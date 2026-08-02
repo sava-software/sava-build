@@ -356,9 +356,10 @@ file order after — so a noted row is not dropped for its bare sibling's kill,
 and the stale hint's "refresh with prune" is a promise prune keeps *(casebook:
 the stale hint that named the wrong flag)*. Two unmatched classes are kept
 anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
-(load-dependent detection, not a kill), and rows whose coordinate still holds
-an unkilled mutant at a *different* status than the row's own (a coverage
-flip the ratchet must triage first — a same-status sibling is never that).
+(load-dependent detection, not a kill), and rows with an *unmatched*
+different-status counterpart at their coordinate (a coverage flip the ratchet
+must triage first — a same-status sibling is never that, and neither is a
+mutant already matched by a row of its own key).
 Reach for prune after a pass that killed baseline rows —
 never for a hand-rolled cleanup script, which is how the status-blind prune
 happened. The three flags are mutually exclusive; the build refuses a

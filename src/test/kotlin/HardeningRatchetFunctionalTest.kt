@@ -467,6 +467,39 @@ $fuzzBlock
   }
 
   @Test
+  fun `a killed row at a status-heterogeneous key is dropped, not kept as a flip`() {
+    // A coordinate can legitimately hold rows at two statuses — a SURVIVED sibling
+    // beside a NO_COVERAGE one. When the survivor is killed, nothing flipped: the
+    // NO_COVERAGE mutant is matched by its own row. A coordinate-level status check
+    // let that matched mutant vouch for the killed row — prune reported "dropped
+    // nothing" while the stale hint (fresh is empty, so it names prune) promised
+    // the drop. The keep must demand an unmatched counterpart, consumed per kept
+    // row: the verify's own newly-covered pairing.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # since killed # line 10\n" +
+          "com.example.Codec,encode,MathMutator,NO_COVERAGE # unreachable claim # line 20\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,KILLED,com.example.CodecTest",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,NO_COVERAGE,none",
+      ),
+      ""
+    )
+
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,NO_COVERAGE # unreachable claim # line 20"),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("# since killed # line 10"), output)
+    assertFalse(output.contains("flip pending triage"), "a matched mutant vouched for a killed sibling:\n$output")
+  }
+
+  @Test
   fun `the refresh flags are mutually exclusive`() {
     writeFixture()
     writeReport(

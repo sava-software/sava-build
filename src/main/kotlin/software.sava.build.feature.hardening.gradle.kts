@@ -1384,15 +1384,32 @@ hardening.mutation.all {
         // nothing). Two classes of unmatched row are kept anyway: rows whose
         // coordinate TIMED_OUT this run (load-dependent detection, not a kill —
         // pruning it starts the refresh ping-pong the TIMED_OUT doctrine warns about),
-        // and rows whose coordinate still holds an unkilled mutant at a *different*
-        // status than the row's own (a coverage flip pending triage — pruning the
-        // stale side would erase the pairing the newly-covered classifier explains
-        // it with).
+        // and rows with a flip counterpart — an unkilled mutant at the same
+        // coordinate whose different status is matched by no row of its own key,
+        // i.e. the pairing the verify classifies as "newly covered"; pruning the
+        // stale side would erase it. The counterpart must be *unmatched* and is
+        // consumed per kept row: a coordinate-level status check let a mutant
+        // already matched by its own row vouch for a genuinely killed sibling at a
+        // status-heterogeneous key, and the stale hint again named a flag that then
+        // dropped nothing.
         fun coordinate(key: String) = key.substringBeforeLast(',')
         val timedOutCoordinates = timedOutCoordinatesNow
-        val unkilledStatusesByCoordinate: Map<String, Set<String>> = current
-            .groupBy(::coordinate) { it.substringAfterLast(',') }
-            .mapValues { (_, statuses) -> statuses.toSet() }
+        val rowsPerKey = acceptedRows.groupingBy { it.key }.eachCount()
+        val flipCounterparts = HashMap<String, MutableMap<String, Int>>()
+        for ((key, lines) in currentLines) {
+          val excess = lines.size - (rowsPerKey[key] ?: 0)
+          if (excess > 0) {
+            flipCounterparts.getOrPut(coordinate(key)) { HashMap() }[key.substringAfterLast(',')] = excess
+          }
+        }
+        fun claimFlipCounterpart(coord: String, rowStatus: String): Boolean {
+          val byStatus = flipCounterparts[coord] ?: return false
+          val status = byStatus.keys.sorted().firstOrNull { it != rowStatus && byStatus.getValue(it) > 0 }
+              ?: return false
+          val n = byStatus.getValue(status)
+          if (n == 1) byStatus.remove(status) else byStatus[status] = n - 1
+          return true
+        }
         // Which rows hold a shrinking key's budget is decided by line affinity first
         // — a row whose '# line' tag names an observed unkilled line is that mutant's
         // row — then by file order, the update refresh's own assignment rule. File
@@ -1426,7 +1443,7 @@ hardening.mutation.all {
           } else if (coordinate(row.key) in timedOutCoordinates) {
             kept.add(row)
             keptUnmatched.add(row to "TIMED_OUT this run (load-dependent)")
-          } else if (unkilledStatusesByCoordinate[coordinate(row.key)].orEmpty().any { it != rowStatus }) {
+          } else if (claimFlipCounterpart(coordinate(row.key), rowStatus)) {
             kept.add(row)
             keptUnmatched.add(row to "coordinate unkilled at another status (flip pending triage)")
           } else {
