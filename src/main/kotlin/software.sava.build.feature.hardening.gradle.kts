@@ -1361,28 +1361,57 @@ hardening.mutation.all {
         // Shrink-only refresh: drop baseline rows matching nothing this run, add or
         // rewrite nothing. This is the one direction a refresh is always safe in —
         // shrinking the baseline is an improvement, and no coin-flip from this run can
-        // be baked in. Two classes of unmatched row are kept anyway: rows whose
+        // be baked in. "Matching" is the verify's own multiset comparison: a key
+        // holding more rows than this run's unkilled mutants has excess rows to drop,
+        // exactly the rows the stale hint counted (before this, the excess fell into
+        // the cross-status keep below — its same-status siblings satisfied a
+        // coordinate-level check — and the hint named a flag that then dropped
+        // nothing). Two classes of unmatched row are kept anyway: rows whose
         // coordinate TIMED_OUT this run (load-dependent detection, not a kill —
         // pruning it starts the refresh ping-pong the TIMED_OUT doctrine warns about),
-        // and rows whose coordinate still holds an unkilled mutant at a different
-        // status (a coverage flip pending triage — pruning the stale side would erase
-        // the pairing the newly-covered classifier explains it with).
+        // and rows whose coordinate still holds an unkilled mutant at a *different*
+        // status than the row's own (a coverage flip pending triage — pruning the
+        // stale side would erase the pairing the newly-covered classifier explains
+        // it with).
         fun coordinate(key: String) = key.substringBeforeLast(',')
         val timedOutCoordinates = timedOutCoordinatesNow
-        val unkilledCoordinates = current.map(::coordinate).toSet()
-        val budget = current.groupingBy { it }.eachCount().toMutableMap()
+        val unkilledStatusesByCoordinate: Map<String, Set<String>> = current
+            .groupBy(::coordinate) { it.substringAfterLast(',') }
+            .mapValues { (_, statuses) -> statuses.toSet() }
+        // Which rows hold a shrinking key's budget is decided by line affinity first
+        // — a row whose '# line' tag names an observed unkilled line is that mutant's
+        // row — then by file order, the update refresh's own assignment rule. File
+        // order alone drops whichever row sat last: a noted row could die for its
+        // bare sibling's kill, and a kept row's tag could keep naming the killed
+        // line, drawing a spurious line-drift advisory on the next verify.
+        val budgetHolders = HashSet<Int>()
+        for ((key, keyIndices) in acceptedRows.indices.groupBy { acceptedRows[it].key }) {
+          var remaining = currentLines[key].orEmpty().size
+          if (remaining >= keyIndices.size) {
+            budgetHolders.addAll(keyIndices)
+            continue
+          }
+          val liveLines = currentLines[key].orEmpty().toSet()
+          val (affine, bare) = keyIndices.partition { index ->
+            acceptedRows[index].recordedLines.any { it.toString() in liveLines }
+          }
+          for (index in affine + bare) {
+            if (remaining == 0) break
+            budgetHolders.add(index)
+            --remaining
+          }
+        }
         val kept = mutableListOf<BaselineNotes.Row>()
         val keptUnmatched = mutableListOf<Pair<BaselineNotes.Row, String>>()
         val droppedRows = mutableListOf<BaselineNotes.Row>()
-        for (row in acceptedRows) {
-          val remaining = budget[row.key] ?: 0
-          if (remaining > 0) {
-            budget[row.key] = remaining - 1
+        for ((rowIndex, row) in acceptedRows.withIndex()) {
+          val rowStatus = row.key.substringAfterLast(',')
+          if (rowIndex in budgetHolders) {
             kept.add(row)
           } else if (coordinate(row.key) in timedOutCoordinates) {
             kept.add(row)
             keptUnmatched.add(row to "TIMED_OUT this run (load-dependent)")
-          } else if (coordinate(row.key) in unkilledCoordinates) {
+          } else if (unkilledStatusesByCoordinate[coordinate(row.key)].orEmpty().any { it != rowStatus }) {
             kept.add(row)
             keptUnmatched.add(row to "coordinate unkilled at another status (flip pending triage)")
           } else {

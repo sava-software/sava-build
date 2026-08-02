@@ -427,6 +427,46 @@ $fuzzBlock
   }
 
   @Test
+  fun `prune shrinks a key with killed siblings and drops the killed line's row`() {
+    // The verify's stale count is a multiset comparison, so a key holding three
+    // accepted rows against two unkilled mutants has one stale row — and the stale
+    // hint names prune. Prune must agree: before this, the excess row satisfied the
+    // cross-status keep through its own same-status siblings, prune reported
+    // "dropped nothing — every row matches", and the hint pointed at a flag that
+    // could not do the job (observed against a real baseline, 13 rows vs 12).
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    // the killed mutant's row sits in the MIDDLE of the file and its neighbours are
+    // tagged to the surviving lines: file-order budgeting would drop line 30's row
+    // and leave a kept tag pointing at the killed line 20
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # keep-first # line 10\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # since killed # line 20\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # keep-last # line 30\n"
+    )
+    fun mutant(line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant(10, "SURVIVED"), mutant(20, "KILLED"), mutant(30, "SURVIVED")), "")
+
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,MathMutator,SURVIVED # keep-first # line 10",
+        "com.example.Codec,encode,MathMutator,SURVIVED # keep-last # line 30",
+      ),
+      baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("# since killed # line 20"), output)
+    assertFalse(output.contains("flip pending triage"), "same-status siblings misread as a cross-status flip:\n$output")
+
+    // rerunning against the same report is now a no-op — the counts agree
+    val settled = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertTrue(settled.contains("prune dropped nothing"), settled)
+  }
+
+  @Test
   fun `the refresh flags are mutually exclusive`() {
     writeFixture()
     writeReport(

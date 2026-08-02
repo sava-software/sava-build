@@ -956,3 +956,79 @@ dangerous thing happened" is worse than no advisory, because it trains the
 reader to filter the dangerous thing*; *a format migration that silences a
 check for exactly one run hides its own regression from the person doing the
 migration*.
+
+## The trap that never existed
+
+A repo's baseline carried twelve `NO_COVERAGE` return-value mutants across
+two families, all accepted on the same argument: the lines were `return
+f(...)` sites whose callee throws for every input reaching them, and
+covering them would convert provably-equivalent mutants into fresh
+`SURVIVED` entries. The argument was written into a test class's javadoc as
+a deliberate-absence rationale — the inputs that would reach those lines
+were kept out of the suite on purpose. It read as settled prudence: the
+repo had taken a real version of that trap knowingly two weeks earlier and
+documented the price.
+
+The mechanism was wrong, and one existing test proved it. A quoted `"1e"`
+had flowed through `readDouble()` since the parser landed — straight into
+one of the twelve lines — and the row read `NO_COVERAGE` in every report
+regardless. PIT's block coverage probes a block at its end: a block that
+always exits by throw never completes, so its execution is invisible, and
+its return-value mutants can never change status because the throw happens
+before the mutated return. The feared conversion to `SURVIVED` requires the
+block to complete, which is exactly what these blocks never do. The trap
+was structurally impossible for every row that cited it.
+
+The deliberate absence had therefore bought nothing and cost real coverage:
+the untested inputs were the malformed-number and truncated-document shapes
+whose exception contract the library explicitly promises. Writing the
+missing tests changed no row's status — the twelve stayed `NO_COVERAGE`, as
+the mechanism predicts — but killed ten *accepted `SURVIVED` siblings*
+whose routing arguments ("sends more inputs to the reference oracle") had
+only ever been checked in the equivalent direction. A mutant that routes
+malformed input *away* from the oracle returns a number where the contract
+demands a throw, and only the deliberately-absent inputs could see it.
+
+Rules: *an acceptance argument must name its mechanism, not just its
+conclusion — "covering this creates survivors" is checkable, and nobody
+checked*; *a `NO_COVERAGE` row is not proof that no test reaches the line —
+when a test demonstrably feeds it and the row stays unreached, the block
+never completes*; *a deliberate test absence is a standing bet that the
+absent inputs observe nothing — re-price it whenever the family it protects
+changes*.
+
+## The stale hint that named the wrong flag
+
+After a killing pass, a suite's verify printed the shrink invitation it was
+designed to print: "5 stale entries (since killed) — refresh with
+-PpruneMutationBaseline (shrink-only; nothing new to bake in)". Prune then
+reported "dropped nothing — every row matches this run". Both messages were
+telling the truth by their own definitions, which was the defect: the
+verify's stale count is a multiset comparison (a key holding thirteen rows
+against twelve unkilled mutants has one stale row), while prune's matching
+was key-level (twelve live mutants meant the key "matched", so all thirteen
+rows stayed). The excess row slipped into the cross-status keep — its
+coordinate held unkilled mutants, satisfied by the very same-status siblings
+that had consumed the key's budget — and was reported as a "flip pending
+triage" that no classifier would ever resolve.
+
+The line-less key made this ordinary. Under line-full keys a killed sibling
+was its own key and prune dropped it; line-less, every compound condition is
+a key whose siblings share identity, and a partial kill at such a key is the
+*expected* outcome of a good testing pass. The workaround was
+`-PupdateMutationBaseline` — the flag whose safety depends on run conditions
+— reached for precisely because the always-safe flag could not do the job it
+was recommended for.
+
+Two fixes travelled together: the cross-status keep now requires a
+*different* status at the coordinate (a same-status sibling is never a
+flip), and which sibling is dropped follows line affinity before file order
+— the row whose `# line` tag names no live line is the killed mutant's row —
+so a noted row is not dropped for its bare sibling's kill, and no kept tag
+is left pointing at the killed line for the drift advisory to flag.
+
+Rules: *two mechanisms that share a definition must share the code that
+computes it — the verify counted stale rows one way and prune matched them
+another, and the gap between them was a recommendation that could not work*;
+*when a hint names a flag, a test should hold the hint to it end-to-end,
+through the flag's actual effect on the file*.

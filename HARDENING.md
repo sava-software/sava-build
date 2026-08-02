@@ -190,14 +190,32 @@ opposite responses:
 
 - **`SURVIVED`** — a test executed the mutated line and could not tell the
   difference. Judgment call: strengthen the assertion or write an acceptance.
-- **`NO_COVERAGE`** — no test reached the line. Nothing to judge; mechanical
-  work. Never accept one as "equivalent" — you have not observed its
-  behaviour, so you cannot know that it is.
+- **`NO_COVERAGE`** — usually: no test reached the line. Nothing to judge;
+  mechanical work. Never accept one as "equivalent" — you have not observed
+  its behaviour, so you cannot know that it is.
+
+`NO_COVERAGE` has one structural exception, and it changes the response
+entirely: **a block that always exits by throw reads `NO_COVERAGE` forever,
+executed or not.** PIT's block coverage probes a block at its *end*, so
+`return f(...)` where `f` throws for every input reaching it never completes
+its block — the line reads unreached no matter what executes it, and its
+return-value mutants can never change status, because the throw happens
+before the mutated return. Diagnose it by contradiction: a test demonstrably
+feeds the line and the row stays `NO_COVERAGE` anyway *(casebook: the trap
+that never existed)*. What such a row is owed is a test asserting the
+throw's contract — exception type and message, ideally against a reference
+oracle — plus a note naming the mechanism; coverage is not on offer.
+Corollary: the fear that covering such a line converts its mutants into
+fresh `SURVIVED` entries is void — that would require the block to complete
+— so never leave a throw-terminated line untested "to avoid the trap".
+Writing that fear down as a test-absence rationale is how one repo lost its
+malformed-input contract coverage for two weeks.
 
 Read the split before planning a pass: "89% killed, 56 to triage" may be 27
 judgment calls and 29 untested methods — very different afternoons. When
 accepting `NO_COVERAGE` is genuinely right (a path the harness cannot reach
-without new scaffolding), say *that* in the note, not "equivalent".
+without new scaffolding, or a throw-terminated block with its contract
+asserted), say *that* in the note, not "equivalent".
 
 `SURVIVED` has the same third category: a mutant distinguishable *in
 principle* but unreachable through any deterministic harness. Accept it as
@@ -208,7 +226,13 @@ hatch is what tells a later reader whether the acceptance still holds
 **"The harness cannot reach this" is a claim with an expiry date.** A
 downstream adaptation of this process accepted 95 rows across two families on
 exactly that claim; it was never true, and disproving it took a single
-session (2026-07-26). So before writing an unreachable acceptance, try the
+session (2026-07-26). A second instance followed within the week
+(2026-08-02): a six-row ServiceLoader family accepted as unreachable because
+the module-path test setup cannot provide a service — which was true, and
+beside the point, because PIT minions run on the class path, where a
+test-resources services file is scanned (see the probe-and-branch pattern in
+the class-path section); the kill took under an hour. So before writing an
+unreachable acceptance, try the
 thing: spend an hour on the harness before spending a paragraph on the
 reason. When a row really is unreachable, write the reason per row rather
 than per family and name the *specific* missing capability, because a later
@@ -324,11 +348,18 @@ is arbitrary, which is the same-key blind spot below, not a bug to police.
 The third refresh is the only one that is always safe:
 `-PpruneMutationBaseline` drops baseline rows matching nothing this run and
 adds or rewrites nothing — shrinking the baseline is always an improvement,
-and no coin-flip from the run can be baked in. Two unmatched classes are kept
+and no coin-flip from the run can be baked in. "Matching" is the verify's own
+multiset comparison: a key holding more rows than the run's unkilled mutants
+has excess to drop, and which sibling goes is decided by line affinity first
+(the row whose `# line` tag names no live line is the killed mutant's row),
+file order after — so a noted row is not dropped for its bare sibling's kill,
+and the stale hint's "refresh with prune" is a promise prune keeps *(casebook:
+the stale hint that named the wrong flag)*. Two unmatched classes are kept
 anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
 (load-dependent detection, not a kill), and rows whose coordinate still holds
-an unkilled mutant at another status (a coverage flip the ratchet must
-triage first). Reach for prune after a pass that killed baseline rows —
+an unkilled mutant at a *different* status than the row's own (a coverage
+flip the ratchet must triage first — a same-status sibling is never that).
+Reach for prune after a pass that killed baseline rows —
 never for a hand-rolled cleanup script, which is how the status-blind prune
 happened. The three flags are mutually exclusive; the build refuses a
 combination.
@@ -586,6 +617,11 @@ when the advisory names a key whose argument you cannot re-derive from the
 current code, treat it as the swap until shown otherwise.
 
 ### When a mutant won't die — a decision tree
+
+Step zero, for `NO_COVERAGE` rows only: confirm the block can complete. A
+mutant in a throw-terminated block (see the `SURVIVED`/`NO_COVERAGE` section)
+cannot be covered *or* killed by any test — assert the throw's contract,
+accept with the mechanism named, and skip the tree.
 
 Worked in this order, each step cheaper than the one after it:
 
@@ -908,15 +944,28 @@ ways: a module-descriptor `provides` clause is invisible to a minion's
 `ServiceLoader` (tests that discover implementations that way fail under PIT
 with a misleading "did not pass without mutation"), while a test-resources
 `META-INF/services` file is honored by the minion but ignored by the
-module-path `test` task — a harness whose result depends on which task ran
-it, which is never committed *(casebook: PIT's world is the class path)*.
+module-path `test` task — a harness whose *pass/fail* depends on which task
+ran it, which is never committed *(casebook: PIT's world is the class path)*.
 
 For real (main-source) services the resolution is the standard dual
 declaration — `module-info` *and* `META-INF/services` — which is also just
 correct packaging for a library classpath consumers can load. For test-only
-providers there is no clean dual form; accept the uncovered path as
-unreachable in-harness and name the escape (a blackbox test module with its
-own descriptor).
+providers, **probe and branch**: register fixture providers in a
+test-resources `META-INF/services` file, then have the test probe
+`ServiceLoader` once and assert the correct behavior for whichever world it
+woke up in — providers found (the class path, so PIT: resolution, filtering,
+and the wrong-provider rejection all execute and their mutants are killable)
+or none found (the module path: the no-provider error, message included).
+Pass/fail stays deterministic in both worlds, which is what the
+never-committed rule actually forbids — environment-dependent *results*, not
+environment-branched assertions. Nest the fixture providers inside the test
+class itself: a top-level fixture matches no `Test*` exclusion and silently
+joins the mutated population. The first consumer to try this killed a
+six-row family that had sat accepted as unreachable in-harness for three
+weeks, its named escape ("a blackbox test module with its own descriptor")
+one capability larger than what the kill needed — the second such acceptance
+disproven by just trying the harness, which is what the expiry-date rule in
+the triage section is about.
 
 That world is built by recompiling **every** main and test source into one
 class-path root, which makes a git-ignored source file a parity hazard: it is
@@ -1570,12 +1619,19 @@ paste.
 > - **PIT minions run on the class path**, even in module-path repos:
 >   `module-info` services are invisible to them, and a test-resources
 >   `META-INF/services` is invisible to the module-path `test` task. Real
->   services are declared in both places; a harness whose result depends on
->   which task ran it is never committed.
+>   services are declared in both places; a harness whose *pass/fail* depends
+>   on which task ran it is never committed — but assertions may branch on a
+>   `ServiceLoader` probe, which is how test-only providers get covered under
+>   PIT (see the probe-and-branch pattern).
 > - `SURVIVED` and `NO_COVERAGE` are different problems: the first is a
->   judgment call about equivalence, the second is an untested line and is
->   mechanical. Never accept a `NO_COVERAGE` mutant as "equivalent" — you have
->   not observed its behaviour.
+>   judgment call about equivalence, the second is usually an untested line
+>   and is mechanical. Never accept a `NO_COVERAGE` mutant as "equivalent" —
+>   you have not observed its behaviour. One structural exception: a block
+>   that always exits by throw reads `NO_COVERAGE` forever, executed or not
+>   (PIT probes a block at its end), and its return-value mutants can never
+>   change status. Such a line is owed a test asserting the throw's contract,
+>   not coverage — and never leave one untested fearing a covered-line
+>   `SURVIVED` conversion, which would require the block to complete.
 > - Exclusions must cover the **test source set**, not a naming convention:
 >   shared fakes are named `RecordingFoo` / `StubFoo` and match no `*Test*`
 >   pattern. After registering or widening a suite, list the mutated classes and
