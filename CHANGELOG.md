@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.21](https://github.com/sava-software/sava-build/compare/21.5.20...21.5.21) (2026-08-02)
+
+
+### Bug Fixes
+
+* **hardening:** only report a SURVIVED -&gt; TIMED_OUT flip when per-key counts change ([ddc3d08](https://github.com/sava-software/sava-build/commit/ddc3d08254d6a14e8cedc62dd2144d4d2a87c195))
+
 ## [21.5.20](https://github.com/sava-software/sava-build/compare/21.5.19...21.5.20) (2026-08-01)
 
 
