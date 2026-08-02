@@ -912,3 +912,47 @@ channel to argue the category, not a quieter check*; *measure an advisory
 against the whole fleet before shipping it — synthetic fixtures cannot
 enumerate what real globs exclude*; *a remedy list that omits the remedy the
 reader needs is how an advisory teaches skimming*.
+
+## The flip that fired forever
+
+The line-less coordinate landed in 21.5.20 and the baselines, the audited
+timeout sets and the mode compare were all converted to match. The status
+stash was converted too — its coordinate function is shared — but the
+comparison built on top of it was not. It asked two sets: is this coordinate
+timed out now, and did it hold a survivor last run. Under the old line-full
+coordinate one key meant one mutant, and the answer to both could only be yes
+if that mutant had moved. Line-less, a key is a bag of siblings, and a
+compound condition routinely puts an accepted survivor and an audited timeout
+in the same bag.
+
+The first consumer to bump saw three such keys. It fired on every run,
+reporting a flip in populations that were byte-identical run to run — and it
+fired on the one advisory whose entire purpose is to stop a reviewer, the
+mutant nobody killed now reading as detected. Worse, it was invisible for
+exactly one run: the first run after the bump still had the old line-full
+stash to compare against, nothing intersected, and the advisory stayed quiet
+until the run that rewrote the stash in the new shape. A reader who checked
+the upgrade run and moved on saw nothing.
+
+The fix is the same shape the baseline comparison had already taken for the
+same reason: compare per-key **counts**, not sets. A flip is a key whose
+timeout count rose *and* whose survivor count fell. A key that gains a
+timeout with its survivors intact is the benign `KILLED -> TIMED_OUT`
+flavour, and a key that changed in neither direction is not news. The
+set-subtraction one-liner that also silences the false positive
+(`- prevTimedOut`) was rejected: it buys quiet by making any key that already
+holds a timeout unable to ever report a real flip, which is the same blind
+spot in the other direction. Counts keep one blind spot of their own, but a
+transient one: a flip and a resolution coinciding at the same key in the same
+run cancel each other's deltas and that run stays quiet — it takes a
+coincidence to hide rather than a structure, and the warning re-fires on the
+next run whose counts diverge, where the rejected subtraction stays blind at
+that key forever.
+
+Rules: *when a key stops identifying one thing, every comparison built on it
+is a multiset comparison — convert them together, not the ones you
+remembered*; *an advisory that cannot distinguish "nothing moved" from "the
+dangerous thing happened" is worse than no advisory, because it trains the
+reader to filter the dangerous thing*; *a format migration that silences a
+check for exactly one run hides its own regression from the person doing the
+migration*.

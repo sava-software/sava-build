@@ -1032,43 +1032,68 @@ hardening.mutation.all {
       // (SURVIVED->TIMED_OUT: a mutant nobody killed now reads as detected purely
       // because its tests ran slowly) look identical in a single report. Comparing
       // against the last run's statuses names each newcomer's origin.
+      //
+      // Compared as per-coordinate *counts*, never as sets of coordinates. The
+      // coordinate is line-less, so one key routinely holds several mutants at once —
+      // an accepted survivor and an audited timeout among them. Set logic asks "is
+      // this key timed out now, and did it hold a survivor before", which such a key
+      // answers yes to on every run, including the ones where nothing moved at all;
+      // a reviewer-stop that fires forever is one nobody reads. A flip is a key whose
+      // timeout count rose *and* whose survivor count fell.
       val statusStash = statusStashFile
       run {
         val coordinate = ::mutantCoordinate
+        fun tally(pairs: List<Pair<String, String>>): Map<String, Map<String, Int>> = pairs
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, statuses) -> statuses.groupingBy { it }.eachCount() }
         val previous = if (statusStash.isFile) {
-          statusStash.readLines().mapNotNull { line ->
+          tally(statusStash.readLines().mapNotNull { line ->
             val sep = line.lastIndexOf(',')
             if (sep < 0) null else line.substring(0, sep) to line.substring(sep + 1)
-          }.groupBy({ it.second }, { it.first })
+          })
         } else {
           emptyMap()
         }
-        val nowTimedOut = timedOutCoordinatesNow
+        val stashRows = rows.filter { it[5] == "TIMED_OUT" || it[5] == "SURVIVED" }
+        val current = tally(stashRows.map { coordinate(it) to it[5] })
         if (previous.isNotEmpty()) {
-          val prevTimedOut = previous["TIMED_OUT"].orEmpty().toSet()
-          val prevSurvived = previous["SURVIVED"].orEmpty().toSet()
-          val fromSurvived = nowTimedOut.intersect(prevSurvived)
-          val newlyTimedOut = nowTimedOut - prevTimedOut - prevSurvived
-          val resolved = prevTimedOut - nowTimedOut
+          fun delta(key: String, status: String) =
+              (current[key]?.get(status) ?: 0) - (previous[key]?.get(status) ?: 0)
+          val fromSurvived = mutableListOf<String>()
+          var newlyTimedOut = 0
+          var resolved = 0
+          for (key in previous.keys + current.keys) {
+            val timedOut = delta(key, "TIMED_OUT")
+            when {
+              // gained a timeout and lost a survivor: the one flavour that can hide
+              // an unkilled mutant behind the watchdog
+              timedOut > 0 && delta(key, "SURVIVED") < 0 -> fromSurvived += key
+              // gained timeouts with its survivors intact — the extra timeouts came
+              // from mutants that were already detected (KILLED<->TIMED_OUT); summed
+              // so the drift line counts mutants, not keys
+              timedOut > 0 -> newlyTimedOut += timedOut
+              timedOut < 0 -> resolved -= timedOut
+            }
+          }
           if (fromSurvived.isNotEmpty()) {
             logger.warn(
-                "pitest '$suiteName': ${fromSurvived.size} previously SURVIVED mutant(s) now TIMED_OUT — " +
-                    "likely load-slowed tests reading as detection, not new kills; do not refresh them out:\n" +
+                "pitest '$suiteName': ${fromSurvived.size} coordinate(s) flipped SURVIVED -> TIMED_OUT — " +
+                    "a mutant nobody killed now reads as detected, likely load-slowed tests rather than " +
+                    "new kills; do not refresh them out:\n" +
                     fromSurvived.sorted().joinToString("\n") { "  $it" }
             )
             advisoryLog.get().record(advisoryScope, "${fromSurvived.size} SURVIVED -> TIMED_OUT flip(s)")
           }
-          if (newlyTimedOut.isNotEmpty() || resolved.isNotEmpty()) {
+          if (newlyTimedOut > 0 || resolved > 0) {
             logger.lifecycle(
                 "pitest '$suiteName': timed-out drift vs previous run — " +
-                    "${newlyTimedOut.size} newly timed out (previously detected), ${resolved.size} no longer; load-dependent"
+                    "$newlyTimedOut newly timed out (previously detected), $resolved no longer; load-dependent"
             )
           }
         }
         statusStash.parentFile.mkdirs()
         statusStash.writeText(
-            rows.filter { it[5] == "TIMED_OUT" || it[5] == "SURVIVED" }
-                .joinToString("\n", postfix = "\n") { "${coordinate(it)},${it[5]}" }
+            stashRows.joinToString("\n", postfix = "\n") { "${coordinate(it)},${it[5]}" }
         )
       }
 

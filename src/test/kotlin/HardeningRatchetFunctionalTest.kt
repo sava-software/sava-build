@@ -1265,6 +1265,68 @@ $fuzzBlock
   }
 
   @Test
+  fun `a coordinate holding both a survivor and a timeout is not a flip every run`() {
+    // The status stash is keyed line-lessly, so an accepted survivor and an audited
+    // timeout routinely share one coordinate. Set logic ("timed out now, survived
+    // before") reports that key as a SURVIVED -> TIMED_OUT flip on every run
+    // forever, including runs where nothing moved — which is how the one advisory
+    // that is meant to stop a reviewer becomes the one they filter out.
+    writeFixture()
+    val mutator = "org.pitest.mutationtest.engine.gregor.mutators.MathMutator"
+    // one key, three mutants: the audited timeout at line 12, two accepted
+    // survivors at 20 and 24 — exactly the shape json-iterator's baselines carry
+    fun report(vararg statusesByLine: Pair<Int, String>) = writeReport(
+      statusesByLine.map { (line, status) ->
+        "Codec.java,com.example.Codec,$mutator,encode,$line,$status," +
+            (if (status == "KILLED") "com.example.CodecTest" else "none")
+      },
+      ""
+    )
+    val stable = arrayOf(12 to "TIMED_OUT", 20 to "SURVIVED", 24 to "SURVIVED")
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # line 20\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # line 24\n"
+    )
+
+    val flip = "flipped SURVIVED -> TIMED_OUT"
+    // first run seeds the stash; the second and third compare against a run that
+    // was identical, so nothing moved and nothing may be reported
+    report(*stable)
+    runner("pitestEncodingVerify").build()
+    repeat(2) {
+      report(*stable)
+      val steady = runner("pitestEncodingVerify").build().output
+      assertFalse(steady.contains(flip), "an unchanged population reported a flip:\n$steady")
+      assertFalse(
+        steady.contains("timed-out drift vs previous run"),
+        "an unchanged population reported drift:\n$steady"
+      )
+    }
+
+    // the real signal still fires at the same key: a survivor became a timeout, so
+    // the timeout count rose while the survivor count fell
+    report(12 to "TIMED_OUT", 20 to "TIMED_OUT", 24 to "SURVIVED")
+    val real = runner("pitestEncodingVerify").build().output
+    assertTrue(real.contains("1 coordinate(s) $flip"), "a real flip went unreported:\n$real")
+    assertTrue(
+      real.contains("  com.example.Codec,encode,MathMutator"),
+      "the flipped coordinate was not named:\n$real"
+    )
+
+    // and the benign flavour stays out of the warning: KILLED mutants timing out
+    // leave the survivor count alone, so they are drift, not a flip — counted as
+    // mutants, not keys, so two new timeouts at one key read as 2
+    report(12 to "TIMED_OUT", 20 to "TIMED_OUT", 24 to "SURVIVED", 30 to "TIMED_OUT", 31 to "TIMED_OUT")
+    val benign = runner("pitestEncodingVerify").build().output
+    assertFalse(benign.contains(flip), "a KILLED -> TIMED_OUT move reported as a flip:\n$benign")
+    assertTrue(
+      benign.contains("2 newly timed out (previously detected)"),
+      "the benign flavour was not counted as mutant drift:\n$benign"
+    )
+  }
+
+  @Test
   fun `a member that stops timing out is noticed after three quiet runs`() {
     // Membership is validated against all mutants, so a member whose mutants exist
     // but never time out — pasted from the wrong report, or a timeout the tests

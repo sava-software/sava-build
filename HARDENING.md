@@ -354,7 +354,13 @@ invoked it*, and the failure looks exactly like a real regression.
   flavour and gets a one-line count; `SURVIVED -> TIMED_OUT` gets a warning
   with the rows, because a mutant nobody killed now reads as detected purely
   through load — do not let a refresh quietly drop it from the baseline on
-  the strength of that. The verify's stale-entry hint honours this: a
+  the strength of that. The two runs are compared as per-coordinate
+  **counts**, not as sets of coordinates: the coordinate is line-less, so one
+  key routinely holds an accepted survivor *and* an audited timeout at the
+  same time, and asking a set "is this key timed out now and was it survived
+  before" answers yes on every run including the ones where nothing moved. A
+  flip is a key whose timeout count rose *and* whose survivor count fell
+  *(casebook: the flip that fired forever)*. The verify's stale-entry hint honours this: a
   baseline row whose coordinate read `TIMED_OUT` this run is reported as the
   load flip it is ("no refresh needed; prune keeps them"), never counted
   among the "since killed" rows the refresh hint points at.
