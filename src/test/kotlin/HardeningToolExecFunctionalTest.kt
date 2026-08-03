@@ -44,15 +44,28 @@ class HardeningToolExecFunctionalTest {
           mavenCentral()
         }
 
+        dependencies {
+          // hardeningCertify includes the real test lifecycle; generated corpus
+          // replay tests therefore need the API a real consumer already carries.
+          testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
+          testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.0.3")
+        }
+
+        tasks.test {
+          useJUnitPlatform()
+        }
+
         hardening {
-          // the recompiles run on the daemon JDK (no toolchain in this fixture), which
-          // sava-build pins to 21
-          bytecodeRelease = 21
+          // No bytecode override: the recompiles must follow this generic fixture's
+          // Java 21 TestKit daemon rather than assuming Sava's Java 25.
           // generated replay tests need junit and the harness classes, neither of
           // which this fixture declares
           recompileExcludes = listOf("CodecFuzzSeedReplayTest.java", "HollowFuzzSeedReplayTest.java")
           mutation.register("encoding") {
-            targetClasses = listOf("com.example.Codec")
+            // The fixture's FakePit/FakeMerge classes are production binaries too;
+            // strict ownership certification requires every compiled production
+            // class to belong to a suite, even though the fake ignores PIT targeting.
+            targetClasses = listOf("com.example.*")
             targetTests = "com.example.*Test*"
             $declineLines
           }
@@ -84,6 +97,18 @@ class HardeningToolExecFunctionalTest {
       """.trimIndent() + "\n"
     )
     val srcDir = File(fixtureDir, "src/main/java/com/example").apply { mkdirs() }
+    val testSrcDir = File(fixtureDir, "src/test/java/com/example").apply { mkdirs() }
+    listOf("CodecFuzz", "HollowFuzz").forEach { className ->
+      testSrcDir.resolve("$className.java").writeText(
+        """
+          package com.example;
+
+          public final class $className {
+            public static void fuzzerTestOneInput(byte[] data) {}
+          }
+        """.trimIndent() + "\n"
+      )
+    }
     // Real arithmetic on both candidate types, so the scan reads a genuine constant
     // pool rather than a fixture that only claims to have money math. Both types are
     // present because a decline must suppress its own mutator and leave the other
@@ -228,6 +253,107 @@ class HardeningToolExecFunctionalTest {
 
     runner("pitestEncoding").build()
     assertFalse(marker.exists(), "an unscoped run must clear the scoped marker")
+  }
+
+  @Test
+  fun `certification writes bound evidence and stale source cannot reuse the report`() {
+    writeFixture(moneyMath = true)
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "config/pitest").mkdirs()
+    File(fixtureDir, "config/pitest/encoding-accepted.csv").writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # legacy accepted row\n")
+
+    val certified = runner("hardeningCertify").build()
+    val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    val evidence = reportDir.resolve(".evidence.tsv")
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    assertTrue(evidence.isFile, "completed PIT evidence missing:\n${certified.output}")
+    assertTrue(receipt.isFile, "certification receipt missing:\n${certified.output}")
+    assertTrue(receipt.readText().contains("schema\t3"), receipt.readText())
+    assertTrue(receipt.readText().contains("session\t"), receipt.readText())
+    assertTrue(receipt.readText().contains("toolClasspathSha256"), receipt.readText())
+    assertTrue(receipt.readText().contains("recordPitestVersion"), receipt.readText())
+    assertTrue(receipt.readText().contains("mode\tfresh-full-strict"), receipt.readText())
+    assertTrue(receipt.readText().contains("suite\tencoding"), receipt.readText())
+    assertTrue(receipt.readText().contains("\tlegacy-unversioned\n"), receipt.readText())
+    assertTrue(certified.output.contains("committed record is legacy-unversioned"), certified.output)
+
+    File(fixtureDir, "src/main/java/com/example/Codec.java").appendText("\n// source changed after PIT\n")
+    val stale = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(stale.contains("completed report evidence no longer matches the current build"), stale)
+    assertTrue(stale.contains("sourceSha256"), stale)
+  }
+
+  @Test
+  fun `mode snapshot refuses completed evidence after its inputs change`() {
+    writeFixture()
+    runner("pitestEncoding").build()
+
+    File(fixtureDir, "src/main/java/com/example/FakePit.java")
+        .appendText("\n// changed after the completed PIT observation\n")
+    val stale = runner("pitestModeSnapshot", "-PpitestMode=stale").buildAndFail().output
+
+    assertTrue(stale.contains("report/evidence pair no longer matches the current build"), stale)
+    assertTrue(stale.contains("sourceSha256"), stale)
+  }
+
+  @Test
+  fun `certification refuses inputs changed after suite verification`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        tasks.register("tamperAfterVerify") {
+          mustRunAfter("pitestEncodingVerify")
+          doLast {
+            file("src/main/java/com/example/FakePit.java")
+              .appendText("\n// changed after verification\n")
+          }
+        }
+        tasks.named("hardeningCertify") {
+          dependsOn("tamperAfterVerify")
+        }
+      """.trimIndent() + "\n"
+    )
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+
+    assertTrue(failed.contains("inputs changed after verification"), failed)
+    assertTrue(failed.contains("sourceSha256"), failed)
+    assertFalse(receipt.exists(), "stale-input certification left a passing receipt")
+  }
+
+  @Test
+  fun `certification preflight rejects scoped flags before PIT executes`() {
+    writeFixture()
+
+    val refused = runner("hardeningCertify", "-PmutateOnly=com.example.Codec").buildAndFail().output
+    assertTrue(refused.contains("hardeningCertify is observation-only and full-population"), refused)
+    assertFalse(
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile,
+      "PIT ran before certification preflight refused the scoped flag")
+  }
+
+  @Test
+  fun `evidence commit failure keeps the report behind the running sentinel`() {
+    writeFixture()
+    val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    reportDir.resolve(".evidence.tsv/blocked").apply {
+      parentFile.mkdirs()
+      writeText("not a replaceable evidence file")
+    }
+
+    val failed = runner("pitestEncoding").buildAndFail().output
+
+    assertTrue(reportDir.resolve(".running").isFile, "evidence failure exposed the report:\n$failed")
+    assertTrue(
+      failed.contains("partial population is not evidence") ||
+          failed.contains(".evidence.tsv"),
+      failed)
   }
 
   @Test

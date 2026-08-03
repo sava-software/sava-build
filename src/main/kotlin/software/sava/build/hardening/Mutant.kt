@@ -1,32 +1,45 @@
 package software.sava.build.hardening
 
 /**
- * PIT's status vocabulary with the two semantic partitions the ratchet reasons
- * about, encoded ONCE. "Detected" is deliberately NARROWER than PIT's own
+ * PIT's status vocabulary with the three independent semantics the ratchet
+ * reasons about, encoded ONCE. "Detected" is deliberately NARROWER than PIT's own
  * scoring: only KILLED and TIMED_OUT (a timed-out mutant was caught,
- * load-dependently), where PIT also scores NON_VIABLE and the error statuses as
- * detected — this plugin counts those as neither, so its percent can sit below
- * PIT's summary line with the difference named "(not counted as detected)".
+ * load-dependently), where PIT also scores NON_VIABLE and EQUIVALENT as detected.
+ * This plugin reports those terminal outcomes without scoring them, so its percent
+ * can sit below PIT's summary. PIT also scores error statuses, but this plugin
+ * refuses them as incomplete evidence instead of calculating a percentage from a
+ * failed experiment.
  * "Gated" is the ratchet's unkilled population — the statuses a baseline row may
- * carry. Everything else lowers the detected count and the summary names it,
- * but it can never enter a baseline or claim a keep.
+ * carry. [validEvidence] is deliberately independent of both: NON_VIABLE and
+ * EQUIVALENT are completed, interpretable outcomes even though the plugin does
+ * not score them as detected, while an error or unfinished status cannot certify
+ * a report or justify shrinking a baseline.
  *
  * A status this enum does not know is a PIT upgrade talking past the plugin —
- * [Mutant.status] reads null and the verify names it loudly, because the old
- * behavior (an unknown string silently falling into "neither" buckets at every
- * call site independently) is exactly the misinterpretation class this type
- * exists to end.
+ * [Mutant.status] reads null and [Mutant.parseReport] refuses the report, because
+ * the old behavior (an unknown string silently falling into "neither" buckets at
+ * every call site independently) is exactly the misinterpretation class this
+ * type exists to end.
  */
-internal enum class MutantStatus(val detected: Boolean, val gated: Boolean) {
-  KILLED(detected = true, gated = false),
-  TIMED_OUT(detected = true, gated = false),
-  SURVIVED(detected = false, gated = true),
-  NO_COVERAGE(detected = false, gated = true),
-  NON_VIABLE(detected = false, gated = false),
-  MEMORY_ERROR(detected = false, gated = false),
-  RUN_ERROR(detected = false, gated = false),
-  NOT_STARTED(detected = false, gated = false),
-  STARTED(detected = false, gated = false);
+internal enum class MutantStatus(
+  val detected: Boolean,
+  val gated: Boolean,
+  val validEvidence: Boolean,
+) {
+  KILLED(detected = true, gated = false, validEvidence = true),
+  TIMED_OUT(detected = true, gated = false, validEvidence = true),
+  SURVIVED(detected = false, gated = true, validEvidence = true),
+  NO_COVERAGE(detected = false, gated = true, validEvidence = true),
+  // PIT scores these as detected. The hardening percentage intentionally does
+  // not, but they are terminal outcomes and therefore valid report evidence.
+  NON_VIABLE(detected = false, gated = false, validEvidence = true),
+  EQUIVALENT(detected = false, gated = false, validEvidence = true),
+  // PIT's detected flag is not an evidence-validity flag: these outcomes say the
+  // mutation experiment failed or never completed, not that a test proved it.
+  MEMORY_ERROR(detected = false, gated = false, validEvidence = false),
+  RUN_ERROR(detected = false, gated = false, validEvidence = false),
+  NOT_STARTED(detected = false, gated = false, validEvidence = false),
+  STARTED(detected = false, gated = false, validEvidence = false);
 
   companion object {
     fun of(raw: String): MutantStatus? = entries.firstOrNull { it.name == raw }
@@ -67,6 +80,7 @@ internal data class Mutant(
   val status: MutantStatus? get() = MutantStatus.of(rawStatus)
   val detected: Boolean get() = status?.detected == true
   val gated: Boolean get() = status?.gated == true
+  val validEvidence: Boolean get() = status?.validEvidence == true
   val line: Int? get() = lineText.toIntOrNull()
   val mutatorSimpleName: String get() = mutator.substringAfterLast('.')
 
@@ -94,6 +108,44 @@ internal data class Mutant(
       )
     }
 
-    fun parseReport(csvLines: List<String>): List<Mutant> = csvLines.mapNotNull(::parse)
+    /**
+     * Parses a complete PIT report, failing closed on a row or status that cannot
+     * certify the mutation population. [parse] stays nullable for single-row callers;
+     * a report must never silently turn an unparsable physical row into a smaller
+     * mutant population.
+     */
+    fun parseReport(csvLines: List<String>): List<Mutant> {
+      val malformed = mutableListOf<Pair<Int, String>>()
+      val mutants = csvLines.mapIndexedNotNull { index, line ->
+        val mutant = parse(line)
+        if (mutant == null || mutant.sourceFile.isBlank() || mutant.className.isBlank() ||
+            mutant.mutator.isBlank() || mutant.method.isBlank() || mutant.line == null ||
+            mutant.rawStatus.isBlank()) {
+          malformed.add(index + 1 to line)
+          null
+        } else {
+          mutant
+        }
+      }
+      if (malformed.isNotEmpty()) {
+        throw IllegalArgumentException(
+            "PIT report contains ${malformed.size} malformed CSV row(s); an incomplete " +
+                "population is not evidence:\n" +
+                malformed.joinToString("\n") { (lineNumber, line) -> "  line $lineNumber: $line" }
+        )
+      }
+      val invalid = mutants.filterNot { it.validEvidence }
+      if (invalid.isNotEmpty()) {
+        val statuses = invalid.groupingBy { it.rawStatus }.eachCount().entries
+            .sortedBy { it.key }
+            .joinToString(", ") { (status, count) -> "$status x$count" }
+        throw IllegalArgumentException(
+            "PIT report contains status(es) that are not valid completed evidence: $statuses. " +
+                "Runtime errors, unfinished mutations, and unknown PIT statuses cannot certify " +
+                "the ratchet or any record writer."
+        )
+      }
+      return mutants
+    }
   }
 }

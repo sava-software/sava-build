@@ -6,6 +6,9 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import kotlin.concurrent.thread
 
 /**
  * Unit tests for the atomic baseline write. The interruption guarantee itself cannot be
@@ -63,5 +66,39 @@ class BaselineFilesTest {
 
     assertTrue(target.isFile, "the target must still exist")
     assertEquals("", target.readText())
+  }
+
+  @Test
+  fun `concurrent writers stage independently and publish only complete content`() {
+    val target = File(tempDir, "encoding-accepted.csv")
+    val payloads = (0 until 24).map { writer ->
+      buildString {
+        repeat(128) { row -> appendLine("com.example.C$writer,m$row,MathMutator,SURVIVED") }
+      }
+    }
+    val ready = CountDownLatch(payloads.size)
+    val start = CountDownLatch(1)
+    val failures = Collections.synchronizedList(mutableListOf<Throwable>())
+    val writers = payloads.map { payload ->
+      thread(start = true) {
+        ready.countDown()
+        start.await()
+        try {
+          BaselineFiles.writeAtomically(target, payload)
+        } catch (t: Throwable) {
+          failures.add(t)
+        }
+      }
+    }
+
+    ready.await()
+    start.countDown()
+    writers.forEach(Thread::join)
+
+    assertTrue(failures.isEmpty(), "concurrent writer failure(s): $failures")
+    assertTrue(target.readText() in payloads, "target contains a partial or foreign payload")
+    assertTrue(
+        target.parentFile.listFiles().orEmpty().none { it.name.endsWith(".tmp") },
+        "staging files leaked: ${target.parentFile.listFiles().orEmpty().map { it.name }}")
   }
 }

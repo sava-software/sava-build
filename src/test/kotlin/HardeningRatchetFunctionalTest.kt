@@ -1,10 +1,13 @@
+import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.hardening.PitestEvidence
 import java.io.File
+import java.util.UUID
 
 /**
  * Functional test for the mutation ratchet and the generators: fabricates PIT
@@ -19,6 +22,7 @@ class HardeningRatchetFunctionalTest {
   private fun writeFixture(
     generateTestSupport: Boolean = false,
     testSupportExcludes: List<String> = emptyList(),
+    testSupportPackage: String? = null,
     recompileExcludes: List<String> = emptyList(),
     // the fuzz targets emit generated junit test sources; omit them when a test
     // actually compiles the fixture (the fixture declares no junit dependency)
@@ -86,6 +90,7 @@ class HardeningRatchetFunctionalTest {
         hardening {
           $releaseLine
           generateTestSupport = $generateTestSupport
+          ${if (testSupportPackage == null) "" else "testSupportPackage = \"$testSupportPackage\""}
           testSupportExcludes = listOf(${testSupportExcludes.joinToString(", ") { "\"$it\"" }})
           recompileExcludes = listOf(${recompileExcludes.joinToString(", ") { "\"$it\"" }})
           mutation.register("encoding") {
@@ -112,8 +117,41 @@ $fuzzBlock
   private fun baselineFile() = File(fixtureDir, "config/pitest/encoding-accepted.csv")
 
   private fun runner(vararg args: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*args, "--stacktrace")
+      .withProjectDir(fixtureDir)
+      .withArguments(*args, "--stacktrace")
+
+  /**
+   * These ratchet tests fabricate CSVs rather than executing PIT. Snapshot first
+   * through the plugin's legacy N-1 path, then attach deterministic provenance to
+   * the stashed fixture so mode-compare's record-writing path can be exercised.
+   * Real current-input validation is covered by HardeningToolExecFunctionalTest.
+   */
+  private fun modeSnapshot(label: String): BuildResult {
+    val result = runner("pitestModeSnapshot", "-PpitestMode=$label").build()
+    val snapshotDir = File(fixtureDir, "build/pitest-modes/$label")
+    snapshotDir.listFiles { file -> file.isFile && file.extension == "csv" }.orEmpty()
+        .forEach { report ->
+          report.parentFile.resolve("${report.nameWithoutExtension}.evidence.tsv").writeText(
+              PitestEvidence(
+                  suite = report.nameWithoutExtension,
+                  invocationId = UUID.randomUUID().toString(),
+                  pitestVersion = "fixture-pit",
+                  junitPluginVersion = "fixture-junit",
+                  pluginSha256 = "fixture-plugin",
+                  identitySchema = PitestEvidence.CURRENT_IDENTITY_SCHEMA,
+                  javaVersion = "fixture-java",
+                  sourceSha256 = "fixture-source",
+                  classesSha256 = "fixture-classes",
+                  classpathSha256 = "fixture-classpath",
+                  toolClasspathSha256 = "fixture-tool-classpath",
+                  configurationSha256 = "fixture-configuration",
+                  reportSha256 = PitestEvidence.sha256(report),
+                  scope = PitestEvidence.FULL_SCOPE,
+                  historyAssisted = false,
+              ).render())
+        }
+    return result
+  }
 
   @Test
   fun `a line move churns nothing and the failure diff carries descriptions`() {
@@ -386,19 +424,19 @@ $fuzzBlock
   }
 
   @Test
-  fun `prune drops only since-killed rows and keeps flip-protected ones`() {
-    // The shrink-only refresh: rows matching this run stay (notes intact), rows whose
-    // mutants are gone are dropped, and two unmatched classes are kept anyway — a
-    // TIMED_OUT coordinate (load-dependent detection, not a kill) and a coordinate
-    // still unkilled at another status (a coverage flip the ratchet must triage).
+  fun `prune refuses a pending status flip before changing the baseline`() {
+    // Shrink-only cannot mean gate-free: this run has a current SURVIVED row where
+    // only NO_COVERAGE was accepted. The keep plan protects the old row as a pending
+    // flip, but that does not accept the current status; prune must fail before it
+    // drops the unrelated since-killed row or rewrites legacy line metadata.
     writeFixture()
     baselineFile().parentFile.mkdirs()
-    baselineFile().writeText(
+    val before =
       "com.example.Codec,encode,10,MathMutator,SURVIVED # untriaged\n" +
           "com.example.Codec,encode,12,MathMutator,NO_COVERAGE # unreachable claim\n" +
           "com.example.Codec,decode,30,MathMutator,SURVIVED # since killed\n" +
           "com.example.Codec,decode,40,IncrementsMutator,NO_COVERAGE\n"
-    )
+    baselineFile().writeText(before)
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none",
@@ -408,22 +446,11 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
-    // the rewrite migrates the legacy rows: line fields become '# line' tags
-    assertEquals(
-      listOf(
-        "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 10",
-        "com.example.Codec,encode,MathMutator,NO_COVERAGE # unreachable claim # line 12",
-        "com.example.Codec,decode,IncrementsMutator,NO_COVERAGE # line 40",
-      ),
-      baselineFile().readLines().filter { it.isNotBlank() }
-    )
-    assertTrue(output.contains("prune dropped 1 row(s)"), output)
-    assertTrue(output.contains("com.example.Codec,decode,MathMutator,SURVIVED # since killed # line 30"), output)
-    // the NO_COVERAGE row whose coordinate timed out is kept as load-dependent
-    // detection; the one whose coordinate survives at another status is a pending flip
-    assertTrue(output.contains("TIMED_OUT this run (load-dependent)"), output)
-    assertTrue(output.contains("flip pending triage"), output)
+    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
+    assertTrue(output.contains("refusing -PpruneMutationBaseline"), output)
+    assertTrue(output.contains("1 gated mutant(s)"), output)
+    assertTrue(output.contains("com.example.Codec,decode,IncrementsMutator,SURVIVED"), output)
+    assertEquals(before, baselineFile().readText(), "a refused prune changed the baseline")
   }
 
   @Test
@@ -791,6 +818,36 @@ $fuzzBlock
     val pruneRefused = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
     assertTrue(pruneRefused.contains("interrupted or failed run"), pruneRefused)
     assertEquals(baselineBefore, baselineFile().readText(), "a partial report pruned the baseline")
+  }
+
+  @Test
+  fun `invalid statuses and malformed report rows fail before a baseline writer`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val baselineBefore = "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n"
+    baselineFile().writeText(baselineBefore)
+
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,RUN_ERROR,none"),
+      ""
+    )
+    val invalid = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
+    assertTrue(invalid.contains("not valid completed evidence"), invalid)
+    assertTrue(invalid.contains("RUN_ERROR x1"), invalid)
+    assertEquals(baselineBefore, baselineFile().readText(), "an error result pruned accepted debt")
+
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10"),
+      ""
+    )
+    val malformed = runner("pitestEncodingVerify", "-PupdateMutationBaseline").buildAndFail().output
+    assertTrue(malformed.contains("1 malformed CSV row(s)"), malformed)
+    assertTrue(malformed.contains("incomplete population is not evidence"), malformed)
+    assertEquals(baselineBefore, baselineFile().readText(), "a malformed report rewrote the baseline")
+    assertFalse(
+      File(fixtureDir, "config/pitest/encoding-pitest-version").exists(),
+      "a refused report stamped the baseline"
+    )
   }
 
   @Test
@@ -2302,17 +2359,26 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(
-      output.contains("hardening: 2 advisory finding(s) across 1 suite(s)") &&
-          output.contains("pitest 'encoding': 1 unaudited timeout(s), 1 stale audit row(s)"),
+      output.contains("hardening: 3 advisory finding(s) across 1 suite(s)") &&
+          output.contains(
+            "pitest 'encoding': report has no completed-run evidence manifest, " +
+                "1 unaudited timeout(s), 1 stale audit row(s)"),
       "advisory summary missing:\n$output"
     )
 
-    // a clean run must not print an empty summary
+    // Fixing the timeout set removes those two findings. The fabricated report still
+    // deliberately lacks a completed-run evidence manifest, so only that migration
+    // advisory remains.
     timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
     File(fixtureDir, "config/pitest/README.md")
       .writeText("`Codec.encode` (MathMutator): the estimate crawls, never fails.\n")
     val clean = runner("pitestEncodingVerify").build().output
-    assertFalse(clean.contains("advisory finding"), "summary printed with nothing to say:\n$clean")
+    assertTrue(
+      clean.contains("hardening: 1 advisory finding(s) across 1 suite(s)") &&
+          clean.contains("pitest 'encoding': report has no completed-run evidence manifest") &&
+          !clean.contains("unaudited timeout") && !clean.contains("stale audit row"),
+      "timeout advisories survived a clean timeout audit:\n$clean"
+    )
   }
 
   @Test
@@ -2420,7 +2486,7 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,com.example.CodecTest"),
       ""
     )
-    val solo = runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    val solo = modeSnapshot("solo")
     assertTrue(solo.output.contains("stashed as 'solo'"), solo.output)
     assertTrue(File(fixtureDir, "build/pitest-modes/solo/encoding.csv").isFile, "solo snapshot missing")
     assertFalse(File(fixtureDir, "build/reports/pitest/encoding").exists(), "reports must be cleared")
@@ -2430,7 +2496,7 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none"),
       ""
     )
-    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+    modeSnapshot("gate")
 
     val compare = runner("pitestModeCompare").buildAndFail()
     assertTrue(compare.output.contains("1 uninsured boundary flip(s)"), compare.output)
@@ -2475,9 +2541,9 @@ $fuzzBlock
           (if (status == "KILLED") "com.example.CodecTest" else "none")
     // both modes: one TIMED_OUT mutant + one KILLED at the coordinate, nothing gated
     writeReport(listOf(mutant(12, "TIMED_OUT"), mutant(20, "KILLED")), "")
-    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    modeSnapshot("solo")
     writeReport(listOf(mutant(12, "TIMED_OUT"), mutant(20, "KILLED")), "")
-    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+    modeSnapshot("gate")
 
     val compare = runner("pitestModeCompare").build().output
     assertTrue(
@@ -2488,6 +2554,30 @@ $fuzzBlock
       compare.contains("com.example.Codec,encode,MathMutator,SURVIVED # flip insurance"),
       "the swept row must be the insured one — plain rows claim the budget first:\n$compare"
     )
+  }
+
+  @Test
+  fun `mode sweep accounts for live siblings by multiplicity`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # plain sibling\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (old load flip)\n"
+    )
+    val survivor =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none"
+    writeReport(listOf(survivor), "")
+    modeSnapshot("solo")
+    writeReport(listOf(survivor), "")
+    modeSnapshot("gate")
+
+    val compare = runner("pitestModeCompare").build().output
+    assertTrue(
+      compare.contains("1 accepted row(s) unkilled in no snapshotted mode"),
+      "one survivor incorrectly vouched for two accepted rows:\n$compare")
+    assertTrue(
+      compare.contains("# flip insurance (old load flip)"),
+      "the surplus insurance row should be swept before its plain sibling:\n$compare")
   }
 
   @Test
@@ -2506,9 +2596,9 @@ $fuzzBlock
       "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,$status," +
           (if (status == "KILLED") "com.example.CodecTest" else "none")
     writeReport(listOf(mutant("KILLED")), "")
-    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    modeSnapshot("solo")
     writeReport(listOf(mutant("SURVIVED")), "")
-    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+    modeSnapshot("gate")
 
     val refused = runner("pitestModeCompare", "-PunionModeFlips").buildAndFail().output
     assertTrue(refused.contains("1 malformed row(s)"), refused)
@@ -2550,7 +2640,7 @@ $fuzzBlock
       ),
       ""
     )
-    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    modeSnapshot("solo")
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
@@ -2558,7 +2648,7 @@ $fuzzBlock
       ),
       ""
     )
-    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+    modeSnapshot("gate")
 
     // one accepted row, two flipped siblings: NOT insured
     val compare = runner("pitestModeCompare").buildAndFail()
@@ -2602,7 +2692,7 @@ $fuzzBlock
       ),
       ""
     )
-    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    modeSnapshot("solo")
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
@@ -2610,7 +2700,7 @@ $fuzzBlock
       ),
       ""
     )
-    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+    modeSnapshot("gate")
 
     val compare = runner("pitestModeCompare").buildAndFail()
     assertTrue(compare.output.contains("1 uninsured boundary flip(s)"), compare.output)
@@ -2769,7 +2859,7 @@ $fuzzBlock
   }
 
   @Test
-  fun `test support generates the five helpers only when enabled`() {
+  fun `test support generates all helpers only when enabled and honors its package`() {
     writeFixture(generateTestSupport = true)
     val result = runner("generateHardeningTestSupport", "tasks", "--group=verification").build()
     assertFalse(result.output.contains("FAILED"), result.output)
@@ -2777,7 +2867,9 @@ $fuzzBlock
     assertTrue(result.output.contains("pitestConverge"), "pitestConverge task missing:\n" + result.output)
 
     val supportDir = File(fixtureDir, "build/generated-sources/hardening-support/java/software/sava/hardening/support")
-    val expected = listOf("Ports", "LoopbackHttpServer", "ManualScheduledExecutor", "RecordingExecutor", "JulRecorder")
+    val expected = listOf(
+      "ConcurrencyHarness", "Ports", "LoopbackHttpServer", "ManualScheduledExecutor",
+      "RecordingExecutor", "JulRecorder")
     expected.forEach { name ->
       assertTrue(supportDir.resolve("$name.java").isFile, "$name.java not generated")
     }
@@ -2796,6 +2888,24 @@ $fuzzBlock
     expected.forEach { name ->
       assertFalse(supportDir.resolve("$name.java").isFile, "$name.java should be cleared when disabled")
     }
+
+    writeFixture(generateTestSupport = true, testSupportPackage = "com.example.hardening.support")
+    runner("generateHardeningTestSupport").build()
+    val customDir = File(
+      fixtureDir, "build/generated-sources/hardening-support/java/com/example/hardening/support")
+    expected.forEach { name ->
+      assertTrue(customDir.resolve("$name.java").isFile, "$name.java not generated in custom package")
+      assertTrue(
+        customDir.resolve("$name.java").readText().contains("package com.example.hardening.support;"),
+        "$name.java retained the foreign default package")
+    }
+
+    writeFixture(generateTestSupport = true, testSupportPackage = "not-a-package")
+    val invalid = runner("generateHardeningTestSupport").buildAndFail().output
+    assertTrue(
+      invalid.contains(
+        "hardening.testSupportPackage 'not-a-package' must be a dotted Java package name"),
+      invalid)
   }
 
   @Test

@@ -11,21 +11,23 @@ import javax.inject.Inject
 
 /**
  * Configuration for the 'software.sava.build.feature.hardening' convention plugin: PIT
- * mutation testing and Jazzer coverage-guided fuzzing for the classes whose correctness
- * is critical (encoders, wire formats, anything that moves money). Target suites by
- * package wildcard with explicit exclusions rather than allowlist, so new classes are
- * mutated by default — see HARDENING.md for the policy and the mutation-baseline
- * ratchet that every 'pitest<Name>' task is verified against.
+ * mutation testing and Jazzer coverage-guided fuzzing. Every production class is
+ * explicitly owned by a mutation suite or an argued decline; target suites by package
+ * wildcard with explicit exclusions rather than allowlist, so new classes are mutated
+ * by default — see HARDENING.md for the policy and the mutation-baseline ratchet that
+ * every 'pitest<Name>' task is verified against.
  *
  * Each [mutation] suite adds a 'pitest<Name>' task; each [fuzz] target adds a
- * 'fuzz<Name>' task. Both consume classes recompiled at [bytecodeRelease] by the shared
- * 'compileForPitest' task, because PIT and Jazzer bundle ASM releases that lag new
- * class-file versions.
+ * 'fuzz<Name>' task. PIT consumes classes recompiled by 'compileForPitest' at
+ * [mutationBytecodeRelease], while Jazzer consumes the separate 'compileForFuzz'
+ * output at [bytecodeRelease]. Both recompiles exist because the tools can bundle ASM
+ * releases that lag new class-file versions.
  */
 abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
 
-  /** Bytecode release the sources are recompiled to for the tools (default 25). Lower it
-   *  if a tool's bundled ASM lags the class-file version the main compilation produces.
+  /** Bytecode release the sources are recompiled to for the tools (defaults to the
+   *  consuming project's Java toolchain). Lower it if a tool's bundled ASM lags the
+   *  class-file version the main compilation produces.
    *  The recompile stays even at the toolchain's version: it also strips module-info and
    *  merges the main and test classes into one plain classpath root for the tools. */
   abstract val bytecodeRelease: Property<Int>
@@ -45,16 +47,21 @@ abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
    *  and PIT runs exactly as open source. */
   abstract val arcmutateBaseVersion: Property<String>
 
-  /** Generate the shared test-support sources — Ports.freePort, LoopbackHttpServer (a
-   *  scripted raw-socket HTTP server for transport paths and status-boundary guards),
-   *  ManualScheduledExecutor (a deterministic clock-advance scheduler), RecordingExecutor,
-   *  and JulRecorder — into the test source set, package 'software.sava.hardening.support'
-   *  (the package is fixed; it names the plugin, not the consuming repo). Off by default;
+  /** Generate the shared test-support sources — ConcurrencyHarness, Ports.freePort,
+   *  LoopbackHttpServer (a scripted raw-socket HTTP server for transport paths and
+   *  status-boundary guards), ManualScheduledExecutor (a deterministic clock-advance
+   *  scheduler), RecordingExecutor, and JulRecorder — into the test source set, in
+   *  [testSupportPackage]. Off by default;
    *  JulRecorder needs 'java.logging' readable from the test module. Generated rather than
    *  published so the helpers compile inside the consuming repo's own test module —
    *  visible on the module path and PIT's class path alike, with no dependency wiring.
    *  See HARDENING.md 'Shared test scaffolding (generated)'. */
   abstract val generateTestSupport: Property<Boolean>
+
+  /** Package for generated shared test-support classes. Defaults to
+   *  `software.sava.hardening.support` for compatibility; unrelated projects should
+   *  set a package they own to avoid split-package and namespace collisions. */
+  abstract val testSupportPackage: Property<String>
 
   /**
    * Source FILE NAMES excluded from the PIT/Jazzer recompiles (e.g. "Integ.java"

@@ -117,7 +117,9 @@ class HardeningFeatureSmokeTest {
 
   @Test
   fun `hardening feature registers pitest and fuzz tasks with default releases`() {
-    writeFixture(emptyList(), expectedMutationRelease = 25, expectedFuzzRelease = 25)
+    // The standalone fixture runs on this build's Java 21 TestKit daemon. Defaults
+    // follow that consumer toolchain instead of assuming Sava's Java 25.
+    writeFixture(emptyList(), expectedMutationRelease = 21, expectedFuzzRelease = 21)
 
     val result = GradleRunner.create()
       .withProjectDir(fixtureDir)
@@ -148,36 +150,101 @@ class HardeningFeatureSmokeTest {
   }
 
   @Test
-  fun `a fuzz workflow missing a registered target fails the sync check`() {
-    // A corpus that replays in check while its target never joins the weekly soak
-    // reads as covered while exploring nothing new. No workflow at all stays quiet
-    // (adopting the soak is the repo's call); an existing workflow must name every
-    // registered target's task.
-    writeFixture(emptyList(), expectedMutationRelease = 25, expectedFuzzRelease = 25)
+  fun `scheduled fuzz workflows are optional and local fuzz aggregate cannot drift`() {
+    writeFixture(emptyList(), expectedMutationRelease = 21, expectedFuzzRelease = 21)
 
     val without = GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
     assertFalse(without.output.contains("FAILED"), without.output)
+    assertTrue(without.output.contains("scheduled fuzz workflows are optional"), without.output)
 
-    // 'fuzzPlainExtra' must not satisfy 'fuzzPlain': word-boundary matching, so a
-    // target whose name prefixes another cannot pass on the longer name's mention
+    // An incomplete old workflow remains irrelevant: local `fuzzAll` derives its
+    // dependencies from the registered targets rather than parsing hand-kept YAML.
     val workflow = File(fixtureDir, ".github/workflows/fuzz.yml")
     workflow.parentFile.mkdirs()
     workflow.writeText("run: ./gradlew --continue fuzzCodec fuzzUnset fuzzPlainExtra\n")
 
-    val missing = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzWorkflowInSync", "--stacktrace").buildAndFail()
+    val optional = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
+    assertFalse(optional.output.contains("FAILED"), optional.output)
+
+    val tasks = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("tasks", "--all", "--stacktrace").build().output
+    assertTrue(tasks.contains("fuzzAll - Runs every registered fuzz target locally"), tasks)
+    val plan = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("fuzzAll", "--dry-run", "--stacktrace").build().output
+    listOf(":fuzzCodec SKIPPED", ":fuzzPlain SKIPPED", ":fuzzUnset SKIPPED").forEach { task ->
+      assertTrue(plan.contains(task), "fuzzAll omitted $task:\n$plan")
+    }
+
+    val oldReceipt = File(fixtureDir, "build/hardening/local-fuzz.tsv").apply {
+      parentFile.mkdirs()
+      writeText("old success\n")
+    }
+    GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("fuzzAll", "-PmaxFuzzTime=0", "--stacktrace").buildAndFail()
+    assertFalse(oldReceipt.exists(), "invalid fuzzAll budget retained an earlier success receipt")
     assertTrue(
-      missing.output.contains("names 1 registered") && missing.output.contains(":fuzzPlain"),
-      "missing target not named with a paste-ready task path:\n" + missing.output
+      File(fixtureDir, "build/hardening/local-fuzz.running").isFile,
+      "invalid fuzzAll budget did not leave its incomplete-campaign sentinel")
+
+    // A later failed aggregate must invalidate an earlier success receipt before any
+    // target starts; otherwise the old TSV can be mistaken for the failed campaign.
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        listOf("fuzzCodec", "fuzzPlain", "fuzzUnset").forEach { taskName ->
+          tasks.named(taskName) {
+            doFirst { throw GradleException("fixture fuzz failure") }
+          }
+        }
+      """.trimIndent() + "\n"
+    )
+    oldReceipt.writeText("old success\n")
+    GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("fuzzAll", "--stacktrace").buildAndFail()
+    assertFalse(oldReceipt.exists(), "failed fuzzAll retained an earlier success receipt")
+    assertTrue(
+      File(fixtureDir, "build/hardening/local-fuzz.running").isFile,
+      "failed fuzzAll did not leave its incomplete-campaign sentinel")
+
+    listOf("0", "00", "abc", "2147483648").forEach { invalid ->
+      val refused = GradleRunner.create().withProjectDir(fixtureDir)
+        .withArguments("validateFuzzBudget", "-PmaxFuzzTime=$invalid", "--stacktrace")
+        .buildAndFail().output
+      assertTrue(refused.contains("0 is libFuzzer's run-forever sentinel"), refused)
+    }
+  }
+
+  @Test
+  fun `fuzzAll records a valid zero-target campaign`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "hardening-zero-fuzz-smoke-test"
+      """.trimIndent() + "\n"
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+      """.trimIndent() + "\n"
     )
 
-    // the documented escape hatch: a commented mention carrying the reason keeps a
-    // target out of the soak deliberately, and legibly
-    workflow.appendText("# fuzzPlain stays out of the soak: replay-only regression corpus\n")
-    val complete = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
-    assertFalse(complete.output.contains("FAILED"), complete.output)
+    val result = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("fuzzAll", "-PmaxFuzzTime=1", "--stacktrace").build()
+    val receipt = File(fixtureDir, "build/hardening/local-fuzz.tsv")
+
+    assertTrue(result.output.contains("fuzzAll: 0 local target(s) completed"), result.output)
+    assertTrue(receipt.isFile, "zero-target campaign did not write a receipt")
+    assertTrue(receipt.readText().contains("maxFuzzTimeSeconds\t1"), receipt.readText())
+    assertFalse(receipt.readText().contains("target\t"), receipt.readText())
+    assertFalse(
+      File(fixtureDir, "build/hardening/local-fuzz.running").exists(),
+      "successful zero-target campaign retained its running sentinel")
   }
 
   @Test

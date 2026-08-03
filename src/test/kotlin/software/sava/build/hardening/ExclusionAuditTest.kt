@@ -76,6 +76,52 @@ class ExclusionAuditTest {
   }
 
   @Test
+  fun `a nested class excluded without its outer class is reported`() {
+    // The old scan discarded every '$' binary before matching exclusions. A
+    // production helper could therefore match a fixture-shaped glob while its
+    // outer class stayed in the suite, leaving only the helper invisible.
+    writeClass("com.example.Codec")
+    writeClass("com.example.Codec\$RecordingHelper")
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.*Recording*"),
+    )
+
+    assertEquals(
+      listOf(
+        ExclusionAudit.Swallowed(
+          "com.example.Codec\$RecordingHelper",
+          "com.example.*Recording*",
+        )
+      ),
+      swallowed,
+    )
+  }
+
+  @Test
+  fun `owning an outer class does not silently own an excluded nested class`() {
+    writeClass("com.example.Codec")
+    writeClass("com.example.Codec\$State")
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.Codec\$*"),
+      siblingScopes = listOf(
+        ExclusionAudit.SuiteScope(
+          targetGlobs = listOf("com.example.Codec"),
+          excludedGlobs = emptyList(),
+        )
+      ),
+    )
+
+    assertEquals(
+      listOf(ExclusionAudit.Swallowed("com.example.Codec\$State", "com.example.Codec\$*")),
+      swallowed,
+    )
+  }
+
+  @Test
   fun `a class whose source sits under a test source dir is the glob's prey, not a finding`() {
     // the mutation recompile contains test sources too — the fixtures the globs
     // exist to exclude must not be reported as swallowed production classes
@@ -385,5 +431,242 @@ class ExclusionAuditTest {
       excludedGlobs = listOf("com.example.Recording*"),
     )
     assertEquals(listOf("com.example.RecordingHelper"), swallowed.map { it.binaryName })
+  }
+
+  @Test
+  fun `production enumeration includes nested classes but excludes their test-owned peers and metadata`() {
+    writeClass("module-info")
+    writeClass("com.example.package-info")
+    writeClass("com.example.Codec")
+    writeClass("com.example.Codec\$State")
+    writeClass("com.example.CodecTests")
+    writeClass("com.example.CodecTests\$Fixture")
+    writeTestSource("com.example.CodecTests")
+
+    assertEquals(
+      listOf("com.example.Codec", "com.example.Codec\$State"),
+      ExclusionAudit.productionClassNames(classesDir, listOf(testSrcDir)),
+    )
+  }
+
+  @Test
+  fun `a nested class of a secondary top-level test declaration is test-owned`() {
+    writeClass("com.example.RecordingHelper")
+    writeClass("com.example.RecordingHelper\$State")
+    val testFile = File(testSrcDir, "com/example/CodecTests.java")
+    testFile.parentFile.mkdirs()
+    testFile.writeText(
+      """
+        package com.example;
+
+        class CodecTests {}
+        final class RecordingHelper {}
+      """.trimIndent()
+    )
+
+    assertEquals(
+      emptyList<String>(),
+      ExclusionAudit.productionClassNames(classesDir, listOf(testSrcDir)),
+    )
+  }
+
+  @Test
+  fun `ownership coverage exposes a production class outside every allowlist`() {
+    val coverage = ExclusionAudit.ownershipCoverage(
+      productionClasses = listOf(
+        "software.sava.incident.io.CreateIncidentRequestRecord",
+        "software.sava.incident.io.IncidentIoClientImpl",
+      ),
+      scopes = listOf(
+        ExclusionAudit.OwnershipScope(
+          suiteName = ":incident-io:pitestRequest",
+          targetGlobs = listOf("software.sava.incident.io.CreateIncidentRequestRecord"),
+          excludedGlobs = emptyList(),
+        )
+      ),
+    )
+
+    assertEquals(
+      listOf(
+        ExclusionAudit.OwnedClass(
+          "software.sava.incident.io.CreateIncidentRequestRecord",
+          listOf(":incident-io:pitestRequest"),
+        )
+      ),
+      coverage.owned,
+    )
+    assertEquals(
+      listOf(ExclusionAudit.UncoveredClass("software.sava.incident.io.IncidentIoClientImpl", emptyList())),
+      coverage.uncovered,
+      "an empty excludedBy distinguishes never-targeted code from an exclusion hole",
+    )
+  }
+
+  @Test
+  fun `focused suites plus a catch-all own new top-level and nested classes`() {
+    val coverage = ExclusionAudit.ownershipCoverage(
+      productionClasses = listOf(
+        "com.example.Decoder",
+        "com.example.NewHandler",
+        "com.example.NewHandler\$State",
+      ),
+      scopes = listOf(
+        ExclusionAudit.OwnershipScope(
+          suiteName = "decoder",
+          targetGlobs = listOf("com.example.Decoder"),
+          excludedGlobs = emptyList(),
+        ),
+        ExclusionAudit.OwnershipScope(
+          suiteName = "catchAll",
+          targetGlobs = listOf("com.example.*"),
+          excludedGlobs = listOf("com.example.Decoder"),
+        ),
+      ),
+    )
+
+    assertEquals(
+      listOf(
+        ExclusionAudit.OwnedClass("com.example.Decoder", listOf("decoder")),
+        ExclusionAudit.OwnedClass("com.example.NewHandler", listOf("catchAll")),
+        ExclusionAudit.OwnedClass("com.example.NewHandler\$State", listOf("catchAll")),
+      ),
+      coverage.owned,
+    )
+    assertTrue(coverage.uncovered.isEmpty(), coverage.toString())
+  }
+
+  @Test
+  fun `a class excluded by every matching suite remains uncovered`() {
+    val coverage = ExclusionAudit.ownershipCoverage(
+      productionClasses = listOf("com.example.LegacyDecoder"),
+      scopes = listOf(
+        ExclusionAudit.OwnershipScope(
+          suiteName = "all",
+          targetGlobs = listOf("com.example.*"),
+          excludedGlobs = listOf("com.example.Legacy*"),
+        ),
+        ExclusionAudit.OwnershipScope(
+          suiteName = "decoders",
+          targetGlobs = listOf("com.example.*Decoder"),
+          excludedGlobs = listOf("com.example.LegacyDecoder"),
+        ),
+      ),
+    )
+
+    assertEquals(
+      listOf(
+        ExclusionAudit.UncoveredClass(
+          "com.example.LegacyDecoder",
+          listOf(
+            ExclusionAudit.ExclusionMatch("all", "com.example.Legacy*"),
+            ExclusionAudit.ExclusionMatch("decoders", "com.example.LegacyDecoder"),
+          ),
+        )
+      ),
+      coverage.uncovered,
+    )
+  }
+
+  @Test
+  fun `a reasoned exclusion decline covers only the exclusion it names`() {
+    val decline = ExclusionAudit.ExplicitDecline(
+      suiteName = "all",
+      glob = "com.example.generated.*",
+      reason = "generated bindings covered by the generator",
+    )
+    val coverage = ExclusionAudit.ownershipCoverage(
+      productionClasses = listOf(
+        "com.example.generated.Binding",
+        "com.other.NeverTargeted",
+      ),
+      scopes = listOf(
+        ExclusionAudit.OwnershipScope(
+          suiteName = "all",
+          targetGlobs = listOf("com.example.*"),
+          excludedGlobs = listOf("com.example.generated.*"),
+        )
+      ),
+      declines = listOf(decline),
+    )
+
+    assertEquals(
+      listOf(ExclusionAudit.DeclinedClass("com.example.generated.Binding", listOf(decline))),
+      coverage.declined,
+    )
+    assertEquals(
+      listOf(ExclusionAudit.UncoveredClass("com.other.NeverTargeted", emptyList())),
+      coverage.uncovered,
+      "a decline is not an arbitrary waiver for code outside every target",
+    )
+    assertTrue(coverage.staleDeclines.isEmpty(), coverage.toString())
+  }
+
+  @Test
+  fun `an overlapping decline cannot waive the exclusion that actually matched first`() {
+    val laterDecline = ExclusionAudit.ExplicitDecline(
+      suiteName = "all",
+      glob = "com.example.generated.*",
+      reason = "generated bindings",
+    )
+    val coverage = ExclusionAudit.ownershipCoverage(
+      productionClasses = listOf("com.example.generated.Binding"),
+      scopes = listOf(
+        ExclusionAudit.OwnershipScope(
+          suiteName = "all",
+          targetGlobs = listOf("com.example.*"),
+          excludedGlobs = listOf("com.example.*", "com.example.generated.*"),
+        )
+      ),
+      declines = listOf(laterDecline),
+    )
+
+    assertEquals(
+      listOf(
+        ExclusionAudit.UncoveredClass(
+          "com.example.generated.Binding",
+          listOf(ExclusionAudit.ExclusionMatch("all", "com.example.*")),
+        )
+      ),
+      coverage.uncovered,
+    )
+    assertEquals(listOf(laterDecline), coverage.staleDeclines)
+  }
+
+  @Test
+  fun `blank declines suppress nothing and become stale when a sibling takes ownership`() {
+    val blank = ExclusionAudit.ExplicitDecline("all", "com.example.Legacy*", "  ")
+    val stale = ExclusionAudit.ExplicitDecline("all", "com.example.Owned*", "formerly generated")
+    val coverage = ExclusionAudit.ownershipCoverage(
+      productionClasses = listOf("com.example.LegacyCodec", "com.example.OwnedCodec"),
+      scopes = listOf(
+        ExclusionAudit.OwnershipScope(
+          suiteName = "all",
+          targetGlobs = listOf("com.example.*"),
+          excludedGlobs = listOf("com.example.Legacy*", "com.example.Owned*"),
+        ),
+        ExclusionAudit.OwnershipScope(
+          suiteName = "owned",
+          targetGlobs = listOf("com.example.Owned*"),
+          excludedGlobs = emptyList(),
+        ),
+      ),
+      declines = listOf(stale, blank),
+    )
+
+    assertEquals(
+      listOf(ExclusionAudit.OwnedClass("com.example.OwnedCodec", listOf("owned"))),
+      coverage.owned,
+    )
+    assertEquals(
+      listOf(
+        ExclusionAudit.UncoveredClass(
+          "com.example.LegacyCodec",
+          listOf(ExclusionAudit.ExclusionMatch("all", "com.example.Legacy*")),
+        )
+      ),
+      coverage.uncovered,
+    )
+    assertEquals(listOf(blank), coverage.blankDeclines)
+    assertEquals(listOf(stale), coverage.staleDeclines)
   }
 }

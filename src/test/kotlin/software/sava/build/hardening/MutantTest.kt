@@ -1,7 +1,9 @@
 package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -51,7 +53,7 @@ class MutantTest {
   }
 
   @Test
-  fun `status semantics partition exactly — detected, gated, neither`() {
+  fun `status semantics separate scoring gating and evidence validity`() {
     assertTrue(MutantStatus.KILLED.detected && !MutantStatus.KILLED.gated)
     assertTrue(MutantStatus.TIMED_OUT.detected && !MutantStatus.TIMED_OUT.gated)
     assertTrue(MutantStatus.SURVIVED.gated && !MutantStatus.SURVIVED.detected)
@@ -61,14 +63,31 @@ class MutantTest {
     }
     assertEquals(2, MutantStatus.entries.count { it.detected })
     assertEquals(2, MutantStatus.entries.count { it.gated })
+    assertTrue(MutantStatus.NON_VIABLE.validEvidence)
+    assertTrue(MutantStatus.EQUIVALENT.validEvidence)
+    assertFalse(MutantStatus.NON_VIABLE.detected)
+    assertFalse(MutantStatus.EQUIVALENT.detected)
+    listOf(
+      MutantStatus.MEMORY_ERROR,
+      MutantStatus.RUN_ERROR,
+      MutantStatus.NOT_STARTED,
+      MutantStatus.STARTED,
+    ).forEach { status -> assertFalse(status.validEvidence, "$status is valid evidence") }
   }
 
   @Test
-  fun `an unknown status is carried verbatim and reads neither detected nor gated`() {
+  fun `an unknown status is carried verbatim but is not valid evidence`() {
     val mutant = Mutant.parse("C.java,com.example.C,org.pitest.M,m,5,FUTURE_STATUS,none")!!
     assertNull(mutant.status)
     assertEquals("FUTURE_STATUS", mutant.rawStatus)
     assertTrue(!mutant.detected && !mutant.gated)
+    assertFalse(mutant.validEvidence)
+
+    val failure = assertThrows(IllegalArgumentException::class.java) {
+      Mutant.parseReport(listOf("C.java,com.example.C,org.pitest.M,m,5,FUTURE_STATUS,none"))
+    }
+    assertTrue(failure.message!!.contains("not valid completed evidence"), failure.message)
+    assertTrue(failure.message!!.contains("FUTURE_STATUS x1"), failure.message)
   }
 
   @Test
@@ -83,5 +102,41 @@ class MutantTest {
   fun `a short row is no row`() {
     assertNull(Mutant.parse("C.java,com.example.C,org.pitest.M,m,5"))
     assertNull(Mutant.parse(""))
+
+    val failure = assertThrows(IllegalArgumentException::class.java) {
+      Mutant.parseReport(
+          listOf(
+            "C.java,com.example.C,org.pitest.M,m,5,KILLED,Test",
+            "C.java,com.example.C,org.pitest.M,m,5",
+            "",
+            "C.java,com.example.C,org.pitest.M,m,not-a-line,SURVIVED,none",
+          )
+      )
+    }
+    assertTrue(failure.message!!.contains("3 malformed CSV row(s)"), failure.message)
+    assertTrue(failure.message!!.contains("line 2:"), failure.message)
+    assertTrue(failure.message!!.contains("line 4:"), failure.message)
+  }
+
+  @Test
+  fun `terminal unscored PIT statuses remain valid report evidence`() {
+    val rows = Mutant.parseReport(
+        listOf(
+          "C.java,com.example.C,org.pitest.M,m,5,NON_VIABLE,none",
+          "C.java,com.example.C,org.pitest.M,m,6,EQUIVALENT,none",
+        )
+    )
+    assertEquals(listOf(MutantStatus.NON_VIABLE, MutantStatus.EQUIVALENT), rows.map { it.status })
+    assertTrue(rows.all { it.validEvidence && !it.detected && !it.gated })
+  }
+
+  @Test
+  fun `error and unfinished statuses invalidate a complete report`() {
+    listOf("MEMORY_ERROR", "RUN_ERROR", "NOT_STARTED", "STARTED").forEach { status ->
+      val failure = assertThrows(IllegalArgumentException::class.java) {
+        Mutant.parseReport(listOf("C.java,com.example.C,org.pitest.M,m,5,$status,none"))
+      }
+      assertTrue(failure.message!!.contains("$status x1"), failure.message)
+    }
   }
 }

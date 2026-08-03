@@ -1,78 +1,421 @@
 #!/usr/bin/env bash
-# Pre-release fleet canary: validates consumer repos against this checkout's
-# unreleased plugin before a release PR is merged. Most rollout surprises are
-# advisory checks meeting real consumer data (committed baselines, audited
-# timeout sets, README causes) that synthetic test fixtures cannot enumerate —
-# this runs the real checks against the real data, in seconds per repo.
+# Consumer-fleet canary for an unreleased sava-build checkout.
 #
-# What it does:
-#   1. publishes this checkout as 0.0.0-test to build/sava-test-repo
-#   2. per consumer repo, derives every pitest<Suite>Debt task from the
-#      committed config/pitest/*-accepted.csv / *-timeouts.csv files and runs
-#      them with -PsavaBuildLocalRepo — Debt carries the audited-timeout set's
-#      static half (row shape, README causes), the exclusion audit's static
-#      half (when a prior run left build/mutation-classes behind), and falls
-#      back to the baseline when no report exists, so no mutation runs are
-#      needed
-#   3. verifies each green build actually resolved 0.0.0-test: a settings
-#      snippet predating -PsavaBuildLocalRepo ignores the property and resolves
-#      the RELEASED plugin — green output that canaries nothing. The 0.0.0-test
-#      settings plugin prints the local-repo notice at the end of every build it
-#      was resolved into (configuration-cache hits included), so its absence
-#      from a green build is a failure, not a maybe.
-#   4. reprints every hardening warning it saw, per repo, and fails if any
-#      consumer build failed (advisory findings are reported, never failures)
+# Ordinary modes are deliberately convenient:
+#   tools/fleet-canary.sh                         # available manifest siblings
+#   tools/fleet-canary.sh --deep                  # manifest's annotated deep legs
+#   tools/fleet-canary.sh ../sava ../ravina:pitestCalls
 #
-# Usage:
-#   tools/fleet-canary.sh                                    # whole fleet from tools/fleet-manifest.txt
-#   tools/fleet-canary.sh --deep                             # fleet, honouring the manifest's deep= annotations
-#   tools/fleet-canary.sh <consumer-repo-dir>[:<pitestSuiteTask>]...   # explicit subset
+# Release mode is deliberately strict:
+#   tools/fleet-canary.sh --release [--allow-advisories]
 #
-# The optional :<pitestSuiteTask> (e.g. json-iterator:pitestUtil) is the deep
-# leg: the named suite runs TWICE as a real mutation run, then its verify.
-# Static checks cannot see the state the verify cycles between runs — the
-# machine-local status stash is written by run N and read by run N+1, and both
-# post-21.5.20 escapes lived exactly there (a flip advisory that false-fired
-# from the second run on, and a format boundary that garbled the first
-# comparison after a bump). One repo carrying the deep leg with its cheapest
-# suite covers the class; name it on the repo whose baselines are richest in
-# same-key siblings.
-#
-# Notes earned the hard way:
-#   - Debt tasks are invoked by NAME, not project path: nested module
-#     directories (a kms/core layout) need not match Gradle project paths, and
-#     a bare name runs in every project that has the task.
-#   - No --quiet anywhere: Gradle's --quiet suppresses WARN, which is exactly
-#     the output being canaried.
+# It preflights every manifest checkout before publishing, requires matching
+# GitHub remotes and clean stable revisions, and runs hardeningCertify against
+# the unreleased plugin. Evidence is an immutable run directory under
+# build/hardening/fleet-canary-runs; the canonical receipt is an atomic pointer
+# whose in_progress state invalidates an older pass as soon as a new run starts.
 set -euo pipefail
 
-sava_build_dir=$(cd "$(dirname "$0")/.." && pwd)
+sava_build_dir=$(cd "$(dirname "$0")/.." && pwd -P)
 local_repo="$sava_build_dir/build/sava-test-repo"
+manifest="$sava_build_dir/tools/fleet-manifest.txt"
+canonical_receipt="$sava_build_dir/build/hardening/fleet-canary-receipt.json"
+plugin_expected_slug="sava-software/sava-build"
+resolution_notice="resolved every 'software.sava.build*' plugin to 0.0.0-test"
 
-# The reprint filter: one alternation per hardening warning a person must review.
-# Deliberately string-coupled to the plugin's message texts; the coupling is pinned
-# by HardeningRatchetFunctionalTest ('the fleet canary reprint filter matches every
-# warning it canaries'), which provokes each warning and greps a real verify's
-# output with this exact pattern — reword a message and that test names this line.
+usage() {
+  cat <<'EOF'
+Usage:
+  tools/fleet-canary.sh
+  tools/fleet-canary.sh --deep
+  tools/fleet-canary.sh <consumer-dir>[:<pitestSuiteTask>] ...
+  tools/fleet-canary.sh --release [--allow-advisories] [--receipt <path>]
+  tools/fleet-canary.sh --verify-receipt <path>
+  tools/fleet-canary.sh --self-test
+
+Ordinary no-argument mode skips unavailable manifest siblings. --deep is valid
+only in manifest mode; append :<pitestSuiteTask> to an explicit repo instead.
+Release mode requires the complete clean fleet and writes a SHA-bound evidence
+bundle. Findings fail unless --allow-advisories records their review.
+EOF
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+require_jq() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "fleet-canary: jq is required for release receipts" >&2
+    exit 2
+  fi
+}
+
+manifest_slugs() {
+  awk 'NF && $1 !~ /^#/ { print $1 }' "$manifest"
+}
+
+origin_slug() {
+  local url=$1
+  url=${url%.git}
+  case "$url" in
+    git@github.com:*) printf '%s\n' "${url#git@github.com:}" ;;
+    https://github.com/*) printf '%s\n' "${url#https://github.com/}" ;;
+    ssh://git@github.com/*) printf '%s\n' "${url#ssh://git@github.com/}" ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
+
+reject_symlink_components() {
+  local target=$1 label=${2:-evidence path} probe
+  case "$target" in
+    /*) probe=$target ;;
+    *) probe="$PWD/$target" ;;
+  esac
+  while [ "$probe" != "/" ]; do
+    if [ -L "$probe" ]; then
+      echo "fleet-canary: refusing symlinked $label component: $probe" >&2
+      return 1
+    fi
+    probe=$(dirname "$probe")
+  done
+}
+
+prepare_pointer_destination() {
+  local raw=$1 raw_parent base physical_parent rel
+  case "$raw" in /*) ;; *) raw="$PWD/$raw" ;; esac
+  raw_parent=$(dirname "$raw")
+  base=$(basename "$raw")
+  case "$base" in ''|.|..) echo "fleet-canary: invalid receipt filename '$base'" >&2; return 1 ;; esac
+  reject_symlink_components "$raw_parent" "receipt directory" || return 1
+  mkdir -p "$raw_parent"
+  physical_parent=$(cd "$raw_parent" && pwd -P)
+  receipt_path="$physical_parent/$base"
+  receipt_parent=$physical_parent
+  reject_symlink_components "$receipt_path" "receipt" || return 1
+  case "$receipt_path" in
+    */fleet-canary-runs/*)
+      echo "fleet-canary: --receipt must name a pointer outside immutable run bundles" >&2
+      return 1
+      ;;
+  esac
+  case "$receipt_path" in
+    "$sava_build_dir"/*)
+      rel=${receipt_path#"$sava_build_dir"/}
+      if ! git -C "$sava_build_dir" check-ignore -q -- "$rel"; then
+        echo "fleet-canary: receipt inside the plugin checkout must be git-ignored: $rel" >&2
+        return 1
+      fi
+      ;;
+  esac
+  if [ -e "$receipt_path" ] && ! jq -e '
+      (.schema == 1 and .mode == "release") or
+      (.schema == 2 and .kind == "fleet-canary-pointer")
+    ' "$receipt_path" >/dev/null 2>&1; then
+    echo "fleet-canary: refusing to replace a file that is not fleet evidence: $receipt_path" >&2
+    return 1
+  fi
+}
+
+write_pointer() {
+  local result=$1 receipt_hash=${2:-} tmp generated_at
+  reject_symlink_components "$receipt_path" "receipt" || return 1
+  if [ "$result" != in_progress ] &&
+      ! jq -e --arg run_id "$run_id" \
+        '.schema == 2 and .kind == "fleet-canary-pointer" and .run_id == $run_id' \
+        "$receipt_path" >/dev/null 2>&1; then
+    echo "fleet-canary: run $run_id was superseded; refusing to replace the newer pointer" >&2
+    return 1
+  fi
+  generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  tmp=$(mktemp "$receipt_parent/.fleet-canary-pointer.XXXXXX")
+  jq -n \
+    --arg result "$result" --arg generated_at "$generated_at" --arg run_id "$run_id" \
+    --arg bundle "$bundle_rel" --arg receipt_sha256 "$receipt_hash" \
+    --arg plugin_sha "$plugin_sha" \
+    '{schema:2,kind:"fleet-canary-pointer",mode:"release",result:$result,
+      generated_at:$generated_at,run_id:$run_id,plugin_sha:$plugin_sha,
+      bundle:$bundle,receipt_sha256:$receipt_sha256}' > "$tmp"
+  mv "$tmp" "$receipt_path"
+}
+
+validate_inner_certification() {
+  awk -F '\t' '
+    $1 == "schema" { schemaRows++; if (NF != 2 || $2 != "3") invalid=1; next }
+    $1 == "project" { projectRows++; if (NF != 2 || $2 == "") invalid=1; next }
+    $1 == "session" { sessionRows++; if (NF != 2 || $2 == "") invalid=1; next }
+    $1 == "mode" {
+      modeRows++; if (NF != 2 || $2 != "fresh-full-strict") invalid=1; next
+    }
+    $1 == "columns" { columnsRows++; next }
+    $1 == "suite" {
+      suites++
+      if (NF != 11 || $2 == "" || $3 == "" || $8 == "" || $11 == "" || seen[$2]++) invalid=1
+      for (i=4; i<=10; i++) {
+        if (i == 8) continue
+        if (length($i) != 64 || $i ~ /[^0-9a-f]/) invalid=1
+      }
+      plugins[$9]=1
+      next
+    }
+    NF > 0 { invalid=1 }
+    END {
+      for (plugin in plugins) pluginCount++
+      if (invalid || schemaRows != 1 || projectRows != 1 || sessionRows != 1 ||
+          modeRows != 1 || columnsRows != 1 || (suites > 0 && pluginCount != 1)) exit 1
+      print suites + 0
+    }
+  ' "$1"
+}
+
+inner_certification_plugin_sha() {
+  awk -F '\t' '
+    $1 == "suite" {
+      if (plugin == "") plugin=$9
+      else if (plugin != $9) exit 1
+    }
+    END { print plugin }
+  ' "$1"
+}
+
+resolve_receipt() {
+  local requested=$1 input_parent input_base pointer_bundle expected target
+  pointer_run_id=""
+  pointer_plugin_sha=""
+  case "$requested" in /*) ;; *) requested="$PWD/$requested" ;; esac
+  reject_symlink_components "$requested" "receipt" || return 1
+  if [ ! -f "$requested" ]; then
+    echo "fleet-canary: no certification receipt at $requested" >&2
+    return 1
+  fi
+  if jq -e '.schema == 2 and .kind == "fleet-canary-pointer"' "$requested" >/dev/null 2>&1; then
+    if ! jq -e '
+        .mode == "release" and .result == "passed" and
+        (.run_id | test("^run[.][A-Za-z0-9]+$")) and
+        .bundle == ("fleet-canary-runs/" + .run_id + "/receipt.json") and
+        (.plugin_sha | test("^[0-9a-f]{40}$")) and
+        (.receipt_sha256 | test("^[0-9a-f]{64}$"))
+      ' "$requested" >/dev/null; then
+      echo "fleet-canary: canonical pointer is not a completed passing run: $requested" >&2
+      return 1
+    fi
+    input_parent=$(cd "$(dirname "$requested")" && pwd -P)
+    pointer_bundle=$(jq -r '.bundle' "$requested")
+    target="$input_parent/$pointer_bundle"
+    reject_symlink_components "$target" "bundle receipt" || return 1
+    if [ ! -f "$target" ]; then
+      echo "fleet-canary: pointed-to bundle receipt is missing: $target" >&2
+      return 1
+    fi
+    expected=$(jq -r '.receipt_sha256' "$requested")
+    if [ "$(sha256_file "$target")" != "$expected" ]; then
+      echo "fleet-canary: bundle receipt hash does not match the canonical pointer: $target" >&2
+      return 1
+    fi
+    pointer_run_id=$(jq -r '.run_id' "$requested")
+    pointer_plugin_sha=$(jq -r '.plugin_sha' "$requested")
+    resolved_receipt=$target
+  else
+    resolved_receipt=$requested
+  fi
+  bundle_dir=$(cd "$(dirname "$resolved_receipt")" && pwd -P)
+}
+
+verify_artifact() {
+  local relative=$1 expected=$2 label=$3 path
+  path="$bundle_dir/$relative"
+  reject_symlink_components "$path" "$label" || return 1
+  if [ ! -f "$path" ]; then
+    echo "fleet-canary: missing $label: $path" >&2
+    return 1
+  fi
+  if [ "$(sha256_file "$path")" != "$expected" ]; then
+    echo "fleet-canary: $label hash mismatch: $path" >&2
+    return 1
+  fi
+}
+
+verify_receipt() {
+  local requested=$1 certified_sha certified_tree actual_tree recorded_manifest_sha
+  local current_manifest_sha manifest_count receipt_count unexpected slug
+  local log_file log_hash cert_file cert_hash cert_suites actual_suites
+  local cert_plugin actual_plugin
+  local repo recorded_sha recorded_origin current_sha current_origin plugin_origin
+  require_jq
+  resolve_receipt "$requested" || return 1
+  if ! jq -e '
+      .schema == 2 and .kind == "fleet-canary-receipt" and
+      .mode == "release" and .result == "passed" and
+      (.run_id | test("^run[.][A-Za-z0-9]+$")) and
+      (.plugin.sha | test("^[0-9a-f]{40}$")) and
+      (.plugin.tree | test("^[0-9a-f]{40,64}$")) and
+      (.plugin.origin | type == "string" and length > 0) and
+      .plugin.dirty_before == false and .plugin.dirty_after == false and
+      (.manifest_sha256 | test("^[0-9a-f]{64}$")) and
+      .preflight_file == "preflight.tsv" and
+      (.preflight_sha256 | test("^[0-9a-f]{64}$")) and
+      (.publish_log_file | test("^plugin-publish[.]log$")) and
+      (.publish_output_sha256 | test("^[0-9a-f]{64}$")) and
+      (.repositories | type == "array" and length > 0) and
+      all(.repositories[];
+        .result == "passed" and .dirty_before == false and .dirty_after == false and
+        (.sha | test("^[0-9a-f]{40}$")) and (.path | type == "string") and
+        (.origin | type == "string" and length > 0) and
+        (.tasks | type == "array" and
+          any(.[]; . == "hardeningCertify") and any(.[]; . == "agentsTemplateInSync")) and
+        (.log_file | test("^logs/[A-Za-z0-9._-]+[.]log$")) and
+        (.output_sha256 | test("^[0-9a-f]{64}$")) and
+        (.findings | type == "string") and
+        (.certifications | type == "array" and length > 0) and
+        ([.certifications[].suite_count] | add > 0) and
+        all(.certifications[];
+          (.path | test("^certifications/[A-Za-z0-9._/-]+[.]tsv$")) and
+          (.sha256 | test("^[0-9a-f]{64}$")) and
+          (.suite_count | type == "number" and . >= 0) and
+          ((.suite_count == 0 and .plugin_sha256 == "") or
+            (.suite_count > 0 and (.plugin_sha256 | test("^[0-9a-f]{64}$")))))) and
+      ([.repositories[].certifications[] | select(.suite_count > 0) | .plugin_sha256] |
+        unique | length == 1) and
+      (.advisories_acknowledged | type == "boolean") and
+      (([.repositories[] | select(.findings != "")] | length) == 0 or
+        .advisories_acknowledged == true)
+    ' "$resolved_receipt" >/dev/null; then
+    echo "fleet-canary: receipt is not a successful strict evidence bundle: $resolved_receipt" >&2
+    return 1
+  fi
+  if [ -n "$pointer_run_id" ] &&
+      { [ "$(jq -r '.run_id' "$resolved_receipt")" != "$pointer_run_id" ] ||
+        [ "$(jq -r '.plugin.sha' "$resolved_receipt")" != "$pointer_plugin_sha" ]; }; then
+    echo "fleet-canary: pointer identity does not match its bundle receipt" >&2
+    return 1
+  fi
+
+  certified_sha=$(jq -r '.plugin.sha' "$resolved_receipt")
+  certified_tree=$(jq -r '.plugin.tree' "$resolved_receipt")
+  if ! git -C "$sava_build_dir" cat-file -e "$certified_sha^{commit}" 2>/dev/null; then
+    echo "fleet-canary: certified plugin commit $certified_sha is not in this checkout" >&2
+    return 1
+  fi
+  actual_tree=$(git -C "$sava_build_dir" rev-parse "$certified_sha^{tree}")
+  if [ "$actual_tree" != "$certified_tree" ]; then
+    echo "fleet-canary: receipt tree $certified_tree does not belong to $certified_sha" >&2
+    return 1
+  fi
+  if ! git -C "$sava_build_dir" merge-base --is-ancestor "$certified_sha" HEAD; then
+    echo "fleet-canary: certified commit $certified_sha is not an ancestor of HEAD" >&2
+    return 1
+  fi
+  if [ -n "$(git -C "$sava_build_dir" status --porcelain --untracked-files=all)" ]; then
+    echo "fleet-canary: current plugin checkout is dirty; it cannot match release evidence" >&2
+    return 1
+  fi
+  plugin_origin=$(git -C "$sava_build_dir" remote get-url origin 2>/dev/null || true)
+  if [ "$plugin_origin" != "$(jq -r '.plugin.origin' "$resolved_receipt")" ] ||
+      [ "$(origin_slug "$plugin_origin")" != "$plugin_expected_slug" ]; then
+    echo "fleet-canary: plugin origin changed after certification: $plugin_origin" >&2
+    return 1
+  fi
+  unexpected=""
+  while IFS= read -r changed; do
+    case "$changed" in
+      .release-please-manifest.json|CHANGELOG.md) ;;
+      *) unexpected="$unexpected${unexpected:+$'\n'}$changed" ;;
+    esac
+  done < <(git -C "$sava_build_dir" diff --name-only "$certified_sha"..HEAD --)
+  if [ -n "$unexpected" ]; then
+    echo "fleet-canary: non-release-metadata files changed after certification:" >&2
+    while IFS= read -r changed; do printf '  %s\n' "$changed" >&2; done <<< "$unexpected"
+    return 1
+  fi
+
+  recorded_manifest_sha=$(jq -r '.manifest_sha256' "$resolved_receipt")
+  current_manifest_sha=$(sha256_file "$manifest")
+  if [ "$recorded_manifest_sha" != "$current_manifest_sha" ]; then
+    echo "fleet-canary: fleet manifest changed after certification" >&2
+    return 1
+  fi
+  manifest_count=$(manifest_slugs | wc -l | tr -d ' ')
+  receipt_count=$(jq '.repositories | length' "$resolved_receipt")
+  if [ "$manifest_count" != "$receipt_count" ]; then
+    echo "fleet-canary: receipt covers $receipt_count repos; manifest requires $manifest_count" >&2
+    return 1
+  fi
+  while IFS= read -r slug; do
+    if ! jq -e --arg slug "$slug" '[.repositories[] | select(.slug == $slug)] | length == 1' \
+        "$resolved_receipt" >/dev/null; then
+      echo "fleet-canary: receipt does not contain exactly one record for $slug" >&2
+      return 1
+    fi
+  done < <(manifest_slugs)
+
+  verify_artifact "$(jq -r '.preflight_file' "$resolved_receipt")" \
+    "$(jq -r '.preflight_sha256' "$resolved_receipt")" "preflight inventory" || return 1
+  verify_artifact "$(jq -r '.publish_log_file' "$resolved_receipt")" \
+    "$(jq -r '.publish_output_sha256' "$resolved_receipt")" "plugin publish log" || return 1
+  while IFS=$'\t' read -r log_file log_hash; do
+    verify_artifact "$log_file" "$log_hash" "consumer log" || return 1
+  done < <(jq -r '.repositories[] | [.log_file,.output_sha256] | @tsv' "$resolved_receipt")
+  while IFS=$'\t' read -r cert_file cert_hash cert_suites cert_plugin; do
+    verify_artifact "$cert_file" "$cert_hash" "inner PIT certification" || return 1
+    actual_suites=$(validate_inner_certification "$bundle_dir/$cert_file") || {
+      echo "fleet-canary: invalid inner PIT certification: $bundle_dir/$cert_file" >&2
+      return 1
+    }
+    if [ "$actual_suites" != "$cert_suites" ]; then
+      echo "fleet-canary: inner certification suite count changed: $bundle_dir/$cert_file" >&2
+      return 1
+    fi
+    actual_plugin=$(inner_certification_plugin_sha "$bundle_dir/$cert_file") || {
+      echo "fleet-canary: inconsistent plugin provenance: $bundle_dir/$cert_file" >&2
+      return 1
+    }
+    if [ "$actual_plugin" != "$cert_plugin" ]; then
+      echo "fleet-canary: inner certification plugin hash changed: $bundle_dir/$cert_file" >&2
+      return 1
+    fi
+  done < <(jq -r '.repositories[].certifications[] |
+      [.path,.sha256,.suite_count,.plugin_sha256] | @tsv' \
+    "$resolved_receipt")
+
+  while IFS=$'\t' read -r slug repo recorded_sha recorded_origin; do
+    if [ ! -e "$repo" ]; then
+      echo "fleet-canary: NOTE $slug checkout unavailable; retained artifacts were verified" >&2
+      continue
+    fi
+    if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      echo "fleet-canary: current checkout for $slug is not a Git worktree: $repo" >&2
+      return 1
+    fi
+    current_sha=$(git -C "$repo" rev-parse HEAD)
+    current_origin=$(git -C "$repo" remote get-url origin 2>/dev/null || true)
+    if [ "$current_sha" != "$recorded_sha" ]; then
+      echo "fleet-canary: $slug moved from certified $recorded_sha to $current_sha" >&2
+      return 1
+    fi
+    if [ "$current_origin" != "$recorded_origin" ] || [ "$(origin_slug "$current_origin")" != "$slug" ]; then
+      echo "fleet-canary: $slug origin changed after certification: $current_origin" >&2
+      return 1
+    fi
+    if [ -n "$(git -C "$repo" status --porcelain --untracked-files=all)" ]; then
+      echo "fleet-canary: $slug checkout is dirty after certification" >&2
+      return 1
+    fi
+  done < <(jq -r '.repositories[] | [.slug,.path,.sha,.origin] | @tsv' "$resolved_receipt")
+
+  echo "fleet-canary: verified $receipt_count-repo evidence bundle for plugin $certified_sha"
+}
+
+# Deliberately coupled to emitted warning text. The first pattern remains pinned
+# by HardeningRatchetFunctionalTest; advisory_pattern adds known warning families
+# that do not enter the plugin's end-of-build advisory service.
 findings_pattern='malformed row|not in the audited set|appear nowhere|match no mutant|no argument in config|advisory finding|written by PIT|swallowed by excludedClasses|match no swallowed|suppress nothing|marker dance'
-
-# The stash-cycle messages only the deep leg's two consecutive real runs can
-# provoke, pinned on the same terms by 'the deep leg filter matches every
-# stash-cycle message' — reword one and that test names this line.
+advisory_pattern="$findings_pattern|mutating [0-9]+ test-source class|enabled mutator set cannot mutate|the recorded decline of .* is stale|declares no seedCorpus|recorded seedCorpus decline is stale"
 deep_pattern='flipped SURVIVED -> TIMED_OUT|flipped NO_COVERAGE -> TIMED_OUT|timed-out drift vs previous run|predates the current stash format'
 
-# Reprint matching lines WITH their payload: the plugin prints listings as a
-# header line followed by two-space-indented rows (paste-ready member rows,
-# flipped coordinates, per-suite advisory details), and a line-based grep kept
-# the header while dropping exactly the rows the header tells a person to act
-# on — the unaudited-set warning reads "add the row below" and the reprint had
-# no row below. Indented lines ride along only while they directly follow a
-# match, so unrelated indented output (Gradle's own, stack traces) stays out.
-# The two-space contract is pinned on the same terms as the patterns above, by
-# 'the fleet canary reprint filter matches every warning it canaries': it
-# replays this indent rule over a real verify's output and demands the payload
-# rows the headers promise — change the rule here or a listing's indentation
-# in the plugin and that test names this line.
 reprint_findings() {
   awk -v pat="$1" '
     $0 ~ pat { print; keep = 1; next }
@@ -81,161 +424,508 @@ reprint_findings() {
   ' "$2"
 }
 
-# The resolution proof: the 0.0.0-test settings plugin's FlowAction prints this line
-# at the end of every build it was actually resolved into. Coupled to the notice's
-# wording like the filter above; pinned by LocalRepoNoticeFunctionalTest ('the fleet
-# canary resolution needle matches the notice') — reword the notice and that test
-# names this line before the canary starts flagging every healthy repo.
-resolution_notice="resolved every 'software.sava.build*' plugin to 0.0.0-test"
+self_test() {
+  local fixture output slugs basenames suites hash
+  fixture=$(mktemp)
+  trap 'rm -f "$fixture"' RETURN
+  printf '%s\n' \
+    "hardening: 1 advisory finding(s) across 1 suite(s)" \
+    "pitest 'x': mutating 1 test-source class(es)" \
+    "pitest 'x': enabled mutator set cannot mutate arithmetic" \
+    "fuzz target 'x' declares no seedCorpus" > "$fixture"
+  output=$(reprint_findings "$advisory_pattern" "$fixture")
+  for expected in "advisory finding" "test-source class" "cannot mutate" "no seedCorpus"; do
+    case "$output" in *"$expected"*) ;; *) echo "fleet-canary self-test: missed $expected" >&2; return 1 ;; esac
+  done
+  hash=$(printf '%064d' 0)
+  printf 'schema\t3\nproject\t:\nsession\tsession-1\nmode\tfresh-full-strict\n' > "$fixture"
+  printf 'columns\tsuite\tname\tinvocation\treportSha256\n' >> "$fixture"
+  printf 'suite\tcodec\tinvocation-1\t%s\t%s\t%s\t%s\t1.17.2\t%s\t%s\tno-record\n' \
+    "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" >> "$fixture"
+  suites=$(validate_inner_certification "$fixture")
+  [ "$suites" = 1 ] || {
+    echo "fleet-canary self-test: inner certification count was $suites" >&2; return 1;
+  }
+  printf 'suite\tcodec\tinvocation-2\t%s\t%s\t%s\t%s\t1.17.2\t%s\t%s\tno-record\n' \
+    "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" >> "$fixture"
+  if validate_inner_certification "$fixture" >/dev/null 2>&1; then
+    echo "fleet-canary self-test: duplicate suite evidence was accepted" >&2
+    return 1
+  fi
+  printf 'schema\t2\nmode\tfresh-full-strict\nsuite\tcodec\n' > "$fixture"
+  if validate_inner_certification "$fixture" >/dev/null 2>&1; then
+    echo "fleet-canary self-test: obsolete inner certification schema was accepted" >&2
+    return 1
+  fi
+  [ "$(origin_slug git@github.com:sava-software/sava.git)" = "sava-software/sava" ] || return 1
+  slugs=$(manifest_slugs)
+  [ "$(printf '%s\n' "$slugs" | sort | uniq -d | wc -l | tr -d ' ')" = "0" ] || {
+    echo "fleet-canary self-test: duplicate manifest slug" >&2; return 1;
+  }
+  basenames=$(printf '%s\n' "$slugs" | sed 's|.*/||')
+  [ "$(printf '%s\n' "$basenames" | sort | uniq -d | wc -l | tr -d ' ')" = "0" ] || {
+    echo "fleet-canary self-test: sibling checkout basename collision" >&2; return 1;
+  }
+  echo "fleet-canary: self-test passed"
+}
 
-# No arguments: run the whole fleet from tools/fleet-manifest.txt, resolving
-# each <org>/<repo> as a sibling checkout (../<repo> from this script's repo).
-# '--deep' honours the manifest's ' deep=<pitestSuiteTask>' annotations; a
-# missing sibling checkout is skipped with a notice, never a failure — the
-# manifest is the roster, the local disk decides what is reachable today.
-if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "${1:-}" = '--deep' ]; }; then
-  deep_run="${1:-}"
-  manifest="$sava_build_dir/tools/fleet-manifest.txt"
-  set --
+release_mode=false
+deep_run=false
+allow_advisories=false
+receipt_path="$canonical_receipt"
+verify_path=""
+self_test_requested=false
+consumer_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --release) release_mode=true ;;
+    --deep) deep_run=true ;;
+    --allow-advisories) allow_advisories=true ;;
+    --receipt)
+      shift
+      [ "$#" -gt 0 ] || { echo "fleet-canary: --receipt requires a path" >&2; exit 2; }
+      receipt_path=$1
+      ;;
+    --verify-receipt)
+      shift
+      [ "$#" -gt 0 ] || { echo "fleet-canary: --verify-receipt requires a path" >&2; exit 2; }
+      verify_path=$1
+      ;;
+    --self-test) self_test_requested=true ;;
+    --help|-h) usage; exit 0 ;;
+    --*) echo "fleet-canary: unknown option $1" >&2; usage >&2; exit 2 ;;
+    *) consumer_args+=("$1") ;;
+  esac
+  shift
+done
+
+if $self_test_requested; then
+  if $release_mode || $deep_run || $allow_advisories || [ -n "$verify_path" ] ||
+      [ "$receipt_path" != "$canonical_receipt" ] || [ "${#consumer_args[@]}" -ne 0 ]; then
+    echo "fleet-canary: --self-test combines with no other option" >&2
+    exit 2
+  fi
+  self_test
+  exit $?
+fi
+if [ -n "$verify_path" ]; then
+  if $release_mode || $deep_run || $allow_advisories ||
+      [ "$receipt_path" != "$canonical_receipt" ] || [ "${#consumer_args[@]}" -ne 0 ]; then
+    echo "fleet-canary: --verify-receipt combines with no run options or repo arguments" >&2
+    exit 2
+  fi
+  verify_receipt "$verify_path"
+  exit $?
+fi
+if $release_mode; then
+  require_jq
+  if $deep_run; then
+    echo "fleet-canary: --deep is an ordinary diagnostic and cannot combine with --release" >&2
+    exit 2
+  fi
+  if [ "${#consumer_args[@]}" -ne 0 ]; then
+    echo "fleet-canary: --release always certifies the complete manifest" >&2
+    exit 2
+  fi
+elif $allow_advisories || [ "$receipt_path" != "$canonical_receipt" ]; then
+  echo "fleet-canary: --allow-advisories and --receipt require --release" >&2
+  exit 2
+fi
+if $deep_run && [ "${#consumer_args[@]}" -ne 0 ]; then
+  echo "fleet-canary: --deep uses manifest annotations and cannot combine with explicit repos; append :<task> instead" >&2
+  exit 2
+fi
+
+plan_file=$(mktemp)
+records_file=$(mktemp)
+out_file=$(mktemp)
+repo_log_tmp=$(mktemp)
+pre_cert_file=$(mktemp)
+inner_records_file=$(mktemp)
+execution_plan=$(mktemp)
+trap 'rm -f "$plan_file" "$records_file" "$out_file" "$repo_log_tmp" "$pre_cert_file" "$inner_records_file" "$execution_plan"' EXIT
+
+if [ "${#consumer_args[@]}" -eq 0 ]; then
   while read -r slug annot _rest; do
     case "$slug" in ''|\#*) continue ;; esac
     case "$annot" in \#*) annot='' ;; esac
-    repo_dir="$sava_build_dir/../${slug##*/}"
-    if [ ! -d "$repo_dir" ]; then
-      echo "fleet-canary: SKIP $slug — no sibling checkout at $repo_dir" >&2
+    repo="$sava_build_dir/../${slug##*/}"
+    deep_task=""
+    if $deep_run; then case "$annot" in deep=*) deep_task=${annot#deep=} ;; esac; fi
+    if [ ! -d "$repo" ] && ! $release_mode; then
+      echo "fleet-canary: SKIP $slug — no sibling checkout at $repo" >&2
       continue
     fi
-    arg="$repo_dir"
-    if [ "$deep_run" = '--deep' ]; then
-      case "$annot" in deep=*) arg="$arg:${annot#deep=}" ;; esac
-    fi
-    set -- "$@" "$arg"
+    printf '%s\t%s\t%s\n' "$slug" "$repo" "$deep_task" >> "$plan_file"
   done < "$manifest"
-  if [ "$#" -eq 0 ]; then
-    echo "fleet-canary: nothing to run — no manifest repo has a sibling checkout" >&2
-    exit 2
+else
+  for arg in "${consumer_args[@]}"; do
+    repo=${arg%%:*}
+    deep_task=""
+    case "$arg" in *:*) deep_task=${arg#*:} ;; esac
+    slug=$(basename "$repo")
+    if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      remote=$(git -C "$repo" remote get-url origin 2>/dev/null || true)
+      detected_slug=$(origin_slug "$remote")
+      if [ -n "$detected_slug" ]; then slug=$detected_slug; fi
+    fi
+    printf '%s\t%s\t%s\n' "$slug" "$repo" "$deep_task" >> "$plan_file"
+  done
+fi
+[ -s "$plan_file" ] || { echo "fleet-canary: nothing to run" >&2; exit 2; }
+
+plugin_sha=$(git -C "$sava_build_dir" rev-parse HEAD)
+plugin_tree=$(git -C "$sava_build_dir" rev-parse 'HEAD^{tree}')
+plugin_origin=$(git -C "$sava_build_dir" remote get-url origin 2>/dev/null || true)
+run_dir=""
+run_id=""
+bundle_rel=""
+logs_dir=""
+certifications_dir=""
+plugin_publish_log="$out_file"
+
+if $release_mode; then
+  prepare_pointer_destination "$receipt_path"
+  runs_parent="$receipt_parent/fleet-canary-runs"
+  reject_symlink_components "$runs_parent" "fleet run directory"
+  mkdir -p "$runs_parent"
+  run_dir=$(mktemp -d "$runs_parent/run.XXXXXX")
+  run_id=$(basename "$run_dir")
+  bundle_rel="fleet-canary-runs/$run_id/receipt.json"
+  write_pointer "in_progress"
+  logs_dir="$run_dir/logs"
+  certifications_dir="$run_dir/certifications"
+  mkdir -p "$logs_dir" "$certifications_dir"
+  plugin_publish_log="$run_dir/plugin-publish.log"
+
+  preflight_failed=""
+  : > "$run_dir/preflight.tsv"
+  printf 'slug\tpath\tsha\torigin\tdirty\tresult\n' >> "$run_dir/preflight.tsv"
+  plugin_dirty=$(git -C "$sava_build_dir" status --porcelain --untracked-files=all)
+  if [ ! -x "$sava_build_dir/gradlew" ]; then
+    preflight_failed="$preflight_failed sava-build(gradlew_not_executable)"
+  fi
+  if [ "$(origin_slug "$plugin_origin")" != "$plugin_expected_slug" ]; then
+    preflight_failed="$preflight_failed sava-build(remote_mismatch)"
+  fi
+  if [ -n "$plugin_dirty" ]; then
+    printf '%s\n' "$plugin_dirty" > "$run_dir/plugin-dirty.txt"
+    preflight_failed="$preflight_failed sava-build(dirty)"
+  fi
+  while IFS=$'\t' read -r slug repo deep_task; do
+    repo_sha=""; remote=""; dirty=false; result=passed
+    if [ ! -d "$repo" ]; then
+      result=missing
+    elif [ ! -f "$repo/gradlew" ]; then
+      result=no_gradlew
+    elif [ ! -x "$repo/gradlew" ]; then
+      result=gradlew_not_executable
+    elif ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      result=not_git
+    else
+      repo_sha=$(git -C "$repo" rev-parse HEAD)
+      remote=$(git -C "$repo" remote get-url origin 2>/dev/null || true)
+      if [ -n "$(git -C "$repo" status --porcelain --untracked-files=all)" ]; then dirty=true; fi
+      if [ "$(origin_slug "$remote")" != "$slug" ]; then result=remote_mismatch
+      elif $dirty; then result=dirty
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$repo" "$repo_sha" "$remote" "$dirty" "$result" \
+      >> "$run_dir/preflight.tsv"
+    if [ "$result" = passed ]; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$repo" "$deep_task" "$repo_sha" "$remote" >> "$execution_plan"
+    else
+      preflight_failed="$preflight_failed $slug($result)"
+    fi
+  done < "$plan_file"
+  if [ -n "$preflight_failed" ]; then
+    write_pointer "failed"
+    echo "fleet-canary: release preflight FAILED:$preflight_failed" >&2
+    echo "fleet-canary: evidence: $run_dir" >&2
+    exit 1
+  fi
+else
+  cp "$plan_file" "$execution_plan"
+fi
+
+echo "fleet-canary: publishing 0.0.0-test from $sava_build_dir at $plugin_sha"
+if ! (cd "$sava_build_dir" && ./gradlew --console=plain \
+    publishSavaBuildTestPublicationToSavaTestRepoRepository) > "$plugin_publish_log" 2>&1; then
+  cat "$plugin_publish_log"
+  if $release_mode; then write_pointer "failed"; fi
+  echo "fleet-canary: local plugin publication failed" >&2
+  exit 1
+fi
+if $release_mode; then
+  if [ "$(git -C "$sava_build_dir" rev-parse HEAD)" != "$plugin_sha" ] ||
+      [ "$(git -C "$sava_build_dir" remote get-url origin 2>/dev/null || true)" != "$plugin_origin" ] ||
+      [ -n "$(git -C "$sava_build_dir" status --porcelain --untracked-files=all)" ]; then
+    write_pointer "failed"
+    echo "fleet-canary: plugin checkout changed during local publication" >&2
+    exit 1
   fi
 fi
-# Any other flag-shaped argument is refused, never treated as a repo dir: a
-# '--deep ../repo' invocation used to skip the flag as not-a-repo and end
-# green with the requested deep leg silently unexercised — green that
-# certifies nothing, the exact shape this script exists to refuse.
-for arg in "$@"; do
-  case "$arg" in
-    --*)
-      echo "fleet-canary: unrecognized flag '$arg' — '--deep' is only valid as the sole" \
-        "argument (manifest mode); for explicit repos, append :<pitestSuiteTask> to run a deep leg" >&2
-      exit 2
-      ;;
-  esac
-done
 
-echo "fleet-canary: publishing 0.0.0-test from $sava_build_dir"
-(cd "$sava_build_dir" && ./gradlew --console=plain publishSavaBuildTestPublicationToSavaTestRepoRepository) > /dev/null
+snapshot_certifications() {
+  local repo=$1 destination=$2 file
+  : > "$destination"
+  while IFS= read -r file; do
+    reject_symlink_components "$file" "inner PIT certification" || return 1
+    printf '%s\t%s\n' "$file" "$(sha256_file "$file")" >> "$destination"
+  done < <(find "$repo" -type f -path '*/build/hardening/pitest-certification.tsv' -print 2>/dev/null | sort)
+}
 
-out_file=$(mktemp)
-trap 'rm -f "$out_file"' EXIT
+collect_certifications() {
+  local slug=$1 repo=$2 previous_file=$3 output_file=$4 safe_slug=$5
+  local source relative destination relative_dest before_hash after_hash copy_hash suites plugin_hash running
+  local total_suites=0 count=0
+  : > "$output_file"
+  running=$(find "$repo" -type f -path '*/build/hardening/pitest-certification.running' -print \
+    2>/dev/null | sort)
+  if [ -n "$running" ]; then
+    echo "fleet-canary: $slug retained in-progress PIT certification sentinel(s):" >&2
+    printf '  %s\n' "$running" >&2
+    return 1
+  fi
+  while IFS= read -r source; do
+    reject_symlink_components "$source" "inner PIT certification" || return 1
+    suites=$(validate_inner_certification "$source") || {
+      echo "fleet-canary: invalid inner PIT certification: $source" >&2; return 1;
+    }
+    plugin_hash=$(inner_certification_plugin_sha "$source") || {
+      echo "fleet-canary: inconsistent plugin provenance: $source" >&2; return 1;
+    }
+    after_hash=$(sha256_file "$source")
+    before_hash=$(awk -F '\t' -v path="$source" '$1 == path { print $2; exit }' "$previous_file")
+    if [ "$suites" -gt 0 ] && [ -n "$before_hash" ] && [ "$before_hash" = "$after_hash" ]; then
+      echo "fleet-canary: hardeningCertify left stale evidence unchanged: $source" >&2
+      return 1
+    fi
+    relative=${source#"$repo"/}
+    case "$relative" in "$source"|../*|*/../*) echo "fleet-canary: certification escaped repo: $source" >&2; return 1 ;; esac
+    if ! printf '%s\n' "$relative" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+      echo "fleet-canary: certification has unsafe relative path: $source" >&2
+      return 1
+    fi
+    relative_dest="certifications/$safe_slug/$relative"
+    destination="$run_dir/$relative_dest"
+    reject_symlink_components "$destination" "retained PIT certification" || return 1
+    mkdir -p "$(dirname "$destination")"
+    cp "$source" "$destination"
+    copy_hash=$(sha256_file "$destination")
+    if [ "$copy_hash" != "$after_hash" ]; then
+      echo "fleet-canary: certification changed while being retained: $source" >&2
+      return 1
+    fi
+    jq -cn --arg path "$relative_dest" --arg sha256 "$copy_hash" \
+      --arg plugin_sha256 "$plugin_hash" --argjson suite_count "$suites" \
+      '{path:$path,sha256:$sha256,suite_count:$suite_count,
+        plugin_sha256:$plugin_sha256}' >> "$output_file"
+    total_suites=$((total_suites + suites))
+    count=$((count + 1))
+  done < <(find "$repo" -type f -path '*/build/hardening/pitest-certification.tsv' -print 2>/dev/null | sort)
+  if [ "$count" -eq 0 ] || [ "$total_suites" -eq 0 ]; then
+    echo "fleet-canary: $slug produced no mutation-suite certification evidence" >&2
+    return 1
+  fi
+}
+
+record_repo() {
+  local slug=$1 repo=$2 sha=$3 origin=$4 dirty_before=$5 dirty_after=$6
+  local tasks=$7 result=$8 output_hash=$9 findings=${10} log_file=${11} certifications_file=${12}
+  jq -cn \
+    --arg slug "$slug" --arg path "$repo" --arg sha "$sha" --arg origin "$origin" \
+    --argjson dirty_before "$dirty_before" --argjson dirty_after "$dirty_after" \
+    --arg tasks "$tasks" --arg result "$result" --arg output_sha256 "$output_hash" \
+    --arg findings "$findings" --arg log_file "$log_file" \
+    --slurpfile certifications "$certifications_file" \
+    '{slug:$slug,path:$path,sha:$sha,origin:$origin,
+      dirty_before:$dirty_before,dirty_after:$dirty_after,
+      tasks:($tasks|split("\n")|map(select(length>0))),result:$result,
+      output_sha256:$output_sha256,findings:$findings,log_file:$log_file,
+      certifications:$certifications}' >> "$records_file"
+}
 
 failed=""
 warned=""
-for arg in "$@"; do
-  repo="${arg%%:*}"
-  deep_task=""
-  case "$arg" in *:*) deep_task="${arg#*:}" ;; esac
-  if [ ! -f "$repo/gradlew" ]; then
-    echo "fleet-canary: SKIP $repo — no gradlew" >&2
-    continue
-  fi
-  # Suite names from committed pitest config; every registered suite with a
-  # baseline or an audited set has a Debt task.
-  tasks=$(find "$repo" -type d -name build -prune -o \
-      \( -name '*-accepted.csv' -o -name '*-timeouts.csv' \) -path '*/config/pitest/*' -print \
-    | sed -e 's|.*/||' -e 's|-accepted\.csv$||' -e 's|-timeouts\.csv$||' \
-    | sort -u \
-    | awk '{ print "pitest" toupper(substr($0, 1, 1)) substr($0, 2) "Debt" }')
-  if [ -z "$tasks" ]; then
-    # Still worth a run: plugin application and settings-snippet compatibility
-    # break loudest in repos with nothing else to check.
-    echo "fleet-canary: $repo — no pitest baselines; plugin-resolution smoke test only"
-    tasks="help"
+while IFS=$'\t' read -r slug repo deep_task pre_sha pre_origin; do
+  repo_result=passed
+  dirty_before=false
+  dirty_after=false
+  tasks=""
+  recorded_tasks=""
+  repo_sha=${pre_sha:-}
+  remote=${pre_origin:-}
+  if $release_mode; then
+    safe_slug=$(printf '%s' "$slug" | tr '/:' '__')
+    log_file="logs/$safe_slug.log"
+    repo_log="$run_dir/$log_file"
+    reject_symlink_components "$repo_log" "consumer log"
+    : > "$repo_log"
+    snapshot_certifications "$repo" "$pre_cert_file"
   else
-    # Hardening repos also check their AGENTS.md template marker against THIS
-    # checkout's digest: a template edit breaks every consumer's 'check' at
-    # bump time by design, and the canary is where that obligation should be
-    # announced — as a per-repo ADVISORY naming the marker dance (matched by
-    # the reprint filter above) — before the release creates it, not one repo
-    # at a time after. Advisory, not a failure: under -PsavaBuildLocalRepo a
-    # stale marker is the expected state — the repo acknowledges a released
-    # digest, and this checkout's has not shipped. Failing here forced repos
-    # to acknowledge unreleased digests, which wedged their 'check' against
-    # every published plugin until the release landed. fuzzWorkflowInSync
-    # rides along: quiet in repos without a weekly soak, and a sub-second
-    # static check that every registered fuzz target is actually in the soak's
-    # task list where one exists.
-    tasks="$tasks
-agentsTemplateInSync
-fuzzWorkflowInSync"
-  fi
-  echo "fleet-canary: $repo — $(echo "$tasks" | tr '\n' ' ')"
-  if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" $tasks) > "$out_file" 2>&1; then
-    failed="$failed $repo"
-    echo "fleet-canary: FAILED $repo — full output:"
-    cat "$out_file"
-  elif ! grep -qF "$resolution_notice" "$out_file"; then
-    # Green, but this checkout's plugin never ran: nothing was canaried, and
-    # reporting the repo green would be the canary's own version of the false
-    # certification the strict flags refuse.
-    failed="$failed $repo"
-    echo "fleet-canary: FAILED $repo — build green but 0.0.0-test was never resolved" \
-      "(settings snippet predating -PsavaBuildLocalRepo? see README's canonical form)"
-  fi
-  # Reprint what a person must review: the hardening warnings, if any.
-  findings=$(reprint_findings "$findings_pattern" "$out_file" || true)
-  if [ -n "$findings" ]; then
-    warned="$warned $repo"
-    echo "$findings"
-  fi
-
-  # Deep leg: two real runs of one suite so the verify compares against a stash
-  # THIS checkout's plugin wrote, both rounds' verify output held to the same
-  # review — round 1 owns the boundary messages (a stash-format reset prints
-  # once and rewrites), round 2 the first real comparison. --rerun-tasks on
-  # BOTH rounds: an up-to-date pitest task reuses a prior report and the stash
-  # never cycles at all.
-  if [ -n "$deep_task" ]; then
-    echo "fleet-canary: $repo — deep leg: $deep_task twice (real mutation runs)"
-    deep_findings=""
-    for round in 1 2; do
-      if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" \
-          --rerun-tasks "$deep_task") > "$out_file" 2>&1; then
-        failed="$failed $repo(deep$round)"
-        echo "fleet-canary: FAILED $repo — deep leg round $round; full output:"
-        cat "$out_file"
-        break
-      fi
-      # drift/flip/reset lines are exactly what the deep leg exists to surface;
-      # they are load-judgment for a person, never failures. Filtered per round —
-      # the stash-format reset notice prints on round 1 only, and a shared output
-      # file would let round 2 overwrite it before a single filter saw it.
-      round_findings=$(reprint_findings "$findings_pattern|$deep_pattern" "$out_file" || true)
-      if [ -n "$round_findings" ]; then
-        deep_findings="$deep_findings$round_findings"$'\n'
-      fi
-    done
-    if [ -n "$deep_findings" ]; then
-      warned="$warned $repo(deep)"
-      printf '%s' "$deep_findings"
+    log_file=""
+    repo_log="$repo_log_tmp"
+    : > "$repo_log"
+    if [ ! -d "$repo" ]; then repo_result=missing
+    elif [ ! -f "$repo/gradlew" ]; then repo_result=no_gradlew
+    elif ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then repo_result=not_git
+    else
+      repo_sha=$(git -C "$repo" rev-parse HEAD)
+      remote=$(git -C "$repo" remote get-url origin 2>/dev/null || true)
+      if [ -n "$(git -C "$repo" status --porcelain --untracked-files=all)" ]; then dirty_before=true; fi
     fi
   fi
-done
 
-echo
+  if [ "$repo_result" = passed ]; then
+    if $release_mode; then
+      if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" tasks --all) \
+          > "$out_file" 2>&1; then
+        repo_result=task_discovery_failed
+      else
+        if ! grep -qF "$resolution_notice" "$out_file"; then
+          repo_result=resolution_missing
+        elif awk '{ name=$1; sub(/^.*:/, "", name); if (name == "hardeningCertify") found=1 }
+            END { exit found ? 0 : 1 }' "$out_file"; then
+          tasks="hardeningCertify"
+        else
+          repo_result=certification_task_missing
+        fi
+      fi
+      cat "$out_file" >> "$repo_log"
+    else
+      tasks=$(find "$repo" -type d -name build -prune -o \
+          \( -name '*-accepted.csv' -o -name '*-timeouts.csv' \) -path '*/config/pitest/*' -print \
+        | sed -e 's|.*/||' -e 's|-accepted\.csv$||' -e 's|-timeouts\.csv$||' \
+        | sort -u | awk '{ print "pitest" toupper(substr($0, 1, 1)) substr($0, 2) "Debt" }')
+      if [ -z "$tasks" ]; then tasks=help; fi
+    fi
+  fi
+
+  if [ "$repo_result" = passed ]; then
+    tasks="$tasks"$'\n'"agentsTemplateInSync"
+    recorded_tasks=$tasks
+    echo "fleet-canary: $slug@$repo_sha — $(echo "$tasks" | tr '\n' ' ')"
+    task_args=()
+    while IFS= read -r task; do [ -n "$task" ] && task_args+=("$task"); done <<< "$tasks"
+    if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" \
+        "${task_args[@]}") > "$out_file" 2>&1; then
+      repo_result=checks_failed
+    elif ! grep -qF "$resolution_notice" "$out_file"; then
+      repo_result=resolution_missing
+    fi
+    cat "$out_file" >> "$repo_log"
+  fi
+
+  if [ "$repo_result" = passed ] && [ -n "$deep_task" ]; then
+    for round in 1 2; do
+      recorded_tasks="$recorded_tasks"$'\n'"$deep_task (--rerun-tasks round $round)"
+      if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" \
+          --rerun-tasks "$deep_task") > "$out_file" 2>&1; then
+        repo_result="deep_round_${round}_failed"
+        cat "$out_file" >> "$repo_log"
+        break
+      elif ! grep -qF "$resolution_notice" "$out_file"; then
+        repo_result="deep_round_${round}_resolution_missing"
+        cat "$out_file" >> "$repo_log"
+        break
+      fi
+      cat "$out_file" >> "$repo_log"
+    done
+  fi
+
+  if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    current_sha=$(git -C "$repo" rev-parse HEAD)
+    current_origin=$(git -C "$repo" remote get-url origin 2>/dev/null || true)
+    if [ -n "$(git -C "$repo" status --porcelain --untracked-files=all)" ]; then dirty_after=true; fi
+    if $release_mode && [ "$repo_result" = passed ]; then
+      if [ "$current_sha" != "$repo_sha" ]; then repo_result=head_changed
+      elif [ "$current_origin" != "$remote" ] || [ "$(origin_slug "$current_origin")" != "$slug" ]; then
+        repo_result=remote_changed
+      elif $dirty_after; then repo_result=dirty_after
+      fi
+    fi
+  elif $release_mode && [ "$repo_result" = passed ]; then
+    repo_result=not_git_after
+  fi
+
+  if $release_mode && [ "$repo_result" = passed ]; then
+    if ! collect_certifications "$slug" "$repo" "$pre_cert_file" "$inner_records_file" "$safe_slug"; then
+      repo_result=certification_evidence_invalid
+    fi
+  else
+    : > "$inner_records_file"
+  fi
+  findings=$(reprint_findings "$advisory_pattern|$deep_pattern" "$repo_log" || true)
+  if [ -n "$findings" ]; then
+    warned="$warned $slug"
+    echo "$findings"
+    if $release_mode && ! $allow_advisories && [ "$repo_result" = passed ]; then
+      repo_result=advisories_unacknowledged
+    fi
+  fi
+  if $release_mode; then
+    output_hash=$(sha256_file "$repo_log")
+    record_repo "$slug" "$repo" "$repo_sha" "$remote" "$dirty_before" "$dirty_after" \
+      "$recorded_tasks" "$repo_result" "$output_hash" "$findings" "$log_file" "$inner_records_file"
+  fi
+  if [ "$repo_result" != passed ]; then
+    failed="$failed $slug($repo_result)"
+    echo "fleet-canary: FAILED $slug — $repo_result; log: $repo_log" >&2
+    if ! $release_mode; then cat "$repo_log" >&2; fi
+  fi
+done < "$execution_plan"
+
+if $release_mode; then
+  plugin_dirty_after=false
+  if [ "$(git -C "$sava_build_dir" rev-parse HEAD)" != "$plugin_sha" ] ||
+      [ "$(git -C "$sava_build_dir" remote get-url origin 2>/dev/null || true)" != "$plugin_origin" ] ||
+      [ -n "$(git -C "$sava_build_dir" status --porcelain --untracked-files=all)" ]; then
+    plugin_dirty_after=true
+    failed="$failed sava-build(changed_during_run)"
+  fi
+  receipt_result=passed
+  [ -z "$failed" ] || receipt_result=failed
+  receipt_tmp=$(mktemp "$run_dir/.receipt.XXXXXX")
+  generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  jq -n \
+    --arg generated_at "$generated_at" --arg run_id "$run_id" --arg result "$receipt_result" \
+    --arg plugin_sha "$plugin_sha" --arg plugin_tree "$plugin_tree" \
+    --arg plugin_origin "$plugin_origin" \
+    --argjson plugin_dirty_after "$plugin_dirty_after" \
+    --arg manifest_sha256 "$(sha256_file "$manifest")" \
+    --arg preflight_file "preflight.tsv" \
+    --arg preflight_sha256 "$(sha256_file "$run_dir/preflight.tsv")" \
+    --arg publish_log_file "plugin-publish.log" \
+    --arg publish_output_sha256 "$(sha256_file "$plugin_publish_log")" \
+    --argjson advisories_acknowledged "$allow_advisories" \
+    --slurpfile repositories "$records_file" \
+    '{schema:2,kind:"fleet-canary-receipt",mode:"release",run_id:$run_id,
+      generated_at:$generated_at,result:$result,
+      plugin:{sha:$plugin_sha,tree:$plugin_tree,origin:$plugin_origin,
+        dirty_before:false,dirty_after:$plugin_dirty_after},
+      manifest_sha256:$manifest_sha256,
+      preflight_file:$preflight_file,preflight_sha256:$preflight_sha256,
+      publish_log_file:$publish_log_file,
+      publish_output_sha256:$publish_output_sha256,
+      advisories_acknowledged:$advisories_acknowledged,repositories:$repositories}' > "$receipt_tmp"
+  mv "$receipt_tmp" "$run_dir/receipt.json"
+  receipt_hash=$(sha256_file "$run_dir/receipt.json")
+  write_pointer "$receipt_result" "$receipt_hash"
+  echo "fleet-canary: evidence bundle: $run_dir"
+  echo "fleet-canary: canonical pointer: $receipt_path"
+fi
+
 if [ -n "$failed" ]; then
-  echo "fleet-canary: FAILED:$failed"
+  echo "fleet-canary: FAILED:$failed" >&2
   exit 1
 fi
 if [ -n "$warned" ]; then
-  echo "fleet-canary: green, with advisory findings in:$warned (reprinted above — advisory, not failures)"
+  if $release_mode; then
+    echo "fleet-canary: release-certified with reviewed advisory findings in:$warned"
+  else
+    echo "fleet-canary: green, with advisory findings in:$warned"
+  fi
 else
   echo "fleet-canary: green — no failures, no advisory findings"
 fi

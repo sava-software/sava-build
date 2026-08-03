@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * The advisories this collects never fail a build by design — load can time out any
  * mutant, a cause can legitimately land after its row — but "advisory" was becoming
  * "invisible": a full gate runs a dozen suites, so a warning from the third one sits
- * several hundred lines above the last line of output, and the pre-release gate is the
+ * several hundred lines above the last line of output, and full certification is the
  * only place these checks run at all (CI runs 'check', which has no mutation suites in
  * it). A reviewer-stop nobody scrolls back to is not a stop.
  *

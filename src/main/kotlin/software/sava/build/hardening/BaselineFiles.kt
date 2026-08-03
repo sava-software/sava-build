@@ -23,12 +23,22 @@ internal object BaselineFiles {
 
   fun writeAtomically(target: File, content: String) {
     target.parentFile.mkdirs()
-    val tmp = File(target.parentFile, "${target.name}.tmp")
-    tmp.writeText(content)
+    // A fixed `<target>.tmp` races across Gradle processes: one writer can move the
+    // shared temp file while another is still about to replace the target. Keep the
+    // staging file beside the target for the atomic rename, but make it unique to
+    // this writer.
+    val tmp = Files.createTempFile(target.parentFile.toPath(), "${target.name}.", ".tmp").toFile()
     try {
-      Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    } catch (_: AtomicMoveNotSupportedException) {
-      Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+      tmp.writeText(content)
+      try {
+        Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+      } catch (_: AtomicMoveNotSupportedException) {
+        Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+      }
+    } finally {
+      // Normally the move consumed the temp. Clean up only the unique file owned by
+      // this invocation if writing or moving failed.
+      Files.deleteIfExists(tmp.toPath())
     }
   }
 }

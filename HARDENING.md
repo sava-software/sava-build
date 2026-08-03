@@ -11,11 +11,11 @@ arguing with its rule — the counter-argument has usually been tried.
 
 ## This work is first-party and defensive
 
-The repos applying this process are libraries and services their authors own
-and publish. Hardening exists to find and fix our own defects before they
-reach a release: mutation testing, fuzzing, crash triage, and the analysis
-around them all target code we wrote, in our own repository, and their output
-is tests and fixes.
+The repos applying this process are libraries, services, and applications their
+maintainers own and release or deploy. Hardening exists to find and fix our own
+defects before they reach users: mutation testing, fuzzing, crash triage, and the
+analysis around them all target code we wrote, in our own repository, and their
+output is tests and fixes.
 
 Some of the vocabulary overlaps with offensive tooling — fuzzing a parser,
 minimizing a crash, reasoning about malformed input from an untrusted peer,
@@ -41,10 +41,34 @@ affect — not by habit in either direction:
 |---|---|---|
 | Inner loop | the module's `test` (or `--tests` for the touched classes) | The change works. |
 | Before handing off a change | the `pitest<Suite>`(s) whose mutated code the change can reach | No new unkilled mutants where the change lives. |
-| Before a release | `qualityGate` on every module (`-PnoMutationHistory` if arcmutate history is active), long fuzz runs (`fuzz<Target> -PmaxFuzzTime=<seconds>`), jmh A/B vs the previous release | Nothing regressed anywhere; no parser crashes at depth; no performance regression. |
+| Before a release | `hardeningCertify` on every module; an explicit local `fuzzAll -PmaxFuzzTime=<seconds>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
+
+A release command without provenance is not durable evidence. Record the repository
+commit, whether the tree was clean before and after, the exact task selectors and
+properties (especially `-PnoMutationHistory` and `-PmaxFuzzTime`), the exit result,
+and a digest of the retained log. An explicit local run is valid; it does not need a
+scheduled workflow or an arbitrary soak window. For a `sava-build` plugin release,
+`tools/fleet-canary.sh --release` and `tools/local-fuzz.sh --release --seconds <N>`
+make those records across the complete consumer roster. Starting either command
+invalidates the canonical pass with an `in_progress` pointer; success points it at an
+immutable ignored run bundle containing the receipt, preflight, retained logs, and inner
+per-project evidence. Each script's `--verify-receipt
+build/hardening/<name>-receipt.json` form rehashes that bundle and validates still-present
+plugin and consumer checkouts without rerunning Gradle. Keep the selected run directories
+with the release record, not in the Git tree they certify *(casebook: the canary that
+skipped two consumers)*.
+
+For `sava-build`, these receipts are the release owner's gate **before merging the Release
+Please PR**. The tag workflow has no access to machine-local bundles and does not enforce
+them; its release-tooling step checks only shell syntax and the runners' self-tests before
+the existing publication job. That limitation must stay explicit in the release record.
 
 `qualityGate` = `test` + every registered `pitest<Suite>`, serialized, each
-finalized by its baseline verification. Its cost scales with the repo's total
+finalized by its baseline verification. `hardeningCertify` is the release form:
+it automatically disables mutation history, rejects scoped and record-changing
+flags before PIT starts, makes timeout drift and whole-production ownership strict,
+requires a provenance-bound report for every suite, and writes
+`build/hardening/pitest-certification.tsv`. Its cost scales with the repo's total
 mutant population, not with the size of the diff — so running it per change
 spends minutes re-learning results the change could not have moved. A suite
 produces new information only when the change can alter code it mutates or
@@ -118,7 +142,7 @@ run cheaper. The cost model is directly optimisable:
 
 *(casebook: loop-speed measurements)*
 
-### Incremental analysis needs arcmutate — free for open source, pre-wired
+### ArcMutate is an optional eligible-OSS accelerator, not a prerequisite
 
 Open-source PIT accepts `--historyInputLocation`/`--historyOutputLocation`
 but its only registered history factory throws — do not re-attempt on the
@@ -126,15 +150,30 @@ strength of the CLI flags existing, and note the failed run leaves the
 previous report in place for the verify step to read *(casebook: the 11×
 "speedup" that did no work)*.
 
-**With a licence, activation is dropping one file.** The plugin keys
-everything off `arcmutate-licence.txt` at the project or root-project
-directory: when present, `com.arcmutate:base` (version pinned in the plugin,
-overridable via `hardening.arcmutateBaseVersion`) joins PIT's classpath and
-every suite runs `+arcmutate_history` against a rolling per-suite file at
-`<module>/.pitest-history/<suite>.hist` — outside `build/` so `clean` cannot
-erase it, git-ignored as machine-local state. Without the file, no dependency
-and no flags: PIT runs exactly as open source, so unlicenced machines and CI
-are unaffected.
+The hardening plugin and this process are package-agnostic: any Java project can
+adopt them. ArcMutate changes only the speed of eligible mutation runs. Without a
+licence file, no ArcMutate dependency or flags are added and PIT runs fully from
+scratch using its open-source engine.
+
+**With an applicable licence, activation is dropping one file.** The plugin keys
+everything off `arcmutate-licence.txt` at the project or root-project directory:
+when present, `com.arcmutate:base` (version pinned in the plugin, overridable via
+`hardening.arcmutateBaseVersion`) joins PIT's classpath and every suite runs
+`+arcmutate_history` against a rolling per-suite file at
+`<module>/.pitest-history/<suite>.hist` — outside `build/` so `clean` cannot erase
+it, git-ignored as machine-local state.
+
+The certificate committed at the `sava-build` repository root is a signed,
+self-contained OSS certificate scoped to `software.sava.*`. It is not an access token.
+It is also not packaged into the published Gradle plugin, copied into consumers, or
+activated merely because a build applies the plugin. Each eligible public open-source
+Sava repository must deliberately copy the certificate to its own root before the
+presence-based activation above can see it. Package scope alone is not eligibility: the
+certificate does **not** apply to GLAM repositories, private `idl-src-gen`, or an
+unrelated adopter. Those projects use the same hardening process with open-source PIT
+unless they obtain a licence that applies to them. The unique
+`subscriptions.arcmutate.com` download URL is private and must stay out of source,
+documentation, logs, and commit messages.
 
 Two honesty rules come with it. Each assisted run announces itself — a
 lifecycle line at start and a `[history]` marker on the verify summary, read
@@ -142,14 +181,15 @@ from the report's own `.history-assisted` stamp so the tag describes the
 report on disk, not this invocation's settings — so a reused number is never
 mistaken for a re-earned one; with history active *fast is the expected
 state*, and suspicion transfers to the exit code and the marker. And
-**anything that writes or certifies the record runs `-PnoMutationHistory`**
+**anything that writes or certifies the record runs without mutation history**
 — enforced, not just prescribed: the record-writing flags
 (`-PupdateMutationBaseline`, `-PunionMutationBaseline`,
 `-PpruneMutationBaseline`, `-PinitTimeoutAudit`) refuse a history-assisted
-report outright, the pre-release gate re-earns every status from scratch,
-and the convergence method's runs refuse history too (two assisted runs
-agree by construction). Delete `.pitest-history/` to reset a machine's
-history wholesale.
+report outright, `hardeningCertify` disables history automatically and re-earns
+every status from scratch, and the convergence method's runs refuse history too
+(two assisted runs agree by construction). `-PnoMutationHistory` remains the
+explicit override for other fresh runs. Delete `.pitest-history/` to reset a
+machine's history wholesale.
 
 ## The mutation ratchet
 
@@ -187,6 +227,14 @@ would silently vouch for a baseline some older PIT wrote.
 Bumping deliberately means setting the suite's file to the new version and
 refreshing that suite, reading the churn as a real population diff rather
 than noise.
+
+One migration exception keeps an existing fleet adoptable: a committed baseline or
+timeout record with **no** version file is legacy-unversioned, not a claimed match to
+some other PIT version. `hardeningCertify` may accept it only after freshly running the
+current PIT and successfully verifying the record; its receipt names
+`legacy-unversioned` rather than pretending the stamp exists. The next deliberate
+record-writing run creates the version file. An existing stamp for a different PIT
+version still fails certification.
 
 The baseline is a ratchet: shrinking it is always an improvement, growing it
 requires a written reason. Repos may seed their first baseline with the full
@@ -262,10 +310,11 @@ and a ratchet failure groups new rows under the same two headings. `TIMED_OUT`
 counts as detected, matching PIT, but is named separately because that
 detection can flip (below). The percentage is rounded **down**, so it never
 reads better than it is; PIT's own line rounds, so the two can differ by a
-point while the counts agree. Error statuses (`RUN_ERROR`, `MEMORY_ERROR`)
-are *not* counted as detected — there PIT is more generous and the counts
-genuinely diverge; the split names them so the dip is explainable (see the
-transient-failures section).
+point while the counts agree. Terminal `NON_VIABLE`/`EQUIVALENT` outcomes are
+shown but not counted as detected. Error or unfinished statuses (`RUN_ERROR`,
+`MEMORY_ERROR`, `STARTED`, `NOT_STARTED`) fail the report closed: they describe
+an experiment that did not complete, not evidence that can certify or shrink a
+ratchet (see the transient-failures section).
 
 Baseline keys are **line-less** — `class,method,mutator,STATUS` — because line
 numbers churn whenever a mutated file is edited, and identity that churns
@@ -815,7 +864,9 @@ never by allowlist. An allowlist silently exempts every class added after it
 was written; a wildcard mutates a new class by default, and a forgotten
 exclusion costs a slower run, not a blind spot. Exclude: test/fuzz/fixture
 sources sharing the recompiled root, classes owned by another suite, and
-deliberate opt-outs — each with a comment saying why.
+deliberate opt-outs. Comments keep the local configuration readable, but a production
+opt-out is certification evidence only when it is recorded through
+`declineExclusionAudit(glob, reason)` as described below.
 
 **Give exclusions a trailing wildcard** (`*Tests*`, not `*Tests`): test
 classes hold nested helpers, and `*Tests` does not match
@@ -839,6 +890,14 @@ of magnitude more unkilled mutants — pre-existing debt becoming visible, not
 new debt. Seed it, label it untriaged, work it down. Cheap lie-detector for
 an allowlist: list the module's main classes, subtract what any suite's
 patterns match, read what is left.
+
+`mutationOwnershipAudit` makes that inventory executable: it enumerates compiled
+production classes and fails when a class is effectively owned by no suite, when an
+ownership decline has no reason, or when a decline has gone stale. A deliberate opt-out
+must first sit inside a suite's target universe, be excluded there, and carry
+`declineExclusionAudit(glob, reason)` naming what owns correctness instead. This audit is
+available directly and is mandatory under `hardeningCertify`; ordinary `qualityGate`
+stays compatible with repos while they complete whole-population adoption.
 
 ## What the ratchet cannot see
 
@@ -900,8 +959,11 @@ as more than it is. The generic edges:
 Each consuming repo should keep its own instance of this inventory (in
 `HARDENING_NOTES.md`), naming the repo-specific edges — the suites whose
 kills depend on background-thread ceilings, the feature-gated paths, the
-packages deliberately without a suite — because the generic list above
-cannot know them.
+temporary package gaps that still prevent certification, and the argued declines for
+code whose correctness lives elsewhere — because the generic list above cannot know
+them. The notes are supplemental context: they do not waive
+`mutationOwnershipAudit`, and a package deliberately outside mutation still needs to
+be targeted, excluded, and recorded with `declineExclusionAudit` before certification.
 
 ## The mutator set bounds what the ratchet can see
 
@@ -1222,121 +1284,35 @@ reference path: require the two to *agree* (or both to reject). Crash-only
 fuzzing cannot see a wrong answer *(casebook: the config differential
 harness)*.
 
-### The weekly soak
+### Local fuzz campaigns
 
-Campaigns only run when someone remembers to run them unless a schedule does
-the remembering; the seed replay guards inputs already found, never the code
-that changed since. The canonical workflow below (drop in as
-`.github/workflows/fuzz.yml`; swap `<N>` for the target count and the task
-list and artifact paths for the module's own) soaks every target weekly and
-uploads reproducers on failure.
+Fuzzing is an explicit local campaign, not a scheduled-workflow obligation. Run every
+target registered in a project with:
 
-The task list is machine-checked: `fuzzWorkflowInSync` (in `check` and the
-fleet canary) fails when the workflow exists but a registered target's task
-appears nowhere in it — the register-and-forget gap where a corpus replays in
-`check` forever while the target is never fuzzed, reading as covered. The
-match is word-boundary (`fuzzWs` does not pass on `fuzzWsFraming`), and a
-mention inside a yaml comment satisfies it deliberately: that is the escape
-hatch for a target kept out of the soak on purpose, with the comment holding
-the reason next to the task list it is absent from. No workflow at all stays
-quiet — adopting the soak is the repo's call, and this section is the nudge.
-
-Three details of the workflow itself are load-bearing, each one a review
-finding against a hand-rolled copy:
-
-- **`--continue`**, or the first crashing target skips every remaining
-  target — inverting the workflow's purpose on exactly the weeks it matters.
-  The build still exits nonzero at the end, so the upload sees every
-  target's findings.
-- **The timeout lives on the step, not the job.** A job-level timeout marks
-  the job *cancelled*, `if: failure()` never fires, and the findings upload
-  is silently lost; a step-level timeout fails the step, the job fails
-  normally, and the upload runs.
-- **The budget is bash integer math in its own step, with the guard.**
-  Workflow-expression arithmetic has no rounding, so it hands the runner a
-  fractional `timeout-minutes` whenever the seconds input is not a multiple
-  of 60 — an untested shape; the bash ceiling is a tested one. The regex
-  guard is load-bearing, not decoration: bash arithmetic resolves alphabetic
-  garbage as an unset variable — `abc` becomes 0 and the soak silently
-  truncates to the floor — so only the guard makes a bad input fail the
-  budget step instead of shrinking the campaign. It requires a *positive*
-  integer with no leading zeros: `0` is libFuzzer's run-forever sentinel
-  (the step would time out mid-target against a 30-minute budget), and a
-  leading zero is octal to bash but decimal to Jazzer — the two paths agree
-  by construction because both shapes are rejected.
-
-```yaml
-name: Fuzz
-
-on:
-  schedule:
-    # weekly soak; findings surface as workflow failures with the crash
-    # input attached — commit each one as a named seed + regression test
-    - cron: "17 5 * * 1"
-  workflow_dispatch:
-    inputs:
-      max-fuzz-time:
-        description: Seconds to run each fuzz target.
-        required: false
-        default: "900"
-
-permissions:
-  contents: read
-
-concurrency:
-  group: fuzz-${{ github.ref_name }}
-  cancel-in-progress: false
-
-jobs:
-  fuzz:
-    runs-on: ubuntu-latest
-    steps:
-      - id: setup
-        uses: sava-software/sava-build@main
-        with:
-          default-java-version: ${{ vars.JAVA_VERSION }}
-          jdk-src: ${{ vars.JDK_SRC }}
-          gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
-
-      # integer ceiling; <N> = number of fuzz targets in the run below. The
-      # regex guard is load-bearing: bash arithmetic resolves alphabetic
-      # garbage as an unset variable, silently budgeting 0 seconds of fuzzing
-      - id: budget
-        name: Compute fuzz time budget
-        env:
-          MAX_FUZZ_TIME: ${{ inputs.max-fuzz-time || '900' }}
-        run: |
-          [[ "$MAX_FUZZ_TIME" =~ ^[1-9][0-9]*$ ]] || { echo "max-fuzz-time must be positive whole seconds, no leading zeros: '$MAX_FUZZ_TIME'" >&2; exit 1; }
-          echo "timeout-minutes=$(( (<N> * MAX_FUZZ_TIME + 59) / 60 + 30 ))" >> "$GITHUB_OUTPUT"
-
-      - name: Fuzz
-        timeout-minutes: ${{ fromJSON(steps.budget.outputs.timeout-minutes) }}
-        run: >
-          ./gradlew --stacktrace --continue
-          -PjavaVersion=${{ steps.setup.outputs.java-version }}
-          -PmaxFuzzTime=${{ inputs.max-fuzz-time || '900' }}
-          :<module>:fuzz<TargetOne> :<module>:fuzz<TargetTwo>
-        # standalone Gradle invocations resolve dependencies themselves, so the
-        # credentials the reusable check workflow injects must be repeated here —
-        # a copy without them fails at configuration, before any fuzzing runs
-        env:
-          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
-          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
-
-      - name: Upload findings
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-findings
-          # Jazzer writes crash-*/oom-*/timeout-* reproducers into the module
-          # working directory; the working corpora hold the inputs that led there
-          path: |
-            <module>/crash-*
-            <module>/oom-*
-            <module>/timeout-*
-            <module>/build/fuzz/
-          if-no-files-found: ignore
+```shell
+./gradlew --continue fuzzAll -PmaxFuzzTime=900
 ```
+
+`fuzzAll` derives its dependencies directly from the `hardening.fuzz` registrations,
+so adding a target cannot leave a hand-maintained task list stale. It writes
+`build/hardening/local-fuzz.tsv` after all selected targets succeed. `--continue` lets
+independent targets finish after one finds a failure; Gradle still exits non-zero.
+Run one `fuzz<Target>` directly for focused iteration.
+
+For a `sava-build` release, `tools/local-fuzz.sh --release --seconds <N>` first preflights
+the complete fleet, publishes the candidate plugin into the local test repository, and
+requires every consumer to expose `fuzzAll` plus at least one registered target. It retains
+the publish log, per-repository logs, and every generated `local-fuzz.tsv` in an immutable,
+SHA-bound run bundle under `build/hardening/local-fuzz-runs/`; the canonical receipt is a
+pointer to that bundle. Ordinary mode accepts explicit repositories or available manifest
+siblings and alone may fall back to individual tasks or `help`. This is evidence from the
+candidate being released; no soak window or cron tick is required.
+
+`fuzzWorkflowInSync` remains only as a compatibility no-op for older consumer scripts.
+It is not part of `check`, and the plugin neither requires nor validates a GitHub fuzz
+workflow. A project may still schedule extra campaigns on its own terms, but that
+schedule is not certification. Every finding still becomes both a committed seed and
+a named regression test before the fix is considered complete.
 
 ## Determinism requirement
 
@@ -1459,11 +1435,10 @@ MINION_DIED, worker EOF, and the daemon log)*:
   abruptly; no `hs_err` file means killed from outside, not crashed.
   One-shot; re-run.
 - **`RUN_ERROR` on individual mutants** — the same shape per-mutant, observed
-  only under multi-suite load. The summary names these as `run_error (not
-  counted as detected)` — deliberately stricter than PIT — so the dip in
-  detected has a visible cause. Not gated, cannot fail the build; a
-  `RUN_ERROR` that *persists* on one mutant across quiet re-runs is not load
-  and deserves a look at the mutated bytecode.
+  only under multi-suite load. The report is refused rather than letting PIT's
+  detected score turn infrastructure failure into certification. Re-run quietly;
+  a `RUN_ERROR` that persists on one mutant is not load and deserves a look at
+  the mutated bytecode.
 
 **The evidence usually survives you discarding it.** The Gradle daemon keeps
 complete build output — including PIT minion stack traces — at
@@ -1475,8 +1450,9 @@ the recipe no longer has to be rediscovered per repo.
 ## Shared test scaffolding (generated)
 
 `hardening.generateTestSupport = true` generates six small classes into the
-test source set (package `software.sava.hardening.support` — fixed; it names
-the plugin, not the consuming repo), compiled inside the consuming module so
+test source set. They default to package `software.sava.hardening.support`; an
+unrelated adopter should set `hardening.testSupportPackage` to a package it owns
+to avoid a foreign or split package. They compile inside the consuming module so
 the module path and PIT's class path both just work: no published artifact,
 no version skew across repos, always plugin-synced. Off by default;
 regenerated every build.
@@ -1528,6 +1504,15 @@ regenerated every build.
 
 ## Adopting in a new repo
 
+The plugin has no package-namespace requirement. Any Java project can apply
+`software.sava.build.feature.hardening`; the ArcMutate certificate described above is
+an optional accelerator with its own, separate eligibility rules. A standalone adopter
+must resolve the versioned plugin marker. A JUnit Platform consumer configures its chosen
+engine normally, while a registered corpus additionally requires Jupiter for the generated
+replay test. The minimal hardening-only build in the README shows that shape without
+applying the other Sava conventions. Tool-bytecode releases follow the adopter's Java
+toolchain, and the generated replay/support sources require Java 17+.
+
 1. Apply `software.sava.build.feature.hardening` and register mutation suites
    (wildcard targets + exclusions) and fuzz targets. `hardeningInit` scaffolds
    the transcription: the `config/pitest/README.md` skeleton, the
@@ -1536,50 +1521,70 @@ regenerated every build.
 2. Pin any unseeded randomness in the test suite (see above).
 3. Seed the baselines: `./gradlew pitest<Suite> -PupdateMutationBaseline` per
    suite, commit `config/pitest/`.
-4. Add a `config/pitest/README.md` from an existing repo's copy: triaged
-   equivalents (initially empty) and the untriaged-debt note.
+4. Review the `config/pitest/README.md` written by `hardeningInit`, then record
+   triaged equivalents (initially empty) and any seeded untriaged debt there.
 5. Add the agent-instructions block below to the repo's `AGENTS.md` with the
    `hardening-template` marker (run `agentsTemplateInSync` — its message
-   prints the current digest), and decide who owns the pre-release
-   `qualityGate` run: wire it into CI if the runners can afford it, otherwise
+   prints the current digest). Read the template from the Git tag matching the plugin
+   version, never from moving `main`; a later `main` may carry a different, unreleased
+   digest. Then decide who owns the pre-release
+   `hardeningCertify` run: wire it into CI if the runners can afford it, otherwise
    record it as a release-checklist item run locally (see the lifecycle
    section) — and say which in `AGENTS.md`.
-6. If the repo will use arcmutate incremental analysis (free licences for
-   open source): add `.pitest-history/` to `.gitignore` — the plugin writes
-   there but cannot ignore it for you — and decide whether the licence
-   certificate is committed (usual for an OSS licence, so every clone gets
-   history) or kept machine-local. Drop `arcmutate-licence.txt` at the repo
-   root; nothing else changes.
+6. `hardeningInit` has already added `.pitest-history/` to `.gitignore`; leave that
+   harmless scaffold in place whether or not this repo is licensed. If the package,
+   repository visibility, and entitlement all apply to an eligible public Sava repo,
+   deliberately copy the `sava-build` repository-root certificate here and commit it
+   as `arcmutate-licence.txt`. The plugin never distributes it. Never copy the Sava OSS
+   certificate into GLAM, private `idl-src-gen`, or an unrelated project; all of them
+   work without it using open-source PIT, or may supply a different licence that applies
+   to them. Keep every private subscription download URL out of the repository and
+   commit messages.
+7. Register fuzz targets wherever arbitrary structured input can expose deeper parser,
+   codec, state-machine, or round-trip behavior, and own an explicit local `fuzzAll`
+   budget before release. A project with no meaningful fuzzable boundary may have zero
+   targets — `fuzzAll` then records a valid zero-target campaign — but should record that
+   judgment in its hardening notes. Scheduled GitHub campaigns are optional and are not
+   checked by the plugin.
+8. For a first-party `sava-build` consumer, add its canonical GitHub slug to
+   `tools/fleet-manifest.txt` in the plugin repo. A checkout that happens to be
+   absent during an ordinary canary is skipped; strict release certification
+   refuses the omission, which is why the roster must be explicit.
 
 ## Agent instructions template
 
-Copy into the repo's `AGENTS.md` (adjust file names). The copies drift: a
-downstream block is an adapted snapshot, and no tooling can diff cross-repo
-prose semantically. The plugin makes the drift **visible** instead of trying:
-it carries a digest of this template's blockquote lines, and every consuming
-module's `agentsTemplateInSync` task (wired into `check`) fails until the
-repo's `AGENTS.md` contains `<!-- hardening-template sha256:<digest> -->`
-acknowledging the current template — so editing the template below breaks
-every downstream `check` on its next plugin refresh, which is the point, and
-no list of downstream repos needs maintaining anywhere. The marker is an
-acknowledgment, not a checksum of the local block: update it only after
-re-diffing the block against the template and syncing or **acting on** each
-changed bullet — a new requirement may mean new code, not just new prose;
-that is how sava's corpus-replay gap went unnoticed until an unrelated
-repo's agent tripped over it. The failure message prints the digest to
-paste. One softening: under `-PsavaBuildLocalRepo` (the fleet canary, or any
-build validating an unreleased checkout) a stale marker warns instead of
-failing — the repo acknowledges a *released* digest and the checkout's has
-not shipped, so the marker dance lands with the release, never before it.
+Copy into the repo's `AGENTS.md` (adjust file names). Use `HARDENING.md` from the
+Git tag matching the installed plugin version, never moving `main`: the digest is
+baked into a release, while `main` may already describe the next one. The copies
+drift, and a downstream block is an adapted snapshot, so no tooling can diff
+cross-repo prose semantically. The plugin makes the drift **visible** instead of
+trying: it carries a digest of this template's blockquote lines. When a root
+`AGENTS.md` does not exist, `agentsTemplateInSync` (wired into `check`) warns and
+prints the marker because adoption still requires the deliberate copy step above.
+Once `AGENTS.md` exists, a missing or stale marker fails until the file contains
+`<!-- hardening-template sha256:<digest> -->` acknowledging the release's template.
+Thus editing the template below breaks already-adopted downstream checks on their
+next plugin refresh, which is the point, and no list of downstream repos needs
+maintaining anywhere. The marker is an acknowledgment, not a checksum of the local
+block: update it only after re-diffing the block against the release-matched template
+and syncing or **acting on** each changed bullet — a new requirement may mean new
+code, not just new prose; that is how sava's corpus-replay gap went unnoticed until
+an unrelated repo's agent tripped over it. The warning or failure prints the digest
+to paste. One softening: under `-PsavaBuildLocalRepo` (the fleet canary, or any build
+validating an unreleased checkout) a stale marker warns instead of failing — the repo
+acknowledges a *released* digest and the checkout's has not shipped, so the marker
+dance lands with the release, never before it. A marker-less existing file still
+fails in that mode; it is unadopted, not merely waiting for a release.
 
 > - **Scale verification to the change.** Iterate with the module's `test`
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated
 >   code the change can reach — including suites in dependent modules that
 >   call a changed API, and the owning suite for test-only edits (a weakened
->   test is exactly what the ratchet catches). The full `qualityGate` — every
->   suite, serialized, diffed against `config/pitest/` — is the pre-release
->   check, owned by CI or by the release checklist (this repo records which);
->   it is not the inner loop.
+>   test is exactly what the ratchet catches). The full `hardeningCertify` — every
+>   suite freshly observed, serialized, provenance-bound, diffed against
+>   `config/pitest/`, with strict timeout and ownership audits — is the pre-release
+>   check, owned by CI or by the release checklist (this repo records which); it is
+>   not the inner loop.
 > - A new unkilled mutant has exactly three legal outcomes: **kill it** with a
 >   test (prefer asserting the property it breaks over restating the
 >   implementation), **refactor** it out of existence, or **accept it** with a
@@ -1696,20 +1701,25 @@ not shipped, so the marker dance lands with the release, never before it.
 > - **A suite that got faster without getting narrower is a bug report.** Real
 >   speedups come from fewer mutants or faster covering tests; an unexplained
 >   one usually means the run did less than you think. Exception: a summary
->   carrying the `[history]` marker is arcmutate incremental reuse and fast is
->   expected — but the pre-release gate still runs with `-PnoMutationHistory`
->   to re-earn every status from scratch.
+>   carrying the `[history]` marker is ArcMutate incremental reuse and fast is
+>   expected — but `hardeningCertify` automatically disables history and re-earns
+>   every status from scratch. The hardening process itself does not require an
+>   ArcMutate licence and applies to any Java package namespace.
 > - **Transient infra failures are not results.** PIT `MINION_DIED` fails
 >   before writing a report, so it cannot corrupt one — re-run the suite; a
 >   Gradle-worker `EOFException` death is the same shape, and a per-mutant
->   `RUN_ERROR` under load is the same shape smaller (the summary names it,
->   and it is not counted as detected). The daemon log
+>   `RUN_ERROR` under load is the same shape smaller (the hardening parser refuses
+>   the report rather than certifying PIT's detected score). The daemon log
 >   (`~/.gradle/daemon/<version>/daemon-<pid>.out.log`) keeps a failed build's
 >   full output even when the shell discarded it — read it before calling a
 >   failure unexplained.
 > - Fuzz findings become a committed seed input **and** a named regression
 >   test, never just a fix — and the committed corpus is replayed by a unit
 >   test inside `check`, so it cannot rot between fuzz runs.
+> - **Run fuzz campaigns explicitly and locally.** `fuzzAll` is derived from every
+>   registered target, so it cannot drift from a hand-written workflow task list;
+>   set and record `-PmaxFuzzTime=<seconds>` before release. Scheduled GitHub fuzz
+>   workflows are optional and are not release evidence.
 > - **When one thing has two representations, fuzz the differential.** Two
 >   parsers for one config, an encode/decode round trip, a fast path beside a
 >   reference path: assert the two *agree* rather than that neither crashes.

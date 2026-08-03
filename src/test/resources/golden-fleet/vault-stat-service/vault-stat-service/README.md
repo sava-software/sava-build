@@ -142,8 +142,9 @@ Two observations worth keeping, because both look like defects and are not:
   gate run out of six reported 45 survivors and one unbaselined row; three
   solo runs and two later gate runs all report 44, and a `RUN_ERROR` was
   independently observed in another run on this machine under load. A
-  `RUN_ERROR` is not counted as detected, so it surfaces as an unkilled row.
-  Re-run before touching a baseline — never refresh to absorb one.
+  `RUN_ERROR` is not valid mutation evidence, so the hardening parser now
+  rejects the entire report. Re-run before touching a baseline — never refresh
+  to absorb one.
 - **`pitestModeCompare` reported `0 uninsured boundary flip(s)`** across solo
   and gate on the pre-split suites (see below); the post-split benign flip
   does not change that conclusion, since a `KILLED`↔`TIMED_OUT` pair is

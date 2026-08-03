@@ -3,12 +3,15 @@ import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.BaselineNotes
 import software.sava.build.hardening.ExclusionAudit
 import software.sava.build.hardening.HardeningAdvisoryLog
+import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
 import software.sava.build.hardening.Mutant
 import software.sava.build.hardening.MutantStatus
 import software.sava.build.hardening.MutatorAdvice
+import software.sava.build.hardening.PitestEvidence
+import software.sava.build.hardening.PitestExecutionLock
 import software.sava.build.hardening.TimeoutAudit
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
@@ -16,12 +19,31 @@ import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.UUID
+
+fun requireSafeHardeningName(kind: String, name: String): String {
+  if (!name.matches(Regex("[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"))) {
+    throw GradleException(
+        "$kind name '$name' is unsafe — use a simple name which starts and ends with a letter or " +
+            "digit and contains only letters, digits, '.', '_' or '-'")
+  }
+  return name
+}
+
+fun requireJavaQualifiedName(kind: String, name: String, requirePackage: Boolean = false): String {
+  if (!javax.lang.model.SourceVersion.isName(name) || (requirePackage && '.' !in name)) {
+    throw GradleException(
+        "$kind '$name' must be a " +
+            (if (requirePackage) "dotted Java package name" else "qualified Java name"))
+  }
+  return name
+}
 
 plugins {
   id("java")
 }
 
-// PIT mutation testing and Jazzer coverage-guided fuzzing for hand-picked classes,
+// PIT mutation testing and Jazzer coverage-guided fuzzing with explicit production ownership,
 // configured via the 'hardening' extension. The main and test sources are recompiled into
 // one plain classpath root per tool, without module-info: 'compileForPitest' at
 // 'hardening.mutationBytecodeRelease' into 'build/mutation-classes', and 'compileForFuzz'
@@ -33,13 +55,18 @@ plugins {
 // Default tool versions come from gradle/libs.versions.toml via the generated
 // HardeningToolDefaults, so Dependabot can keep them current.
 val hardening = extensions.create<HardeningExtension>("hardening")
-hardening.bytecodeRelease.convention(25)
+// Follow the consuming build instead of assuming Sava's current JDK. This makes the
+// standalone plugin usable on Java 17/21 while retaining an explicit override for a
+// tool whose bundled ASM lags the selected toolchain.
+hardening.bytecodeRelease.convention(
+    javaToolchains.compilerFor(java.toolchain).map { it.metadata.languageVersion.asInt() })
 hardening.mutationBytecodeRelease.convention(hardening.bytecodeRelease)
 hardening.pitestVersion.convention(HardeningToolDefaults.PITEST)
 hardening.pitestJunit5PluginVersion.convention(HardeningToolDefaults.PITEST_JUNIT5_PLUGIN)
 hardening.jazzerVersion.convention(HardeningToolDefaults.JAZZER)
 hardening.arcmutateBaseVersion.convention(HardeningToolDefaults.ARCMUTATE_BASE)
 hardening.generateTestSupport.convention(false)
+hardening.testSupportPackage.convention("software.sava.hardening.support")
 hardening.testSupportExcludes.convention(emptyList())
 hardening.recompileExcludes.convention(emptyList())
 
@@ -49,9 +76,12 @@ hardening.recompileExcludes.convention(emptyList())
 // factory throws — so everything below keys off the licence certificate: without an
 // 'arcmutate-licence.txt' at the project or root-project directory, no dependency is
 // added and no flags are passed, and PIT runs exactly as open source.
-// '-PnoMutationHistory' forces a from-scratch run with the licence present; the
-// pre-release quality gate is expected to use it (see HARDENING.md).
-val mutationHistory = (layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile ||
+// '-PnoMutationHistory' forces a from-scratch run with the licence present.
+// Certification is a fresh observation by definition. Whether this invocation is a
+// certification is decided at execution time by hardeningCertifyPreflight's build
+// service, so aliases, abbreviations and aggregate tasks cannot accidentally retain
+// history merely because their command-line spelling differs.
+val mutationHistoryAvailable = (layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile ||
     rootProject.layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile) &&
     !providers.gradleProperty("noMutationHistory").isPresent
 
@@ -60,7 +90,7 @@ val pitest = configurations.create("pitest") {
   defaultDependencies {
     add(project.dependencies.create("org.pitest:pitest-command-line:${hardening.pitestVersion.get()}"))
     add(project.dependencies.create("org.pitest:pitest-junit5-plugin:${hardening.pitestJunit5PluginVersion.get()}"))
-    if (mutationHistory) {
+    if (mutationHistoryAvailable) {
       add(project.dependencies.create("com.arcmutate:base:${hardening.arcmutateBaseVersion.get()}"))
     }
   }
@@ -112,6 +142,182 @@ val qualityGate = tasks.register("qualityGate") {
   group = "verification"
   description = "Unit tests plus every PIT suite with mutation-baseline verification."
   dependsOn(tasks.named("test"))
+  val mutateOnly = providers.gradleProperty("mutateOnly")
+  doFirst {
+    if (mutateOnly.isPresent) {
+      throw GradleException(
+          "qualityGate cannot certify a scoped mutation population (-PmutateOnly=${mutateOnly.get()}). " +
+              "Run the gate without -PmutateOnly so every registered suite measures its full population."
+      )
+    }
+  }
+}
+
+// A release-grade gate is intentionally separate from the permissive developer gate.
+// Its preflight is a dependency of every PIT execution selected for certification, so
+// a record-writing/scoped flag is refused before it can run or change evidence.
+val hardeningCertificationSession = gradle.sharedServices.registerIfAbsent(
+    "hardeningCertificationSession", HardeningCertificationSession::class
+) {}
+// Each suite adds a lazily rendered snapshot of the inputs PIT would consume now.
+// Report consumers declared before suite registration (certification and mode
+// snapshots) use this to compare the complete manifest, not just its report hash.
+val currentPitestEvidenceBySuite = objects.mapProperty<String, String>()
+val certificationReceiptFile = layout.buildDirectory.file("hardening/pitest-certification.tsv")
+val certificationReceiptRunning = layout.buildDirectory.file("hardening/pitest-certification.running")
+val hardeningCertifyPreflight = tasks.register("hardeningCertifyPreflight") {
+  description = "Internal to hardeningCertify: refuses flags that make the run partial or state-changing."
+  usesService(hardeningCertificationSession)
+  val forbidden = listOf(
+      "mutateOnly",
+      "updateMutationBaseline",
+      "unionMutationBaseline",
+      "pruneMutationBaseline",
+      "initTimeoutAudit",
+      "unionModeFlips",
+      "trialMutators",
+      "pitestMode",
+  ).associateWith { providers.gradleProperty(it) }
+  doLast {
+    // Invalidate any prior receipt before this invocation can consume or mutate PIT
+    // evidence. The sentinel deliberately survives every failure/interruption and is
+    // retired only after the new receipt commits atomically.
+    certificationReceiptFile.get().asFile.delete()
+    certificationReceiptRunning.get().asFile.also {
+      it.parentFile.mkdirs()
+      it.writeText("starting\n")
+    }
+    val present = forbidden.filterValues { it.isPresent }.keys.sorted()
+    val excluded = gradle.startParameter.excludedTaskNames.sorted()
+    if (present.isNotEmpty() || excluded.isNotEmpty()) {
+      throw GradleException(
+          "hardeningCertify is observation-only and full-population; remove " +
+              buildList {
+                if (present.isNotEmpty()) add("incompatible flag(s): " + present.joinToString(", ") { "-P$it" })
+                if (excluded.isNotEmpty()) add("task exclusion(s): " + excluded.joinToString(", ") { "-x $it" })
+              }.joinToString("; "))
+    }
+    val sessionId = hardeningCertificationSession.get().activate()
+    certificationReceiptRunning.get().asFile.writeText("session\t$sessionId\n")
+  }
+}
+
+val certificationSuiteNames = mutableListOf<String>()
+val hardeningCertify = tasks.register("hardeningCertify") {
+  group = "verification"
+  description = "Fresh, full, strict mutation certification; writes build/hardening/pitest-certification.tsv."
+  dependsOn(qualityGate)
+  dependsOn(hardeningCertifyPreflight)
+  usesService(hardeningCertificationSession)
+  val reportRoot = layout.buildDirectory.dir("reports/pitest")
+  val receiptFile = certificationReceiptFile
+  val receiptRunning = certificationReceiptRunning
+  val configDir = layout.projectDirectory.dir("config/pitest")
+  val certifiedProjectPath = project.path
+  val pitVersion = hardening.pitestVersion
+  val currentEvidenceBySuite = currentPitestEvidenceBySuite
+  doFirst {
+    if (!hardeningCertificationSession.get().isActive() || !receiptRunning.get().asFile.isFile) {
+      receiptFile.get().asFile.delete()
+      receiptRunning.get().asFile.also {
+        it.parentFile.mkdirs()
+        if (!it.isFile) it.writeText("invalid\n")
+      }
+      throw GradleException(
+          "hardeningCertify: certification preflight did not run; refusing to reuse an earlier receipt")
+    }
+  }
+  doLast {
+    val sessionId = hardeningCertificationSession.get().sessionId()
+        ?: throw GradleException("hardeningCertify: certification session is not active")
+    val receiptRows = mutableListOf<String>()
+    certificationSuiteNames.sorted().forEach { suiteName ->
+      val suiteDir = reportRoot.get().asFile.resolve(suiteName)
+      val report = suiteDir.resolve("mutations.csv")
+      val manifest = suiteDir.resolve(".evidence.tsv")
+      if (!report.isFile || !manifest.isFile) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' has no completed report/evidence pair — " +
+                "run the full suite in this certification invocation")
+      }
+      val evidence = try {
+        PitestEvidence.parse(manifest.readText())
+      } catch (e: IllegalArgumentException) {
+        throw GradleException("hardeningCertify: invalid evidence for '$suiteName': ${e.message}", e)
+      }
+      if (evidence.scope != PitestEvidence.FULL_SCOPE || evidence.historyAssisted) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' is not a fresh full observation " +
+                "(scope=${evidence.scope}, historyAssisted=${evidence.historyAssisted})")
+      }
+      if (evidence.reportSha256 != PitestEvidence.sha256(report)) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' report changed after its evidence manifest was written")
+      }
+      val expectedTemplate = currentEvidenceBySuite.get()[suiteName]?.let { PitestEvidence.parse(it) }
+          ?: throw GradleException(
+              "hardeningCertify: '$suiteName' has no current evidence definition")
+      val expectedEvidence = expectedTemplate.copy(
+          invocationId = evidence.invocationId,
+          reportSha256 = evidence.reportSha256,
+      )
+      val currentDifferences = evidence.differences(expectedEvidence)
+      if (currentDifferences.isNotEmpty()) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' inputs changed after verification — refusing to " +
+                "commit a stale receipt:\n" +
+                currentDifferences.joinToString("\n") { "  $it" })
+      }
+      try {
+        hardeningCertificationSession.get().requireVerified(certifiedProjectPath, suiteName, evidence)
+      } catch (e: IllegalStateException) {
+        throw GradleException("hardeningCertify: ${e.message}", e)
+      }
+      val baseline = configDir.file("$suiteName-accepted.csv").asFile
+      val timeouts = configDir.file("$suiteName-timeouts.csv").asFile
+      val stamp = configDir.file("$suiteName-pitest-version").asFile
+      val recordedPitVersion = stamp.takeIf { it.isFile }?.readText()?.trim()
+      if ((baseline.isFile || timeouts.isFile) &&
+          recordedPitVersion != null && recordedPitVersion != pitVersion.get()) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' committed records are not stamped for PIT ${pitVersion.get()}")
+      }
+      val hasCommittedRecord = baseline.isFile || timeouts.isFile
+      val recordProvenance = when {
+        recordedPitVersion != null -> recordedPitVersion
+        hasCommittedRecord -> "legacy-unversioned"
+        else -> "no-record"
+      }
+      if ((baseline.isFile || timeouts.isFile) && recordedPitVersion == null) {
+        logger.lifecycle(
+            "hardeningCertify: '$suiteName' committed record is legacy-unversioned; " +
+                "the fresh PIT ${pitVersion.get()} report verified its allowlist, and the next " +
+                "deliberate record write will adopt a version stamp")
+      }
+      receiptRows.add(
+          listOf(
+              "suite", suiteName, evidence.invocationId, evidence.reportSha256,
+              evidence.sourceSha256, evidence.classesSha256, evidence.configurationSha256,
+              evidence.pitestVersion, evidence.pluginSha256, evidence.toolClasspathSha256,
+              recordProvenance,
+          ).joinToString("\t"))
+    }
+    val receipt = buildString {
+      appendLine("schema\t3")
+      appendLine("project\t$certifiedProjectPath")
+      appendLine("session\t$sessionId")
+      appendLine("mode\tfresh-full-strict")
+      appendLine(
+          "columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\t" +
+              "configurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\t" +
+              "recordPitestVersion")
+      receiptRows.forEach(::appendLine)
+    }
+    BaselineFiles.writeAtomically(receiptFile.get().asFile, receipt)
+    receiptRunning.get().asFile.delete()
+    logger.lifecycle(
+        "hardeningCertify: ${certificationSuiteNames.size} suite(s) certified; receipt: ${receiptFile.get().asFile}")
+  }
 }
 
 // End-of-build summary for the verify tasks' advisory findings. The advisories never
@@ -122,6 +328,15 @@ val qualityGate = tasks.register("qualityGate") {
 val hardeningAdvisoryLog = gradle.sharedServices.registerIfAbsent(
     "hardeningAdvisoryLog", HardeningAdvisoryLog::class
 ) {}
+
+// `mustRunAfter` only orders tasks within one project. This service is registered on
+// the shared Gradle instance, so PIT worker pools are serialized across every module
+// selected in the build as well.
+val pitestExecutionLock = gradle.sharedServices.registerIfAbsent(
+    "hardeningPitestExecutionLock", PitestExecutionLock::class
+) {
+  maxParallelUsages.set(1)
+}
 
 // The agent-instructions template in HARDENING.md is copied (adapted) into each
 // consuming repo's AGENTS.md, and prose copies drift silently — a template change is
@@ -137,6 +352,7 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   description = "Fails when AGENTS.md has not acknowledged the current agent-instructions template in HARDENING.md."
   val agentsDoc = rootProject.layout.projectDirectory.file("AGENTS.md").asFile
   val expected = HardeningTemplateDigest.SHA256_12
+  val templateTask = if (project.path == ":") "hardeningAgentTemplate" else "${project.path}:hardeningAgentTemplate"
   // Set when a build resolves an unreleased sava-build checkout (the fleet canary's
   // '-PsavaBuildLocalRepo'). A stale marker under that flag is the expected state,
   // not a defect: the repo acknowledges the digest of a RELEASED plugin, and this
@@ -144,6 +360,9 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   // unreleased digests ahead of the release — which then wedged their 'check'
   // against every published plugin until the release landed and the pin was bumped.
   val validatingUnreleased = providers.gradleProperty("savaBuildLocalRepo").isPresent
+  val advisoryLog = hardeningAdvisoryLog
+  val advisoryScope = (if (project.path == ":") "" else "${project.path} ") + "agentsTemplateInSync"
+  usesService(advisoryLog)
   inputs.files(agentsDoc)
   inputs.property("templateDigest", expected)
   inputs.property("validatingUnreleased", validatingUnreleased)
@@ -151,9 +370,10 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
     if (!agentsDoc.isFile) {
       logger.warn(
           "agentsTemplateInSync: no AGENTS.md at $agentsDoc — copy the agent-instructions " +
-              "template from sava-build's HARDENING.md ('Adopting in a new repo') and add:\n" +
+              "template printed by './gradlew $templateTask' and add:\n" +
               "  <!-- hardening-template sha256:$expected -->"
       )
+      advisoryLog.get().record(advisoryScope, "AGENTS.md is missing")
       return@doLast
     }
     val doc = agentsDoc.readText()
@@ -166,24 +386,34 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
           "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.groupValues[1]}; this " +
               "unreleased checkout's is $expected — the marker dance lands with the release that ships " +
               "this digest, not before it. When bumping the plugin past that release, re-diff the " +
-              "AGENTS.md hardening block against HARDENING.md's template, then update the marker to:\n" +
+              "AGENTS.md hardening block against './gradlew $templateTask', then update the marker to:\n" +
               "  <!-- hardening-template sha256:$expected -->"
       )
+      advisoryLog.get().record(
+          advisoryScope, "AGENTS.md acknowledges an older hardening template during unreleased validation")
       return@doLast
     }
     throw GradleException(
         if (stale == null) {
-          "AGENTS.md has no 'hardening-template' marker. Diff its hardening block against the " +
-              "agent-instructions template in sava-build's HARDENING.md, sync or act on what " +
+          "AGENTS.md has no 'hardening-template' marker. Diff its hardening block against " +
+              "the exact template printed by './gradlew $templateTask', sync or act on what " +
               "differs, then add:\n  <!-- hardening-template sha256:$expected -->"
         } else {
           "The shared agent-instructions template changed since this repo's AGENTS.md last " +
-              "acknowledged it (marker ${stale.groupValues[1]}, current $expected). Re-diff the " +
-              "AGENTS.md hardening block against the template in sava-build's HARDENING.md — a " +
+          "acknowledged it (marker ${stale.groupValues[1]}, current $expected). Re-diff the " +
+              "AGENTS.md hardening block against './gradlew $templateTask' — a " +
               "changed bullet may need code, not just prose — then update the marker to:\n" +
               "  <!-- hardening-template sha256:$expected -->"
         }
     )
+  }
+}
+tasks.register("hardeningAgentTemplate") {
+  group = "help"
+  description = "Prints the exact agent-instructions template carried by this plugin version."
+  doLast {
+    logger.quiet(HardeningTemplateDigest.TEMPLATE)
+    logger.quiet("<!-- hardening-template sha256:${HardeningTemplateDigest.SHA256_12} -->")
   }
 }
 tasks.named("check") { dependsOn(agentsTemplateInSync) }
@@ -205,15 +435,8 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
   description = "Internal to pitestConverge: snapshots round-one PIT reports and clears them."
   val reportsRoot = layout.buildDirectory.dir("reports/pitest")
   val snapshotRoot = convergeSnapshotDir
-  val historyAssisted = mutationHistory
   val names = convergeSuiteNames
   doLast {
-    if (historyAssisted) {
-      throw GradleException(
-          "pitestConverge proves nothing with arcmutate history active — two assisted runs " +
-              "agree by construction. Re-run with -PnoMutationHistory."
-      )
-    }
     val snapshot = snapshotRoot.get().asFile
     snapshot.deleteRecursively()
     snapshot.mkdirs()
@@ -222,10 +445,28 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
       if (!csv.isFile) {
         throw GradleException("pitestConverge: no round-one report for '$suiteName' at $csv")
       }
+      val evidenceFile = csv.parentFile.resolve(".evidence.tsv")
+      val historyAssisted = csv.parentFile.resolve(".history-assisted").isFile ||
+          (evidenceFile.isFile && try {
+            PitestEvidence.parse(evidenceFile.readText()).historyAssisted
+          } catch (e: IllegalArgumentException) {
+            throw GradleException("pitestConverge: invalid round-one evidence for '$suiteName': ${e.message}", e)
+          })
+      if (historyAssisted) {
+        throw GradleException(
+            "pitestConverge proves nothing when '$suiteName' round one is arcmutate-history-assisted — " +
+                "two assisted runs agree by construction. Re-run with -PnoMutationHistory.")
+      }
       if (csv.parentFile.resolve(".running").isFile) {
         throw GradleException(
             "pitestConverge: the '$suiteName' round-one report was left by an interrupted or " +
                 "failed run — a partial population cannot anchor the diff. Re-run the suites."
+        )
+      }
+      if (csv.parentFile.resolve(".scoped").isFile) {
+        throw GradleException(
+            "pitestConverge: the '$suiteName' round-one report was produced with -PmutateOnly — " +
+                "a scoped population cannot prove suite convergence. Re-run without -PmutateOnly."
         )
       }
       csv.copyTo(snapshot.resolve("$suiteName.csv"))
@@ -262,13 +503,22 @@ val pitestConverge = tasks.register("pitestConverge") {
                 "failed run — a partial population would read as mass flips. Re-run pitestConverge."
         )
       }
+      if (round2Csv.parentFile.resolve(".scoped").isFile) {
+        throw GradleException(
+            "pitestConverge: the '$suiteName' round-two report was produced with -PmutateOnly — " +
+                "a scoped population cannot prove suite convergence. Re-run without -PmutateOnly."
+        )
+      }
       val round2 = statuses(round2Csv)
       (round1.keys + round2.keys).sorted().forEach { key ->
         val before = round1[key] ?: emptyList()
         val after = round2[key] ?: emptyList()
         if (before != after) {
-          // only flips crossing the unkilled boundary can move the ratchet
-          val crossed = before.any { it in gated } != after.any { it in gated }
+          // Crossing is a gated-submultiset comparison, not a presence check:
+          // SURVIVED<->NO_COVERAGE changes the status-specific baseline, and a
+          // [KILLED,SURVIVED] -> [SURVIVED,SURVIVED] sibling flip grows its count
+          // without changing gated presence. Both can move the ratchet.
+          val crossed = before.filter { it in gated } != after.filter { it in gated }
           if (crossed) boundaryFlips++ else benignFlips++
           logger.lifecycle(
               "pitestConverge '$suiteName': $key — ${before.joinToString("/")} -> ${after.joinToString("/")}" +
@@ -367,14 +617,18 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
   val snapshotRoot = pitestModesRoot
   val names = convergeSuiteNames
   val mode = providers.gradleProperty("pitestMode")
+  val currentEvidenceBySuite = currentPitestEvidenceBySuite
   doLast {
     val label = mode.orNull ?: throw GradleException(
         "pitestModeSnapshot needs -PpitestMode=<label> naming how the suites just ran (e.g. solo, gate)"
     )
-    if (!label.matches(Regex("[A-Za-z0-9._-]+"))) {
-      throw GradleException("pitestModeSnapshot: '-PpitestMode=$label' — use letters, digits, '.', '_' or '-'")
+    requireSafeHardeningName("pitestModeSnapshot label", label)
+    val root = snapshotRoot.get().asFile.toPath().toAbsolutePath().normalize()
+    val destPath = root.resolve(label).normalize()
+    if (destPath.parent != root) {
+      throw GradleException("pitestModeSnapshot: '-PpitestMode=$label' resolves outside $root")
     }
-    val dest = snapshotRoot.get().asFile.resolve(label)
+    val dest = destPath.toFile()
     dest.deleteRecursively()
     dest.mkdirs()
     names.forEach { suiteName ->
@@ -403,6 +657,33 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
             "pitestModeSnapshot: the '$suiteName' report was produced with -PmutateOnly — a partial " +
                 "population is not an observation of this mode. Re-run the suites without -PmutateOnly."
         )
+      }
+      val evidenceFile = reportDir.resolve(".evidence.tsv")
+      if (evidenceFile.isFile) {
+        val evidence = try {
+          PitestEvidence.parse(evidenceFile.readText())
+        } catch (e: IllegalArgumentException) {
+          throw GradleException("pitestModeSnapshot: invalid evidence for '$suiteName': ${e.message}", e)
+        }
+        val expectedTemplate = currentEvidenceBySuite.get()[suiteName]
+            ?.let { PitestEvidence.parse(it) }
+            ?: throw GradleException(
+                "pitestModeSnapshot: '$suiteName' has no current evidence definition")
+        val expectedEvidence = expectedTemplate.copy(
+            invocationId = evidence.invocationId,
+            reportSha256 = PitestEvidence.sha256(csv),
+        )
+        val differences = evidence.differences(expectedEvidence)
+        if (differences.isNotEmpty()) {
+          throw GradleException(
+              "pitestModeSnapshot: '$suiteName' report/evidence pair no longer matches the " +
+                  "current build:\n" + differences.joinToString("\n") { "  $it" })
+        }
+        evidenceFile.copyTo(dest.resolve("$suiteName.evidence.tsv"))
+      } else {
+        logger.warn(
+            "pitestModeSnapshot: '$suiteName' has no completed-run evidence manifest — " +
+                "legacy snapshot accepted for N-1 migration; re-run under this plugin before unioning flips")
       }
       csv.copyTo(dest.resolve("$suiteName.csv"))
       reportDir.deleteRecursively()
@@ -445,6 +726,62 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
     val unionedNow = mutableListOf<String>()
     val deadRows = mutableListOf<String>()
     names.forEach { suiteName ->
+      val evidenceByMode = modes.mapNotNull { label ->
+        val file = snapshotRoot.get().asFile.resolve("$label/$suiteName.evidence.tsv")
+        if (file.isFile) label to PitestEvidence.parse(file.readText()) else null
+      }.toMap()
+      if (evidenceByMode.isNotEmpty() && evidenceByMode.size != modes.size) {
+        throw GradleException(
+            "pitestModeCompare: '$suiteName' mixes provenance-bound and legacy snapshots — " +
+                "clear build/pitest-modes and capture every mode again")
+      }
+      if (evidenceByMode.isNotEmpty()) {
+        val stableFingerprints = evidenceByMode.mapValues { (_, evidence) ->
+          listOf(
+              evidence.pitestVersion,
+              evidence.junitPluginVersion,
+              evidence.pluginSha256,
+              evidence.identitySchema,
+              evidence.javaVersion,
+              evidence.sourceSha256,
+              evidence.classesSha256,
+              evidence.classpathSha256,
+              evidence.toolClasspathSha256,
+              evidence.configurationSha256,
+              evidence.scope,
+              evidence.historyAssisted.toString(),
+          )
+        }
+        if (stableFingerprints.values.distinct().size != 1) {
+          throw GradleException(
+              "pitestModeCompare: '$suiteName' snapshots do not describe the same code, tools, " +
+                  "classpath, and suite configuration; mode flips cannot be separated from build churn:\n" +
+                  stableFingerprints.entries.joinToString("\n") { (label, values) ->
+                    "  $label: ${PitestEvidence.sha256(values.joinToString("\n"))}"
+                  })
+        }
+        modes.forEach { label ->
+          val csv = snapshotRoot.get().asFile.resolve("$label/$suiteName.csv")
+          val evidence = evidenceByMode.getValue(label)
+          if (evidence.reportSha256 != PitestEvidence.sha256(csv)) {
+            throw GradleException(
+                "pitestModeCompare: '$suiteName' snapshot '$label' changed after its evidence was recorded")
+          }
+        }
+      } else if (unionFlips) {
+        throw GradleException(
+            "pitestModeCompare: refusing -PunionModeFlips for legacy '$suiteName' snapshots without " +
+                "completed-run provenance; capture both modes again under this plugin")
+      }
+      val modePitVersion = evidenceByMode.values.firstOrNull()?.pitestVersion
+      val modeToolVersionFile = baselineDir.file("$suiteName-pitest-version").asFile
+      if (unionFlips && modePitVersion != null && modeToolVersionFile.isFile &&
+          modeToolVersionFile.readText().trim() != modePitVersion) {
+        throw GradleException(
+            "pitestModeCompare: '$suiteName' snapshots use PIT $modePitVersion but " +
+                "${modeToolVersionFile.name} records ${modeToolVersionFile.readText().trim()} — " +
+                "refusing to rewrite across the tool-version boundary")
+      }
       val perMode = modes.associateWith { label ->
         val csv = snapshotRoot.get().asFile.resolve("$label/$suiteName.csv")
         if (!csv.isFile) {
@@ -575,6 +912,9 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
         BaselineFiles.writeAtomically(
             baselineFile,
             acceptedRows.sortedBy { it.key }.joinToString("\n", postfix = "\n") { BaselineNotes.render(it) })
+        if (!modeToolVersionFile.isFile && modePitVersion != null) {
+          BaselineFiles.writeAtomically(modeToolVersionFile, "$modePitVersion\n")
+        }
       }
       // HARDENING.md's sweep: accepted rows unkilled in *no* snapshotted mode are
       // widening the gate for nothing. Report only — removal is a judgment call, and
@@ -587,10 +927,24 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       // claim the budget before insured rows, mirroring the keep plan's
       // insurance-never-spends-the-budget rule; insured rows past the budget are
       // exactly the "insurance that outlived its cause" this sweep exists to name.
-      val unkilledAnywhere = perMode.values.flatMap { modeStatuses ->
-        modeStatuses.flatMap { (key, statusList) -> statusList.filter { it in gated }.map { "$key,$it" } }
-      }.toSet()
-      val deadCandidates = acceptedRows.indices.filter { acceptedRows[it].key !in unkilledAnywhere }
+      // Maximum live multiplicity per baseline key across modes. A Set answers only
+      // whether one sibling survived and used to let one live mutant vouch for every
+      // duplicate accepted row at that key. Plain rows claim live capacity before
+      // flip-insurance rows so surplus insurance is the row reported as outliving its
+      // cause.
+      val liveBudget = HashMap<String, Int>()
+      perMode.values.forEach { modeStatuses ->
+        val counts = modeStatuses.flatMap { (key, statusList) ->
+          statusList.filter { it in gated }.map { "$key,$it" }
+        }.groupingBy { it }.eachCount()
+        counts.forEach { (key, count) -> liveBudget.merge(key, count, ::maxOf) }
+      }
+      val liveAccounted = HashSet<Int>()
+      acceptedRows.indices.groupBy { acceptedRows[it].key }.forEach { (key, indices) ->
+        val ordered = indices.sortedBy { acceptedRows[it].note?.contains("flip insurance") == true }
+        ordered.take(liveBudget[key] ?: 0).forEach(liveAccounted::add)
+      }
+      val deadCandidates = acceptedRows.indices.filterNot { it in liveAccounted }
       val timeoutBudget = HashMap<String, Int>()
       perMode.values.forEachIndexed { modeIndex, modeStatuses ->
         val counts = HashMap<String, Int>()
@@ -705,6 +1059,7 @@ val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
 // predates the module's first harness and carries no hand-written '*Fuzz*' row.
 val fuzzHarnessExcludes = objects.listProperty<String>()
 hardening.fuzz.all {
+  requireSafeHardeningName("fuzz target", name)
   // orElse keeps a misconfigured target's blast radius local: targetClass has no
   // convention, and an absent value propagated through the zip would drop the
   // whole --excludedClasses argument — taking every suite's own *Test* exclusions
@@ -714,48 +1069,88 @@ hardening.fuzz.all {
   fuzzHarnessExcludes.addAll(targetClass.map { listOf(it, "$it\$*") }.orElse(emptyList()))
 }
 
-// A corpus that replays in `check` but whose target never joins the weekly soak
-// reads as covered while exploring nothing new — the same silent-gap class as a
-// suite registration missing its harness exclusion. If the repo carries a fuzz
-// workflow, every registered target's task must appear in it; without one the
-// check stays quiet (adopting the soak is the repo's call, and HARDENING.md's
-// "The weekly soak" section is the nudge).
+// Local fuzzing is the canonical execution path. The aggregate is derived directly
+// from the registered targets, so it cannot drift the way a hand-written scheduled
+// workflow task list can. A successful local run writes a small receipt; the fleet
+// wrapper adds repository SHAs and collects those receipts for release review.
 val fuzzTargetNames = objects.setProperty<String>()
-hardening.fuzz.all {
-  fuzzTargetNames.add(name)
-}
-val fuzzWorkflowInSync = tasks.register("fuzzWorkflowInSync") {
-  group = "verification"
-  description = "Fails when a weekly fuzz workflow exists but names a registered fuzz target nowhere."
-  val workflowFile = rootProject.layout.projectDirectory.file(".github/workflows/fuzz.yml").asFile
-  val names = fuzzTargetNames
-  val taskPathPrefix = path.substringBeforeLast(':')
-  inputs.files(workflowFile)
+val maxFuzzTime = providers.gradleProperty("maxFuzzTime").orElse("60")
+val localFuzzReceiptFile = layout.buildDirectory.file("hardening/local-fuzz.tsv")
+val localFuzzReceiptRunning = layout.buildDirectory.file("hardening/local-fuzz.running")
+val validateFuzzBudget = tasks.register("validateFuzzBudget") {
+  description = "Internal to local fuzz tasks: validates -PmaxFuzzTime as bounded positive seconds."
+  val budget = maxFuzzTime
+  inputs.property("maxFuzzTime", budget)
   doLast {
-    if (!workflowFile.isFile) {
-      return@doLast
-    }
-    val text = workflowFile.readText()
-    // word-boundary, not substring: 'fuzzWs' must not pass on 'fuzzWsFraming'. A
-    // mention inside a yaml comment satisfies the check deliberately — the escape
-    // hatch for a target kept out of the soak on purpose, whose comment then holds
-    // the reason next to the task list it is absent from.
-    val missing = names.get().sorted()
-        .map { "fuzz" + it.replaceFirstChar(Char::uppercase) }
-        .filterNot { Regex("\\b" + Regex.escape(it) + "\\b").containsMatchIn(text) }
-    if (missing.isNotEmpty()) {
+    val raw = budget.get()
+    val seconds = raw.toLongOrNull()
+    if (!Regex("[1-9][0-9]*").matches(raw) || seconds == null || seconds > Int.MAX_VALUE) {
       throw GradleException(
-          "fuzzWorkflowInSync: $workflowFile runs a weekly soak but names ${missing.size} registered " +
-              "fuzz target(s) nowhere — its corpus replays in check, but the target itself is never " +
-              "fuzzed, which reads as covered while exploring nothing. Add to the soak's gradle " +
-              "invocation:\n" + missing.joinToString("\n") { "  $taskPathPrefix:$it" } +
-              "\nor, to keep a target out of the soak deliberately, name it in a yaml comment with " +
-              "the reason."
-      )
+          "-PmaxFuzzTime must be positive whole seconds without leading zeros, up to " +
+              "${Int.MAX_VALUE}; was '$raw' (0 is libFuzzer's run-forever sentinel)")
     }
   }
 }
-tasks.named("check") { dependsOn(fuzzWorkflowInSync) }
+val fuzzAllPreflight = tasks.register("fuzzAllPreflight") {
+  description = "Internal to fuzzAll: invalidates earlier aggregate evidence before targets run."
+  val receipt = localFuzzReceiptFile
+  val running = localFuzzReceiptRunning
+  doLast {
+    receipt.get().asFile.delete()
+    running.get().asFile.also {
+      it.parentFile.mkdirs()
+      it.writeText("running\n")
+    }
+  }
+}
+validateFuzzBudget.configure { mustRunAfter(fuzzAllPreflight) }
+val fuzzAll = tasks.register("fuzzAll") {
+  group = "verification"
+  description = "Runs every registered fuzz target locally; -PmaxFuzzTime=<seconds> applies to each target."
+  dependsOn(validateFuzzBudget)
+  dependsOn(fuzzAllPreflight)
+  val names = fuzzTargetNames
+  val maxTime = maxFuzzTime
+  val receiptProjectPath = project.path
+  val receiptFileProvider = localFuzzReceiptFile
+  val receiptRunning = localFuzzReceiptRunning
+  doFirst {
+    if (!receiptRunning.get().asFile.isFile) {
+      receiptFileProvider.get().asFile.delete()
+      throw GradleException("fuzzAll: preflight did not run; refusing to retain an earlier receipt")
+    }
+  }
+  doLast {
+    val receipt = buildString {
+      appendLine("schema\t1")
+      appendLine("project\t$receiptProjectPath")
+      appendLine("maxFuzzTimeSeconds\t${maxTime.get()}")
+      names.get().sorted().forEach { target ->
+        appendLine("target\tfuzz${target.replaceFirstChar(Char::uppercase)}")
+      }
+    }
+    val receiptFile = receiptFileProvider.get().asFile
+    BaselineFiles.writeAtomically(receiptFile, receipt)
+    receiptRunning.get().asFile.delete()
+    logger.lifecycle("fuzzAll: ${names.get().size} local target(s) completed; receipt: $receiptFile")
+  }
+}
+hardening.fuzz.all {
+  fuzzTargetNames.add(name)
+  val fuzzTaskName = "fuzz" + name.replaceFirstChar(Char::uppercase)
+  fuzzAll.configure { dependsOn(fuzzTaskName) }
+}
+
+// Compatibility task for consumers that still mention the old workflow check. It no
+// longer inspects `.github/workflows/fuzz.yml`: scheduled GitHub fuzzing is optional,
+// and `fuzzAll` is the non-drifting local replacement.
+val fuzzWorkflowInSync = tasks.register("fuzzWorkflowInSync") {
+  group = "verification"
+  description = "Deprecated compatibility task; scheduled fuzz workflows are optional. Use fuzzAll locally."
+  doLast {
+    logger.lifecycle("fuzzWorkflowInSync: scheduled fuzz workflows are optional; run fuzzAll locally")
+  }
+}
 
 // Every suite's mutation scope, keyed by suite name: each suite's exclusion
 // audit subtracts the classes its siblings actually mutate, so the targeting
@@ -764,9 +1159,67 @@ tasks.named("check") { dependsOn(fuzzWorkflowInSync) }
 // hole)*. Values are providers; by execution time every suite is registered.
 val suiteTargetGlobs = objects.mapProperty<String, List<String>>()
 val suiteExcludedGlobs = objects.mapProperty<String, List<String>>()
+val suiteDeclinedExclusions = objects.mapProperty<String, Map<String, String>>()
+
+// Whole-population ownership closes the gap a per-suite exclusion audit cannot see:
+// production that no target glob selects at all. It is a dedicated task for the
+// developer loop and a mandatory leg of strict certification; ordinary qualityGate
+// remains focused on the suites a project has already adopted.
+val mutationOwnershipAudit = tasks.register("mutationOwnershipAudit") {
+  group = "verification"
+  description = "Fails when a compiled production class has no mutation-suite owner or argued exclusion decline."
+  dependsOn(compileForPitest)
+  val classesDir = mutationClassesDir
+  val targets = suiteTargetGlobs
+  val exclusions = suiteExcludedGlobs
+  val declines = suiteDeclinedExclusions
+  val ownershipTestSourceDirs = sourceSets.test.get().java.srcDirs
+  doLast {
+    val production = ExclusionAudit.productionClassNames(classesDir.get().asFile, ownershipTestSourceDirs)
+    val scopes = targets.get().entries.sortedBy { it.key }.map { (suiteName, globs) ->
+      ExclusionAudit.OwnershipScope(suiteName, globs, exclusions.get()[suiteName].orEmpty())
+    }
+    val explicitDeclines = declines.get().entries.sortedBy { it.key }.flatMap { (suiteName, records) ->
+      records.entries.sortedBy { it.key }.map { (glob, reason) ->
+        ExclusionAudit.ExplicitDecline(suiteName, glob, reason)
+      }
+    }
+    val coverage = ExclusionAudit.ownershipCoverage(production, scopes, explicitDeclines)
+    val problems = buildList {
+      if (coverage.uncovered.isNotEmpty()) {
+        add("${coverage.uncovered.size} production class(es) have no effective mutation-suite owner:")
+        coverage.uncovered.forEach { uncovered ->
+          val why = if (uncovered.excludedBy.isEmpty()) "matched by no suite target" else
+            "excluded by " + uncovered.excludedBy.joinToString { "${it.suiteName}:${it.glob}" }
+          add("  ${uncovered.binaryName} — $why")
+        }
+      }
+      if (coverage.blankDeclines.isNotEmpty()) {
+        add("${coverage.blankDeclines.size} ownership decline(s) have no reason:")
+        coverage.blankDeclines.forEach { add("  ${it.suiteName}:${it.glob}") }
+      }
+      if (coverage.staleDeclines.isNotEmpty()) {
+        add("${coverage.staleDeclines.size} ownership decline(s) no longer waive an unowned class:")
+        coverage.staleDeclines.forEach { add("  ${it.suiteName}:${it.glob}") }
+      }
+    }
+    if (problems.isNotEmpty()) {
+      throw GradleException(
+          "mutationOwnershipAudit: the production mutation population is incomplete:\n" +
+              problems.joinToString("\n") +
+              "\nTarget each class in a suite, or exclude it from a matched target and record " +
+              "declineExclusionAudit with the measured reason/correctness owner.")
+    }
+    logger.lifecycle(
+        "mutationOwnershipAudit: ${coverage.owned.size} production class(es) owned, " +
+            "${coverage.declined.size} explicitly declined")
+  }
+}
+hardeningCertify.configure { dependsOn(mutationOwnershipAudit) }
 
 hardening.mutation.all {
   val suite = this
+  requireSafeHardeningName("mutation suite", suite.name)
   suite.mutators.convention("STRONGER")
   suite.threads.convention(4)
   // PIT's own defaults; see MutationSuite.timeoutFactor for tuning guidance
@@ -780,6 +1233,7 @@ hardening.mutation.all {
   }
   suiteTargetGlobs.put(suite.name, suite.targetClasses)
   suiteExcludedGlobs.put(suite.name, allExcludedClasses)
+  suiteDeclinedExclusions.put(suite.name, suite.declinedExclusionAudits)
 
   // Mutation ratchet: after each 'pitest<Name>' run, diff the unkilled mutants
   // (SURVIVED and NO_COVERAGE) against the checked-in baseline at
@@ -788,6 +1242,92 @@ hardening.mutation.all {
   // '-PupdateMutationBaseline' and documenting the reason (see HARDENING.md).
   val pitestTaskName = "pitest" + suite.name.replaceFirstChar(Char::uppercase)
   val suiteName = suite.name
+  // Inputs bound into the completed-report manifest. A direct verify is allowed to
+  // reuse a report only while these fingerprints still match; changing source,
+  // compiled classes, dependencies, suite targeting, or tool/plugin bytes makes the
+  // old report stale instead of silently authoritative.
+  val evidenceProjectDir = layout.projectDirectory.asFile
+  val evidenceSourceFiles = files(
+      sourceSets.main.get().allSource,
+      sourceSets.test.get().allSource,
+      layout.projectDirectory.file("build.gradle.kts"),
+      rootProject.layout.projectDirectory.file("settings.gradle.kts"),
+  )
+  val evidenceClassFiles = fileTree(mutationClassesDir)
+  val pitestBuildDirPath = layout.buildDirectory.get().asFile.absolutePath + File.separator
+  val pitestResourceDirs = files(
+      sourceSets.main.get().output.resourcesDir!!,
+      sourceSets.test.get().output.resourcesDir!!,
+  )
+  // Mirror the JavaExec classpath exactly: processed resources and dependencies,
+  // excluding this project's conventional class outputs (the recompiled root above
+  // replaces them). Hashing those unused outputs made a later ordinary `test`
+  // compilation invalidate evidence for bytes PIT never loaded.
+  val evidenceClasspathFiles = files(
+      pitestResourceDirs,
+      configurations["testRuntimeClasspath"],
+  ).filter { file ->
+    pitestResourceDirs.any { it.absolutePath == file.absolutePath } ||
+        !file.absolutePath.startsWith(pitestBuildDirPath)
+  }
+  val evidencePluginCode = File(PitestEvidence::class.java.protectionDomain.codeSource.location.toURI())
+  val evidenceJavaLauncher = javaToolchains.launcherFor(java.toolchain)
+  val evidenceConfigurationText = providers.provider {
+    buildString {
+      appendLine("targetClasses=${suite.targetClasses.get().sorted().joinToString(",")}")
+      appendLine("excludedClasses=${allExcludedClasses.get().sorted().joinToString(",")}")
+      appendLine("targetTests=${suite.targetTests.get()}")
+      appendLine("mutators=${suite.mutators.get()}")
+      appendLine("threads=${suite.threads.get()}")
+      appendLine("timeoutFactor=${suite.timeoutFactor.get()}")
+      appendLine("timeoutConst=${suite.timeoutConst.get()}")
+      appendLine("mutationBytecodeRelease=${hardening.mutationBytecodeRelease.get()}")
+      appendLine("recompileExcludes=${hardening.recompileExcludes.get().sorted().joinToString(",")}")
+      // File content is fingerprinted separately, but classpath order changes JVM
+      // shadowing semantics and therefore belongs to the suite configuration too.
+      appendLine(
+          "classpathOrderSha256=" + PitestEvidence.sha256(
+              evidenceClasspathFiles.files.joinToString("\n") { it.absoluteFile.normalize().path }))
+      appendLine(
+          "toolClasspathOrderSha256=" + PitestEvidence.sha256(
+              pitest.files.joinToString("\n") { it.absoluteFile.normalize().path }))
+    }
+  }
+  fun evidenceSnapshot(
+    invocationId: String,
+    reportSha256: String,
+    scope: String,
+    historyAssisted: Boolean,
+    javaVersion: String,
+  ) = PitestEvidence(
+      suite = suiteName,
+      invocationId = invocationId,
+      pitestVersion = hardening.pitestVersion.get(),
+      junitPluginVersion = hardening.pitestJunit5PluginVersion.get(),
+      pluginSha256 = PitestEvidence.fingerprintTree(evidencePluginCode),
+      identitySchema = PitestEvidence.CURRENT_IDENTITY_SCHEMA,
+      javaVersion = javaVersion,
+      sourceSha256 = PitestEvidence.fingerprint(evidenceProjectDir, evidenceSourceFiles.files),
+      classesSha256 = PitestEvidence.fingerprint(evidenceProjectDir, evidenceClassFiles.files),
+      classpathSha256 = PitestEvidence.fingerprint(evidenceProjectDir, evidenceClasspathFiles.files),
+      toolClasspathSha256 = PitestEvidence.fingerprint(evidenceProjectDir, pitest.files),
+      configurationSha256 = PitestEvidence.sha256(evidenceConfigurationText.get()),
+      reportSha256 = reportSha256,
+      scope = scope,
+      historyAssisted = historyAssisted,
+  )
+  currentPitestEvidenceBySuite.put(
+      suiteName,
+      providers.provider {
+        evidenceSnapshot(
+            invocationId = "current-input-template",
+            reportSha256 = "",
+            scope = PitestEvidence.FULL_SCOPE,
+            historyAssisted = false,
+            javaVersion = evidenceJavaLauncher.get().metadata.javaRuntimeVersion,
+        ).render()
+      },
+  )
   // computed once and shared by every advisory-recording task in the suite: the
   // end-of-build summary groups findings by this string, so two drifting copies
   // would split one suite's findings across two scope headings
@@ -805,19 +1345,24 @@ hardening.mutation.all {
     val prune = providers.gradleProperty("pruneMutationBaseline").isPresent
     val listUnkilled = providers.gradleProperty("listUnkilled").isPresent
     val initTimeoutAudit = providers.gradleProperty("initTimeoutAudit").isPresent
-    val strictTimeoutAudit = providers.gradleProperty("strictTimeoutAudit").isPresent
+    val strictTimeoutAuditRequested = providers.gradleProperty("strictTimeoutAudit").isPresent
     val statusStashFile = layout.projectDirectory.file(".pitest-history/$suiteName.statuses").asFile
     val timeoutQuietFile = layout.projectDirectory.file(".pitest-history/$suiteName.timeout-quiet").asFile
     val toolVersionFile = layout.projectDirectory.file("config/pitest/$suiteName-pitest-version").asFile
     val pitToolVersion = hardening.pitestVersion
     // captured locally so the doLast lambda does not hold the script instance
     val advisoryLog = hardeningAdvisoryLog
+    val certificationSession = hardeningCertificationSession
+    val evidenceProjectPath = project.path
     val advisoryScope = suiteAdvisoryScope
     usesService(advisoryLog)
+    usesService(certificationSession)
     // Resolved at configuration time so the scaffolding check below can ask whether a
     // mutated class is one of this project's own test sources.
     val testSourceDirs = sourceSets.test.get().java.srcDirs
     doLast {
+      val certificationActive = certificationSession.get().isActive()
+      val strictTimeoutAudit = strictTimeoutAuditRequested || certificationActive
       val csv = csvProvider.get().asFile
       // The '.running' sentinel is written before PIT starts and cleared only
       // after a clean exit, so a report left by a crashed or interrupted run —
@@ -846,6 +1391,69 @@ hardening.mutation.all {
                 "~/.gradle/daemon/<version>/daemon-<pid>.out.log"
         )
       }
+      val writingRecord = update || union || prune || initTimeoutAudit
+      val completedEvidenceFile = csv.parentFile.resolve(".evidence.tsv")
+      var verifiedEvidence: PitestEvidence? = null
+      if (!completedEvidenceFile.isFile) {
+        val message = "pitest '$suiteName': report has no completed-run evidence manifest at " +
+            "$completedEvidenceFile — it may predate this plugin or be a detached/stale report; " +
+            "run $pitestTaskName to bind it to the current code and configuration"
+        // N-1 migration path: old reports have no manifest. A writer may consume one
+        // only when every visible source/config input predates the report; this keeps
+        // existing checked-out reports usable for one upgrade while refusing the
+        // common stale-report footgun immediately. Certification never accepts the
+        // heuristic — a fresh run earns a real manifest.
+        val newerInputs = evidenceSourceFiles.files.filter { it.isFile && it.lastModified() > csv.lastModified() }
+        if (certificationActive || (writingRecord && newerInputs.isNotEmpty())) {
+          throw GradleException(
+              message + if (newerInputs.isEmpty()) "" else
+                  "\n  newer input(s):\n" + newerInputs.sortedBy { it.path }
+                      .joinToString("\n") { "  $it" })
+        }
+        logger.warn(message)
+        advisoryLog.get().record(advisoryScope, "report has no completed-run evidence manifest")
+        if (writingRecord) {
+          try {
+            certificationSession.get().requireNoIncompleteAttempt(
+                evidenceProjectPath, suiteName, null)
+          } catch (e: IllegalStateException) {
+            throw GradleException("pitest '$suiteName': ${e.message}", e)
+          }
+        }
+      } else {
+        val recordedEvidence = try {
+          PitestEvidence.parse(completedEvidenceFile.readText())
+        } catch (e: IllegalArgumentException) {
+          throw GradleException(
+              "pitest '$suiteName': malformed completed-run evidence manifest at $completedEvidenceFile — " +
+                  "${e.message}; re-run $pitestTaskName", e)
+        }
+        val scopeMarker = csv.parentFile.resolve(".scoped")
+        val expectedEvidence = evidenceSnapshot(
+            invocationId = recordedEvidence.invocationId,
+            reportSha256 = PitestEvidence.sha256(csv),
+            scope = scopeMarker.takeIf { it.isFile }?.readText()?.trim().orEmpty()
+                .ifEmpty { PitestEvidence.FULL_SCOPE },
+            historyAssisted = csv.parentFile.resolve(".history-assisted").isFile,
+            javaVersion = evidenceJavaLauncher.get().metadata.javaRuntimeVersion,
+        )
+        val differences = recordedEvidence.differences(expectedEvidence)
+        if (differences.isNotEmpty()) {
+          throw GradleException(
+              "pitest '$suiteName': completed report evidence no longer matches the current build — " +
+                  "a stale report cannot verify or rewrite mutation state; re-run $pitestTaskName:\n" +
+                  differences.joinToString("\n") { "  $it" })
+        }
+        verifiedEvidence = recordedEvidence
+        if (writingRecord) {
+          try {
+            certificationSession.get().requireNoIncompleteAttempt(
+                evidenceProjectPath, suiteName, recordedEvidence)
+          } catch (e: IllegalStateException) {
+            throw GradleException("pitest '$suiteName': ${e.message}", e)
+          }
+        }
+      }
       // The mutant population is a function of PIT itself (whose default version rides
       // plugin bumps via Dependabot), so the baseline record is only comparable to runs
       // from the version that wrote it. The recorded version lives in
@@ -863,9 +1471,8 @@ hardening.mutation.all {
       // stamp would silently vouch for a baseline some older PIT wrote.
       val currentPit = pitToolVersion.get()
       val recordedPit = toolVersionFile.takeIf { it.isFile }?.readText()?.trim()
-      val writingRecord = update || union || prune || initTimeoutAudit
       if (recordedPit != null && recordedPit != currentPit) {
-        if (writingRecord) {
+        if (writingRecord || certificationActive) {
           throw GradleException(
               "pitest '$suiteName': the baseline record was written by PIT $recordedPit but this run used " +
                   "PIT $currentPit — refusing to rewrite the record across a tool bump, whose population " +
@@ -908,19 +1515,6 @@ hardening.mutation.all {
       // incident class is a mutant read differently at two sites, and a per-site
       // parts[] index is how that class reproduces.
       val rows = Mutant.parseReport(csv.readLines())
-      // A status the plugin does not know is a PIT upgrade talking past the
-      // ratchet: it used to fall silently into every "neither" bucket at each
-      // call site independently — name it once, here, instead.
-      val unknownStatuses = rows.filter { it.status == null }.map { it.rawStatus }.distinct().sorted()
-      if (unknownStatuses.isNotEmpty()) {
-        logger.warn(
-            "pitest '$suiteName': PIT emitted status(es) this plugin does not recognize — " +
-                unknownStatuses.joinToString(", ") +
-                " — treated as neither detected nor gated; a PIT upgrade may have added " +
-                "semantics the ratchet cannot interpret yet"
-        )
-        advisoryLog.get().record(advisoryScope, "${unknownStatuses.size} unrecognized PIT status(es)")
-      }
 
       val byStatus = rows.groupingBy { it.rawStatus }.eachCount()
       val total = rows.size
@@ -938,10 +1532,10 @@ hardening.mutation.all {
           byStatus[s.name]?.let { add("$it ${s.name.lowercase()}") }
         }
         if (timedOut > 0) add("$timedOut timed out (load-dependent)")
-        // Anything else (RUN_ERROR, MEMORY_ERROR, ..., and the unknowns named
-        // above) is neither detected nor gated — usually a load-dependent flake,
-        // but it lowers the detected count, so the summary must account for it or
-        // the number reads as a regression with no visible cause.
+        // Valid terminal outcomes the plugin deliberately does not score as
+        // detected (NON_VIABLE and EQUIVALENT) stay visible in the summary.
+        // Error, unfinished and unknown statuses were rejected by parseReport:
+        // they cannot certify either this summary or a record writer.
         byStatus.keys
             .filterNot { MutantStatus.of(it)?.let { s -> s.detected || s.gated } == true }
             .sorted()
@@ -980,6 +1574,8 @@ hardening.mutation.all {
             "pitest '$suiteName': mutating ${scaffolding.size} test-source class(es) — " +
                 "add to excludedClasses:\n" + scaffolding.joinToString("\n") { "  $it" }
         )
+        advisoryLog.get().record(
+            advisoryScope, "${scaffolding.size} mutated test-source class(es)")
       }
 
       // PIT's CSV omits the mutation description — which sub-condition of a line was hit,
@@ -1619,6 +2215,19 @@ hardening.mutation.all {
             BaselineEngine.Disposition.DROP -> droppedRows.add(row)
           }
         }
+        // Prune is shrink-only, not gate-free. Validate the complete current gated
+        // multiset against the exact rows the prune proposes BEFORE touching the
+        // baseline: a fresh row (including a SURVIVED<->NO_COVERAGE status change)
+        // must fail here and leave the previous record byte-for-byte intact.
+        val unacceptedAfterPrune = multisetDiff(current, kept.map { it.key })
+        if (unacceptedAfterPrune.isNotEmpty()) {
+          throw GradleException(
+              "pitest baseline '$suiteName': refusing -PpruneMutationBaseline — the report has " +
+                  "${unacceptedAfterPrune.size} gated mutant(s) the proposed pruned baseline would not " +
+                  "accept, so this is not a green shrink-only transition; no baseline changes were made:\n" +
+                  unacceptedAfterPrune.joinToString("\n") { "  $it" }
+          )
+        }
         val keptDetail = if (keptUnmatched.isEmpty()) "" else
           "\n  kept ${keptUnmatched.size} unmatched row(s):\n" +
               keptUnmatched.joinToString("\n") { (row, why) -> "  ${BaselineNotes.render(row)} — $why" }
@@ -1911,6 +2520,15 @@ hardening.mutation.all {
                 "-PupdateMutationBaseline creates config/pitest/$suiteName-accepted.csv."
         )
       }
+      if (certificationActive) {
+        val evidence = verifiedEvidence ?: throw GradleException(
+            "pitest '$suiteName': certification requires completed evidence generated in this invocation")
+        try {
+          certificationSession.get().recordVerified(evidenceProjectPath, suiteName, evidence)
+        } catch (e: IllegalStateException) {
+          throw GradleException("pitest '$suiteName': ${e.message}", e)
+        }
+      }
     }
   }
   tasks.register("${pitestTaskName}Debt") {
@@ -2088,6 +2706,7 @@ hardening.mutation.all {
 
   qualityGate.configure { dependsOn(pitestTaskName) }
   convergeSuiteNames.add(suiteName)
+  certificationSuiteNames.add(suiteName)
   pitestConvergeSnapshot.configure { dependsOn(pitestTaskName) }
   // ordered, not depended on: a combined '<suites> pitestModeSnapshot' invocation must
   // not stash before the runs finish — or clear a report the verify finalizer still reads
@@ -2170,32 +2789,25 @@ hardening.mutation.all {
       enforceExit: Boolean = true
   ): JavaExec.() -> Unit = {
     dependsOn(compileForPitest)
+    javaLauncher.convention(evidenceJavaLauncher)
+    usesService(pitestExecutionLock)
+    usesService(hardeningCertificationSession)
+    // This edge is inert in ordinary runs (preflight is not scheduled), but when
+    // any alias/abbreviation reaches hardeningCertify it orders activation before
+    // every PIT flavour without making normal qualityGate depend on certification.
+    mustRunAfter(hardeningCertifyPreflight)
     mainClass = "org.pitest.mutationtest.commandline.MutationCoverageReport"
     classpath = pitest
     // the module test plumbing patches resources into the module instead of exposing
     // them on testRuntimeClasspath, so the tools get the processed resource dirs
     // explicitly
     dependsOn(tasks.named("processResources"), tasks.named("processTestResources"))
-    val buildDirPath = layout.buildDirectory.get().asFile.absolutePath
-    val mutationClassesPath = mutationClassesDir.get().asFile.absolutePath
-    val resourceDirs = files(
-      sourceSets.main.get().output.resourcesDir!!,
-      sourceSets.test.get().output.resourcesDir!!
-    )
     val classPathArg = files(
       mutationClassesDir,
-      resourceDirs,
-      configurations["testRuntimeClasspath"]
+      evidenceClasspathFiles,
     ).elements.map { locations ->
       "--classPath=" + locations
           .map { it.asFile.absolutePath }
-          // keep the recompiled classes, resource dirs, and dependency jars; drop this
-          // project's class outputs, which the recompiled root replaces
-          .filter { path ->
-            path == mutationClassesPath
-                || resourceDirs.any { it.absolutePath == path }
-                || !path.startsWith(buildDirPath)
-          }
           .joinToString(",")
     }
     // '-PmutateOnly=<glob[,glob]>' narrows the mutated classes for a fast
@@ -2222,9 +2834,12 @@ hardening.mutation.all {
     // because it is machine-local state. Input and output are the same file; on the
     // first run the input does not exist yet and PIT starts fresh. The lifecycle line
     // keeps reuse honest — with history active a fast run is expected, so the log
-    // must say why, and the pre-release gate re-earns its numbers with
-    // '-PnoMutationHistory'.
+    // must say why; hardeningCertify disables history automatically and re-earns
+    // every status.
     val scopedMarker = layout.buildDirectory.file("reports/pitest/$reportSubdir/.scoped")
+    val bindsSuiteEvidence = reportSubdir == suiteName
+    val completedEvidence = layout.buildDirectory.file("reports/pitest/$reportSubdir/.evidence.tsv")
+    val evidenceInvocation = layout.buildDirectory.file("reports/pitest/$reportSubdir/.evidence-invocation")
     // Defer PIT's non-zero exit to doLast so a failed run still closes the minion
     // filters — otherwise the exec action throws, doLast is skipped, and the
     // suppressed-count summary and any buffered partial line (now including stderr,
@@ -2233,6 +2848,8 @@ hardening.mutation.all {
     // holder so doFirst can hand the execution-time filters to doLast without
     // the configuration cache trying to serialize a live stream
     val minionFilters = AtomicReference<MinionFilters?>()
+    val preRunEvidence = AtomicReference<PitestEvidence?>()
+    val historyForAttempt = AtomicReference<Boolean?>()
     // The '.running' sentinel: written before PIT starts, cleared only after a
     // clean exit (below the assert, like the scope marker). PIT writes the CSV
     // incrementally, so a crashed or interrupted run leaves a partial report
@@ -2240,6 +2857,9 @@ hardening.mutation.all {
     // without the sentinel a same-invocation refresh flag rewrites the baseline
     // from whatever fraction of the population PIT reached before dying.
     val runningMarker = layout.buildDirectory.file("reports/pitest/$reportSubdir/.running")
+    val historyFile = layout.projectDirectory.file(".pitest-history/${suite.name}.hist").asFile
+    fun historyActiveNow() = withHistory && mutationHistoryAvailable &&
+        !hardeningCertificationSession.get().isActive()
     doFirst {
       this as JavaExec
       // the default (null) standard output and error both forward to the console; the
@@ -2248,12 +2868,36 @@ hardening.mutation.all {
       standardOutput = filters.out
       errorOutput = filters.err
       minionFilters.set(filters)
+      val historyActive = historyActiveNow()
+      historyForAttempt.set(historyActive)
+      if (historyActive) {
+        historyFile.parentFile.mkdirs()
+        logger.lifecycle("pitest '$suiteName': arcmutate history active — $historyFile")
+      }
+      val invocationId = UUID.randomUUID().toString()
+      if (bindsSuiteEvidence) {
+        // Record the attempt before touching any sentinel/evidence path. If a
+        // filesystem or later doFirst action fails, a record writer in the finalizer
+        // cannot fall back to an older completed report from disk.
+        hardeningCertificationSession.get().startAttempt(project.path, suiteName, invocationId)
+      }
       runningMarker.get().asFile.also {
         it.parentFile.mkdirs()
         it.writeText("")
       }
+      if (bindsSuiteEvidence) {
+        completedEvidence.get().asFile.delete()
+        evidenceInvocation.get().asFile.writeText(invocationId + "\n")
+        val scope = mutateOnly.orNull?.trim().orEmpty().ifEmpty { PitestEvidence.FULL_SCOPE }
+        preRunEvidence.set(evidenceSnapshot(
+            invocationId = invocationId,
+            reportSha256 = "",
+            scope = scope,
+            historyAssisted = historyActive,
+            javaVersion = javaLauncher.get().metadata.javaRuntimeVersion,
+        ))
+      }
     }
-    val historyActive = withHistory && mutationHistory
     doLast {
       // Close the filters first, before the deferred failure is re-raised, so the
       // summary and any buffered tail survive a failing run.
@@ -2278,9 +2922,36 @@ hardening.mutation.all {
       // than tabulated.
       if (enforceExit) executionResult.get().assertNormalExitValue()
       if (executionResult.get().exitValue != 0) return@doLast
-      runningMarker.get().asFile.delete()
       val marker = scopedMarker.get().asFile
-      if (mutateOnly.isPresent) marker.writeText(mutateOnly.get() + "\n") else marker.delete()
+      val historyActive = historyForAttempt.get() ?: historyActiveNow()
+      val scope = mutateOnly.orNull?.trim().orEmpty().ifEmpty { PitestEvidence.FULL_SCOPE }
+      var completedRunEvidence: PitestEvidence? = null
+      if (bindsSuiteEvidence) {
+        val report = marker.parentFile.resolve("mutations.csv")
+        if (!report.isFile) {
+          throw GradleException(
+              "pitest '$suiteName' exited successfully but wrote no CSV report at $report — " +
+                  "cannot create completed-run evidence")
+        }
+        val before = preRunEvidence.get() ?: throw GradleException(
+            "pitest '$suiteName' has no pre-run evidence fingerprint — refusing to certify its report")
+        val after = evidenceSnapshot(
+            invocationId = before.invocationId,
+            reportSha256 = "",
+            scope = scope,
+            historyAssisted = historyActive,
+            javaVersion = javaLauncher.get().metadata.javaRuntimeVersion,
+        )
+        val changedInputs = before.differences(after)
+        if (changedInputs.isNotEmpty()) {
+          throw GradleException(
+              "pitest '$suiteName': evidence inputs changed while PIT was running — refusing to commit " +
+                  "completed evidence; re-run against a stable checkout:\n" +
+                  changedInputs.joinToString("\n") { "  $it" })
+        }
+        completedRunEvidence = before.copy(reportSha256 = PitestEvidence.sha256(report))
+      }
+      if (scope == PitestEvidence.FULL_SCOPE) marker.delete() else marker.writeText(scope + "\n")
       // A history-assisted report is reuse, not observation; the marker lets
       // pitestModeSnapshot and the verify's record-writing flags refuse it. Kept
       // in lockstep with the report like the scope marker — written when history
@@ -2288,13 +2959,21 @@ hardening.mutation.all {
       // does not inherit the previous run's marker and read as reuse forever.
       val historyMarker = marker.parentFile.resolve(".history-assisted")
       if (historyActive) historyMarker.writeText("") else historyMarker.delete()
-    }
-    val historyFile = layout.projectDirectory.file(".pitest-history/${suite.name}.hist").asFile
-    if (historyActive) {
-      doFirst {
-        historyFile.parentFile.mkdirs()
-        logger.lifecycle("pitest '$suiteName': arcmutate history active — $historyFile")
+      if (bindsSuiteEvidence) {
+        val invocationFile = evidenceInvocation.get().asFile
+        val evidence = completedRunEvidence ?: error("completed PIT evidence was not assembled")
+        check(invocationFile.readText().trim() == evidence.invocationId) {
+          "pitest '$suiteName' invocation marker changed while PIT was running"
+        }
+        BaselineFiles.writeAtomically(completedEvidence.get().asFile, evidence.render())
+        hardeningCertificationSession.get().recordCompleted(project.path, suiteName, evidence)
+        invocationFile.delete()
       }
+      // The report becomes consumable only after every completion marker and, for a
+      // normal suite run, its bound evidence manifest are durable. If any step above
+      // throws, retain `.running` so the verify finalizer cannot treat the half-committed
+      // report as a record-writing input.
+      runningMarker.get().asFile.delete()
     }
     argumentProviders.add {
       buildList {
@@ -2310,7 +2989,7 @@ hardening.mutation.all {
         add(threadsArg.get())
         add(timeoutFactorArg.get())
         add(timeoutConstArg.get())
-        if (historyActive) {
+        if (historyActiveNow()) {
           if (historyFile.isFile) {
             add("--historyInputLocation=" + historyFile.absolutePath)
           }
@@ -2330,7 +3009,6 @@ hardening.mutation.all {
     runAfter?.let { mustRunAfter(it) }
     group = "verification"
     description = "PIT mutation testing of the '${suite.name}' classes against their tests."
-    configurePitestExec()
     // Mutator-blindness advice. A mutant that is never generated cannot
     // survive, so a suite whose subject is BigDecimal/BigInteger math can sit
     // green for years with that math unmutated and nothing anywhere says so.
@@ -2415,6 +3093,9 @@ hardening.mutation.all {
                   "or record the measured decision not to: " +
                   "declineMutator(\"${finding.mutator}\", \"what the trial generated, and why it was not worth it\")."
           )
+          adviceAdvisoryLog.get().record(
+              adviceAdvisoryScope,
+              "${finding.classCount} class(es) use unmutated ${finding.label} arithmetic")
         }
         // A suppression that has outlived its subject is worse than none: it reads as
         // a settled decision about code that no longer exists.
@@ -2422,9 +3103,15 @@ hardening.mutation.all {
           logger.warn(
               "pitest '$suiteName': the recorded decline of ${stale.mutator} is stale — ${stale.why}."
           )
+          adviceAdvisoryLog.get().record(
+              adviceAdvisoryScope, "stale ${stale.mutator} mutator decline")
         }
       }
     }
+    // Configure after the advice action: Gradle's doFirst prepends, so pitestExec's
+    // attempt/sentinel action runs first and a failure in advice cannot expose stale
+    // evidence to the verify finalizer.
+    configurePitestExec()
   }
 
   // The converge second round: same run, no ratchet finalizer, ordered after the
@@ -2492,6 +3179,9 @@ hardening.fuzz.all {
     val adoptLocalCorpus = providers.gradleProperty("adoptLocalCorpus").isPresent
     doLast {
       val cap = maxLen.orNull ?: return@doLast
+      if (cap <= 0) {
+        throw GradleException("fuzz '$targetName': maxLen must be positive, was $cap")
+      }
       fun oversizedIn(dir: File?) =
           dir?.listFiles()?.filter { it.isFile && it.length() > cap }.orEmpty().sortedBy { it.name }
       val committed = oversizedIn(seedCorpus.orNull?.asFile)
@@ -2510,7 +3200,9 @@ hardening.fuzz.all {
   tasks.register<JavaExec>("fuzz" + target.name.replaceFirstChar(Char::uppercase)) {
     group = "verification"
     description = "Coverage-guided fuzzing of the '${target.name}' target with Jazzer; -PmaxFuzzTime=<seconds> (default 60)."
+    mustRunAfter(fuzzAllPreflight)
     dependsOn(seedLenCheck)
+    dependsOn(validateFuzzBudget)
     // Jazzer gets its own recompile: it may not read the class files
     // 'mutationBytecodeRelease' targets.
     dependsOn(compileForFuzz)
@@ -2541,7 +3233,7 @@ hardening.fuzz.all {
     val targetClassArg = target.targetClass.map { "--target_class=$it" }
     // locals so the lambda below does not capture the script instance, which the
     // configuration cache cannot serialize
-    val maxFuzzTimeArg = providers.gradleProperty("maxFuzzTime").orElse("60").map { "-max_total_time=$it" }
+    val maxFuzzTimeArg = maxFuzzTime.map { "-max_total_time=$it" }
     val maxLenArg = target.maxLen.map { "-max_len=$it" }
     // committed seeds are passed as a trailing read-only corpus: libFuzzer replays every
     // input from every listed dir but only writes newly interesting ones to the first
@@ -2662,6 +3354,9 @@ hardening.fuzz.all {
 val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
   description = "Generates seed-corpus replay tests for fuzz targets that declare a seedCorpus."
   val outputDir = layout.buildDirectory.dir("generated-sources/fuzz-replay/java")
+  val advisoryLog = hardeningAdvisoryLog
+  val advisoryScope = (if (project.path == ":") "" else "${project.path} ") + "fuzz corpus"
+  usesService(advisoryLog)
   outputs.dir(outputDir)
   // configuration-time snapshot of plain values, so the configuration cache can serialize
   val testResourceDirs = sourceSets.test.get().resources.srcDirs.toList()
@@ -2689,6 +3384,8 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
   }.sortedBy { it.first }
   val targets = hardening.fuzz.mapNotNull { target ->
     val corpus = target.seedCorpus.orNull?.asFile ?: return@mapNotNull null
+    val targetClass = requireJavaQualifiedName(
+        "fuzz target '${target.name}' targetClass", target.targetClass.get(), requirePackage = true)
     // A corpus under the test resources is resolved as a classpath resource — hermetic
     // under any working directory or test-distribution scheme. Anything else falls back
     // to its absolute path, which is regenerated every build so it stays machine-correct.
@@ -2696,7 +3393,7 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
       val relative = corpus.relativeToOrNull(dir)
       if (relative == null || relative.path.startsWith("..")) null else relative.invariantSeparatorsPath
     }
-    listOf(target.name, target.targetClass.get(), corpus.absolutePath, resourcePath ?: "")
+    listOf(target.name, targetClass, corpus.absolutePath, resourcePath ?: "")
   }
   inputs.property("targets", targets.map { it.joinToString("|") })
   // Declared as an input so adding or removing a corpus-less target re-runs this
@@ -2717,9 +3414,11 @@ val generateFuzzReplayTests = tasks.register("generateFuzzReplayTests") {
               "  A corpus is where a finding lands, so this holds even where a mutator reaches the format " +
               "from scratch — if it genuinely does not, record why: declineSeedCorpus(\"...\")."
       )
+      advisoryLog.get().record(advisoryScope, "fuzz target '$name' declares no seedCorpus")
     }
     staleDeclines.forEach { (name, why) ->
       logger.warn("fuzz target '$name': the recorded seedCorpus decline is stale — $why.")
+      advisoryLog.get().record(advisoryScope, "fuzz target '$name' has a stale seedCorpus decline")
     }
     val dir = outputDir.get().asFile
     dir.deleteRecursively()
@@ -2844,25 +3543,31 @@ tasks.register("hardeningInit") {
       logger.lifecycle("hardeningInit: .gitignore already covers $ignoreLine")
     } else {
       gitignore.appendText((if (gitignore.isFile && !gitignore.readText().endsWith("\n")) "\n" else "") +
-          "\n# arcmutate incremental-analysis history (machine-local, written by the hardening plugin)\n$ignoreLine\n")
+          "\n# optional ArcMutate history (machine-local when an applicable licence is present)\n$ignoreLine\n")
       logger.lifecycle("hardeningInit: appended $ignoreLine to $gitignore")
     }
     logger.lifecycle(
         """
         |hardeningInit: remaining adoption steps (HARDENING.md 'Adopting in a new repo'):
-        |  1. register mutation suites (wildcard targets + exclusions) and fuzz targets
+        |  1. register mutation suites (wildcard targets + exclusions) and every
+        |       meaningful fuzz target; zero fuzz targets is valid when the repo records why
         |  2. pin any unseeded randomness in the test suite
         |  3. seed each baseline: ./gradlew pitest<Suite> -PupdateMutationBaseline
         |  4. for suites whose summary reports timed-out mutants, seed the audited set:
         |       ./gradlew pitest<Suite> -PinitTimeoutAudit — then write each member's
         |       structural cause in config/pitest/README.md (HARDENING.md, audited-timeout bullet)
-        |  5. copy the agent-instructions template from HARDENING.md into AGENTS.md with:
+        |  5. run ./gradlew hardeningAgentTemplate and copy that exact version-matched
+        |       agent-instructions template into AGENTS.md with:
         |       <!-- hardening-template sha256:$digest -->
-        |  6. decide who owns the pre-release qualityGate run, and record it in AGENTS.md
+        |  6. decide who owns the pre-release hardeningCertify run, and record it in AGENTS.md
         |  7. fuzz targets with a seedCorpus get a generated replay test automatically;
         |       document seed provenance in a README next to (never inside) the corpus dir
-        |  8. optional: hardening.generateTestSupport = true generates shared socket/
-        |       scheduler/logging test helpers (HARDENING.md 'Shared test scaffolding')
+        |  8. own an explicit local fuzzAll -PmaxFuzzTime=<seconds> release budget;
+        |       scheduled GitHub fuzz workflows are optional and are not certification
+        |  9. optional: hardening.generateTestSupport = true generates shared socket/
+        |       scheduler/logging test helpers; unrelated adopters should also set
+        |       hardening.testSupportPackage to a package they own
+        |       (HARDENING.md 'Shared test scaffolding')
         |""".trimMargin()
     )
   }
@@ -2879,8 +3584,10 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
   outputs.dir(outputDir)
   val enabled = hardening.generateTestSupport
   val excludes = hardening.testSupportExcludes
+  val packageName = hardening.testSupportPackage
   inputs.property("enabled", enabled)
   inputs.property("excludes", excludes)
+  inputs.property("packageName", packageName)
   doLast {
     val dir = outputDir.get().asFile
     dir.deleteRecursively()
@@ -2889,7 +3596,9 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
       return@doLast
     }
     val excluded = excludes.get().toSet()
-    val pkgDir = dir.resolve("software/sava/hardening/support")
+    val pkg = packageName.get()
+    requireJavaQualifiedName("hardening.testSupportPackage", pkg, requirePackage = true)
+    val pkgDir = dir.resolve(pkg.replace('.', '/'))
     pkgDir.mkdirs()
     // each helper is skippable by simple name — 'JulRecorder' cannot compile in a test
     // module that does not read 'java.logging'
@@ -2899,7 +3608,7 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
       }
     }
     generate("Ports") { """
-        |package software.sava.hardening.support;
+        |package $pkg;
         |
         |/// Generated by the sava-build hardening plugin; regenerated every build, do not edit.
         |public final class Ports {
@@ -2920,7 +3629,7 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
         |}
         |""".trimMargin() }
     generate("RecordingExecutor") { """
-        |package software.sava.hardening.support;
+        |package $pkg;
         |
         |import java.util.concurrent.Executor;
         |import java.util.concurrent.atomic.AtomicInteger;
@@ -2950,7 +3659,7 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
         |}
         |""".trimMargin() }
     generate("ConcurrencyHarness") { """
-        |package software.sava.hardening.support;
+        |package $pkg;
         |
         |/// Generated by the sava-build hardening plugin; regenerated every build, do not edit.
         |///
@@ -3007,7 +3716,7 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
         |}
         |""".trimMargin() }
     generate("JulRecorder") { """
-        |package software.sava.hardening.support;
+        |package $pkg;
         |
         |import java.text.MessageFormat;
         |import java.util.ArrayList;
@@ -3118,7 +3827,7 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
         |}
         |""".trimMargin() }
     generate("LoopbackHttpServer") { """
-        |package software.sava.hardening.support;
+        |package $pkg;
         |
         |import java.io.ByteArrayOutputStream;
         |import java.io.IOException;
@@ -3243,7 +3952,7 @@ val generateHardeningTestSupport = tasks.register("generateHardeningTestSupport"
         |}
         |""".trimMargin() }
     generate("ManualScheduledExecutor") { """
-        |package software.sava.hardening.support;
+        |package $pkg;
         |
         |import java.time.Duration;
         |import java.util.ArrayList;

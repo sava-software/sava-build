@@ -240,7 +240,8 @@ before any report was written); the test worker had died with no `hs_err`
 dump — killed from outside, not crashed. An automatic retry on `MINION_DIED`
 was considered and declined at ~1 occurrence per 100 suite runs: it would
 mostly mask environment sickness. Per-mutant `RUN_ERROR` under multi-suite
-load is the same shape smaller, and the verify summary now names it.
+load is the same shape smaller; the verify now refuses that incomplete report
+instead of accepting PIT's detected score.
 
 ## PIT's world is the class path
 
@@ -1040,3 +1041,44 @@ computes it — the verify counted stale rows one way and prune matched them
 another, and the gap between them was a recommendation that could not work*;
 *when a hint names a flag, a test should hold the hint to it end-to-end,
 through the flag's actual effect on the file*.
+
+## The canary that skipped two consumers
+
+Twenty plugin releases into the hardening rollout, a fresh inventory found
+that the pre-release fleet roster was not the fleet. `idl-clients` and
+`glam-sdk-java` both consumed the hardening plugin but appeared nowhere in the
+manifest. Between them they carried six committed mutation-suite baselines and
+fifteen registered fuzz targets — exactly the real-data shapes the canary exists
+to exercise. Nothing in a green run disclosed their absence because the roster
+was treated as truth.
+
+The runner had a second ambiguity: no-argument mode skipped a listed repo whose
+sibling checkout was missing and still exited green. That is useful while
+developing on whatever happens to be checked out, but the same command was the
+documented release check. It recorded neither consumer commits nor dirty state,
+the Gradle tasks it actually found, or the plugin commit that `0.0.0-test`
+contained. After the terminal scrolled away, “the fleet passed” could not answer
+which fleet, at which revisions, against which candidate. A GitHub-driven fleet
+workflow had briefly been tried and then removed as disproportionate; removing
+it without supplying a strict local contract restored the original ambiguity.
+
+The repair kept both legitimate workflows and named the boundary. Ordinary
+mode may skip unavailable siblings and accept explicit subsets. Release mode
+requires every canonical slug, matching remotes, and clean trees; discovers
+registered tasks rather than inferring the suite inventory from whichever
+files already exist; and writes an immutable run bundle with hashed publish,
+consumer, and inner-certification evidence under ignored `build/`. Starting a
+rerun first changes the canonical pointer to `in_progress`, so interruption
+cannot leave yesterday's pass looking current. The build-free validator
+rehashes the bundle and checks still-present consumer revisions. The release
+owner retains and validates both bundles before merging the Release Please PR;
+the tag workflow cannot consume this machine-local evidence. Long fuzzing is
+invoked explicitly with a recorded budget; a cron schedule and arbitrary wait
+window remain optional.
+
+Rules: *an inventory is part of the safety mechanism — audit it from the
+consumers, not only from itself*; *“skip” and “certify” are different commands,
+even when they share an implementation*; *green without revisions, task names,
+and retained results is a recollection, not release evidence*; *when automation
+is too expensive, replace it with a strict local contract rather than a softer
+claim*.

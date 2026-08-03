@@ -13,7 +13,7 @@ import java.io.File
 /// has to be looked for, and no one looks for what they do not know is there.
 ///
 /// So each `pitest<Suite>` run scans the classes it is about to mutate for
-/// arithmetic calls on those types and, when the matching arcmutate mutator is
+/// arithmetic calls on those types and, when the matching PIT mutator is
 /// not enabled, prints the trial command. The advice is self-extinguishing —
 /// enable the mutator (or record a measured decision not to) and it goes quiet.
 ///
@@ -24,7 +24,7 @@ import java.io.File
 /// noise, and noise is what stops the useful case from being read.
 object MutatorAdvice {
 
-  /// An arcmutate mutator and the receiver type whose arithmetic it rewrites.
+  /// A PIT mutator and the receiver type whose arithmetic it rewrites.
   private data class Candidate(val mutator: String, val owner: String, val label: String)
 
   private val CANDIDATES = listOf(
@@ -39,7 +39,7 @@ object MutatorAdvice {
   /// counted, or the advice cries wolf and stops being read.
   ///
   /// This is a heuristic, not proof. The match is on owner plus method name,
-  /// so an overload arcmutate may not rewrite — `divide(BigDecimal, int,
+  /// so an overload PIT may not rewrite — `divide(BigDecimal, int,
   /// RoundingMode)`, `sqrt`, `gcd` — still counts, and the advice can point at
   /// a suite where the trial then generates nothing. That direction is the
   /// cheap one: the answer is a recorded decline carrying the measurement,

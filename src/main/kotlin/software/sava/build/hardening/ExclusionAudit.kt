@@ -37,6 +37,154 @@ object ExclusionAudit {
   /// partition the audit called a hole)*.
   data class SuiteScope(val targetGlobs: List<String>, val excludedGlobs: List<String>)
 
+  /// A named suite for a whole-population ownership check. [suiteName] should be
+  /// unique in the population being checked (a Gradle task path is a good id in a
+  /// multi-project build). A class is owned only when a target matches and no
+  /// exclusion does — the same effective-ownership rule [SuiteScope] uses.
+  data class OwnershipScope(
+    val suiteName: String,
+    val targetGlobs: List<String>,
+    val excludedGlobs: List<String>,
+  )
+
+  /// A deliberate ownership opt-out. It is intentionally tied to a suite and
+  /// one of that suite's effective exclusion globs: an arbitrary waiver for a
+  /// never-targeted class would make an allowlist hole read as a decision. To
+  /// decline such a class, first put it in a target universe, exclude it, and
+  /// record why correctness is carried elsewhere.
+  data class ExplicitDecline(
+    val suiteName: String,
+    val glob: String,
+    val reason: String,
+  )
+
+  data class ExclusionMatch(val suiteName: String, val glob: String)
+
+  data class OwnedClass(val binaryName: String, val suiteNames: List<String>)
+
+  data class DeclinedClass(val binaryName: String, val declines: List<ExplicitDecline>)
+
+  /// A production class with no effective owner and no argued decline. An empty
+  /// [excludedBy] means no suite target matched at all; otherwise the entries name
+  /// the first effective exclusion in every suite whose target did match.
+  data class UncoveredClass(val binaryName: String, val excludedBy: List<ExclusionMatch>)
+
+  /// A complete, deterministic partition of the supplied production population.
+  /// [staleDeclines] matched no currently-unowned excluded class; [blankDeclines]
+  /// matched or not, but cannot suppress anything without an argument.
+  data class OwnershipCoverage(
+    val owned: List<OwnedClass>,
+    val declined: List<DeclinedClass>,
+    val uncovered: List<UncoveredClass>,
+    val staleDeclines: List<ExplicitDecline>,
+    val blankDeclines: List<ExplicitDecline>,
+  )
+
+  /// Enumerates compiled production binary classes, including nested, anonymous,
+  /// and compiler-generated member classes. Test ownership follows source
+  /// ownership: `Foo$Inner.class` is test-owned when `Foo.java` is under a test
+  /// source root, and a nested class of a secondary top-level test declaration is
+  /// test-owned too. JVM metadata classes have no mutable behavior and are omitted.
+  ///
+  /// This is the filesystem boundary for [ownershipCoverage]; the coverage
+  /// decision itself stays pure and can be tested from class-name fixtures.
+  @JvmStatic
+  fun productionClassNames(
+      classesDir: File,
+      testSourceDirs: Collection<File>,
+  ): List<String> {
+    if (!classesDir.isDirectory) return emptyList()
+    val packageSources = HashMap<String, List<String>>()
+    return binaryClassNames(classesDir)
+        .filterNot(::isJvmMetadataClass)
+        .filterNot { isTestOwned(it, testSourceDirs, packageSources) }
+        .distinct()
+        .sorted()
+        .toList()
+  }
+
+  /// Partitions [productionClasses] into effective suite ownership, explicit
+  /// declines, and uncovered classes. Matching uses PIT's glob grammar. A decline
+  /// is effective only for an otherwise-unowned class whose target matched in the
+  /// named suite and whose *first* matching exclusion is the decline's exact glob;
+  /// this mirrors [swallowedProductionClasses] and [applyDeclines], including
+  /// overlapping-exclusion order. Thus a broad allowlist cannot hide a class that
+  /// no suite targets, and a decline becomes stale as soon as a sibling owns the
+  /// class.
+  @JvmStatic
+  fun ownershipCoverage(
+      productionClasses: Collection<String>,
+      scopes: List<OwnershipScope>,
+      declines: List<ExplicitDecline> = emptyList(),
+  ): OwnershipCoverage {
+    data class CompiledScope(
+      val name: String,
+      val targets: List<Regex>,
+      val exclusions: List<Pair<String, Regex>>,
+    )
+
+    val compiledScopes = scopes.map { scope ->
+      CompiledScope(
+        scope.suiteName,
+        scope.targetGlobs.map(::globToRegex),
+        scope.excludedGlobs.map { it to globToRegex(it) },
+      )
+    }
+    val declineKeys = declines.map { ExclusionMatch(it.suiteName, it.glob) }
+    val hitDeclines = HashSet<Int>()
+    val owned = ArrayList<OwnedClass>()
+    val declined = ArrayList<DeclinedClass>()
+    val uncovered = ArrayList<UncoveredClass>()
+
+    productionClasses.asSequence()
+        .filterNot(::isJvmMetadataClass)
+        .distinct()
+        .sorted()
+        .forEach { binaryName ->
+          val owners = compiledScopes.asSequence()
+              .filter { scope ->
+                scope.targets.any { it.matches(binaryName) } &&
+                    scope.exclusions.none { (_, regex) -> regex.matches(binaryName) }
+              }
+              .map { it.name }
+              .distinct()
+              .sorted()
+              .toList()
+          if (owners.isNotEmpty()) {
+            owned += OwnedClass(binaryName, owners)
+            return@forEach
+          }
+
+          val blockers = compiledScopes.mapNotNull { scope ->
+            if (scope.targets.none { it.matches(binaryName) }) return@mapNotNull null
+            scope.exclusions.firstOrNull { (_, regex) -> regex.matches(binaryName) }
+                ?.let { (glob, _) -> ExclusionMatch(scope.name, glob) }
+          }.distinct()
+              .sortedWith(compareBy(ExclusionMatch::suiteName, ExclusionMatch::glob))
+
+          val argued = declines.withIndex().mapNotNull { (index, decline) ->
+            if (declineKeys[index] !in blockers) return@mapNotNull null
+            hitDeclines += index
+            decline.takeIf { it.reason.isNotBlank() }
+          }.sortedWith(
+              compareBy(ExplicitDecline::suiteName, ExplicitDecline::glob, ExplicitDecline::reason))
+
+          if (argued.isNotEmpty()) {
+            declined += DeclinedClass(binaryName, argued)
+          } else {
+            uncovered += UncoveredClass(binaryName, blockers)
+          }
+        }
+
+    val stale = declines.withIndex().filterNot { it.index in hitDeclines }.map { it.value }
+        .sortedWith(
+            compareBy(ExplicitDecline::suiteName, ExplicitDecline::glob, ExplicitDecline::reason))
+    val blank = declines.filter { it.reason.isBlank() }
+        .sortedWith(
+            compareBy(ExplicitDecline::suiteName, ExplicitDecline::glob, ExplicitDecline::reason))
+    return OwnershipCoverage(owned, declined, uncovered, stale, blank)
+  }
+
   @JvmStatic
   fun swallowedProductionClasses(
       classesDir: File,
@@ -56,42 +204,31 @@ object ExclusionAudit {
     // candidates, so the common all-green run costs nothing beyond the exact-file
     // existence checks
     val packageSources = HashMap<String, List<String>>()
-    return classesDir.walkTopDown()
-        .filter { it.isFile && it.name.endsWith(".class") }
-        .mapNotNull { file ->
-          val binaryName = file.relativeTo(classesDir).invariantSeparatorsPath
-              .removeSuffix(".class")
-              .replace('/', '.')
-          // nested classes are skipped: when the outer class is swallowed, reporting
-          // each inner class repeats one decision per member. A glob matching *only*
-          // a nested class (say `*Recording*` on `Foo$RecordingHelper`) is a real
-          // exclusion this scan deliberately under-reports — the source file is the
-          // unit a rename or recompileExcludes acts on, and that unit is the outer.
-          if (binaryName.contains('$')) return@mapNotNull null
-          val sourceRelative = binaryName.replace('.', '/') + ".java"
-          if (testSourceDirs.any { dir -> dir.resolve(sourceRelative).isFile }) return@mapNotNull null
+    val swallowed = binaryClassNames(classesDir)
+        .filterNot(::isJvmMetadataClass)
+        .mapNotNull { binaryName ->
           if (included.none { it.matches(binaryName) }) return@mapNotNull null
           val hit = excluded.firstOrNull { (_, regex) -> regex.matches(binaryName) }
               ?: return@mapNotNull null
+          if (isTestOwned(binaryName, testSourceDirs, packageSources)) return@mapNotNull null
           // handed off, not swallowed: a sibling suite that would actually mutate
           // this class (its targets match, its own exclusions do not) owns it
           if (siblings.any { (targets, excludes) ->
                 targets.any { it.matches(binaryName) } && excludes.none { it.matches(binaryName) }
               }) return@mapNotNull null
-          // A secondary top-level class declared in a differently-named test file
-          // (FooTests.java carrying 'class Helper') has no Helper.java anywhere,
-          // so the exact-file check above misreads it as production. It is
-          // test-owned iff some .java in the same package under a test source dir
-          // declares it AT COLUMN 0 — top-level declarations always are, while an
-          // inner 'class Helper' is indented and compiles to Outer$Helper, so it
-          // can never own a top-level Helper.class. Checked last, only for actual
-          // swallow candidates: the declaration scan reads source text, and the
-          // common all-green run must not pay for it.
-          if (declaredInTestSource(binaryName, testSourceDirs, packageSources)) return@mapNotNull null
           Swallowed(binaryName, hit.first)
         }
         .toList()
-        .sortedBy { it.binaryName }
+
+    // Keep the historical one-decision-per-source signal when an outer and its
+    // nested classes are swallowed by the same glob. Crucially, a nested class
+    // remains visible when only it matches, when it hits a different exclusion,
+    // or when a sibling owns the outer but not the nested binary class.
+    val swallowedKeys = swallowed.mapTo(HashSet()) { it.binaryName to it.glob }
+    return swallowed.filterNot { candidate ->
+      enclosingBinaryNames(candidate.binaryName)
+          .any { outer -> (outer to candidate.glob) in swallowedKeys }
+    }.sortedBy { it.binaryName }
   }
 
   /// What a suite's recorded declines did to its swallowed set: the classes still
@@ -159,6 +296,47 @@ object ExclusionAudit {
   // PIT-glob parsing lives in PitGlobs, shared with MutatorAdvice so the two
   // scans can never disagree on which classes a glob selects.
   private fun globToRegex(glob: String): Regex = PitGlobs.toRegex(glob)
+
+  private fun binaryClassNames(classesDir: File): Sequence<String> = classesDir.walkTopDown()
+      .asSequence()
+      .filter { it.isFile && it.name.endsWith(".class") }
+      .map { file ->
+        file.relativeTo(classesDir).invariantSeparatorsPath
+            .removeSuffix(".class")
+            .replace('/', '.')
+      }
+
+  private fun isJvmMetadataClass(binaryName: String): Boolean =
+      binaryName == "module-info" || binaryName == "package-info" ||
+          binaryName.endsWith(".module-info") || binaryName.endsWith(".package-info")
+
+  /// The binary names that can own [binaryName]'s source, exact name first.
+  /// Exact-first matters because `$` is legal in a top-level Java identifier:
+  /// `Foo$Bar.java` owns `Foo$Bar.class`, while absent that file the same binary
+  /// spelling ordinarily means member `Bar` in `Foo.java`.
+  private fun sourceOwnerCandidates(binaryName: String): Sequence<String> = sequence {
+    val packageName = binaryName.substringBeforeLast('.', "")
+    var simpleName = binaryName.substringAfterLast('.')
+    while (true) {
+      yield(if (packageName.isEmpty()) simpleName else "$packageName.$simpleName")
+      val separator = simpleName.lastIndexOf('$')
+      if (separator < 0) break
+      simpleName = simpleName.substring(0, separator)
+    }
+  }
+
+  private fun enclosingBinaryNames(binaryName: String): Sequence<String> =
+      sourceOwnerCandidates(binaryName).drop(1)
+
+  private fun isTestOwned(
+      binaryName: String,
+      testSourceDirs: Collection<File>,
+      packageSources: MutableMap<String, List<String>>,
+  ): Boolean = sourceOwnerCandidates(binaryName).any { sourceOwner ->
+    val sourceRelative = sourceOwner.replace('.', '/') + ".java"
+    testSourceDirs.any { dir -> dir.resolve(sourceRelative).isFile } ||
+        declaredInTestSource(sourceOwner, testSourceDirs, packageSources)
+  }
 
   // Column-0 anchored: top-level declarations start the line, an inner class's
   // indentation excludes it (it compiles to Outer$Inner and owns nothing

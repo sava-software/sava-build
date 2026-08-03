@@ -113,6 +113,24 @@ val generateHardeningTemplateDigest = tasks.register("generateHardeningTemplateD
       .digest(template.toByteArray(Charsets.UTF_8))
       .joinToString("") { "%02x".format(it) }
       .take(12)
+    // Consumers need the exact template carried by the plugin version they resolved.
+    // A link to the main branch can move ahead of a released digest, so bake the text
+    // beside the digest and expose it through the hardeningAgentTemplate task.
+    val templateLiteral = buildString {
+      append('"')
+      template.forEach { char ->
+        when (char) {
+          '\\' -> append("\\\\")
+          '"' -> append("\\\"")
+          '\n' -> append("\\n")
+          '\r' -> append("\\r")
+          '\t' -> append("\\t")
+          '$' -> append("\\$")
+          else -> append(char)
+        }
+      }
+      append('"')
+    }
     val file = outputDir.get().file("software/sava/build/hardening/HardeningTemplateDigest.kt").asFile
     file.parentFile.mkdirs()
     file.writeText(buildString {
@@ -121,6 +139,7 @@ val generateHardeningTemplateDigest = tasks.register("generateHardeningTemplateD
       appendLine()
       appendLine("internal object HardeningTemplateDigest {")
       appendLine("  const val SHA256_12 = \"$digest\"")
+      appendLine("  const val TEMPLATE = $templateLiteral")
       appendLine("}")
     })
   }
@@ -164,6 +183,10 @@ tasks.test {
       // Read via 'savaBuild.root' too, by the reprint-filter pin in
       // HardeningRatchetFunctionalTest — declared so editing the script re-runs it.
       canaryScript = layout.projectDirectory.file("tools/fleet-canary.sh")
+      // The repository intentionally carries the public, package-scoped OSS
+      // ArcMutate certificate. Its test guards the eligibility boundary and, most
+      // importantly, ensures the private subscription URL is never pasted beside it.
+      arcMutateLicence = layout.projectDirectory.file("arcmutate-licence.txt")
       projectRoot = layout.projectDirectory
       // Re-run when the published plugin changes; maven-metadata.xml is excluded because
       // its 'lastUpdated' timestamp changes on every publish and would defeat up-to-date
@@ -187,6 +210,10 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)
   abstract val canaryScript: RegularFileProperty
+
+  @get:InputFile
+  @get:PathSensitive(PathSensitivity.NONE)
+  abstract val arcMutateLicence: RegularFileProperty
 
   @get:InputFiles
   @get:PathSensitive(PathSensitivity.RELATIVE)

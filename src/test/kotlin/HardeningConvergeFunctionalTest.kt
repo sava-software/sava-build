@@ -56,7 +56,9 @@ class HardeningConvergeFunctionalTest {
   private fun writeReport(reportDirName: String, vararg csvRows: String) {
     val reportDir = File(fixtureDir, "build/reports/pitest/$reportDirName")
     reportDir.mkdirs()
-    reportDir.resolve("mutations.csv").writeText(csvRows.joinToString("\n", postfix = "\n"))
+    reportDir.resolve("mutations.csv").writeText(
+      if (csvRows.isEmpty()) "" else csvRows.joinToString("\n", postfix = "\n")
+    )
   }
 
   private fun runner(vararg args: String): GradleRunner = GradleRunner.create()
@@ -123,6 +125,22 @@ class HardeningConvergeFunctionalTest {
       "per-mutant flip line missing:\n" + benign.output
     )
 
+    // Gated presence stays true while the gated MULTISET grows: the killed sibling
+    // now survives beside the always-surviving one. A presence-only comparison called
+    // this benign even though the ratchet needs a second accepted row.
+    writeReport(
+      "encoding",
+      "Codec.java,com.example.Codec,$mathMutator,encode,12,SURVIVED,none",
+      "Codec.java,com.example.Codec,$mathMutator,encode,12,SURVIVED,none",
+      "Codec.java,com.example.Codec,$boundaryMutator,decode,30,KILLED,com.example.CodecTest"
+    )
+    writeReport("parsing", "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest")
+    val siblingGrowth = convergeRun().buildAndFail()
+    assertTrue(
+      siblingGrowth.output.contains("KILLED/SURVIVED -> SURVIVED/SURVIVED  ** crosses the unkilled boundary **"),
+      "gated sibling-count growth was not classified as a boundary flip:\n" + siblingGrowth.output
+    )
+
     // KILLED -> SURVIVED crosses the unkilled boundary: the wandering kill count the
     // task exists to catch, so it fails and names the row
     writeReport(
@@ -175,20 +193,45 @@ class HardeningConvergeFunctionalTest {
     writeFixture()
     File(fixtureDir, "arcmutate-licence.txt").writeText("licence\n")
 
-    // two assisted runs agree by construction, so the snapshot refuses outright
+    // Two assisted runs agree by construction, so the snapshot refuses concrete
+    // report evidence rather than inferring provenance from this checkout's current
+    // licence setting.
+    writeReport("encoding", "")
+    File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").writeText("")
     val assisted = snapshotRun().buildAndFail()
     assertTrue(
-      assisted.output.contains("proves nothing with arcmutate history active"),
+      assisted.output.contains("round one is arcmutate-history-assisted"),
       assisted.output
     )
     assertTrue(assisted.output.contains("-PnoMutationHistory"), assisted.output)
 
     // the escape hatch reaches the per-suite report check, which names the first
     // suite missing its round-one report
+    File(fixtureDir, "build/reports/pitest").deleteRecursively()
     val missing = runner(
       "pitestConvergeSnapshot", "-PnoMutationHistory", "-x", "pitestEncoding", "-x", "pitestParsing"
     ).buildAndFail()
     assertTrue(missing.output.contains("no round-one report for 'encoding'"), missing.output)
+  }
+
+  @Test
+  fun `scoped reports cannot certify converge or the aggregate quality gate`() {
+    writeFixture()
+    writeReport("encoding", "Codec.java,com.example.Codec,$mathMutator,encode,8,KILLED,com.example.CodecTest")
+    writeReport("parsing", "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest")
+    File(fixtureDir, "build/reports/pitest/encoding/.scoped").writeText("com.example.Codec\n")
+
+    val converge = snapshotRun().buildAndFail()
+    assertTrue(converge.output.contains("scoped population cannot prove suite convergence"), converge.output)
+    assertTrue(converge.output.contains("without -PmutateOnly"), converge.output)
+
+    // Exclude the aggregate's expensive dependencies: this isolates the aggregate
+    // task's own certification guard, which must still fail rather than print green.
+    val gate = runner(
+      "qualityGate", "-PmutateOnly=com.example.Codec",
+      "-x", "test", "-x", "agentsTemplateInSync", "-x", "pitestEncoding", "-x", "pitestParsing"
+    ).buildAndFail()
+    assertTrue(gate.output.contains("qualityGate cannot certify a scoped mutation population"), gate.output)
   }
 
   @Test

@@ -20,5 +20,10 @@ jobs:
         with:
           website: ${{ vars.JDK_SRC }}
           release: ${{ vars.GRADLE_JAVA_VERSION }}
+      - name: Check release tooling
+        run: |
+          bash -n tools/fleet-canary.sh tools/local-fuzz.sh
+          tools/fleet-canary.sh --self-test
+          tools/local-fuzz.sh --self-test
       - name: Gradle Check
         run: ./gradlew --stacktrace check

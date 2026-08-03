@@ -25,8 +25,10 @@ savaGithubPackagesPassword=GITHUB_TOKEN
 ```
 
 In CI these are passed as the `ORG_GRADLE_PROJECT_savaGithubPackagesUsername` / `..Password`
-environment variables, which Gradle maps to the properties automatically. If no credentials are
-found the GitHub Packages repositories are skipped with a warning.
+environment variables, which Gradle maps to the properties automatically. The full Sava settings
+plugin skips GitHub Packages repositories with a warning when credentials are absent. A standalone
+build applying a plugin from that repository cannot resolve it without credentials, so the
+hardening-only example below fails fast instead.
 
 ### settings.gradle.kts
 
@@ -73,6 +75,82 @@ Each Java module lives in a sub-directory containing `src/main/java/module-info.
 discovered automatically; nested locations can be registered explicitly with
 `module("path/to/dir") { artifact = "artifact-id" }`.
 
+### Standalone hardening-only project
+
+The hardening plugin does not require the Sava settings plugin, module conventions,
+Solana BOM, or a `software.sava.*` package. An unrelated Java build resolves its
+versioned marker directly from Sava's GitHub Packages repository. Put that authenticated
+repository in `pluginManagement` using the credentials described above:
+
+```kotlin
+// settings.gradle.kts
+pluginManagement {
+  repositories {
+    gradlePluginPortal()
+    mavenCentral()
+    val gprUser = providers.gradleProperty("savaGithubPackagesUsername").orNull
+      ?.takeIf { it.isNotBlank() }
+      ?: error("savaGithubPackagesUsername is required to resolve sava-build")
+    val gprToken = providers.gradleProperty("savaGithubPackagesPassword").orNull
+      ?.takeIf { it.isNotBlank() }
+      ?: error("savaGithubPackagesPassword is required to resolve sava-build")
+    maven {
+      url = uri("https://maven.pkg.github.com/sava-software/sava-build")
+      credentials {
+        username = gprUser
+        password = gprToken
+      }
+    }
+  }
+}
+```
+
+Then apply only the Java and hardening plugins. PIT's tool classpath includes its JUnit 5
+integration, and every registered seed corpus produces a generated Jupiter replay test. A
+standalone JUnit Platform build must supply compatible Platform/engine versions and select
+`useJUnitPlatform()`; the example uses Jupiter, which is specifically required whenever replay
+tests are generated:
+
+```kotlin
+// build.gradle.kts
+plugins {
+  java
+  id("software.sava.build.feature.hardening") version "<sava-build-version>"
+}
+
+repositories { mavenCentral() }
+
+dependencies {
+  testImplementation("org.junit.jupiter:junit-jupiter:<junit-version>")
+  testRuntimeOnly("org.junit.platform:junit-platform-launcher:<junit-platform-version>")
+}
+
+tasks.test { useJUnitPlatform() }
+
+hardening {
+  mutation.register("core") {
+    targetClasses = listOf("com.acme.product.*")
+    targetTests = "com.acme.product.*Test*"
+  }
+  fuzz.register("parser") {
+    targetClass = "com.acme.product.ParserFuzz"
+    seedCorpus = layout.projectDirectory.dir("src/test/resources/fuzz/parser")
+  }
+  // Optional generated helpers should live in a package the adopter owns.
+  testSupportPackage = "com.acme.testing.hardening"
+}
+```
+
+The tool-bytecode releases default to the consuming Java toolchain rather than Sava's
+toolchain; lower `bytecodeRelease` or `mutationBytecodeRelease` only if a bundled tool
+cannot yet read that class-file version. Generated corpus replay and shared-support
+sources require Java 17 or newer. Run `./gradlew hardeningInit`, complete its ownership
+and baseline checklist, and copy the agent-instructions block from the `HARDENING.md` at
+the Git tag matching `<sava-build-version>` before treating `hardeningCertify` as a release
+gate. For example, use
+`https://github.com/sava-software/sava-build/blob/<sava-build-version>/HARDENING.md#agent-instructions-template`,
+not the moving `main` copy, whose template digest may belong to an unreleased plugin.
+
 ### gradle/sava.properties
 
 Project defaults read by the convention plugins. Values must be unquoted; every key can be
@@ -116,7 +194,9 @@ org.postgresql.jdbc=org.postgresql:postgresql
 `software.sava.build.java-module` is the aggregate applied to every module via `javaModules {}`;
 it composes the `base.*`, `feature.*`, and `check.*` plugins below. The `feature.jlink`,
 `feature.jmh`, `feature.hardening`, `feature.publish-maven-central`, and `modules.*`
-plugins are applied per project as needed — no version required, they resolve from the settings classpath.
+plugins are applied per project as needed. When the `software.sava.build` settings plugin is
+present they resolve from its settings classpath and need no project-level version; a standalone
+project must request its plugin by an explicit version, as in the hardening-only example above.
 
 | Plugin | Description |
 |---|---|
@@ -125,7 +205,7 @@ plugins are applied per project as needed — no version required, they resolve 
 | `software.sava.build.feature.publish` | Maven publishing with sources/javadoc jars, POM metadata from [sava.properties](#gradlesavaproperties), optional GPG signing, and the `savaGithubPackagesPublish` repository. Applied by `java-module`. |
 | `software.sava.build.feature.publish-maven-central` | Maven Central publishing for the `:aggregation` project: stages, bundles (`zipCentralPortalDeployment`), and uploads (`publishCentralPortalDeployment`) deployments straight to the [Central Portal API](https://central.sonatype.org/publish/publish-portal-api/). The `nmcpAggregation` configuration and `publishAggregationToCentralPortal` task from the retired [nmcp](https://github.com/GradleUp/nmcp) plugin remain as deprecated aliases. |
 | `software.sava.build.feature.jmh` | [JMH](https://github.com/melix/jmh-gradle-plugin) benchmarking conventions for standalone benchmark builds: quick-look run defaults (1 fork, 5×1s warmup, 8×1s measurement, fail-on-error), a `jmh` task that is never skipped as `UP-TO-DATE`, per-run results archived timestamped under `<project>/jmh-results/` — outside `build/`, so `clean` keeps measurement history — with `results.txt` re-rendered after each run as the newest-wins merge of all archived runs (subset runs converge on a full scoreboard; delete archive files to drop stale rows), and service-replicating JVM flags (compact object headers, generational ZGC, pinned pre-touched 2g heap, `-XX:+PerfDisableSharedMem`) — override wholesale with `jmh { jvmArgsAppend.set(...) }`. Every default is overridable per invocation: `-PjmhFork`, `-PjmhIncludes=<regex>[,...]`, `-PjmhWarmupIterations`, `-PjmhWarmup`, `-PjmhIterations`, `-PjmhTimeOnIteration`, `-PjmhFailOnError`, and `-PjmhJvmArgsAppend="<flag> <flag>..."` (replaces the service flag list wholesale). Decision-grade comparisons need 3+ forks and isolation from other load. Leaves the toolchain to the consuming build (benchmark harnesses often pin bespoke JDKs). |
-| `software.sava.build.feature.hardening` | [PIT](https://pitest.org) mutation testing and [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) coverage-guided fuzzing for hand-picked, correctness-critical classes, configured via `hardening {}`: each `mutation` suite (`targetClasses`, `targetTests`, optional `mutators`/`threads`) adds a `pitest<Name>` task reporting HTML/CSV under `build/reports/pitest/<name>`; each `fuzz` target (a class with `public static void fuzzerTestOneInput(byte[])`, no Jazzer imports needed) adds a `fuzz<Name>` task (`-PmaxFuzzTime=<seconds>`, default 60; optional `maxLen` caps libFuzzer input length for targets whose cost grows super-linearly with input size) whose corpus persists under `build/fuzz/<name>-corpus`, run with JVM args pre-authorizing Jazzer's dynamic agent, Unsafe usage, and native access. Each tool consumes the main and test sources recompiled into one plain, module-info-free classpath root: `compileForPitest` at `mutationBytecodeRelease` into `build/mutation-classes` and `compileForFuzz` at `bytecodeRelease` into `build/fuzz-classes` (both default 25; lower one when a tool's bundled ASM lags the toolchain's class-file version); the mutation directory name deliberately avoids the string "pitest", which PIT silently drops from classpath roots. Tool versions overridable via `pitestVersion`, `pitestJunit5PluginVersion`, and `jazzerVersion`. Workflow tooling around the mutation-baseline ratchet (policy: [HARDENING.md](HARDENING.md)): every `pitest<Name>` run is finalized by `pitest<Name>Verify` diffing unkilled mutants against `config/pitest/<name>-accepted.csv` (line-less `class,method,mutator,STATUS` keys with `# line` tags as metadata, `# untriaged` row notes counted, `-PlistUnkilled` annotates rows with PIT's XML mutation descriptions, `-PupdateMutationBaseline` names what it drops, `-PunionMutationBaseline` appends without dropping); `migrateMutationBaselines` respells committed legacy baselines into the current row format with no mutation run; `pitestConverge` runs every suite twice and diffs per-mutant statuses; `pitestModeSnapshot -PpitestMode=<label>` / `pitestModeCompare` diff solo-vs-`qualityGate` runs per mutant and write observed-flip insurance with `-PunionModeFlips`; `pitestMutatorTrial -PtrialMutators=...` tabulates which suites a candidate mutator fires in; `generateFuzzReplayTests` turns every committed seed corpus into a generated replay test inside `check`; `hardeningInit` scaffolds adoption; and `hardening.generateTestSupport = true` generates shared test helpers (`Ports`, `LoopbackHttpServer`, `ManualScheduledExecutor`, `RecordingExecutor`, `JulRecorder`) into the test source set. |
+| `software.sava.build.feature.hardening` | [PIT](https://pitest.org) mutation testing and [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) coverage-guided fuzzing with explicit ownership of the production population, configured via `hardening {}`: each `mutation` suite (`targetClasses`, `targetTests`, optional `mutators`/`threads`) adds a `pitest<Name>` task reporting HTML/CSV under `build/reports/pitest/<name>`; each `fuzz` target (a class with `public static void fuzzerTestOneInput(byte[])`, no Jazzer imports needed) adds a `fuzz<Name>` task (`-PmaxFuzzTime=<seconds>`, default 60; optional `maxLen` caps libFuzzer input length for targets whose cost grows super-linearly with input size) whose corpus persists under `build/fuzz/<name>-corpus`, run with JVM args pre-authorizing Jazzer's dynamic agent, Unsafe usage, and native access. Each tool consumes the main and test sources recompiled into one plain, module-info-free classpath root: `compileForPitest` at `mutationBytecodeRelease` into `build/mutation-classes` and `compileForFuzz` at `bytecodeRelease` into `build/fuzz-classes` (both default to the consuming Java toolchain; lower one when a tool's bundled ASM lags its class-file version); the mutation directory name deliberately avoids the string "pitest", which PIT silently drops from classpath roots. Tool versions overridable via `pitestVersion`, `pitestJunit5PluginVersion`, and `jazzerVersion`. Workflow tooling around the mutation-baseline ratchet (policy: [HARDENING.md](HARDENING.md)): every `pitest<Name>` run is finalized by `pitest<Name>Verify` diffing unkilled mutants against `config/pitest/<name>-accepted.csv` (line-less `class,method,mutator,STATUS` keys with `# line` tags as metadata, `# untriaged` row notes counted, `-PlistUnkilled` annotates rows with PIT's XML mutation descriptions, `-PupdateMutationBaseline` names what it drops, `-PunionMutationBaseline` appends without dropping); `migrateMutationBaselines` respells committed legacy baselines into the current row format with no mutation run; `pitestConverge` runs every suite twice and diffs per-mutant statuses; `pitestModeSnapshot -PpitestMode=<label>` / `pitestModeCompare` diff solo-vs-`qualityGate` runs per mutant and write observed-flip insurance with `-PunionModeFlips`; `pitestMutatorTrial -PtrialMutators=...` tabulates which suites a candidate mutator fires in; `generateFuzzReplayTests` turns every committed seed corpus into a generated replay test inside `check`; `fuzzAll` runs every registered target locally; `hardeningCertify` performs fresh, full, provenance-bound mutation certification with strict timeout and ownership audits; `hardeningInit` scaffolds adoption; and `hardening.generateTestSupport = true` generates shared test helpers (`ConcurrencyHarness`, `Ports`, `LoopbackHttpServer`, `ManualScheduledExecutor`, `RecordingExecutor`, `JulRecorder`) into the test source set. |
 | `software.sava.build.modules.postgresql` | Opt-in [extra-java-module-info](https://github.com/gradlex-org/extra-java-module-info) patch converting the PostgreSQL JDBC driver into an explicit module (required for jlink). |
 | `software.sava.build.modules.gcp-kms` | Opt-in module patches for the Google Cloud KMS client and its non-modular transitive dependencies. |
 | `software.sava.build.base.dependency-rules` | Consistent resolution against the solana version catalog BOM. |
@@ -135,6 +215,17 @@ plugins are applied per project as needed — no version required, they resolve 
 | `software.sava.build.check.attestations` | `verifySavaAttestations` task: verifies the GitHub build-provenance attestations of resolved sava dependencies (sha256 lookup in the org attestation store, cosign verification against the reusable publish workflow's identity), plus their sources/javadoc jars and the sava-build plugin jar in use (attested by `gradle_plugin_publish.yml`). Missing attestations warn until `savaAttestations.requireAttestations = true`; failed verifications always fail. Configure via `savaAttestations {}`; needs a `cosign` executable or a Docker image passed as `-PsavaCosignImage=...`. Applied by `java-module`; not part of `check` (requires network). |
 | `software.sava.build.feature.javadoc` | Lenient javadoc (`Xdoclint:none`, HTML5). |
 | `software.sava.build.check.dependencies` | [Dependency analysis](https://github.com/autonomousapps/dependency-analysis-gradle-plugin) and module-directive scope checks wired into `check`. |
+
+The hardening plugin is not restricted to Sava package names. Any Java project can
+register its own production namespaces, mutation suites, exclusions, and fuzz targets.
+`fuzzAll` derives a local campaign from every registered target, while
+`hardeningCertify` performs fresh, full, provenance-bound mutation runs with strict
+timeout and production-ownership audits. The ArcMutate certificate committed at this
+repository's root is a separate optional accelerator: it applies only to eligible public
+`software.sava.*` projects, not GLAM, private `idl-src-gen`, or unrelated adopters. It is not
+packaged into the published Gradle plugin and the plugin never copies it into a consumer. An
+eligible Sava repository activates it only after someone deliberately copies the certificate to
+that repository's root; ineligible projects use the same process with open-source PIT.
 
 ## Configuration
 
@@ -348,37 +439,73 @@ checkout. When changing dependencies, regenerate the
 ./gradlew --write-verification-metadata pgp,sha256 check generatePrecompiledScriptPluginAccessors
 ```
 
-### Pre-release fleet canary
+### Pre-release fleet certification
 
-Before merging a release PR, run the consumer fleet against the unreleased plugin:
+The quick canary stays useful during development:
 
 ```shell
-tools/fleet-canary.sh <consumer-repo-dir>...
+tools/fleet-canary.sh                     # locally available manifest siblings
+tools/fleet-canary.sh --deep              # also run annotated mutation cycles
+tools/fleet-canary.sh ../sava ../ravina:pitestCalls
 ```
 
-The functional tests exercise synthetic fixtures; the checks that only fire against real
-consumer data — committed baselines, audited timeout sets, README causes, settings
-snippets — historically surfaced one new finding per release, *after* the release, one
-repo at a time. The canary publishes `0.0.0-test` and runs every repo's
-`pitest<Suite>Debt` tasks (derived from the committed `config/pitest` files) plus
-`agentsTemplateInSync` under `-PsavaBuildLocalRepo`, which exercises plugin
-application, the settings snippet, and the static half of the audit checks in seconds
-per repo, without mutation runs. A template-digest change therefore surfaces here as
-per-repo *advisories* naming the marker dance the release will obligate at bump time —
-before the release, not one consumer CI at a time after. Advisory, not a failure:
-under `-PsavaBuildLocalRepo` a stale marker is the expected state (the repo
-acknowledges a released digest; this checkout's has not shipped), and failing here
-forced repos to pre-acknowledge unreleased digests, wedging their `check` against
-every published plugin until the release landed. Build failures fail the
-canary; advisory findings are reprinted per repo for review. A green build must also
-print the local-repo notice, proving `0.0.0-test` actually ran: a settings snippet
-predating `-PsavaBuildLocalRepo` ignores the property and resolves the released
-plugin, so its green output canaries nothing — the canary fails that repo and points
-at the canonical snippet above. A repo that trips a check the fixtures missed earns a
-functional test reproducing its shape.
+Those ordinary modes intentionally skip unavailable manifest siblings and permit an
+explicit subset. They are observations, not release certification. On a clean candidate
+commit with every manifest repo checked out as a sibling, run the strict forms instead:
 
-With no arguments the script runs the whole fleet from the roster in
-[tools/fleet-manifest.txt](tools/fleet-manifest.txt), resolving each repo as a sibling
-checkout; `--deep` also honours the manifest's `deep=<pitestSuiteTask>` annotations
-(two real mutation runs on the annotated suite). Explicit repo arguments still work
-for canarying a subset, and `:<pitestSuiteTask>` on any argument runs its deep leg.
+```shell
+tools/fleet-canary.sh --release
+tools/fleet-canary.sh --verify-receipt build/hardening/fleet-canary-receipt.json
+
+tools/local-fuzz.sh --release --seconds 900
+tools/local-fuzz.sh --verify-receipt build/hardening/local-fuzz-receipt.json
+```
+
+`--release` preflights the entire roster before publishing the test plugin and refuses a
+missing repo, mismatched GitHub remote, or dirty plugin or consumer worktree (linked
+worktrees included). Starting a run immediately changes the canonical receipt to an
+`in_progress` pointer, invalidating an older pass. A completed pointer names an immutable
+`build/hardening/<name>-runs/run.*/` bundle containing the machine-readable receipt,
+preflight inventory, plugin-publish log, one log per consumer, and copies of the inner
+`pitest-certification.tsv` or `local-fuzz.tsv` evidence. The receipt binds and hashes those
+files together with the plugin commit/tree/origin, manifest digest, each consumer's
+commit/origin, exact tasks, and the fuzz budget. Keep the selected run directories with
+the release record, but do not commit them into the tree they certify.
+
+The build-free verification commands rehash every retained file and, when a recorded
+checkout is still available, require its current commit, origin, and clean state to match.
+They accept only subsequent Release Please changes to `CHANGELOG.md` and
+`.release-please-manifest.json`; re-run both certifications after any other candidate,
+fixture, workflow, or policy change.
+
+The functional tests exercise synthetic fixtures; real baselines, audited timeout sets,
+README causes, task registration, and settings snippets have historically supplied a
+new post-release surprise one repo at a time. The canary publishes `0.0.0-test` and,
+under `-PsavaBuildLocalRepo`, runs lightweight debt and template checks in ordinary
+mode. Release mode requires every consumer's `hardeningCertify`, which freshly executes
+all registered mutation suites and writes provenance-bound per-project evidence.
+`--deep` remains an explicit repeated diagnostic, not a release soak or prerequisite.
+The separate local fuzz pass uses the plugin's `fuzzAll` aggregate; release mode requires
+both that aggregate and a nonempty registered target set in every consumer. Only ordinary
+diagnostic mode may fall back to discovered `fuzz<Target>` tasks (or `help` for a targetless
+repo). `--continue` lets independent targets finish after one fails.
+Neither release check trusts a merely green consumer build: each requires the
+`0.0.0-test` resolution notice, so an obsolete settings snippet cannot silently test
+the published plugin instead.
+
+Hardening advisories are evidence to review, not text to lose in a green log. Strict
+canary mode therefore fails when it sees one; after inspecting every reprinted payload,
+rerun with `--allow-advisories` to record that acknowledgement. A stale agent-template
+marker is expected while testing an unreleased digest, for example, but it still belongs
+in the release record. Any consumer shape the fixtures missed earns a focused functional
+test before release.
+
+The roster is [tools/fleet-manifest.txt](tools/fleet-manifest.txt). Scheduled GitHub fuzz
+workflows are outside the plugin contract; release evidence comes from the explicit
+local fuzz command and receipt, not from waiting for a schedule or soak window.
+
+These machine-local receipts are the **release owner's gate before merging the Release
+Please PR**. They are not uploaded to GitHub today, and the tag-triggered publish workflow
+cannot consume or enforce them; that workflow only syntax-checks and self-tests the runner
+scripts before its existing build and publication steps. Do not describe a tagged release
+as fleet-certified unless the owner retained and verified both local run bundles first.
