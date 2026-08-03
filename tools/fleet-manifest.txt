@@ -1,0 +1,28 @@
+# Fleet canary roster: the consumer repos validated against an unreleased
+# sava-build before its release PR merges. This file exists to answer, after
+# the fact, "which repos were validated for a release" — a prior review found
+# that unknowable once a release had shipped. The Fleet Canary workflow
+# (.github/workflows/fleet-canary.yml) reads this roster, clones each repo
+# fresh at depth 1 (committed state, never a dirty working tree), runs
+# tools/fleet-canary.sh across the fleet, and uploads the output as the
+# release's canary record.
+#
+# Format: one repo per line, `<github-org>/<repo>`, optionally annotated with
+# ` deep=<pitestSuiteTask>` naming the suite that carries the deep leg (two
+# real mutation runs cycling the machine-local status stash — see the usage
+# notes in tools/fleet-canary.sh). The deep annotation is honoured only when
+# the workflow's `deep` input is true; release-PR runs stay static-only.
+# Lines starting with '#' and blank lines are ignored.
+#
+# Private repos (idl-src-gen, vault-stat-service) need the FLEET_CANARY_TOKEN
+# secret (a PAT with repo read on both orgs) to clone in CI; without it the
+# workflow validates the public subset and WARNS, naming what it could not
+# reach — the canary record stays honest about its coverage either way.
+sava-software/sava
+sava-software/ravina
+sava-software/json-iterator deep=pitestUtil
+sava-software/http-servers
+sava-software/idl-src-gen
+sava-software/incident-client
+glamsystems/ix-proxy
+glamsystems/vault-stat-service

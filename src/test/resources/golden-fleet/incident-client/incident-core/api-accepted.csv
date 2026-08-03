@@ -1,0 +1,12 @@
+software.sava.incident.core.api.IncidentAlertRecord$IncidentAlertBuilder,<init>,39,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # defensive-copy
+software.sava.incident.core.api.IncidentAlertRecord$IncidentAlertBuilder,create,56,ConditionalsBoundaryMutator,SURVIVED # copy-on-write
+software.sava.incident.core.api.IncidentAlertRecord$IncidentAlertBuilder,create,56,RemoveConditionalMutator_ORDER_ELSE,SURVIVED # copy-on-write
+software.sava.incident.core.api.IncidentAlertRecord$IncidentAlertBuilder,create,56,RemoveConditionalMutator_ORDER_IF,SURVIVED # copy-on-write
+software.sava.incident.core.api.IncidentAlertRecord$IncidentAlertBuilder,customDetail,103,RemoveConditionalMutator_EQUAL_IF,SURVIVED # copy-on-write
+software.sava.incident.core.api.IncidentClients,createClient,33,NullReturnValsMutator,NO_COVERAGE # service-loader-binding
+software.sava.incident.core.api.IncidentClients,createClient,37,NullReturnValsMutator,NO_COVERAGE # service-loader-binding
+software.sava.incident.core.api.IncidentClients,createClient,41,NullReturnValsMutator,NO_COVERAGE # service-loader-binding
+software.sava.incident.core.api.IncidentClients,loadFactory,47,NullReturnValsMutator,NO_COVERAGE # service-loader-binding
+software.sava.incident.core.api.IncidentServiceVal,retry,71,ConditionalsBoundaryMutator,SURVIVED # async-routing
+software.sava.incident.core.api.IncidentServiceVal,retry,71,RemoveConditionalMutator_ORDER_ELSE,SURVIVED # async-routing
+software.sava.incident.core.api.IncidentServiceVal,retry,71,RemoveConditionalMutator_ORDER_IF,SURVIVED # async-routing

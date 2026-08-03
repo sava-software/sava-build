@@ -1,3 +1,4 @@
+import software.sava.build.hardening.BaselineEngine
 import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.BaselineNotes
 import software.sava.build.hardening.ExclusionAudit
@@ -1035,18 +1036,8 @@ hardening.mutation.all {
       val current = currentWithLines.map { it.first }.sorted()
       val currentLines: Map<String, List<String>> =
           currentWithLines.groupBy({ it.first }, { it.second })
-      fun multisetDiff(a: List<String>, b: List<String>): List<String> {
-        val remaining = b.groupingBy { it }.eachCount().toMutableMap()
-        return a.filter { row ->
-          val n = remaining[row] ?: 0
-          if (n > 0) {
-            remaining[row] = n - 1
-            false
-          } else {
-            true
-          }
-        }
-      }
+      fun multisetDiff(a: List<String>, b: List<String>): List<String> =
+          BaselineEngine.multisetDiff(a, b)
 
       // Same-line siblings of the same mutator FAMILY that ARE detected
       // disambiguate a survivor's direction: the survivor is the opposite branch or
@@ -1284,45 +1275,12 @@ hardening.mutation.all {
         val previous = if (staleFormat) emptyMap() else tally(stashEntries)
         val current = tally(rows.map { coordinate(it) to it[5] })
         if (previous.isNotEmpty()) {
-          fun delta(key: String, status: String) =
-              (current[key]?.get(status) ?: 0) - (previous[key]?.get(status) ?: 0)
-          val fromSurvived = mutableListOf<String>()
-          val fromNoCoverage = mutableListOf<String>()
-          var newlyTimedOut = 0
-          var firstObserved = 0
-          var resolved = 0
-          for (key in previous.keys + current.keys) {
-            val timedOut = delta(key, "TIMED_OUT")
-            if (timedOut > 0) {
-              // gained a timeout and lost an unkilled: a mutant nobody killed now
-              // hides behind the watchdog — the survived and never-reached
-              // origins are both dangerous and each named (a key can lose both)
-              val survivedDrop = delta(key, "SURVIVED") < 0
-              val noCoverageDrop = delta(key, "NO_COVERAGE") < 0
-              when {
-                survivedDrop || noCoverageDrop -> {
-                  if (survivedDrop) fromSurvived += key
-                  if (noCoverageDrop) fromNoCoverage += key
-                }
-                // gained timeouts with its unkilled population intact at a key
-                // whose stash held a DETECTED read (KILLED or TIMED_OUT; KILLED
-                // is stashed, so a fully-killed key lands here) — the benign
-                // KILLED<->TIMED_OUT flavour; summed so the drift line counts
-                // mutants, not keys
-                key in previous &&
-                    previous.getValue(key).keys.any { it == "KILLED" || it == "TIMED_OUT" } ->
-                  newlyTimedOut += timedOut
-                // no prior detected read to have come from: a new coordinate, a
-                // new sibling at a gated-only key, or a key whose only prior
-                // reads were PIT's not-counted-as-detected statuses (NON_VIABLE,
-                // RUN_ERROR, MEMORY_ERROR) — "previously detected" would be a
-                // false claim for every one of these
-                else -> firstObserved += timedOut
-              }
-            } else if (timedOut < 0) {
-              resolved -= timedOut
-            }
-          }
+          // classification semantics live in BaselineEngine.driftCompare: the
+          // dangerous flavours name each lost-unkilled origin (a key can lose
+          // both), "previously detected" requires an actual prior detected read,
+          // and everything else is a first observation
+          val (fromSurvived, fromNoCoverage, newlyTimedOut, firstObserved, resolved) =
+              BaselineEngine.driftCompare(previous, current)
           if (fromSurvived.isNotEmpty()) {
             logger.warn(
                 "pitest '$suiteName': ${fromSurvived.size} coordinate(s) flipped SURVIVED -> TIMED_OUT — " +
@@ -1620,115 +1578,16 @@ hardening.mutation.all {
       // path's stale hint: each surface prints row identities, so deciding from
       // two allocators (the hint used to budget in baseline-file order over key
       // strings while prune budgeted affinity-first over rows) let the hint
-      // promise "prune keeps them" about a row prune then dropped. One plan, per
-      // accepted row, in this order:
-      //   matched — holds part of its key's surviving budget: line affinity first
-      //             (a row whose '# line' tag names an observed unkilled line is
-      //             that mutant's row), then file order, the update refresh's own
-      //             assignment rule. File order alone drops whichever row sat
-      //             last: a noted row could die for its bare sibling's kill.
-      //   insured — a row at a flip-insured key. Insurance rows exist because the
-      //             coordinate was OBSERVED flapping — a run where the mutant
-      //             reads killed is the flap the note records, and pruning it
-      //             fails the next solo run with an unexplained survivor. The
-      //             marker is key-level (any row of the key noting 'flip
-      //             insurance' insures its siblings), the row leaves by the
-      //             union's written removal criterion, never by refresh — and
-      //             because the keep is unconditional it is decided BEFORE the
-      //             timeout budget: an insured row spending that budget vouched
-      //             for nobody and pushed the sibling the timeout could actually
-      //             be hiding past the budget.
-      //   timeout — holds part of its coordinate's timeout budget: at most as
-      //             many rows as mutants actually timed out there (a presence
-      //             check let one audited permanent timeout vouch for arbitrarily
-      //             many genuinely killed siblings), line affinity first — a
-      //             '# line' tag naming a timed-out line — then file order.
-      //   flip    — consumed an *unmatched* different-status counterpart at its
-      //             coordinate (the pairing the verify classifies as "newly
-      //             covered"); a triage item, not a refresh. Consumed once per
-      //             row: a coordinate-level status check let a mutant already
-      //             matched by its own row vouch for a killed sibling.
-      //   drop    — matches nothing: since killed.
-      val keepPlan: List<String> = run {
-        fun coordinate(key: String) = key.substringBeforeLast(',')
-        val dispositions = arrayOfNulls<String>(acceptedRows.size)
-        for ((key, keyIndices) in acceptedRows.indices.groupBy { acceptedRows[it].key }) {
-          var remaining = currentLines[key].orEmpty().size
-          if (remaining >= keyIndices.size) {
-            keyIndices.forEach { dispositions[it] = "matched" }
-            continue
-          }
-          val liveLines = currentLines[key].orEmpty().toSet()
-          val (affine, bare) = keyIndices.partition { index ->
-            acceptedRows[index].recordedLines.any { it.toString() in liveLines }
-          }
-          for (index in affine + bare) {
-            if (remaining == 0) break
-            dispositions[index] = "matched"
-            --remaining
-          }
-        }
-        val flipInsuredKeys = acceptedRows
-            .filter { it.note?.contains("flip insurance") == true }
-            .mapTo(HashSet()) { it.key }
-        for (index in acceptedRows.indices) {
-          if (dispositions[index] == null && acceptedRows[index].key in flipInsuredKeys) {
-            dispositions[index] = "insured"
-          }
-        }
-        // Timeout budget order: affine rows (tag names a timed-out line — the row
-        // behind the watchdog), then bare rows in file order, then anti-affine
-        // rows last (tag names a line KILLED this run — provably the killed
-        // mutant's row, the mirror of the survivor budget's affinity rule).
-        // Between bare rows nothing can decide — no tag, no information — so
-        // file order picks, and a wrong pick is loud: the live mutant resurfaces
-        // as a fresh row next run and the ratchet fails naming it, where the old
-        // presence keep was silently wrong forever in the other direction.
-        val killedLinesByCoordinate = rows.filter { it[5] == "KILLED" }
-            .groupBy(::mutantCoordinate) { it[4].toIntOrNull() }
-        for ((coord, keyIndices) in acceptedRows.indices
-            .filter { dispositions[it] == null }
-            .groupBy { coordinate(acceptedRows[it].key) }) {
-          val timedOutHere = timedOutByAuditKey[coord] ?: continue
-          var remaining = timedOutHere.size
-          val timedOutLines = timedOutHere.mapNotNull { it[4].toIntOrNull() }.toSet()
-          val killedLines = killedLinesByCoordinate[coord].orEmpty().filterNotNull().toSet()
-          val (affine, rest) = keyIndices.partition { index ->
-            acceptedRows[index].recordedLines.any { it in timedOutLines }
-          }
-          val (antiAffine, bare) = rest.partition { index ->
-            acceptedRows[index].recordedLines.any { it in killedLines }
-          }
-          for (index in affine + bare + antiAffine) {
-            if (remaining == 0) break
-            dispositions[index] = "timeout"
-            --remaining
-          }
-        }
-        val rowsPerKey = acceptedRows.groupingBy { it.key }.eachCount()
-        val flipCounterparts = HashMap<String, MutableMap<String, Int>>()
-        for ((key, lines) in currentLines) {
-          val excess = lines.size - (rowsPerKey[key] ?: 0)
-          if (excess > 0) {
-            flipCounterparts.getOrPut(coordinate(key)) { HashMap() }[key.substringAfterLast(',')] = excess
-          }
-        }
-        for (index in acceptedRows.indices) {
-          if (dispositions[index] != null) continue
-          val coord = coordinate(acceptedRows[index].key)
-          val rowStatus = acceptedRows[index].key.substringAfterLast(',')
-          val byStatus = flipCounterparts[coord]
-          val status = byStatus?.keys?.sorted()?.firstOrNull { it != rowStatus && byStatus.getValue(it) > 0 }
-          if (status != null) {
-            val n = byStatus.getValue(status)
-            if (n == 1) byStatus.remove(status) else byStatus[status] = n - 1
-            dispositions[index] = "flip"
-          } else {
-            dispositions[index] = "drop"
-          }
-        }
-        dispositions.map { checkNotNull(it) }
-      }
+      // promise "prune keeps them" about a row prune then dropped. The plan's
+      // dispositions and their ordering rules live in BaselineEngine.keepPlan —
+      // the pure, unit- and property-tested transition core; this task only
+      // feeds it the report's per-coordinate timed-out and killed lines.
+      val keepPlan: List<BaselineEngine.Disposition> = BaselineEngine.keepPlan(
+          acceptedRows,
+          currentLines,
+          timedOutByAuditKey.mapValues { (_, mutants) -> mutants.map { it[4].toIntOrNull() } },
+          rows.filter { it[5] == "KILLED" }.groupBy(::mutantCoordinate) { it[4].toIntOrNull() },
+      )
       // A refresh rewrite emits rows only: '#' comment lines and blank lines do
       // not survive it. migrateMutationBaselines is the one path that preserves
       // them, so a rewrite must at least be LOUD about the prose it is about to
@@ -1755,20 +1614,20 @@ hardening.mutation.all {
         val droppedRows = mutableListOf<BaselineNotes.Row>()
         for ((rowIndex, row) in acceptedRows.withIndex()) {
           when (keepPlan[rowIndex]) {
-            "matched" -> kept.add(row)
-            "timeout" -> {
+            BaselineEngine.Disposition.MATCHED -> kept.add(row)
+            BaselineEngine.Disposition.TIMEOUT -> {
               kept.add(row)
               keptUnmatched.add(row to "TIMED_OUT this run (load-dependent)")
             }
-            "flip" -> {
+            BaselineEngine.Disposition.FLIP -> {
               kept.add(row)
               keptUnmatched.add(row to "coordinate unkilled at another status (flip pending triage)")
             }
-            "insured" -> {
+            BaselineEngine.Disposition.INSURED -> {
               kept.add(row)
               keptUnmatched.add(row to "flip insurance at this key (remove by its written criterion, not a refresh)")
             }
-            else -> droppedRows.add(row)
+            BaselineEngine.Disposition.DROP -> droppedRows.add(row)
           }
         }
         val keptDetail = if (keptUnmatched.isEmpty()) "" else
@@ -1822,72 +1681,15 @@ hardening.mutation.all {
         // note that drops is its own, not whichever row came first; without line
         // evidence the assignment is arbitrary, which is the documented same-key
         // blind spot, not a bug to police.
-        val pairIdxByKey = HashMap<String, MutableList<Int>>()
-        acceptedRows.forEachIndexed { idx, row -> pairIdxByKey.getOrPut(row.key) { mutableListOf() }.add(idx) }
-        val chosenIdx = mutableSetOf<Int>()
-        // per copy of each key: the observed line (null when unparsable) and the
-        // assigned accepted row, filled by the two passes below
-        class Copy(val key: String, val line: Int?) {
-          var pair: Int? = null
-        }
-        val copies = currentLines.keys.sorted().flatMap { key ->
-          currentLines.getValue(key).map { it.toIntOrNull() }.sortedWith(nullsLast(naturalOrder()))
-              .map { Copy(key, it) }
-        }
-        for (copy in copies) {
-          val pairs = pairIdxByKey[copy.key] ?: continue
-          val line = copy.line ?: continue
-          val hit = pairs.firstOrNull { line in acceptedRows[it].recordedLines }
-          if (hit != null) {
-            copy.pair = hit
-            chosenIdx.add(hit)
-            pairs.remove(hit)
-          }
-        }
-        for (copy in copies) {
-          if (copy.pair != null) continue
-          val pairs = pairIdxByKey[copy.key] ?: continue
-          if (pairs.isEmpty()) continue
-          val idx = pairs.removeAt(0)
-          copy.pair = idx
-          chosenIdx.add(idx)
-        }
-        val droppedIdx = acceptedRows.indices.filter { it !in chosenIdx }
-        // note-carrying flip pool: dropped rows that carry a note, each consumed at
-        // most once, matched by coordinate (key minus status)
-        val flipPool = droppedIdx.filter { acceptedRows[it].note != null }.toMutableList()
-        val carriedIdx = mutableSetOf<Int>()
-        var flipped = 0
-        var seeded = 0
-        val written = copies.map { copy ->
-          val lineTag = copy.line?.let { listOf(it) } ?: emptyList()
-          val match = copy.pair
-          if (match != null) {
-            return@map BaselineNotes.render(copy.key, acceptedRows[match].note, lineTag)
-          }
-          val coordinate = copy.key.substringBeforeLast(',')
-          val flip = flipPool.firstOrNull { acceptedRows[it].key.substringBeforeLast(',') == coordinate }
-          if (flip != null) {
-            flipPool.remove(flip)
-            carriedIdx.add(flip)
-            flipped++
-            val from = acceptedRows[flip].key.substringAfterLast(',')
-            val to = copy.key.substringAfterLast(',')
-            return@map BaselineNotes.render(
-                copy.key, "${acceptedRows[flip].note} (carried across $from -> $to)", lineTag)
-          }
-          // A genuinely new key — or a new sibling mutant at an accepted key — arrives
-          // as explicit debt, never as a bare row: triage means replacing this label,
-          // so the baseline itself always says which rows are argued and which are
-          // waiting. A surfaced sibling seeds '# untriaged' too: its twin's argument
-          // was written for the mutants it had, not for one more.
-          seeded++
-          BaselineNotes.render(copy.key, "# untriaged", lineTag)
-        }
+        // pairing, note carry, and seeding live in BaselineEngine.updateRewrite;
+        // this task renders its result and names each dropped row's fate below
+        val rewrite = BaselineEngine.updateRewrite(acceptedRows, currentLines)
+        val droppedIdx = rewrite.droppedIdx
+        val carriedIdx = rewrite.carriedIdx
         // A refresh with nothing unkilled writes no record: an empty (or newly
         // created, one-newline) baseline file reads as an armed-but-empty record
         // where there is no record at all, and clutters fully-detected suites.
-        if (copies.isEmpty()) {
+        if (rewrite.copies == 0) {
           if (baselineFile.isFile) {
             warnDroppedComments()
             baselineFile.delete()
@@ -1897,11 +1699,11 @@ hardening.mutation.all {
           }
         } else {
           warnDroppedComments()
-          BaselineFiles.writeAtomically(baselineFile, written.joinToString("\n", postfix = "\n"))
+          BaselineFiles.writeAtomically(baselineFile, rewrite.written.joinToString("\n", postfix = "\n"))
           logger.lifecycle(
-              "pitest baseline '$suiteName': wrote ${copies.size} accepted entries" +
-                  (if (seeded == 0) "" else " ($seeded new row(s) seeded '# untriaged')") +
-                  (if (flipped == 0) "" else " ($flipped note(s) carried across a status flip — re-check them)")
+              "pitest baseline '$suiteName': wrote ${rewrite.copies} accepted entries" +
+                  (if (rewrite.seeded == 0) "" else " (${rewrite.seeded} new row(s) seeded '# untriaged')") +
+                  (if (rewrite.flipped == 0) "" else " (${rewrite.flipped} note(s) carried across a status flip — re-check them)")
           )
         }
         if (droppedIdx.isNotEmpty()) {
@@ -1938,59 +1740,18 @@ hardening.mutation.all {
         // baseline rows that happened to be detected this run — a full
         // '-PupdateMutationBaseline' there would bake in this run's coin-flips and start
         // refresh ping-pong.
-        val added = multisetDiff(current, accepted)
-        if (added.isEmpty()) {
+        // the merge — per-key max counts, existing rows verbatim with their own
+        // tagged lines claimed fewest-live-options-first, added copies bare with
+        // the genuinely unclaimed observed lines — lives in BaselineEngine.unionMerge
+        val merge = BaselineEngine.unionMerge(acceptedRows, current, currentLines)
+        if (merge.added.isEmpty()) {
           logger.lifecycle("pitest baseline '$suiteName': union added nothing new")
         } else {
-          // multiset union: per key, the larger of the two occurrence counts —
-          // existing rows keep their notes and line tags verbatim, added copies land
-          // bare with this run's observed line
-          val pairsByKey = acceptedRows.groupBy { it.key }
-          val currentCounts = current.groupingBy { it }.eachCount()
-          val linePool = HashMap<String, ArrayDeque<Int>>()
-          currentLines.forEach { (key, lines) ->
-            linePool[key] = ArrayDeque(lines.mapNotNull { it.toIntOrNull() }.sorted())
-          }
-          var total = 0
-          val merged = (pairsByKey.keys + currentCounts.keys).sorted().flatMap { key ->
-            val existing = pairsByKey[key].orEmpty()
-            val extra = maxOf(0, (currentCounts[key] ?: 0) - existing.size)
-            // Existing rows consume their own tagged lines from the pool, so the
-            // added copies below receive the genuinely unclaimed ones. Blind
-            // oldest-first consumption handed an existing row the new sibling's
-            // smaller line, tagged the appended row with the existing mutant's
-            // line, and armed the next verify's same-key-swap advisory against a
-            // file this write produced. Rows with the fewest live tagged lines
-            // claim first: a multi-line tag (a flip-insurance row names every
-            // line its family was observed at) must not steal the only copy of a
-            // line a sibling row tags exactly. Rows without a live tagged line
-            // consume oldest-first — the documented same-key blind spot.
-            linePool[key]?.let { pool ->
-              val pending = existing.toMutableList()
-              var blind = 0
-              while (pending.isNotEmpty()) {
-                val next = checkNotNull(pending.minByOrNull { row ->
-                  val live = row.recordedLines.count { pool.contains(it) }
-                  if (live == 0) Int.MAX_VALUE else live
-                })
-                pending.remove(next)
-                val claimed = next.recordedLines.firstOrNull { pool.contains(it) }
-                if (claimed != null) pool.remove(claimed) else ++blind
-              }
-              repeat(blind) { pool.removeFirstOrNull() }
-            }
-            total += existing.size + extra
-            existing.map { BaselineNotes.render(it) } +
-                List(extra) {
-                  BaselineNotes.render(
-                      key, null, linePool[key]?.removeFirstOrNull()?.let { listOf(it) } ?: emptyList())
-                }
-          }
           warnDroppedComments()
-          BaselineFiles.writeAtomically(baselineFile, merged.joinToString("\n", postfix = "\n"))
+          BaselineFiles.writeAtomically(baselineFile, merge.merged.joinToString("\n", postfix = "\n"))
           logger.lifecycle(
-              "pitest baseline '$suiteName': union added ${added.size} entries (baseline now $total):\n" +
-                  added.joinToString("\n") { row -> "  $row${describe(row)}" }
+              "pitest baseline '$suiteName': union added ${merge.added.size} entries (baseline now ${merge.total}):\n" +
+                  merge.added.joinToString("\n") { row -> "  $row${describe(row)}" }
           )
         }
         if (baselineFile.isFile) stampToolVersion() else stampOrRetireToolVersion()
@@ -2048,26 +1809,14 @@ hardening.mutation.all {
       // the same counterpart and report a churn that did not happen. Line shifts no
       // longer exist as a category: lines are not identity, so editing above a
       // mutated method produces no fresh rows at all.
-      val acceptedRowTexts = accepted.toSet()
-      val unpairedStale = stale.toMutableList()
-      val newlyCoveredPairs = mutableListOf<Pair<String, String>>()
-      val surfacedSiblings = mutableListOf<String>()
-      for (row in fresh.sorted()) {
-        val flip = unpairedStale.firstOrNull {
-          it.substringBeforeLast(',') == row.substringBeforeLast(',') && it != row
-        }
-        if (flip != null) {
-          unpairedStale.remove(flip)
-          newlyCoveredPairs.add(row to flip)
-          continue
-        }
-        if (row in acceptedRowTexts) {
-          surfacedSiblings.add(row)
-        }
-      }
+      // pairing and counting live in BaselineEngine.classifyChurn — a stale row is
+      // consumed once it pairs, so several fresh rows cannot all claim one counterpart
+      val churn = BaselineEngine.classifyChurn(fresh, stale, accepted.toSet())
+      val newlyCoveredPairs = churn.newlyCoveredPairs
+      val surfacedSiblings = churn.surfacedSiblings
       val newlyCoveredFrom = newlyCoveredPairs.toMap(mutableMapOf())
       val surfacedSiblingTexts = surfacedSiblings.toSet()
-      val unexplained = fresh.size - newlyCoveredPairs.size - surfacedSiblings.size
+      val unexplained = churn.unexplained
       fun freshHint(row: String): String = when {
         row in surfacedSiblingTexts ->
           " (shares an accepted key — sibling debt surfaced, or a NEW mutant at that key; check the line)"
@@ -2093,9 +1842,9 @@ hardening.mutation.all {
         //             killed on this run and survives on another; the hint used
         //             to name it and prune then dropped it, failing the next solo
         //             run with an unexplained survivor
-        val staleTimedOut = acceptedRows.indices.filter { keepPlan[it] == "timeout" }
-        val staleInsured = acceptedRows.indices.filter { keepPlan[it] == "insured" }
-        val staleGone = acceptedRows.indices.filter { keepPlan[it] == "drop" }
+        val staleTimedOut = acceptedRows.indices.filter { keepPlan[it] == BaselineEngine.Disposition.TIMEOUT }
+        val staleInsured = acceptedRows.indices.filter { keepPlan[it] == BaselineEngine.Disposition.INSURED }
+        val staleGone = acceptedRows.indices.filter { keepPlan[it] == BaselineEngine.Disposition.DROP }
         if (staleGone.isNotEmpty()) {
           // Point at prune, not update: when the only news is *fewer* survivors, the
           // shrink-only refresh is the always-safe direction — it cannot bake in a

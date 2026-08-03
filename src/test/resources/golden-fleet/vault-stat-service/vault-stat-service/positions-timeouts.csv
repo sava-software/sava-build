@@ -1,0 +1,4 @@
+# Audited timed-out mutants — line-less `class,method,mutator` keys (sava-build
+# HARDENING.md, the audited-set bullet). This suite has never produced a
+# timed-out mutant; the file exists empty to arm the check, so the very first
+# timeout here warns as the reviewer-stop it is.

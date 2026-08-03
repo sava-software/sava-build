@@ -1,0 +1,16 @@
+# Audited timed-out mutants — line-less `class,method,mutator` keys (sava-build
+# HARDENING.md, the audited-set bullet). Structural cause per member: README.md,
+# "Timed-out mutants". A timeout outside this set is a reviewer-stop: identify
+# the structural cause, write it in the README, then admit the row.
+systems.glam.services.vault.stats.rest.handlers.glam.tables.BaseGlamVaultTableHandler, extendAndCreateTables, RemoveConditionalMutator_EQUAL_IF   # line 108
+systems.glam.services.vault.stats.rest.handlers.glam.tables.BaseGlamVaultTableHandler, extendAndCreateTables, RemoveConditionalMutator_EQUAL_ELSE # line 116
+systems.glam.services.vault.stats.rest.handlers.glam.sparkle.SparkleHandler,           generatePNG,           IncrementsMutator                   # line 107
+systems.glam.services.vault.stats.rest.handlers.glam.sparkle.SparkleHandler,           generatePNG,           RemoveConditionalMutator_ORDER_IF   # line 107
+systems.glam.services.vault.stats.rest.handlers.glam.sparkle.SparkleHandler,           generatePNG,           MathMutator                         # line 114 — the recorded benign KILLED<->TIMED_OUT flapper
+systems.glam.services.logging.BaseJulLogger,                                           formatPlaceholders,    IncrementsMutator                   # lines 70, 81
+systems.glam.services.vault.stats.rest.handlers.kamino.KaminoVaultContextHandler,      httpResponse,          RemoveConditionalMutator_EQUAL_ELSE # line 52
+systems.glam.services.vault.stats.rest.handlers.kamino.KaminoVaultContextHandler,      httpResponse,          VoidMethodCallMutator               # lines 53, 62
+systems.glam.services.vault.stats.rest.handlers.kamino.KaminoReserveContextsHandler,   httpResponse,          VoidMethodCallMutator               # line 107
+systems.glam.services.monitor.IncidentNotifierImpl,                                   queueResponse,         VoidMethodCallMutator               # line 45
+systems.glam.services.monitor.IncidentNotifierImpl,                                   run,                   RemoveConditionalMutator_EQUAL_ELSE # lines 53, 57
+systems.glam.services.monitor.IncidentNotifierImpl,                                   run,                   VoidMethodCallMutator               # lines 55, 58

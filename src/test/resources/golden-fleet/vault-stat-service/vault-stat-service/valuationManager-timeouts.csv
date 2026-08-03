@@ -1,0 +1,5 @@
+# Audited timed-out mutants — line-less `class,method,mutator` keys (sava-build
+# HARDENING.md, the audited-set bullet). Structural cause per member: README.md,
+# "Timed-out mutants". A timeout outside this set is a reviewer-stop: identify
+# the structural cause, write it in the README, then admit the row.
+systems.glam.services.vault.stats.value.GlamVaultValuationManagerImpl, glamVaultTableUpdate, RemoveConditionalMutator_EQUAL_IF # line 1442 (pre-harness 1404); the recorded KILLED<->TIMED_OUT converge oscillation

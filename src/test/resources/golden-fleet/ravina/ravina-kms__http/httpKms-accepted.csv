@@ -1,0 +1,4 @@
+software.sava.kms.http.HttpKMSClient,<init>,48,NakedReceiverMutator,SURVIVED # restating-default
+software.sava.kms.http.HttpKMSClient,sign,71,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # alloc-only-copy
+software.sava.kms.http.HttpKMSClient,sign,71,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # alloc-only-copy
+software.sava.kms.http.HttpKMSErrorTracker,logResponse,38,VoidMethodCallMutator,SURVIVED # log-removal

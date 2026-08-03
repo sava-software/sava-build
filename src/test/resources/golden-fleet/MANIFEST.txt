@@ -1,0 +1,25 @@
+# Golden fleet corpus: committed config/pitest snapshots from the consumer fleet.
+# Columns: repo<TAB>module-path<TAB>HEAD-commit (snapshot taken with 'git show <commit>:<path>').
+# Directory layout: golden-fleet/<repo>/<module-path with '/' as '__'>/<original file name>.
+sava	sava-core	ccd7010bbf97e4450427f8a0139e8a36b84deb53
+sava	sava-rpc	ccd7010bbf97e4450427f8a0139e8a36b84deb53
+ravina	ravina-core	109a770afefd5a4e30f72e7d583de90805f98532
+ravina	ravina-kms/core	109a770afefd5a4e30f72e7d583de90805f98532
+ravina	ravina-kms/google	109a770afefd5a4e30f72e7d583de90805f98532
+ravina	ravina-kms/http	109a770afefd5a4e30f72e7d583de90805f98532
+ravina	ravina-solana	109a770afefd5a4e30f72e7d583de90805f98532
+json-iterator	json-iterator	e916ec47c424933fa9af8875fac5170ceba692d3
+http-servers	http-servers-core	c166295a2861b669024112fd09dd87224d1e564c
+http-servers	http-servers-fusionauth	c166295a2861b669024112fd09dd87224d1e564c
+http-servers	http-servers-hello	c166295a2861b669024112fd09dd87224d1e564c
+http-servers	http-servers-jdk	c166295a2861b669024112fd09dd87224d1e564c
+http-servers	http-servers-jetty	c166295a2861b669024112fd09dd87224d1e564c
+http-servers	http-servers-sava	c166295a2861b669024112fd09dd87224d1e564c
+idl-src-gen	idl-src-gen-server	7fa1b3b6a76570b4c675088f295497298253f419
+idl-src-gen	idl-src-gen	7fa1b3b6a76570b4c675088f295497298253f419
+incident-client	incident-core	c5f3119507c835f43ff3a576e9583dce11a9d306
+incident-client	incident-io	c5f3119507c835f43ff3a576e9583dce11a9d306
+incident-client	incident-pagerduty	c5f3119507c835f43ff3a576e9583dce11a9d306
+incident-client	incident-webhook	c5f3119507c835f43ff3a576e9583dce11a9d306
+ix-proxy	ix-proxy	3cf47aaedbae068d84caca05daef17d790f01b4e
+vault-stat-service	vault-stat-service	b62622e3231f04467440526a5b72530f1475dd66

@@ -376,3 +376,19 @@ predating `-PsavaBuildLocalRepo` ignores the property and resolves the released
 plugin, so its green output canaries nothing — the canary fails that repo and points
 at the canonical snippet above. A repo that trips a check the fixtures missed earns a
 functional test reproducing its shape.
+
+In CI, the [Fleet Canary workflow](.github/workflows/fleet-canary.yml) runs this
+automatically on every release PR — exactly the PR the other `check-pr` jobs
+deliberately skip — against fresh `--depth 1` clones of the fleet roster in
+[tools/fleet-manifest.txt](tools/fleet-manifest.txt), so it validates each consumer's
+committed state rather than whatever a local working tree happens to hold. The full
+canary output is uploaded as a workflow artifact named with the sava-build SHA; that
+artifact is the canary record for the release — which repos and suites were validated,
+and every advisory reprinted. Private fleet repos need the `FLEET_CANARY_TOKEN` secret
+(a PAT with repo read on the manifest's orgs) to clone; without it the workflow
+validates the public subset and warns, naming what it could not reach — the record
+stays honest about its coverage either way. Local runs remain the way to canary
+uncommitted consumer migrations and to run the deep leg cheaply (append
+`:<pitestSuiteTask>` to a repo argument for two real mutation runs); in CI the deep
+leg runs only on manual dispatch with the `deep` input, honouring the manifest's
+`deep=<pitestSuiteTask>` annotations.

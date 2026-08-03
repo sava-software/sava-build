@@ -1,0 +1,7 @@
+# Audited timeout-detected mutants for the jsonParse suite (HARDENING.md, the
+# audited-set bullet). One line-less class,method,mutator key per row — the
+# verify warns on any timed-out mutant outside this set, and on members whose
+# structural cause is missing from README.md. Lines ride in '#' comments only:
+# a new timeout in an already-audited method+mutator draws no warning, so the
+# README cause names the line for a reviewer to re-read when that code moves.
+software.sava.idl.generator.LegacyAnchorIdlConverter,convert,RemoveConditionalMutator_EQUAL_ELSE # line 121

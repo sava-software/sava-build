@@ -1,0 +1,13 @@
+systems.glam.ix.proxy.BaseIxProxy,validateMapping,29,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # invariant-guard
+systems.glam.ix.proxy.ConfigLoader$Worker,get,142,VoidMethodCallMutator,SURVIVED # log-only
+systems.glam.ix.proxy.IxMapConfig,createProxy,58,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # single-variant-guard
+systems.glam.ix.proxy.IxMapConfig,createProxy,58,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # single-variant-guard
+systems.glam.ix.proxy.IxProxyRecord,mapInstructionUnchecked,80,ConditionalsBoundaryMutator,SURVIVED # empty-copy-equivalent
+systems.glam.ix.proxy.IxProxyRecord,mapInstructionUnchecked,80,RemoveConditionalMutator_ORDER_IF,SURVIVED # empty-copy-equivalent
+systems.glam.ix.proxy.ProgramProxyMap,mapTransaction,60,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # defensive-null-tables
+systems.glam.ix.proxy.ProgramProxyMap,mapTransaction,60,RemoveConditionalMutator_EQUAL_IF,SURVIVED # defensive-null-tables
+systems.glam.ix.proxy.ProgramProxyMap,mapTransactionWithTable,89,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # defensive-null-tables
+systems.glam.ix.proxy.ProgramProxyMap,mapTransactionWithTable,89,RemoveConditionalMutator_EQUAL_IF,SURVIVED # defensive-null-tables
+systems.glam.ix.proxy.ProgramProxyMap,mapTransactionWithTables,114,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # delegation-equivalent
+systems.glam.ix.proxy.ProgramProxyMap,mapTransactionWithTables,127,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED # defensive-null-tables
+systems.glam.ix.proxy.ProgramProxyMap,mapTransactionWithTables,127,RemoveConditionalMutator_EQUAL_IF,SURVIVED # defensive-null-tables

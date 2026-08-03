@@ -1,0 +1,2 @@
+software.sava.idl.generator.shared.SerDeUtil,fixedLengthString,104,RemoveConditionalMutator_ORDER_ELSE,SURVIVED # defense-in-depth
+software.sava.idl.generator.shared.SerDeUtil,writeVal,141,RemoveConditionalMutator_ORDER_IF,SURVIVED # defense-in-depth
