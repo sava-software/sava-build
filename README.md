@@ -466,13 +466,18 @@ worktrees included). Starting a run immediately changes the canonical receipt to
 `in_progress` pointer, invalidating an older pass. A completed pointer names an immutable
 `build/hardening/<name>-runs/run.*/` bundle containing the machine-readable receipt,
 preflight inventory, plugin-publish log, one log per consumer, and copies of the inner
-`pitest-certification.tsv` or `local-fuzz.tsv` evidence. The receipt binds and hashes those
-files together with the plugin commit/tree/origin, manifest digest, each consumer's
-commit/origin, exact tasks, and the fuzz budget. Keep the selected run directories with
+`pitest-certification.tsv` or `local-fuzz.tsv` evidence, plus the exact published
+`0.0.0-test` plugin JAR. The receipt binds and hashes those files together with the plugin
+commit/tree/origin, manifest digest, each consumer's commit/origin, exact tasks, and the
+fuzz budget. Every inner receipt's loaded-plugin hash must equal the retained JAR hash, so
+all consumers resolving the same stale binary cannot agree their way to green. Keep the selected run directories with
 the release record, but do not commit them into the tree they certify.
 
 The build-free verification commands rehash every retained file and, when a recorded
 checkout is still available, require its current commit, origin, and clean state to match.
+They report the exact number of consumer checkouts revalidated and refuse full verification
+when that number is zero; unavailable individual checkouts remain named skips whose retained
+artifacts are still checked.
 They accept only subsequent Release Please changes to `CHANGELOG.md` and
 `.release-please-manifest.json`; re-run both certifications after any other candidate,
 fixture, workflow, or policy change.

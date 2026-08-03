@@ -1,6 +1,7 @@
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -15,6 +16,11 @@ class HardeningFeatureSmokeTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
 
   private fun writeFixture(
     hardeningSettings: List<String>,
@@ -275,8 +281,14 @@ class HardeningFeatureSmokeTest {
 
     assertTrue(result.output.contains("fuzzAll: 0 local target(s) completed"), result.output)
     assertTrue(receipt.isFile, "zero-target campaign did not write a receipt")
-    assertTrue(receipt.readText().contains("maxFuzzTimeSeconds\t1"), receipt.readText())
-    assertFalse(receipt.readText().contains("target\t"), receipt.readText())
+    val receiptText = receipt.readText()
+    assertTrue(receiptText.contains("schema\t2"), receiptText)
+    assertTrue(
+      Regex("(?m)^pluginSha256\\t[0-9a-f]{64}$").containsMatchIn(receiptText),
+      "zero-target receipt did not bind the loaded plugin binary:\n$receiptText",
+    )
+    assertTrue(receiptText.contains("maxFuzzTimeSeconds\t1"), receiptText)
+    assertFalse(receiptText.contains("target\t"), receiptText)
     assertFalse(
       File(fixtureDir, "build/hardening/local-fuzz.running").exists(),
       "successful zero-target campaign retained its running sentinel")

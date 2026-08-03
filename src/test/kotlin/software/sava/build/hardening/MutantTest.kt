@@ -137,6 +137,10 @@ class MutantTest {
         Mutant.parseReport(listOf("C.java,com.example.C,org.pitest.M,m,5,$status,none"))
       }
       assertTrue(failure.message!!.contains("$status x1"), failure.message)
+      assertTrue(
+          failure.message!!.contains("line 1: C.java,com.example.C,org.pitest.M,m,5,$status,none"),
+          failure.message,
+      )
     }
   }
 }

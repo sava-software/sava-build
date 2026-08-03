@@ -275,6 +275,20 @@ val hardeningCertify = tasks.register("hardeningCertify") {
         hasCommittedRecord -> "legacy-unversioned"
         else -> "no-record"
       }
+      // The report and compiled/configured inputs prove what PIT observed; these
+      // committed files prove what made that observation acceptable. Keep their
+      // digest in the inner receipt too, rather than relying only on the fleet
+      // wrapper's clean Git commit to bind the baseline, timeout membership, causes,
+      // and PIT-version provenance.
+      val recordInputsSha256 = PitestEvidence.fingerprint(
+          configDir.asFile,
+          listOf(
+              baseline,
+              timeouts,
+              stamp,
+              configDir.file("README.md").asFile,
+          ).filter { it.isFile },
+      )
       if ((baseline.isFile || timeouts.isFile) && recordedPitVersion == null) {
         logger.lifecycle(
             "hardeningCertify: '$suiteName' committed record is legacy-unversioned; " +
@@ -286,18 +300,18 @@ val hardeningCertify = tasks.register("hardeningCertify") {
               "suite", suiteName, evidence.invocationId, evidence.reportSha256,
               evidence.sourceSha256, evidence.classesSha256, evidence.configurationSha256,
               evidence.pitestVersion, evidence.pluginSha256, evidence.toolClasspathSha256,
-              recordProvenance,
+              recordInputsSha256, recordProvenance,
           ).joinToString("\t"))
     }
     val receipt = buildString {
-      appendLine("schema\t3")
+      appendLine("schema\t4")
       appendLine("project\t$certifiedProjectPath")
       appendLine("session\t$sessionId")
       appendLine("mode\tfresh-full-strict")
       appendLine(
           "columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\t" +
               "configurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\t" +
-              "recordPitestVersion")
+              "recordInputsSha256\trecordPitestVersion")
       receiptRows.forEach(::appendLine)
     }
     BaselineFiles.writeAtomically(receiptFile.get().asFile, receipt)
@@ -1036,7 +1050,7 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
 // line-less keys with '# line' tags. No report, no PIT run, no stamping:
 // identity is preserved by construction (parse/render round-trips the key,
 // note and recorded lines), so this cannot change what any verify compares —
-// it only respells the record. The refresh flags migrate too, but they need a
+// it only respells the record. Refresh flags migrate whenever they write, but they need a
 // green mutation run, and update needs a *solo* run or it drops flip-insurance
 // rows reading TIMED_OUT under load; this task removes that hazard from fleet
 // migration entirely. Comment and blank lines pass through verbatim.
@@ -1103,6 +1117,8 @@ val fuzzTargetNames = objects.setProperty<String>()
 val maxFuzzTime = providers.gradleProperty("maxFuzzTime").orElse("60")
 val localFuzzReceiptFile = layout.buildDirectory.file("hardening/local-fuzz.tsv")
 val localFuzzReceiptRunning = layout.buildDirectory.file("hardening/local-fuzz.running")
+val localFuzzPluginCode = File(PitestEvidence::class.java.protectionDomain.codeSource.location.toURI())
+val localFuzzPluginSha256 = PitestEvidence.fingerprintTree(localFuzzPluginCode)
 val validateFuzzBudget = tasks.register("validateFuzzBudget") {
   description = "Internal to local fuzz tasks: validates -PmaxFuzzTime as bounded positive seconds."
   val budget = maxFuzzTime
@@ -1138,6 +1154,7 @@ val fuzzAll = tasks.register("fuzzAll") {
   dependsOn(fuzzAllPreflight)
   val names = fuzzTargetNames
   val maxTime = maxFuzzTime
+  val pluginSha256 = localFuzzPluginSha256
   val receiptProjectPath = project.path
   val receiptFileProvider = localFuzzReceiptFile
   val receiptRunning = localFuzzReceiptRunning
@@ -1149,8 +1166,9 @@ val fuzzAll = tasks.register("fuzzAll") {
   }
   doLast {
     val receipt = buildString {
-      appendLine("schema\t1")
+      appendLine("schema\t2")
       appendLine("project\t$receiptProjectPath")
+      appendLine("pluginSha256\t$pluginSha256")
       appendLine("maxFuzzTimeSeconds\t${maxTime.get()}")
       names.get().sorted().forEach { target ->
         appendLine("target\tfuzz${target.replaceFirstChar(Char::uppercase)}")
@@ -2301,11 +2319,13 @@ hardening.mutation.all {
             advisoryScope, "${baselineCommentLines.size} comment line(s) dropped by a rewrite")
       }
       if (prune) {
-        // Shrink-only refresh: drop baseline rows matching nothing this run, add or
-        // rewrite nothing. This is the one direction a refresh is always safe in —
-        // shrinking the baseline is an improvement, and no coin-flip from this run can
-        // be baked in. What is kept and what drops is the keep plan above, verbatim —
-        // the stale hint reads the same plan, so the two cannot disagree.
+        // Shrink-only identity refresh: drop baseline rows matching nothing this run
+        // and add no rows. Matched rows do refresh their '# line' metadata from this
+        // report, which is safe because lines are not identity and gives the advisory
+        // a clearing operation that cannot accept a mutant. Unmatched timeout, flip,
+        // and insurance keeps retain their old lines because this run did not observe
+        // them at their own key. What is kept and what drops is the keep plan above,
+        // verbatim — the stale hint reads the same plan, so the two cannot disagree.
         val kept = mutableListOf<BaselineNotes.Row>()
         val keptUnmatched = mutableListOf<Pair<BaselineNotes.Row, String>>()
         val droppedRows = mutableListOf<BaselineNotes.Row>()
@@ -2340,10 +2360,14 @@ hardening.mutation.all {
                   unacceptedAfterPrune.joinToString("\n") { "  $it" }
           )
         }
+        val pruneRewrite = BaselineEngine.pruneRewrite(acceptedRows, keepPlan, currentLines)
+        val rowSpellingsChanged = pruneRewrite.written != baselineRowLines
         val keptDetail = if (keptUnmatched.isEmpty()) "" else
           "\n  kept ${keptUnmatched.size} unmatched row(s):\n" +
               keptUnmatched.joinToString("\n") { (row, why) -> "  ${BaselineNotes.render(row)} — $why" }
-        if (droppedRows.isEmpty()) {
+        val refreshedDetail = if (pruneRewrite.refreshedLineTags == 0) "" else
+          "; refreshed ${pruneRewrite.refreshedLineTags} kept row line tag(s) from this run"
+        if (droppedRows.isEmpty() && !rowSpellingsChanged) {
           logger.lifecycle(
               "pitest baseline '$suiteName': prune dropped nothing — every row matches this run$keptDetail")
         } else if (kept.isEmpty()) {
@@ -2356,17 +2380,28 @@ hardening.mutation.all {
                   droppedRows.joinToString("\n") { row -> "  ${BaselineNotes.render(row)}${describe(row.key)}" }
           )
         } else {
-          // kept rows are re-rendered, which also migrates a legacy five-field file to
-          // the line-less format (the legacy line field becomes a '# line' tag)
+          // Kept rows are re-rendered even when only a matched row's line metadata
+          // changed. This also migrates a legacy five-field file to the line-less
+          // format (the legacy line field becomes a '# line' tag).
           warnDroppedComments()
           BaselineFiles.writeAtomically(
-              baselineFile, kept.joinToString("\n", postfix = "\n") { BaselineNotes.render(it) })
-          logger.lifecycle(
-              "pitest baseline '$suiteName': prune dropped ${droppedRows.size} row(s) since killed " +
-                  "(baseline now ${kept.size}):\n" +
-                  droppedRows.joinToString("\n") { row -> "  ${BaselineNotes.render(row)}${describe(row.key)}" } +
-                  keptDetail
-          )
+              baselineFile, pruneRewrite.written.joinToString("\n", postfix = "\n"))
+          if (droppedRows.isEmpty()) {
+            val action = if (pruneRewrite.refreshedLineTags == 0) {
+              "re-rendered ${kept.size} row(s) in the current format"
+            } else {
+              "refreshed ${pruneRewrite.refreshedLineTags} line tag(s) from this run"
+            }
+            logger.lifecycle(
+                "pitest baseline '$suiteName': prune dropped nothing and $action$keptDetail")
+          } else {
+            logger.lifecycle(
+                "pitest baseline '$suiteName': prune dropped ${droppedRows.size} row(s) since killed " +
+                    "(baseline now ${kept.size}$refreshedDetail):\n" +
+                    droppedRows.joinToString("\n") { row -> "  ${BaselineNotes.render(row)}${describe(row.key)}" } +
+                    keptDetail
+            )
+          }
         }
         if (baselineFile.isFile) stampToolVersion() else stampOrRetireToolVersion()
         return@doLast
@@ -2478,8 +2513,8 @@ hardening.mutation.all {
       // audited-timeout sets there is no new-sibling quiet case to preserve, and
       // any unrecorded line under matched counts is worth a re-read. Partial tags
       // or skewed counts fall back to the audit's key-level disjointness. Advisory
-      // only, never a failure: lines are metadata, and the next refresh rewrites
-      // the tags (BaselineNotes.lineDrift owns the semantics).
+      // only, never a failure: lines are metadata, and a green prune or a full
+      // update rewrites matched tags (BaselineNotes.lineDrift owns the semantics).
       run {
         val observed = currentLines
             .mapValues { (_, lines) -> lines.mapNotNull { it.toIntOrNull() } }
@@ -2489,7 +2524,8 @@ hardening.mutation.all {
               "pitest baseline '$suiteName': ${drifted.size} accepted key(s) unkilled at line(s) " +
                   "no row's '# line' tag names — the code the acceptance argues about has moved, or a " +
                   "new mutant sits under an old acceptance (the same-key swap); re-read the README " +
-                  "argument, then let the next refresh rewrite the tag:\n" +
+                  "argument, then use a green -PpruneMutationBaseline to rewrite the matched tag " +
+                  "without widening the baseline:\n" +
                   drifted.entries.sortedBy { it.key }.joinToString("\n") { (key, lines) ->
                     val (recordedLines, observedLines) = lines
                     "  $key # line(s) ${recordedLines.sorted().joinToString(", ")} -> " +
@@ -2752,18 +2788,35 @@ hardening.mutation.all {
           .filter { it.size >= 4 }
           .map { it[0] to it.last() }
       val csv = csvProvider.get().asFile
+      var invalidReport = false
       // scoped and interrupted-run reports both fall back to the baseline: a
-      // partial population under-counts debt exactly like a hand-picked one
+      // partial population under-counts debt exactly like a hand-picked one. An
+      // error/unfinished report is equally unusable as a tally, but Debt remains
+      // the read-only triage surface after a failed PIT run: name every offending
+      // mutant, then fall back to the committed baseline instead of disabling the
+      // next diagnostic the failure calls for.
       val reportPairs = if (csv.isFile &&
           !csv.parentFile.resolve(".scoped").isFile &&
           !csv.parentFile.resolve(".running").isFile) {
-        Mutant.parseReport(csv.readLines())
-            .filter { it.gated }
-            .map { it.className to it.rawStatus }
+        try {
+          Mutant.parseReport(csv.readLines())
+              .filter { it.gated }
+              .map { it.className to it.rawStatus }
+        } catch (e: IllegalArgumentException) {
+          invalidReport = true
+          logger.warn(
+              "pitest '$suiteName' debt: current report is not valid completed evidence; " +
+                  "falling back to the committed baseline for the tally:\n${e.message}")
+          null
+        }
       } else {
         null
       }
-      val source = if (reportPairs != null) "current report" else "baseline (no full report present)"
+      val source = when {
+        reportPairs != null -> "current report"
+        invalidReport -> "baseline (current report invalid)"
+        else -> "baseline (no full report present)"
+      }
       val debt = tally(reportPairs ?: baselinePairs)
       val baselineDebt = tally(baselinePairs)
       if (debt.isEmpty()) {
@@ -3701,8 +3754,10 @@ tasks.register("hardeningInit") {
           |run's unkilled mutants (`SURVIVED` and `NO_COVERAGE`) against the accepted
           |baseline in `<suite>-accepted.csv` and **fails on anything new**. Baseline row
           |format: `class,method,mutator,STATUS` — line numbers are metadata, carried as
-          |a trailing `# line N` tag every refresh rewrites, so editing above a mutated
-          |method churns nothing. Full policy — the three legal outcomes for a new
+          |a trailing `# line N` tag, so editing above a mutated method churns nothing.
+          |A full update refreshes every tag; a green prune refreshes matched retained
+          |rows even when it drops nothing. Unions and format-only migration preserve
+          |existing tags. Full policy — the three legal outcomes for a new
           |survivor, determinism requirements, targeting rules — lives in sava-build's
           |`HARDENING.md`.
           |

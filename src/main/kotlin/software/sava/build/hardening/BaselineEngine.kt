@@ -133,6 +133,79 @@ internal object BaselineEngine {
     return dispositions.map { checkNotNull(it) }
   }
 
+  /** The rows a green prune writes, and how many matched rows received new line metadata. */
+  data class PruneRewrite(
+    val written: List<String>,
+    val refreshedLineTags: Int,
+  )
+
+  /**
+   * Renders a prune after its caller has proved that the proposed kept multiset
+   * accepts the complete current gated population. Rows matched at their own key
+   * receive this run's observed line, assigned by recorded-line affinity first and
+   * file order second — the same sibling rule used by [updateRewrite]. Unmatched
+   * timeout, pending-flip, and flip-insurance rows have no current observation at
+   * their own key, so their recorded lines remain intact. Dropped rows are omitted.
+   *
+   * The green-population precondition makes the number of current copies at each
+   * matched key exactly the number of [Disposition.MATCHED] rows there. Keeping the
+   * check here too prevents a future caller from silently discarding or inventing a
+   * line assignment.
+   */
+  fun pruneRewrite(
+    acceptedRows: List<BaselineNotes.Row>,
+    keepPlan: List<Disposition>,
+    currentLines: Map<String, List<String>>,
+  ): PruneRewrite {
+    require(acceptedRows.size == keepPlan.size) {
+      "prune keep plan has ${keepPlan.size} dispositions for ${acceptedRows.size} rows"
+    }
+    val refreshedLines = HashMap<Int, List<Int>>()
+    val matchedByKey = acceptedRows.indices
+        .filter { keepPlan[it] == Disposition.MATCHED }
+        .groupBy { acceptedRows[it].key }
+    for ((key, rowIndices) in matchedByKey) {
+      class Copy(val line: Int?) {
+        var rowIndex: Int? = null
+      }
+      val copies = currentLines[key].orEmpty()
+          .map { Copy(it.toIntOrNull()) }
+          .sortedWith(compareBy(nullsLast(naturalOrder<Int>())) { it.line })
+      require(copies.size == rowIndices.size) {
+        "prune matched ${rowIndices.size} row(s) at '$key' but observed ${copies.size} current copy/copies"
+      }
+      val unassignedRows = rowIndices.toMutableList()
+      for (copy in copies) {
+        val line = copy.line ?: continue
+        val affine = unassignedRows.firstOrNull { line in acceptedRows[it].recordedLines }
+        if (affine != null) {
+          copy.rowIndex = affine
+          unassignedRows.remove(affine)
+        }
+      }
+      for (copy in copies) {
+        if (copy.rowIndex != null) continue
+        copy.rowIndex = unassignedRows.removeAt(0)
+      }
+      copies.forEach { copy ->
+        refreshedLines[checkNotNull(copy.rowIndex)] = copy.line?.let(::listOf).orEmpty()
+      }
+    }
+    var refreshedLineTags = 0
+    val written = acceptedRows.indices.mapNotNull { index ->
+      if (keepPlan[index] == Disposition.DROP) return@mapNotNull null
+      val row = acceptedRows[index]
+      val lines = if (keepPlan[index] == Disposition.MATCHED) {
+        refreshedLines.getValue(index)
+      } else {
+        row.recordedLines
+      }
+      if (lines != row.recordedLines) refreshedLineTags++
+      BaselineNotes.render(row.key, row.note, lines)
+    }
+    return PruneRewrite(written, refreshedLineTags)
+  }
+
   /** The drift comparison's outcome: dangerous flips by origin, and the benign tallies. */
   data class Drift(
     val fromSurvived: List<String>,

@@ -2,6 +2,7 @@ import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.PitestEvidence
@@ -18,6 +19,11 @@ class HardeningConvergeFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
 
   private val mathMutator = "org.pitest.mutationtest.engine.gregor.mutators.MathMutator"
   private val boundaryMutator = "org.pitest.mutationtest.engine.gregor.mutators.ConditionalsBoundaryMutator"
@@ -346,6 +352,10 @@ class HardeningConvergeFunctionalTest {
     // an empty report is a zero-fire observation, not a failed run: no missing-report note
     writeReport("parsing-trial")
     val zeroFire = runner(*trialArgs).build()
+    assertTrue(
+      zeroFire.output.contains("Configuration cache entry reused."),
+      "pitestMutatorTrial did not reuse the fixture's configuration cache:\n" + zeroFire.output,
+    )
     assertTrue(Regex("parsing\\s+0 generated\\n").containsMatchIn(zeroFire.output), zeroFire.output)
     assertFalse(
       zeroFire.output.contains("0 generated (no report"),

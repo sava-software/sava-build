@@ -3,6 +3,7 @@ import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.PitestEvidence
@@ -18,6 +19,11 @@ class HardeningRatchetFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
 
   private fun writeFixture(
     generateTestSupport: Boolean = false,
@@ -190,6 +196,21 @@ $fuzzBlock
     assertTrue(moved.contains("line 12: Replaced Shift Left with Shift Right"), "XML description missing:\n$moved")
     assertFalse(moved.contains("refresh with"), "a line move must not ask for a refresh:\n$moved")
     assertFalse(moved.contains("moved line only"), "the drift-tolerance machinery is retired:\n$moved")
+
+    // Prune remains shrink-only in identity, but refreshes metadata for rows it
+    // matched to this run. That gives the advisory a safe clearing operation even
+    // when no accepted row was killed.
+    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    assertEquals(
+      "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 12\n",
+      baselineFile().readText(),
+    )
+    assertTrue(pruned.contains("prune dropped nothing and refreshed 1 line tag(s)"), pruned)
+    val settled = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      settled.contains("no row's '# line' tag names"),
+      "prune did not clear the line-drift advisory:\n$settled",
+    )
 
     // a genuinely new mutant still fails, tallied and described
     writeReport(
@@ -836,7 +857,20 @@ $fuzzBlock
     val invalid = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
     assertTrue(invalid.contains("not valid completed evidence"), invalid)
     assertTrue(invalid.contains("RUN_ERROR x1"), invalid)
+    assertTrue(
+      invalid.contains(
+        "line 1: Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,RUN_ERROR,none"
+      ),
+      "invalid-status failure did not retain the mutant coordinate:\n$invalid",
+    )
     assertEquals(baselineBefore, baselineFile().readText(), "an error result pruned accepted debt")
+
+    val debt = runner("pitestEncodingDebt").build().output
+    assertTrue(debt.contains("falling back to the committed baseline"), debt)
+    assertTrue(debt.contains("RUN_ERROR x1"), debt)
+    assertTrue(debt.contains("baseline (current report invalid)"), debt)
+    assertTrue(debt.contains("1 survived"), debt)
 
     writeReport(
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10"),
@@ -2389,8 +2423,8 @@ $fuzzBlock
     // killed. Within a key the update assigns accepted rows by line affinity, so the
     // surviving line-20 mutant takes the pair recorded at 20 and the noted line-12
     // pair drops — with its note's fate named. Without recorded lines the assignment
-    // would be file-order-arbitrary; the tags every refresh writes are what keep
-    // this determinate.
+    // would be file-order-arbitrary; the tags written by an update or a green prune
+    // are what keep this determinate.
     writeFixture()
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText(
@@ -3202,8 +3236,8 @@ $fuzzBlock
   @Test
   fun `migrateMutationBaselines respells a legacy file and touches nothing else`() {
     // Format-only: no report, no PIT run — parse and re-render, comments preserved,
-    // identity untouched. The refresh flags migrate too, but they need a green
-    // mutation run; this path exists so fleet migration needs neither.
+    // identity untouched. Refresh flags migrate whenever they write, but they need a
+    // green mutation run; this path exists so fleet migration needs neither.
     writeFixture()
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText(
@@ -3225,6 +3259,10 @@ $fuzzBlock
 
     // idempotent, and byte-identical files are not rewritten
     val second = runner("migrateMutationBaselines").build().output
+    assertTrue(
+      second.contains("Configuration cache entry reused."),
+      "migrateMutationBaselines did not reuse the fixture's configuration cache:\n$second",
+    )
     assertTrue(second.contains("already in the current format"), second)
   }
 

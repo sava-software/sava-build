@@ -116,7 +116,7 @@ internal data class Mutant(
      */
     fun parseReport(csvLines: List<String>): List<Mutant> {
       val malformed = mutableListOf<Pair<Int, String>>()
-      val mutants = csvLines.mapIndexedNotNull { index, line ->
+      val parsed = csvLines.mapIndexedNotNull { index, line ->
         val mutant = parse(line)
         if (mutant == null || mutant.sourceFile.isBlank() || mutant.className.isBlank() ||
             mutant.mutator.isBlank() || mutant.method.isBlank() || mutant.line == null ||
@@ -124,7 +124,7 @@ internal data class Mutant(
           malformed.add(index + 1 to line)
           null
         } else {
-          mutant
+          Triple(index + 1, line, mutant)
         }
       }
       if (malformed.isNotEmpty()) {
@@ -134,18 +134,21 @@ internal data class Mutant(
                 malformed.joinToString("\n") { (lineNumber, line) -> "  line $lineNumber: $line" }
         )
       }
-      val invalid = mutants.filterNot { it.validEvidence }
+      val invalid = parsed.filterNot { (_, _, mutant) -> mutant.validEvidence }
       if (invalid.isNotEmpty()) {
-        val statuses = invalid.groupingBy { it.rawStatus }.eachCount().entries
+        val statuses = invalid.groupingBy { (_, _, mutant) -> mutant.rawStatus }.eachCount().entries
             .sortedBy { it.key }
             .joinToString(", ") { (status, count) -> "$status x$count" }
         throw IllegalArgumentException(
-            "PIT report contains status(es) that are not valid completed evidence: $statuses. " +
+            "PIT report contains status(es) that are not valid completed evidence: $statuses:\n" +
+                invalid.joinToString("\n") { (lineNumber, line, _) ->
+                  "  line $lineNumber: $line"
+                } + "\n" +
                 "Runtime errors, unfinished mutations, and unknown PIT statuses cannot certify " +
                 "the ratchet or any record writer."
         )
       }
-      return mutants
+      return parsed.map { (_, _, mutant) -> mutant }
     }
   }
 }

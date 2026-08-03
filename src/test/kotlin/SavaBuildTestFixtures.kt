@@ -26,3 +26,18 @@ val savaBuildPluginManagement: String = run {
  */
 fun savaBuildTestProperty(name: String): String = System.getProperty(name)
   ?: error("System property '$name' is not set; run the tests through Gradle (./gradlew test).")
+
+/**
+ * Enables the configuration cache for every invocation in a TestKit fixture.
+ *
+ * Putting the switch in the consumer's `gradle.properties`, rather than selecting
+ * a few task names at the runner call site, makes every task graph exercise Gradle's
+ * serialization boundary. That is important for convention plugins: a new task
+ * action can capture a precompiled-script instance even when the handful of release
+ * entry points covered explicitly remain clean.
+ */
+fun enableTestKitConfigurationCache(fixtureDir: File) {
+  File(fixtureDir, "gradle.properties").writeText(
+    "org.gradle.configuration-cache=true\n"
+  )
+}

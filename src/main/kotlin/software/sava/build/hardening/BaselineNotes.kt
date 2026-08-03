@@ -17,7 +17,7 @@ package software.sava.build.hardening
  * Legacy five-field rows (`class,method,<line>,mutator,STATUS`, the pre-line-less
  * format) still parse: the numeric line field is demoted to recorded-line metadata and
  * the row compares by its line-less key. Any baseline write emits the current format,
- * so a legacy file migrates on its next refresh.
+ * so a legacy file migrates on its next baseline-rewriting refresh.
  */
 internal object BaselineNotes {
 

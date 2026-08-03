@@ -1,6 +1,7 @@
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -15,6 +16,11 @@ class HardeningInitFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
 
   private fun writeFixture() {
     File(fixtureDir, "settings.gradle.kts").writeText(
@@ -70,6 +76,10 @@ class HardeningInitFunctionalTest {
     val second = runner().build()
     assertTrue(second.output.contains("exists — left untouched"), second.output)
     assertTrue(second.output.contains(".gitignore already covers .pitest-history/"), second.output)
+    assertTrue(
+      second.output.contains("Configuration cache entry reused."),
+      "hardeningInit did not reuse the fixture's configuration cache:\n" + second.output,
+    )
     assertEquals(readmeBefore, readme.readText(), "README must never be rewritten")
     assertEquals(gitignoreBefore, gitignore.readText(), "the ignore line must not be appended twice")
   }

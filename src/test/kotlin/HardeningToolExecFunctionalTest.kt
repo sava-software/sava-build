@@ -2,6 +2,7 @@ import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.PitestEvidence
@@ -19,6 +20,11 @@ class HardeningToolExecFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
 
   /**
    * [moneyMath] adds a real 'com.example.Codec' whose BigDecimal/BigInteger arithmetic
@@ -98,6 +104,11 @@ class HardeningToolExecFunctionalTest {
             // the Jazzer pre-authorizations include flags newer than this fixture's JDK
             jvmArgs = listOf<String>()
           }
+        }
+        tasks.named<JavaExec>("fuzzPlain") {
+          mainClass = "com.example.FakeFuzz"
+          classpath = files(layout.buildDirectory.dir("fuzz-classes"))
+          jvmArgs = listOf<String>()
         }
 
 $buildTail
@@ -227,6 +238,27 @@ $buildTail
         }
       """.trimIndent() + "\n"
     )
+    srcDir.resolve("FakeFuzz.java").writeText(
+      """
+        package com.example;
+
+        import java.nio.file.Files;
+        import java.nio.file.Path;
+
+        public final class FakeFuzz {
+          public static void main(String[] args) throws Exception {
+            String corpus = null;
+            for (String arg : args) {
+              if (!arg.startsWith("-")) corpus = arg;
+            }
+            if (corpus == null || !Files.isDirectory(Path.of(corpus))) {
+              throw new IllegalStateException("writable corpus was not prepared: " + corpus);
+            }
+            System.out.println("fixture fuzz executed");
+          }
+        }
+      """.trimIndent() + "\n"
+    )
   }
 
   private fun writeSeedCorpus() {
@@ -279,6 +311,18 @@ $buildTail
   }
 
   @Test
+  fun `a fuzz target execution is configuration-cache clean`() {
+    writeFixture()
+
+    val first = runner("fuzzPlain", "-PmaxFuzzTime=1").build()
+    assertTrue(first.output.contains("fixture fuzz executed"), first.output)
+
+    val second = runner("fuzzPlain", "-PmaxFuzzTime=1").build()
+    assertTrue(second.output.contains("Configuration cache entry reused."), second.output)
+    assertTrue(second.output.contains("fixture fuzz executed"), second.output)
+  }
+
+  @Test
   fun `certification writes bound evidence and stale source cannot reuse the report`() {
     writeFixture(moneyMath = true)
     writeSeedCorpus()
@@ -293,13 +337,32 @@ $buildTail
     val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
     assertTrue(evidence.isFile, "completed PIT evidence missing:\n${certified.output}")
     assertTrue(receipt.isFile, "certification receipt missing:\n${certified.output}")
-    assertTrue(receipt.readText().contains("schema\t3"), receipt.readText())
-    assertTrue(receipt.readText().contains("session\t"), receipt.readText())
-    assertTrue(receipt.readText().contains("toolClasspathSha256"), receipt.readText())
-    assertTrue(receipt.readText().contains("recordPitestVersion"), receipt.readText())
-    assertTrue(receipt.readText().contains("mode\tfresh-full-strict"), receipt.readText())
-    assertTrue(receipt.readText().contains("suite\tencoding"), receipt.readText())
-    assertTrue(receipt.readText().contains("\tlegacy-unversioned\n"), receipt.readText())
+    val receiptText = receipt.readText()
+    assertTrue(receiptText.contains("schema\t4"), receiptText)
+    assertTrue(receiptText.contains("session\t"), receiptText)
+    assertTrue(receiptText.contains("toolClasspathSha256"), receiptText)
+    assertTrue(receiptText.contains("recordInputsSha256"), receiptText)
+    assertTrue(receiptText.contains("recordPitestVersion"), receiptText)
+    assertTrue(receiptText.contains("mode\tfresh-full-strict"), receiptText)
+    assertTrue(receiptText.contains("suite\tencoding"), receiptText)
+    assertTrue(receiptText.contains("\tlegacy-unversioned\n"), receiptText)
+    val columns = receiptText.lineSequence().first { it.startsWith("columns\t") }.split('\t')
+    val suiteRow = receiptText.lineSequence().first { it.startsWith("suite\tencoding\t") }.split('\t')
+    val recordInputsIndex = columns.indexOf("recordInputsSha256") - 1
+    val configDir = File(fixtureDir, "config/pitest")
+    assertEquals(
+      PitestEvidence.fingerprint(
+        configDir,
+        listOf(
+          File(configDir, "encoding-accepted.csv"),
+          File(configDir, "encoding-timeouts.csv"),
+          File(configDir, "encoding-pitest-version"),
+          File(configDir, "README.md"),
+        ).filter { it.isFile },
+      ),
+      suiteRow[recordInputsIndex],
+      "certification receipt did not bind the committed records that decided the gate",
+    )
     assertTrue(certified.output.contains("committed record is legacy-unversioned"), certified.output)
     val recordedEvidence = PitestEvidence.parse(evidence.readText())
     assertEquals(

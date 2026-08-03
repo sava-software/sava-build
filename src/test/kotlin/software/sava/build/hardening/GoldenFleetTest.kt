@@ -9,9 +9,12 @@ import java.io.File
 /**
  * Golden-corpus tests over the consumer fleet's committed mutation-baseline files.
  *
- * `src/test/resources/golden-fleet/` holds byte-identical snapshots of every
- * `config/pitest/` directory across the fleet (see `MANIFEST.txt` for the source
- * repo, module path, and HEAD commit of each snapshot). Where [BaselineNotesTest]
+ * `src/test/resources/golden-fleet/` holds byte-identical snapshots of the
+ * `config/pitest/` directories enumerated by its `MANIFEST.txt` (source repo,
+ * module path, and HEAD commit). This historical parser corpus is deliberately
+ * independent of the release runner's current fleet inventory; its own manifest
+ * is nevertheless exact, so an omitted snapshot cannot turn these checks vacuous.
+ * Where [BaselineNotesTest]
  * and [TimeoutAuditTest] argue the format's edge cases with constructed lines,
  * these tests hold the parsers to the data the fleet actually shipped: a format
  * regression that would only surface in a consumer's verify after release fails
@@ -24,6 +27,11 @@ import java.io.File
 class GoldenFleetTest {
 
   private companion object {
+    data class ManifestEntry(val repo: String, val modulePath: String, val commit: String) {
+      val corpusPath: String =
+          "$repo/${modulePath.replace("/", "__")}"
+    }
+
     /**
      * The corpus root, resolved through the classpath so the tests exercise the
      * same resource-processing path a packaging change would break.
@@ -31,6 +39,17 @@ class GoldenFleetTest {
     val corpusRoot: File = GoldenFleetTest::class.java.getResource("/golden-fleet/MANIFEST.txt")
         ?.let { File(it.toURI()).parentFile }
         ?: error("golden-fleet corpus is missing from the test classpath")
+
+    val manifestEntries: List<ManifestEntry> = File(corpusRoot, "MANIFEST.txt").readLines()
+        .withIndex()
+        .filter { (_, line) -> line.isNotBlank() && !line.trimStart().startsWith("#") }
+        .map { (index, line) ->
+          val fields = line.split('\t')
+          require(fields.size == 3) {
+            "golden-fleet/MANIFEST.txt:${index + 1}: expected repo, module path, and commit"
+          }
+          ManifestEntry(fields[0], fields[1], fields[2])
+        }
 
     /**
      * Corpus files whose committed content genuinely fails an assertion, keyed by
@@ -55,12 +74,42 @@ class GoldenFleetTest {
   }
 
   @Test
-  fun `the corpus is present with every fleet repo and file kind`() {
-    val repos = corpusRoot.listFiles { f -> f.isDirectory }!!.map { it.name }.sorted()
+  fun `the manifest exactly describes the corpus inventory`() {
+    val malformedEntries = manifestEntries.filter {
+      it.repo.isBlank() || it.modulePath.isBlank() || !it.commit.matches(Regex("[0-9a-f]{40}"))
+    }
+    assertEquals(emptyList<ManifestEntry>(), malformedEntries, "malformed golden-fleet manifest row(s)")
     assertEquals(
-        listOf("http-servers", "idl-src-gen", "incident-client", "ix-proxy",
-            "json-iterator", "ravina", "sava", "vault-stat-service"),
-        repos, "a fleet repo's snapshot went missing from the corpus")
+        manifestEntries.size,
+        manifestEntries.distinctBy { it.corpusPath }.size,
+        "golden-fleet manifest maps more than one row to the same corpus directory")
+
+    val expectedModules = manifestEntries.map { it.corpusPath }.sorted()
+    val actualModules = corpusRoot.listFiles { file -> file.isDirectory }.orEmpty()
+        .flatMap { repo ->
+          repo.listFiles { file -> file.isDirectory }.orEmpty()
+              .map { module -> "${repo.name}/${module.name}" }
+        }
+        .sorted()
+    assertEquals(expectedModules, actualModules,
+        "golden-fleet module directories diverged from MANIFEST.txt")
+
+    val expectedRepos = manifestEntries.map { it.repo }.distinct().sorted()
+    val actualRepos = corpusRoot.listFiles { file -> file.isDirectory }.orEmpty()
+        .map { it.name }.sorted()
+    assertEquals(expectedRepos, actualRepos,
+        "golden-fleet repository directories diverged from MANIFEST.txt")
+
+    expectedModules.forEach { modulePath ->
+      val module = File(corpusRoot, modulePath)
+      assertTrue(File(module, "README.md").isFile, "$modulePath has no snapshotted README.md")
+      assertTrue(
+          module.listFiles { file -> file.isFile && file.name.endsWith("-accepted.csv") }
+              .orEmpty().isNotEmpty(),
+          "$modulePath has no snapshotted accepted baseline",
+      )
+    }
+
     assertTrue(corpusFiles("-accepted.csv").isNotEmpty(), "no accepted baselines in the corpus")
     assertTrue(corpusFiles("-timeouts.csv").isNotEmpty(), "no timeout memberships in the corpus")
     assertTrue(corpusFiles("README.md").isNotEmpty(), "no READMEs in the corpus")
@@ -140,13 +189,13 @@ class GoldenFleetTest {
   }
 
   @Test
-  fun `the corpus canary counts well over 300 rows`() {
-    // Guards the loading path, not the format: a resource-processing or layout
-    // change that silently empties the corpus would turn every test above into a
-    // vacuous pass over zero files.
+  fun `the corpus canary retains every snapshotted baseline row`() {
+    // This is deliberately exact. The manifest inventory catches a missing module,
+    // while the row total catches partial resource loss within a still-present one.
+    // A deliberate corpus refresh updates this number alongside its provenance.
     val totalRows = (corpusFiles("-accepted.csv") + corpusFiles("-timeouts.csv"))
         .sumOf { rowLines(it).size }
-    assertTrue(totalRows > 300,
-        "corpus row count fell to $totalRows — the golden fleet resources are not loading")
+    assertEquals(1564, totalRows,
+        "golden-fleet baseline row count changed; restore lost resources or record the intentional refresh")
   }
 }

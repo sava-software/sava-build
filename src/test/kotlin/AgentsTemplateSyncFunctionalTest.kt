@@ -1,6 +1,7 @@
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -17,6 +18,11 @@ class AgentsTemplateSyncFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
 
   // Mirrors 'generateHardeningTemplateDigest' in sava-build's build.gradle.kts: only
   // the '>' blockquote lines of the template section are hashed, trailing whitespace

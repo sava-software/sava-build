@@ -19,6 +19,8 @@ export LC_ALL=C
 
 sava_build_dir=$(cd "$(dirname "$0")/.." && pwd -P)
 local_repo="$sava_build_dir/build/sava-test-repo"
+published_plugin_jar="$local_repo/software/sava/sava-build/0.0.0-test/sava-build-0.0.0-test.jar"
+retained_plugin_jar_file="plugin-0.0.0-test.jar"
 manifest="$sava_build_dir/tools/fleet-manifest.txt"
 canonical_receipt="$sava_build_dir/build/hardening/fleet-canary-receipt.json"
 plugin_expected_slug="sava-software/sava-build"
@@ -53,6 +55,28 @@ sha256_stream() {
 
 sha256_file() {
   sha256_stream < "$1"
+}
+
+snapshot_published_plugin_jar() {
+  local source_before source_after retained_hash destination
+  reject_symlink_components "$published_plugin_jar" "published plugin jar" || return 1
+  if [ ! -f "$published_plugin_jar" ]; then
+    echo "fleet-canary: publication produced no plugin jar at $published_plugin_jar" >&2
+    return 1
+  fi
+  source_before=$(sha256_file "$published_plugin_jar") || return 1
+  published_plugin_sha256=$source_before
+  [ -n "${run_dir:-}" ] || return 0
+  destination="$run_dir/$retained_plugin_jar_file"
+  reject_symlink_components "$destination" "retained published plugin jar" || return 1
+  cp "$published_plugin_jar" "$destination"
+  reject_symlink_components "$published_plugin_jar" "published plugin jar" || return 1
+  source_after=$(sha256_file "$published_plugin_jar") || return 1
+  retained_hash=$(sha256_file "$destination") || return 1
+  if [ "$source_before" != "$source_after" ] || [ "$source_after" != "$retained_hash" ]; then
+    echo "fleet-canary: published plugin jar changed while being retained" >&2
+    return 1
+  fi
 }
 
 require_jq() {
@@ -192,7 +216,7 @@ write_pointer() {
 
 validate_inner_certification() {
   awk -F '\t' '
-    $1 == "schema" { schemaRows++; if (NF != 2 || $2 != "3") invalid=1; next }
+    $1 == "schema" { schemaRows++; if (NF != 2 || $2 != "4") invalid=1; next }
     $1 == "project" { projectRows++; if (NF != 2 || $2 == "") invalid=1; next }
     $1 == "session" { sessionRows++; if (NF != 2 || $2 == "") invalid=1; next }
     $1 == "mode" {
@@ -200,17 +224,17 @@ validate_inner_certification() {
     }
     $1 == "columns" {
       columnsRows++
-      if (NF != 12 || $2 != "suite" || $3 != "name" || $4 != "invocation" ||
+      if (NF != 13 || $2 != "suite" || $3 != "name" || $4 != "invocation" ||
           $5 != "reportSha256" || $6 != "sourceSha256" || $7 != "classesSha256" ||
           $8 != "configurationSha256" || $9 != "pitestVersion" ||
           $10 != "pluginSha256" || $11 != "toolClasspathSha256" ||
-          $12 != "recordPitestVersion") invalid=1
+          $12 != "recordInputsSha256" || $13 != "recordPitestVersion") invalid=1
       next
     }
     $1 == "suite" {
       suites++
-      if (NF != 11 || $2 == "" || $3 == "" || $8 == "" || $11 == "" || seen[$2]++) invalid=1
-      for (i=4; i<=10; i++) {
+      if (NF != 12 || $2 == "" || $3 == "" || $8 == "" || $12 == "" || seen[$2]++) invalid=1
+      for (i=4; i<=11; i++) {
         if (i == 8) continue
         if (length($i) != 64 || $i ~ /[^0-9a-f]/) invalid=1
       }
@@ -239,6 +263,61 @@ inner_certification_plugin_sha() {
 
 inner_certification_project() {
   awk -F '\t' '$1 == "project" { print $2; exit }' "$1"
+}
+
+release_receipt_schema_valid() {
+  jq -e '
+    . as $receipt |
+    .schema == 3 and .kind == "fleet-canary-receipt" and
+    .mode == "release" and .result == "passed" and
+    (.run_id | test("^run[.][A-Za-z0-9]+$")) and
+    (.plugin.sha | test("^[0-9a-f]{40}$")) and
+    (.plugin.tree | test("^[0-9a-f]{40,64}$")) and
+    (.plugin.origin | type == "string" and length > 0) and
+    .plugin.test_jar_file == "plugin-0.0.0-test.jar" and
+    (.plugin.test_jar_sha256 | test("^[0-9a-f]{64}$")) and
+    .plugin.dirty_before == false and .plugin.dirty_after == false and
+    (.manifest_sha256 | test("^[0-9a-f]{64}$")) and
+    .preflight_file == "preflight.tsv" and
+    (.preflight_sha256 | test("^[0-9a-f]{64}$")) and
+    .publish_log_file == "plugin-publish.log" and
+    (.publish_output_sha256 | test("^[0-9a-f]{64}$")) and
+    (.repositories | type == "array" and length > 0) and
+    (([.repositories[].log_file] | unique | length) == (.repositories | length)) and
+    (([.repositories[].certifications[].path] | unique | length) ==
+      ([.repositories[].certifications[].path] | length)) and
+    all(.repositories[];
+      .result == "passed" and .dirty_before == false and .dirty_after == false and
+      (.sha | test("^[0-9a-f]{40}$")) and (.path | type == "string") and
+      (.origin | type == "string" and length > 0) and
+      (.tasks | type == "array" and
+        any(.[]; . == "hardeningCertify") and any(.[]; . == "agentsTemplateInSync")) and
+      (.certification_projects | type == "array" and length > 0) and
+      all(.certification_projects[];
+        type == "string" and test("^(:|:[^:\\t\\r\\n]+(:[^:\\t\\r\\n]+)*)$")) and
+      ((.certification_projects | unique | length) == (.certification_projects | length)) and
+      (.log_file | test("^logs/[A-Za-z0-9._-]+[.]log$")) and
+      (.output_sha256 | test("^[0-9a-f]{64}$")) and
+      (.findings | type == "string") and
+      (.certifications | type == "array" and length > 0) and
+      (([.certifications[].project] | sort) == (.certification_projects | sort)) and
+      ([.certifications[].suite_count] | add > 0) and
+      all(.certifications[];
+        (.project | type == "string" and
+          test("^(:|:[^:\\t\\r\\n]+(:[^:\\t\\r\\n]+)*)$")) and
+        (.path | test("^certifications/[A-Za-z0-9._/-]+[.]tsv$")) and
+        (.path | split("/") | all(.[]; . != "" and . != "." and . != "..")) and
+        (.sha256 | test("^[0-9a-f]{64}$")) and
+        (.suite_count | type == "number" and . >= 0) and
+        ((.suite_count == 0 and .plugin_sha256 == "") or
+          (.suite_count > 0 and (.plugin_sha256 | test("^[0-9a-f]{64}$")) and
+            .plugin_sha256 == $receipt.plugin.test_jar_sha256)))) and
+    ([.repositories[].certifications[] | select(.suite_count > 0) | .plugin_sha256] |
+      unique | length == 1) and
+    (.advisories_acknowledged | type == "boolean") and
+    (([.repositories[] | select(.findings != "")] | length) == 0 or
+      .advisories_acknowledged == true)
+  ' "$1" >/dev/null
 }
 
 resolve_receipt() {
@@ -401,56 +480,10 @@ verify_receipt() {
   local log_file log_hash cert_file cert_hash cert_suites actual_suites cert_path
   local cert_plugin actual_plugin recorded_project actual_project
   local repo recorded_sha recorded_origin current_sha current_origin plugin_origin
+  local checkout_count=0 unavailable_count=0
   require_jq
   resolve_receipt "$requested" || return 1
-  if ! jq -e '
-      .schema == 2 and .kind == "fleet-canary-receipt" and
-      .mode == "release" and .result == "passed" and
-      (.run_id | test("^run[.][A-Za-z0-9]+$")) and
-      (.plugin.sha | test("^[0-9a-f]{40}$")) and
-      (.plugin.tree | test("^[0-9a-f]{40,64}$")) and
-      (.plugin.origin | type == "string" and length > 0) and
-      .plugin.dirty_before == false and .plugin.dirty_after == false and
-      (.manifest_sha256 | test("^[0-9a-f]{64}$")) and
-      .preflight_file == "preflight.tsv" and
-      (.preflight_sha256 | test("^[0-9a-f]{64}$")) and
-      (.publish_log_file | test("^plugin-publish[.]log$")) and
-      (.publish_output_sha256 | test("^[0-9a-f]{64}$")) and
-      (.repositories | type == "array" and length > 0) and
-      (([.repositories[].log_file] | unique | length) == (.repositories | length)) and
-      (([.repositories[].certifications[].path] | unique | length) ==
-        ([.repositories[].certifications[].path] | length)) and
-      all(.repositories[];
-        .result == "passed" and .dirty_before == false and .dirty_after == false and
-        (.sha | test("^[0-9a-f]{40}$")) and (.path | type == "string") and
-        (.origin | type == "string" and length > 0) and
-        (.tasks | type == "array" and
-          any(.[]; . == "hardeningCertify") and any(.[]; . == "agentsTemplateInSync")) and
-        (.certification_projects | type == "array" and length > 0) and
-        all(.certification_projects[];
-          type == "string" and test("^(:|:[^:\\t\\r\\n]+(:[^:\\t\\r\\n]+)*)$")) and
-        ((.certification_projects | unique | length) == (.certification_projects | length)) and
-        (.log_file | test("^logs/[A-Za-z0-9._-]+[.]log$")) and
-        (.output_sha256 | test("^[0-9a-f]{64}$")) and
-        (.findings | type == "string") and
-        (.certifications | type == "array" and length > 0) and
-        (([.certifications[].project] | sort) == (.certification_projects | sort)) and
-        ([.certifications[].suite_count] | add > 0) and
-        all(.certifications[];
-          (.project | type == "string" and
-            test("^(:|:[^:\\t\\r\\n]+(:[^:\\t\\r\\n]+)*)$")) and
-          (.path | test("^certifications/[A-Za-z0-9._/-]+[.]tsv$")) and
-          (.path | split("/") | all(.[]; . != "" and . != "." and . != "..")) and
-          (.sha256 | test("^[0-9a-f]{64}$")) and
-          (.suite_count | type == "number" and . >= 0) and
-          ((.suite_count == 0 and .plugin_sha256 == "") or
-            (.suite_count > 0 and (.plugin_sha256 | test("^[0-9a-f]{64}$")))))) and
-      ([.repositories[].certifications[] | select(.suite_count > 0) | .plugin_sha256] |
-        unique | length == 1) and
-      (.advisories_acknowledged | type == "boolean") and
-      (([.repositories[] | select(.findings != "")] | length) == 0 or
-        .advisories_acknowledged == true)
-    ' "$resolved_receipt" >/dev/null; then
+  if ! release_receipt_schema_valid "$resolved_receipt"; then
     echo "fleet-canary: receipt is not a successful strict evidence bundle: $resolved_receipt" >&2
     return 1
   fi
@@ -523,6 +556,9 @@ verify_receipt() {
     "$(jq -r '.preflight_sha256' "$resolved_receipt")" "preflight inventory" || return 1
   verify_artifact "$(jq -r '.publish_log_file' "$resolved_receipt")" \
     "$(jq -r '.publish_output_sha256' "$resolved_receipt")" "plugin publish log" || return 1
+  verify_artifact "$(jq -r '.plugin.test_jar_file' "$resolved_receipt")" \
+    "$(jq -r '.plugin.test_jar_sha256' "$resolved_receipt")" \
+    "published 0.0.0-test plugin jar" || return 1
   while IFS=$'\t' read -r slug log_file log_hash; do
     if ! log_path_matches_slug "$slug" "$log_file"; then
       echo "fleet-canary: consumer log is not bound to repository $slug: $log_file" >&2
@@ -530,7 +566,7 @@ verify_receipt() {
     fi
     verify_artifact "$log_file" "$log_hash" "consumer log" || return 1
   done < <(jq -r '.repositories[] | [.slug,.log_file,.output_sha256] | @tsv' "$resolved_receipt")
-  while IFS=$'\t' read -r slug cert_file cert_hash cert_suites cert_plugin recorded_project; do
+  while IFS=$'\t' read -r slug cert_file cert_hash cert_suites recorded_project cert_plugin; do
     if ! artifact_path_matches_slug "certifications" "$slug" "$cert_file"; then
       echo "fleet-canary: inner PIT certification is not bound to repository $slug: $cert_file" >&2
       return 1
@@ -553,6 +589,11 @@ verify_receipt() {
       echo "fleet-canary: inner certification plugin hash changed: $cert_path" >&2
       return 1
     fi
+    if [ "$actual_suites" -gt 0 ] &&
+        [ "$actual_plugin" != "$(jq -r '.plugin.test_jar_sha256' "$resolved_receipt")" ]; then
+      echo "fleet-canary: inner certification does not describe the retained published plugin jar: $cert_path" >&2
+      return 1
+    fi
     actual_project=$(inner_certification_project "$cert_path")
     if [ "$actual_project" != "$recorded_project" ]; then
       echo "fleet-canary: inner certification project changed: $cert_path" >&2
@@ -560,11 +601,12 @@ verify_receipt() {
     fi
     verify_artifact_unchanged "$cert_path" "$cert_hash" "inner PIT certification" || return 1
   done < <(jq -r '.repositories[] as $repository | $repository.certifications[] |
-      [$repository.slug,.path,.sha256,.suite_count,.plugin_sha256,.project] | @tsv' "$resolved_receipt")
+      [$repository.slug,.path,.sha256,.suite_count,.project,.plugin_sha256] | @tsv' "$resolved_receipt")
 
   while IFS=$'\t' read -r slug repo recorded_sha recorded_origin; do
     if [ ! -e "$repo" ]; then
       echo "fleet-canary: NOTE $slug checkout unavailable; retained artifacts were verified" >&2
+      unavailable_count=$((unavailable_count + 1))
       continue
     fi
     if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -585,10 +627,15 @@ verify_receipt() {
       echo "fleet-canary: $slug checkout is dirty after certification" >&2
       return 1
     fi
+    checkout_count=$((checkout_count + 1))
   done < <(jq -r '.repositories[] | [.slug,.path,.sha,.origin] | @tsv' "$resolved_receipt")
 
   verification_inputs_unchanged || return 1
-  echo "fleet-canary: verified $receipt_count-repo evidence bundle for plugin $certified_sha"
+  if [ "$checkout_count" -eq 0 ]; then
+    echo "fleet-canary: retained artifacts for $receipt_count repos verified, but zero consumer checkouts were available; refusing full verification" >&2
+    return 1
+  fi
+  echo "fleet-canary: retained artifacts verified for $receipt_count repos; revalidated $checkout_count consumer checkout(s), $unavailable_count unavailable; plugin $certified_sha"
 }
 
 # Deliberately coupled to emitted warning text. The first pattern remains pinned
@@ -608,19 +655,23 @@ reprint_findings() {
 
 self_test() {
   local fixture records output projects slugs basenames suites hash
-  local path_fixture pointer_file target_receipt artifact_file symlink_file
-  local target_hash artifact_hash resolved_path saved_pwd long_name key
+  local path_fixture pointer_file target_receipt artifact_file symlink_file plan_probe stdin_probe
+  local target_hash artifact_hash resolved_path saved_pwd long_name key repo_key plan_rows _stolen
+  local probe_slug probe_repo probe_deep probe_sha probe_origin
+  local row_suites zero_project zero_plugin
   require_jq
   fixture=$(mktemp)
   records=$(mktemp)
   path_fixture=$(mktemp -d)
+  plan_probe=$(mktemp)
+  stdin_probe=$(mktemp)
   path_fixture=$(cd "$path_fixture" && pwd -P)
   pointer_file="$path_fixture/pointer.json"
   target_receipt="$path_fixture/fleet-canary-runs/run.A/receipt.json"
   artifact_file="$path_fixture/fleet-canary-runs/run.A/logs/ok.log"
   symlink_file="$path_fixture/fleet-canary-runs/run.A/logs/link.log"
   trap '
-    rm -f "$fixture" "$records" "$symlink_file" "$artifact_file" \
+    rm -f "$fixture" "$records" "$plan_probe" "$stdin_probe" "$symlink_file" "$artifact_file" \
       "$target_receipt" "$pointer_file"
     rmdir "$path_fixture/fleet-canary-runs/run.A/logs" \
       "$path_fixture/fleet-canary-runs/run.A" "$path_fixture/fleet-canary-runs" \
@@ -662,27 +713,38 @@ self_test() {
     return 1
   fi
   hash=$(printf '%064d' 0)
-  printf 'schema\t3\nproject\t:\nsession\tsession-1\nmode\tfresh-full-strict\n' > "$fixture"
-  printf 'columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\tconfigurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\trecordPitestVersion\n' >> "$fixture"
-  printf 'suite\tcodec\tinvocation-1\t%s\t%s\t%s\t%s\t1.17.2\t%s\t%s\tno-record\n' \
-    "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" >> "$fixture"
+  printf 'schema\t4\nproject\t:\nsession\tsession-1\nmode\tfresh-full-strict\n' > "$fixture"
+  printf 'columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\tconfigurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\trecordInputsSha256\trecordPitestVersion\n' >> "$fixture"
+  printf 'suite\tcodec\tinvocation-1\t%s\t%s\t%s\t%s\t1.17.2\t%s\t%s\t%s\tno-record\n' \
+    "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" >> "$fixture"
   suites=$(validate_inner_certification "$fixture")
   [ "$suites" = 1 ] || {
     echo "fleet-canary self-test: inner certification count was $suites" >&2; return 1;
   }
-  printf 'suite\tcodec\tinvocation-2\t%s\t%s\t%s\t%s\t1.17.2\t%s\t%s\tno-record\n' \
-    "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" >> "$fixture"
+  cp "$fixture" "$records"
+  awk -F '\t' 'BEGIN { OFS="\t" } $1 == "suite" { $11="invalid" } { print }' \
+    "$records" > "$fixture"
+  if validate_inner_certification "$fixture" >/dev/null 2>&1; then
+    echo "fleet-canary self-test: invalid record-input fingerprint was accepted" >&2
+    return 1
+  fi
+  cp "$records" "$fixture"
+  printf 'suite\tcodec\tinvocation-2\t%s\t%s\t%s\t%s\t1.17.2\t%s\t%s\t%s\tno-record\n' \
+    "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" >> "$fixture"
   if validate_inner_certification "$fixture" >/dev/null 2>&1; then
     echo "fleet-canary self-test: duplicate suite evidence was accepted" >&2
     return 1
   fi
-  printf 'schema\t3\nproject\t:\nsession\tsession-1\nmode\tfresh-full-strict\n' > "$fixture"
+  printf 'schema\t4\nproject\t:\nsession\tsession-1\nmode\tfresh-full-strict\n' > "$fixture"
   printf 'columns\tsuite\tname\tinvocation\treportSha256\tWRONG\n' >> "$fixture"
   if validate_inner_certification "$fixture" >/dev/null 2>&1; then
     echo "fleet-canary self-test: malformed columns header was accepted" >&2
     return 1
   fi
-  printf 'schema\t2\nmode\tfresh-full-strict\nsuite\tcodec\n' > "$fixture"
+  printf 'schema\t3\nproject\t:\nsession\tsession-1\nmode\tfresh-full-strict\n' > "$fixture"
+  printf 'columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\tconfigurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\trecordPitestVersion\n' >> "$fixture"
+  printf 'suite\tcodec\tinvocation-1\t%s\t%s\t%s\t%s\t1.17.2\t%s\t%s\tno-record\n' \
+    "$hash" "$hash" "$hash" "$hash" "$hash" "$hash" >> "$fixture"
   if validate_inner_certification "$fixture" >/dev/null 2>&1; then
     echo "fleet-canary self-test: obsolete inner certification schema was accepted" >&2
     return 1
@@ -717,9 +779,69 @@ self_test() {
     echo "fleet-canary self-test: cross-repository log alias was accepted" >&2
     return 1
   fi
+  printf 'one\037/repo-one\037\037sha-one\037origin-one\n' > "$plan_probe"
+  printf 'two\037/repo-two\037pitestCodec\037sha-two\037origin-two\n' >> "$plan_probe"
+  printf 'stdin may be consumed by a child\n' > "$stdin_probe"
+  plan_rows=0
+  while IFS=$'\037' read -r -u 3 \
+      probe_slug probe_repo probe_deep probe_sha probe_origin; do
+    if [ "$probe_slug" = one ] &&
+        { [ "$probe_repo" != /repo-one ] || [ -n "$probe_deep" ] ||
+          [ "$probe_sha" != sha-one ] || [ "$probe_origin" != origin-one ]; }; then
+      echo "fleet-canary self-test: execution plan collapsed an empty field" >&2
+      return 1
+    fi
+    IFS= read -r _stolen || true
+    plan_rows=$((plan_rows + 1))
+  done 3< "$plan_probe" < "$stdin_probe"
+  [ "$plan_rows" -eq 2 ] || {
+    echo "fleet-canary self-test: execution plan shared stdin and was truncated" >&2; return 1;
+  }
 
   mkdir -p "$(dirname "$artifact_file")"
-  printf '{}\n' > "$target_receipt"
+  repo_key=$(artifact_key "sava-software/example")
+  jq -n --arg hash "$hash" --arg repo_key "$repo_key" \
+    '{schema:3,kind:"fleet-canary-receipt",mode:"release",result:"passed",run_id:"run.A",
+      plugin:{sha:"0000000000000000000000000000000000000000",
+        tree:"0000000000000000000000000000000000000000",
+        origin:"git@github.com:sava-software/sava-build.git",dirty_before:false,dirty_after:false,
+        test_jar_file:"plugin-0.0.0-test.jar",test_jar_sha256:$hash},
+      manifest_sha256:$hash,preflight_file:"preflight.tsv",preflight_sha256:$hash,
+      publish_log_file:"plugin-publish.log",publish_output_sha256:$hash,
+      advisories_acknowledged:false,
+      repositories:[{slug:"sava-software/example",path:"/tmp/example",
+        sha:"0000000000000000000000000000000000000000",origin:"git@github.com:sava-software/example.git",
+        dirty_before:false,dirty_after:false,result:"passed",
+        tasks:["hardeningCertify","agentsTemplateInSync"],certification_projects:[":",":empty"],
+        log_file:("logs/"+$repo_key+".log"),output_sha256:$hash,findings:"",
+        certifications:[{project:":",path:("certifications/"+$repo_key+"/root.tsv"),
+          sha256:$hash,suite_count:1,plugin_sha256:$hash},
+          {project:":empty",path:("certifications/"+$repo_key+"/empty.tsv"),
+            sha256:$hash,suite_count:0,plugin_sha256:""}]}]}' > "$target_receipt"
+  release_receipt_schema_valid "$target_receipt" || {
+    echo "fleet-canary self-test: realistic release receipt schema was rejected" >&2; return 1;
+  }
+  zero_project=""
+  zero_plugin=unexpected
+  while IFS=$'\t' read -r row_suites zero_project zero_plugin; do
+    [ "$row_suites" = 0 ] && break
+  done < <(jq -r '.repositories[].certifications[] |
+      [.suite_count,.project,.plugin_sha256] | @tsv' "$target_receipt")
+  if [ "$zero_project" != :empty ] || [ -n "$zero_plugin" ]; then
+    echo "fleet-canary self-test: zero-suite certification fields shifted during parsing" >&2
+    return 1
+  fi
+  jq --arg bad "$(printf '%064d' 1)" \
+    '.repositories[0].certifications[0].plugin_sha256=$bad' "$target_receipt" > "$fixture"
+  if release_receipt_schema_valid "$fixture"; then
+    echo "fleet-canary self-test: stale consumer plugin identity was accepted" >&2
+    return 1
+  fi
+  jq '.repositories[0].tasks=[]' "$target_receipt" > "$fixture"
+  if release_receipt_schema_valid "$fixture"; then
+    echo "fleet-canary self-test: structurally incomplete receipt was accepted" >&2
+    return 1
+  fi
   printf 'artifact\n' > "$artifact_file"
   target_hash=$(sha256_file "$target_receipt")
   artifact_hash=$(sha256_file "$artifact_file")
@@ -889,6 +1011,7 @@ bundle_rel=""
 logs_dir=""
 certifications_dir=""
 plugin_publish_log="$out_file"
+published_plugin_sha256=""
 
 if $release_mode; then
   prepare_pointer_destination "$receipt_path"
@@ -939,7 +1062,8 @@ if $release_mode; then
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$repo" "$repo_sha" "$remote" "$dirty" "$result" \
       >> "$run_dir/preflight.tsv"
     if [ "$result" = passed ]; then
-      printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$repo" "$deep_task" "$repo_sha" "$remote" >> "$execution_plan"
+      printf '%s\037%s\037%s\037%s\037%s\n' \
+        "$slug" "$repo" "$deep_task" "$repo_sha" "$remote" >> "$execution_plan"
     else
       preflight_failed="$preflight_failed $slug($result)"
     fi
@@ -951,7 +1075,9 @@ if $release_mode; then
     exit 1
   fi
 else
-  cp "$plan_file" "$execution_plan"
+  while IFS=$'\t' read -r slug repo deep_task; do
+    printf '%s\037%s\037%s\n' "$slug" "$repo" "$deep_task" >> "$execution_plan"
+  done < "$plan_file"
 fi
 
 echo "fleet-canary: publishing 0.0.0-test from $sava_build_dir at $plugin_sha"
@@ -960,6 +1086,11 @@ if ! (cd "$sava_build_dir" && ./gradlew --console=plain \
   cat "$plugin_publish_log"
   if $release_mode; then write_pointer "failed"; fi
   echo "fleet-canary: local plugin publication failed" >&2
+  exit 1
+fi
+if ! snapshot_published_plugin_jar; then
+  if $release_mode; then write_pointer "failed"; fi
+  echo "fleet-canary: could not retain the published plugin identity" >&2
   exit 1
 fi
 if $release_mode; then
@@ -1029,6 +1160,10 @@ collect_certifications() {
     plugin_hash=$(inner_certification_plugin_sha "$destination") || {
       echo "fleet-canary: inconsistent retained plugin provenance: $destination" >&2; return 1;
     }
+    if [ "$suites" -gt 0 ] && [ "$plugin_hash" != "$published_plugin_sha256" ]; then
+      echo "fleet-canary: $slug certified with plugin $plugin_hash, not published jar $published_plugin_sha256" >&2
+      return 1
+    fi
     project=$(inner_certification_project "$destination")
     verify_artifact_unchanged "$destination" "$copy_hash" \
       "retained inner PIT certification" || return 1
@@ -1074,7 +1209,10 @@ failed=""
 warned=""
 consumer_cache_args=()
 if $release_mode; then consumer_cache_args+=(--configuration-cache); fi
-while IFS=$'\t' read -r slug repo deep_task pre_sha pre_origin; do
+expected_execution_rows=$(wc -l < "$plan_file" | tr -d ' ')
+processed_execution_rows=0
+while IFS=$'\037' read -r -u 3 slug repo deep_task pre_sha pre_origin; do
+  processed_execution_rows=$((processed_execution_rows + 1))
   repo_result=passed
   dirty_before=false
   dirty_after=false
@@ -1108,7 +1246,7 @@ while IFS=$'\t' read -r slug repo deep_task pre_sha pre_origin; do
     if $release_mode; then
       if ! (cd "$repo" && ./gradlew --console=plain "${consumer_cache_args[@]}" \
           -PsavaBuildLocalRepo="$local_repo" tasks --all) \
-          > "$out_file" 2>&1; then
+          3<&- > "$out_file" 2>&1; then
         repo_result=task_discovery_failed
       else
         if ! grep -qF "$resolution_notice" "$out_file"; then
@@ -1140,7 +1278,7 @@ while IFS=$'\t' read -r slug repo deep_task pre_sha pre_origin; do
     while IFS= read -r task; do [ -n "$task" ] && task_args+=("$task"); done <<< "$tasks"
     if ! (cd "$repo" && ./gradlew --console=plain "${consumer_cache_args[@]}" \
         -PsavaBuildLocalRepo="$local_repo" \
-        "${task_args[@]}") > "$out_file" 2>&1; then
+        "${task_args[@]}") 3<&- > "$out_file" 2>&1; then
       repo_result=checks_failed
     elif ! grep -qF "$resolution_notice" "$out_file"; then
       repo_result=resolution_missing
@@ -1152,7 +1290,7 @@ while IFS=$'\t' read -r slug repo deep_task pre_sha pre_origin; do
     for round in 1 2; do
       recorded_tasks="$recorded_tasks"$'\n'"$deep_task (--rerun-tasks round $round)"
       if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" \
-          --rerun-tasks "$deep_task") > "$out_file" 2>&1; then
+          --rerun-tasks "$deep_task") 3<&- > "$out_file" 2>&1; then
         repo_result="deep_round_${round}_failed"
         cat "$out_file" >> "$repo_log"
         break
@@ -1207,7 +1345,11 @@ while IFS=$'\t' read -r slug repo deep_task pre_sha pre_origin; do
     echo "fleet-canary: FAILED $slug — $repo_result; log: $repo_log" >&2
     if ! $release_mode; then cat "$repo_log" >&2; fi
   fi
-done < "$execution_plan"
+done 3< "$execution_plan"
+if [ "$processed_execution_rows" -ne "$expected_execution_rows" ]; then
+  failed="$failed execution-plan(truncated:$processed_execution_rows/$expected_execution_rows)"
+  echo "fleet-canary: execution plan truncated after $processed_execution_rows of $expected_execution_rows rows" >&2
+fi
 
 if $release_mode; then
   plugin_dirty_after=false
@@ -1225,6 +1367,8 @@ if $release_mode; then
     --arg generated_at "$generated_at" --arg run_id "$run_id" --arg result "$receipt_result" \
     --arg plugin_sha "$plugin_sha" --arg plugin_tree "$plugin_tree" \
     --arg plugin_origin "$plugin_origin" \
+    --arg test_jar_file "$retained_plugin_jar_file" \
+    --arg test_jar_sha256 "$published_plugin_sha256" \
     --argjson plugin_dirty_after "$plugin_dirty_after" \
     --arg manifest_sha256 "$(sha256_file "$manifest")" \
     --arg preflight_file "preflight.tsv" \
@@ -1233,10 +1377,11 @@ if $release_mode; then
     --arg publish_output_sha256 "$(sha256_file "$plugin_publish_log")" \
     --argjson advisories_acknowledged "$allow_advisories" \
     --slurpfile repositories "$records_file" \
-    '{schema:2,kind:"fleet-canary-receipt",mode:"release",run_id:$run_id,
+    '{schema:3,kind:"fleet-canary-receipt",mode:"release",run_id:$run_id,
       generated_at:$generated_at,result:$result,
       plugin:{sha:$plugin_sha,tree:$plugin_tree,origin:$plugin_origin,
-        dirty_before:false,dirty_after:$plugin_dirty_after},
+        dirty_before:false,dirty_after:$plugin_dirty_after,
+        test_jar_file:$test_jar_file,test_jar_sha256:$test_jar_sha256},
       manifest_sha256:$manifest_sha256,
       preflight_file:$preflight_file,preflight_sha256:$preflight_sha256,
       publish_log_file:$publish_log_file,

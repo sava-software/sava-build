@@ -140,6 +140,42 @@ class BaselineEngineTest {
   }
 
   @Test
+  fun `prune refreshes matched lines by affinity and preserves unmatched evidence`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# moved", listOf(10)),
+      BaselineNotes.Row(key, "# stationary sibling", listOf(20)),
+      BaselineNotes.Row(
+        "com.example.Codec,decode,MathMutator,SURVIVED",
+        "# flip insurance (gate=KILLED, solo=SURVIVED)",
+        listOf(50),
+      ),
+      BaselineNotes.Row("com.example.Codec,dead,MathMutator,SURVIVED", "# killed", listOf(70)),
+    )
+
+    val rewrite = BaselineEngine.pruneRewrite(
+      accepted,
+      listOf(
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.INSURED,
+        BaselineEngine.Disposition.DROP,
+      ),
+      mapOf(key to listOf("20", "12")),
+    )
+
+    assertEquals(
+      listOf(
+        "$key # moved # line 12",
+        "$key # stationary sibling # line 20",
+        "com.example.Codec,decode,MathMutator,SURVIVED # flip insurance (gate=KILLED, solo=SURVIVED) # line 50",
+      ),
+      rewrite.written,
+    )
+    assertEquals(1, rewrite.refreshedLineTags)
+  }
+
+  @Test
   fun `drift comparison of a run against itself is silent`() {
     repeat(500) { seed ->
       val rnd = Random(seed)

@@ -52,12 +52,22 @@ scheduled workflow or an arbitrary soak window. For a `sava-build` plugin releas
 make those records across the complete consumer roster. Starting either command
 invalidates the canonical pass with an `in_progress` pointer; success points it at an
 immutable ignored run bundle containing the receipt, preflight, retained logs, and inner
-per-project evidence. Both release runners enable Gradle's configuration cache for task
-discovery and the consumer gate: storing that entry is part of the canary, so an
-execution-time action that captures a plugin script fails before release even when the
-consumer normally leaves the cache off. Each script's `--verify-receipt
+per-project evidence, plus the exact published `0.0.0-test` plugin JAR. The outer receipt
+hashes that JAR, and every inner certification or fuzz receipt must name the same plugin
+binary hash; consumers merely agreeing with one another is not enough. Both release runners
+enable Gradle's configuration cache for task
+discovery and the consumer graphs they actually execute (`hardeningCertify` and
+`fuzzAll`): storing those entries is part of the canary, so a script capture on a release
+path fails before release even when the consumer normally leaves the cache off. The
+plugin's TestKit fixtures also enable the cache in `gradle.properties`, which exercises
+diagnostic-only actions such as mode comparison, mutator trials, migration, initialization,
+Debt, and individual fuzz targets without pretending the release graphs select them.
+Each script's `--verify-receipt
 build/hardening/<name>-receipt.json` form rehashes that bundle and validates still-present
-plugin and consumer checkouts without rerunning Gradle. Keep the selected run directories
+plugin and consumer checkouts without rerunning Gradle. It reports the exact number of
+consumer checkouts revalidated and refuses a full-verification success when that number is
+zero; an unavailable individual checkout remains a named skip because its retained evidence
+can still be hashed. Keep the selected run directories
 with the release record, not in the Git tree they certify *(casebook: the canary that
 skipped two consumers)*.
 
@@ -71,7 +81,11 @@ finalized by its baseline verification. `hardeningCertify` is the release form:
 it automatically disables mutation history, rejects scoped and record-changing
 flags before PIT starts, makes timeout drift and whole-production ownership strict,
 requires a provenance-bound report for every suite, and writes
-`build/hardening/pitest-certification.tsv`. Its cost scales with the repo's total
+`build/hardening/pitest-certification.tsv`. Each suite row binds not only the report,
+compiled code, source, configuration, PIT tool classpath, and loaded plugin binary, but
+also the accepted baseline, audited timeout membership, recorded PIT-version stamp, and
+the suite's triage README that decided whether the observation was acceptable. Its cost
+scales with the repo's total
 mutant population, not with the size of the diff — so running it per change
 spends minutes re-learning results the change could not have moved. A suite
 produces new information only when the change can alter code it mutates or
@@ -328,11 +342,14 @@ ratchet (see the transient-failures section).
 Baseline keys are **line-less** — `class,method,mutator,STATUS` — because line
 numbers churn whenever a mutated file is edited, and identity that churns
 makes the ratchet police text moves instead of behavior. Lines still appear
-on rows, demoted to metadata: every refresh writes each row's observed line
-as a trailing `# line N` tag (the audited-timeout convention), kept for
-triage pointers and the line-drift advisory below. Editing above a mutated
-method therefore changes *nothing* the comparison sees. Two situations still
-produce paired stale + "new" rows, and they call for **opposite** responses:
+on rows, demoted to metadata as trailing `# line N` tags (the audited-timeout
+convention), kept for triage pointers and the line-drift advisory below. A
+full update rewrites every tag from its report; a green prune rewrites the
+tags of retained rows it matched at their own key. Union operations preserve
+existing tags and tag only rows they add, while format-only migration
+preserves the recorded tags. Editing above a mutated method therefore changes
+*nothing* the comparison sees. Two situations still produce paired stale +
+"new" rows, and they call for **opposite** responses:
 
 - `(newly covered — was NO_COVERAGE; triage, not a refresh)` — same
   class/method/mutator, different status. A test now *reaches* the mutant,
@@ -377,9 +394,9 @@ means replacing that label with a short family label (`# race-guard
 family`, `# capacity-hint`) whose full argument lives in the README. An
 already-unlabeled row is a different thing — it predates seeding (added in
 21.5.12) and its argument lives in the README rather than on the row — and a
-refresh preserves that state rather than converting it to seeded debt. Both
-refresh flags preserve notes, and the verify summary counts them **per
-label** (`38 rows — 13 '# untriaged', 20 '# race-guard family', 5
+refresh preserves that state rather than converting it to seeded debt. All
+baseline refresh flags preserve notes, and the verify summary counts them
+**per label** (`38 rows — 13 '# untriaged', 20 '# race-guard family', 5
 unlabeled`; the debt task prints the same breakdown), so triage state is a
 number the build prints rather than prose that drifts from the CSV it
 describes. Rows that predate seeding
@@ -415,9 +432,15 @@ is arbitrary, which is the same-key blind spot below, not a bug to police.
 
 The third refresh is the only one that is always safe:
 `-PpruneMutationBaseline` drops baseline rows matching nothing this run and
-adds or rewrites nothing — shrinking the baseline is always an improvement,
-and no coin-flip from the run can be baked in. "Matching" is the verify's own
-multiset comparison: a key holding more rows than the run's unkilled mutants
+adds no rows — shrinking the baseline is always an improvement, and no
+coin-flip from the run can be baked in. It also refreshes the `# line` tag of
+each retained row matched at its own key, using line affinity before file
+order; unmatched rows kept for `TIMED_OUT`, a pending flip, or flip insurance
+retain their prior tags because that run did not observe them at their own
+key. A line-only rewrite is still atomic and occurs even when prune drops
+nothing, which makes prune the safe way to clear a reviewed line-drift
+advisory without widening the accepted population. "Matching" is the
+verify's own multiset comparison: a key holding more rows than the run's unkilled mutants
 has excess to drop, and which sibling goes is decided by line affinity first
 (the row whose `# line` tag names no live line is the killed mutant's row),
 file order after — so a noted row is not dropped for its bare sibling's kill,
@@ -678,12 +701,15 @@ timeout sets, for the same reason): editing above a mutated method changes
 nothing the ratchet sees, so the drift classifier, the pure-drift tolerated
 pass, the pairing-outlier scan and `-PnoDriftTolerance` are all retired —
 there is no drift left to tolerate. What remains of lines is metadata and one
-advisory: every refresh writes each row's observed line as a `# line N` tag,
-and a key unkilled *only* at lines its tags do not name draws a **line-drift
-advisory** — the code the acceptance argues about has moved, or a new
-mutant sits under an old acceptance; re-read the README argument, then let
-the next refresh rewrite the tag. The check is row-level where the data
-supports it: when every row of a key carries a tag and the observed count
+advisory: a key unkilled *only* at lines its tags do not name draws a
+**line-drift advisory** — the code the acceptance argues about has moved, or
+a new mutant sits under an old acceptance. Re-read the README argument, then
+use a green `-PpruneMutationBaseline` to refresh matched tags without
+accepting anything; a full update also refreshes tags but carries its normal
+baseline-widening risk. Unions preserve existing tags and attach observed
+tags only to rows they add; `migrateMutationBaselines` preserves recorded
+tags because it has no current mutation report. The check is row-level where
+the data supports it: when every row of a key carries a tag and the observed count
 matches the row count, *any* unrecorded line is reported — the baseline's
 multiset already fails a genuinely new sibling as a count change, so unlike
 the audited timeout sets there is no new-sibling quiet case to preserve.
@@ -691,7 +717,8 @@ Partial tags or skewed counts fall back to the audit's key-level
 disjointness (the skew is already failing the build or printing the stale
 hint). Legacy five-field rows (`class,method,<line>,mutator,STATUS`) still
 parse — the line field demotes to recorded-line metadata — and any refresh
-migrates the file; `migrateMutationBaselines` respells every suite's file
+that actually rewrites the file migrates it; `migrateMutationBaselines`
+respells every suite's file
 without a mutation run (parse/re-render, comments preserved, identity
 untouched by construction), which is the fleet migration path: the refresh
 flags need a green run, and update needs a *solo* one or it drops
@@ -1312,8 +1339,11 @@ For a `sava-build` release, `tools/local-fuzz.sh --release --seconds <N>` first 
 the complete fleet, publishes the candidate plugin into the local test repository, and
 requires every consumer to expose `fuzzAll` plus at least one registered target. It retains
 the publish log, per-repository logs, and every generated `local-fuzz.tsv` in an immutable,
-SHA-bound run bundle under `build/hardening/local-fuzz-runs/`; the canonical receipt is a
-pointer to that bundle. The runner enables the configuration cache and removes prior inner
+SHA-bound run bundle under `build/hardening/local-fuzz-runs/`, together with the exact
+published `0.0.0-test` plugin JAR; the canonical receipt is a pointer to that bundle. Each
+inner fuzz receipt records the loaded plugin binary, and the runner requires its hash to
+equal the retained JAR's hash, catching the case where every consumer reused the same stale
+resolution. The runner enables the configuration cache and removes prior inner
 aggregate receipts before invoking Gradle, so a stale deterministic TSV cannot impersonate
 the current campaign if plugin-side invalidation regresses. Ordinary mode accepts explicit repositories or available manifest
 siblings and alone may fall back to individual tasks or `help`. This is evidence from the
@@ -1447,9 +1477,11 @@ MINION_DIED, worker EOF, and the daemon log)*:
   One-shot; re-run.
 - **`RUN_ERROR` on individual mutants** — the same shape per-mutant, observed
   only under multi-suite load. The report is refused rather than letting PIT's
-  detected score turn infrastructure failure into certification. Re-run quietly;
-  a `RUN_ERROR` that persists on one mutant is not load and deserves a look at
-  the mutated bytecode.
+  detected score turn infrastructure failure into certification. The refusal prints
+  every offending CSV row, and `pitest<Suite>Debt` repeats those rows while falling
+  back to the committed baseline for its read-only tally. Save that coordinate (or run
+  Debt) before a quiet re-run replaces the report; a `RUN_ERROR` that persists at the
+  same coordinate is not load and deserves investigation in the mutated bytecode.
 
 **The evidence usually survives you discarding it.** The Gradle daemon keeps
 complete build output — including PIT minion stack traces — at
@@ -1604,12 +1636,15 @@ fails in that mode; it is unadopted, not merely waiting for a release.
 >   and which are debt. Never run `-PupdateMutationBaseline` just to make the
 >   build pass.
 > - Baseline keys are line-less (`class,method,mutator,STATUS`) — editing
->   above a mutated method churns nothing, and `# line` tags are metadata a
->   refresh rewrites. The trade is one documented hole: a new mutant replacing
->   a killed one at the same key inherits its acceptance silently, so when the
->   line-drift advisory names a key whose argument no longer reads against the
+>   above a mutated method churns nothing, and `# line` tags are metadata. A
+>   full update refreshes every tag; a green prune safely refreshes matched
+>   retained rows even when it drops nothing. Unions and format-only migration
+>   preserve existing tags. The trade is one documented hole: a new mutant
+>   replacing a killed one at the same key inherits its acceptance silently,
+>   so when the line-drift advisory names a key whose argument no longer reads against the
 >   code, treat it as that swap until shown otherwise. Legacy five-field files
->   migrate on any refresh, or all at once with `migrateMutationBaselines` (no
+>   migrate on any baseline-rewriting refresh, or all at once with
+>   `migrateMutationBaselines` (no
 >   mutation run needed) — but only after every pin resolving the plugin is
 >   bumped, because pre-line-less plugin versions cannot read a migrated file.
 > - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
@@ -1719,7 +1754,10 @@ fails in that mode; it is unadopted, not merely waiting for a release.
 >   before writing a report, so it cannot corrupt one — re-run the suite; a
 >   Gradle-worker `EOFException` death is the same shape, and a per-mutant
 >   `RUN_ERROR` under load is the same shape smaller (the hardening parser refuses
->   the report rather than certifying PIT's detected score). The daemon log
+>   the report rather than certifying PIT's detected score). The refusal and
+>   `pitest<Suite>Debt` name every offending row; retain the coordinate before a
+>   quiet re-run replaces the report, because the same coordinate twice is a defect,
+>   not load. The daemon log
 >   (`~/.gradle/daemon/<version>/daemon-<pid>.out.log`) keeps a failed build's
 >   full output even when the shell discarded it — read it before calling a
 >   failure unexplained.
