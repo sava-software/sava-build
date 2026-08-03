@@ -58,6 +58,29 @@ internal object BaselineNotes {
     }
   }
 
+  /**
+   * A line whose key part cannot be a baseline row: after stripping the trailing
+   * `# line` tag and the note, the coordinate must be `class,method,mutator,STATUS`
+   * or the legacy five-field form with a numeric line third, every field non-empty.
+   * A malformed row parses into a key that matches no mutant, reads as "since
+   * killed", and is then silently dropped by the next refresh — diagnosing the
+   * shape is the same job the timeout membership's malformed-row check does, so
+   * the two files cannot disagree on whether the tool argues with a row or
+   * quietly ignores it.
+   */
+  fun malformed(line: String): Boolean {
+    val tagMatch = LINE_TAG.find(line)
+    val beforeTag = if (tagMatch == null) line else line.substring(0, tagMatch.range.first)
+    val hash = beforeTag.indexOf('#')
+    val rawKey = (if (hash < 0) beforeTag else beforeTag.substring(0, hash)).trim()
+    val fields = rawKey.split(',').map { it.trim() }
+    return when (fields.size) {
+      4 -> fields.any { it.isEmpty() }
+      5 -> fields[2].toIntOrNull() == null || fields.any { it.isEmpty() }
+      else -> true
+    }
+  }
+
   /** The trailing `# line` tag for [lines], or the empty string for none. */
   fun renderLineTag(lines: Collection<Int>): String {
     if (lines.isEmpty()) return ""

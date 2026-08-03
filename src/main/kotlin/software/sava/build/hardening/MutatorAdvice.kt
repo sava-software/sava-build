@@ -157,19 +157,10 @@ object MutatorAdvice {
     }
   }
 
-  /// PIT globs: `*` spans package separators, `?` is one character.
-  private fun globToRegex(glob: String): Regex {
-    val pattern = buildString {
-      glob.forEach { c ->
-        when (c) {
-          '*' -> append(".*")
-          '?' -> append('.')
-          else -> append(Regex.escape(c.toString()))
-        }
-      }
-    }
-    return Regex(pattern)
-  }
+  // PIT-glob parsing lives in PitGlobs: this scan's private copy lacked the '**.'
+  // handling ExclusionAudit documents as necessary, so the same glob selected
+  // different classes depending on which advisory read it.
+  private fun globToRegex(glob: String): Regex = PitGlobs.toRegex(glob)
 
   /// Counts arithmetic method references per owner in one class file's constant
   /// pool. Returns null when the file cannot be parsed as a class — advice is

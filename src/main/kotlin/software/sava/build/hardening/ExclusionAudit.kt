@@ -51,6 +51,11 @@ object ExclusionAudit {
     val siblings = siblingScopes.map { scope ->
       scope.targetGlobs.map(::globToRegex) to scope.excludedGlobs.map(::globToRegex)
     }
+    // one read of each package's test sources per audit, shared by every candidate
+    // in that package — the declaration scan below runs only for actual swallow
+    // candidates, so the common all-green run costs nothing beyond the exact-file
+    // existence checks
+    val packageSources = HashMap<String, List<String>>()
     return classesDir.walkTopDown()
         .filter { it.isFile && it.name.endsWith(".class") }
         .mapNotNull { file ->
@@ -73,6 +78,16 @@ object ExclusionAudit {
           if (siblings.any { (targets, excludes) ->
                 targets.any { it.matches(binaryName) } && excludes.none { it.matches(binaryName) }
               }) return@mapNotNull null
+          // A secondary top-level class declared in a differently-named test file
+          // (FooTests.java carrying 'class Helper') has no Helper.java anywhere,
+          // so the exact-file check above misreads it as production. It is
+          // test-owned iff some .java in the same package under a test source dir
+          // declares it AT COLUMN 0 — top-level declarations always are, while an
+          // inner 'class Helper' is indented and compiles to Outer$Helper, so it
+          // can never own a top-level Helper.class. Checked last, only for actual
+          // swallow candidates: the declaration scan reads source text, and the
+          // common all-green run must not pay for it.
+          if (declaredInTestSource(binaryName, testSourceDirs, packageSources)) return@mapNotNull null
           Swallowed(binaryName, hit.first)
         }
         .toList()
@@ -141,22 +156,37 @@ object ExclusionAudit {
           "declineExclusionAudit(\"<glob>\", \"<what these are, and what carries their " +
           "correctness instead>\")."
 
-  /// PIT globs: `*` spans package separators, `?` is one character, and `**.` is
-  /// PIT's zero-or-more-packages marker — `**.Foo` matches `Foo` and `a.b.Foo`,
-  /// which plain `*`-expansion cannot express (it would demand at least one
-  /// character before the dot).
-  private fun globToRegex(glob: String): Regex {
-    val pattern = glob.split("**.").joinToString("(.*\\.)?") { part ->
-      buildString {
-        part.forEach { c ->
-          when (c) {
-            '*' -> append(".*")
-            '?' -> append('.')
-            else -> append(Regex.escape(c.toString()))
-          }
-        }
+  // PIT-glob parsing lives in PitGlobs, shared with MutatorAdvice so the two
+  // scans can never disagree on which classes a glob selects.
+  private fun globToRegex(glob: String): Regex = PitGlobs.toRegex(glob)
+
+  // Column-0 anchored: top-level declarations start the line, an inner class's
+  // indentation excludes it (it compiles to Outer$Inner and owns nothing
+  // top-level), and a javadoc's ' * class Helper' never reaches the keyword
+  // (the modifier group cannot consume '*'). Same-line annotations are allowed
+  // as tokens so '@SuppressWarnings("x") final class Helper' still counts.
+  private fun declaredInTestSource(
+      binaryName: String,
+      testSourceDirs: Collection<File>,
+      packageSources: MutableMap<String, List<String>>,
+  ): Boolean {
+    val simpleName = binaryName.substringAfterLast('.')
+    val packagePath = binaryName.substringBeforeLast('.', "").replace('.', '/')
+    // token separators are same-line whitespace only: '\s+' spanning newlines let
+    // a column-0 word line re-admit the indented inner declaration below it, and
+    // a declaration whose modifiers wrap still matches — the 'class <Name>' line
+    // itself starts at column 0
+    val declaration = Regex(
+        "(?m)^(?:(?:@\\w+(?:\\([^)]*\\))?|[\\w-]+)[ \\t]+)*(?:class|interface|enum|record)[ \\t]+" +
+            "${Regex.escape(simpleName)}\\b")
+    val sources = packageSources.getOrPut(packagePath) {
+      testSourceDirs.flatMap { dir ->
+        val packageDir = if (packagePath.isEmpty()) dir else dir.resolve(packagePath)
+        packageDir.listFiles { file -> file.isFile && file.name.endsWith(".java") }
+            ?.map { it.readText() }
+            .orEmpty()
       }
     }
-    return Regex(pattern)
+    return sources.any { declaration.containsMatchIn(it) }
   }
 }

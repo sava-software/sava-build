@@ -219,6 +219,12 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
       if (!csv.isFile) {
         throw GradleException("pitestConverge: no round-one report for '$suiteName' at $csv")
       }
+      if (csv.parentFile.resolve(".running").isFile) {
+        throw GradleException(
+            "pitestConverge: the '$suiteName' round-one report was left by an interrupted or " +
+                "failed run — a partial population cannot anchor the diff. Re-run the suites."
+        )
+      }
       csv.copyTo(snapshot.resolve("$suiteName.csv"))
       reportsRoot.get().asFile.resolve(suiteName).deleteRecursively()
     }
@@ -251,7 +257,14 @@ val pitestConverge = tasks.register("pitestConverge") {
     var benignFlips = 0
     names.forEach { suiteName ->
       val round1 = statuses(snapshotRoot.get().asFile.resolve("$suiteName.csv"))
-      val round2 = statuses(reportsRoot.get().asFile.resolve("$suiteName/mutations.csv"))
+      val round2Csv = reportsRoot.get().asFile.resolve("$suiteName/mutations.csv")
+      if (round2Csv.parentFile.resolve(".running").isFile) {
+        throw GradleException(
+            "pitestConverge: the '$suiteName' round-two report was left by an interrupted or " +
+                "failed run — a partial population would read as mass flips. Re-run pitestConverge."
+        )
+      }
+      val round2 = statuses(round2Csv)
       (round1.keys + round2.keys).sorted().forEach { key ->
         val before = round1[key] ?: emptyList()
         val after = round2[key] ?: emptyList()
@@ -307,6 +320,15 @@ val pitestMutatorTrial = tasks.register("pitestMutatorTrial") {
     val width = names.maxOf { it.length } + 2
     val lines = names.sorted().map { name ->
       val csv = reportsRoot.get().asFile.resolve("$name-trial/mutations.csv")
+      // a CSV still carrying the '.running' sentinel is a crashed or interrupted
+      // trial's partial population — tabulating it prints half numbers the task
+      // then tells the user to record in config/pitest/README.md
+      if (csv.isFile && csv.parentFile.resolve(".running").isFile) {
+        throw GradleException(
+            "pitestMutatorTrial: the '$name' trial report was left by an interrupted or failed " +
+                "run — partial numbers must not be recorded. Re-run the trial."
+        )
+      }
       val rows = if (csv.isFile) csv.readLines().mapNotNull { line ->
         val parts = line.split(',')
         if (parts.size < 6) null else parts
@@ -368,6 +390,12 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
         throw GradleException(
             "pitestModeSnapshot: no report for '$suiteName' at $csv — run every suite in the mode " +
                 "being labeled first; a partial snapshot would diff a suite against its absence"
+        )
+      }
+      if (reportDir.resolve(".running").isFile) {
+        throw GradleException(
+            "pitestModeSnapshot: the '$suiteName' report was left by an interrupted or failed run — " +
+                "a partial population is not an observation of this mode. Re-run the suites."
         )
       }
       if (reportDir.resolve(".history-assisted").isFile) {
@@ -441,15 +469,38 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       // Baseline rows parsed as an ordered LIST (BaselineNotes, both formats): a
       // duplicate key is a sibling mutant, and the set this used to collapse into
       // silently deduped siblings on the union write — a shrink outside prune's rules.
+      // Malformed rows and comment lines are diagnosed on the verify's terms — the
+      // shared BaselineNotes shape check, the same message — so the two surfaces
+      // cannot give contradictory instructions about one row, and the union write
+      // below cannot silently drop what it never parsed.
       val baselineFile = baselineDir.file("$suiteName-accepted.csv").asFile
-      val acceptedRows: MutableList<BaselineNotes.Row> = if (baselineFile.isFile) {
-        baselineFile.readLines()
-            .filter { it.isNotBlank() && !it.startsWith("#") }
-            .map { BaselineNotes.parse(it) }
-            .toMutableList()
-      } else {
-        mutableListOf()
+      val baselineLines = if (baselineFile.isFile) baselineFile.readLines() else emptyList()
+      val baselineCommentLines = baselineLines.filter {
+        it.isNotBlank() && it.trimStart().startsWith("#")
       }
+      val baselineRowLines = baselineLines.filter {
+        it.isNotBlank() && !it.trimStart().startsWith("#")
+      }
+      val malformedRows = baselineRowLines.filter { BaselineNotes.malformed(it) }
+      if (malformedRows.isNotEmpty()) {
+        logger.warn(
+            "pitestModeCompare: ${malformedRows.size} malformed row(s) in ${baselineFile.name} — " +
+                "expected 'class,method,mutator,STATUS [# note] [# line N]'; the verify names these " +
+                "too, and a rewrite would silently drop them:\n" +
+                malformedRows.joinToString("\n") { "  $it" }
+        )
+        if (unionFlips) {
+          throw GradleException(
+              "pitestModeCompare: ${baselineFile.name} carries ${malformedRows.size} malformed row(s) " +
+                  "(listed above) — the -PunionModeFlips rewrite would silently drop them. " +
+                  "Fix the row shape first."
+          )
+        }
+      }
+      val acceptedRows: MutableList<BaselineNotes.Row> = baselineRowLines
+          .filterNot { BaselineNotes.malformed(it) }
+          .map { BaselineNotes.parse(it) }
+          .toMutableList()
       // Counts, not membership: sibling mutants share the line-less key, and the
       // verify compares multisets — insurance must match its arithmetic or a key
       // "already insured" by one row still fails the next gate verify on the
@@ -525,7 +576,17 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       }
       if (unionedHere) {
         // every pre-existing row rewritten verbatim (duplicates included), the added
-        // insurance rows appended in key order
+        // insurance rows appended in key order. Comment lines do not survive this
+        // rewrite any more than the verify's — the same loudness applies (the one
+        // writer the warnDroppedComments doctrine used to miss).
+        if (baselineCommentLines.isNotEmpty()) {
+          logger.warn(
+              "pitestModeCompare: ${baselineCommentLines.size} comment line(s) in ${baselineFile.name} " +
+                  "do not survive the insurance rewrite (migrateMutationBaselines preserves them) — " +
+                  "move durable prose to config/pitest/README.md or a row's '# note':\n" +
+                  baselineCommentLines.joinToString("\n") { "  $it" }
+          )
+        }
         BaselineFiles.writeAtomically(
             baselineFile,
             acceptedRows.sortedBy { it.key }.joinToString("\n", postfix = "\n") { BaselineNotes.render(it) })
@@ -533,12 +594,55 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       // HARDENING.md's sweep: accepted rows unkilled in *no* snapshotted mode are
       // widening the gate for nothing. Report only — removal is a judgment call, and
       // insurance that outlived its cause has a casebook entry of its own.
+      // A row is also accounted for by its coordinate's TIMED_OUT budget — the
+      // verify's keep-plan discipline, not a presence check, and the budget is the
+      // MIN across modes: a mutant that timed out in every mode is one physical
+      // mutant, so it vouches for one row, not one row per mode (a per-mode budget
+      // with a shared accounted-set let one slow mutant exempt a pile). Plain rows
+      // claim the budget before insured rows, mirroring the keep plan's
+      // insurance-never-spends-the-budget rule; insured rows past the budget are
+      // exactly the "insurance that outlived its cause" this sweep exists to name.
       val unkilledAnywhere = perMode.values.flatMap { modeStatuses ->
         modeStatuses.flatMap { (key, statusList) -> statusList.filter { it in gated }.map { "$key,$it" } }
       }.toSet()
-      acceptedRows.filter { it.key !in unkilledAnywhere }.sortedBy { it.key }.forEach { row ->
-        deadRows.add("$suiteName: ${BaselineNotes.render(row.key, row.note, emptyList())}")
+      val deadCandidates = acceptedRows.indices.filter { acceptedRows[it].key !in unkilledAnywhere }
+      val timeoutBudget = HashMap<String, Int>()
+      perMode.values.forEachIndexed { modeIndex, modeStatuses ->
+        val counts = HashMap<String, Int>()
+        modeStatuses.forEach { (coord, statusList) ->
+          val timedOut = statusList.count { it == "TIMED_OUT" }
+          if (timedOut > 0) counts[coord] = timedOut
+        }
+        if (modeIndex == 0) {
+          timeoutBudget.putAll(counts)
+        } else {
+          timeoutBudget.keys.retainAll(counts.keys)
+          timeoutBudget.replaceAll { coord, budget -> minOf(budget, counts.getValue(coord)) }
+        }
       }
+      // ROW-level insurance for the ordering, unlike prune's key-level keep: the
+      // question here is which row the timeout most plausibly explains, and the
+      // row carrying the insurance note has its own removal criterion — this
+      // sweep naming it — while its bare sibling has no other story. Key-level
+      // partitioning read every sibling of an insured row as insured and handed
+      // the budget straight back to the insurance row.
+      val timeoutAccounted = HashSet<Int>()
+      val (insuredCandidates, plainCandidates) =
+          deadCandidates.partition { acceptedRows[it].note?.contains("flip insurance") == true }
+      for (index in plainCandidates + insuredCandidates) {
+        val coord = acceptedRows[index].key.substringBeforeLast(',')
+        val remaining = timeoutBudget[coord] ?: 0
+        if (remaining > 0) {
+          timeoutBudget[coord] = remaining - 1
+          timeoutAccounted.add(index)
+        }
+      }
+      deadCandidates.filterNot { it in timeoutAccounted }
+          .sortedBy { acceptedRows[it].key }
+          .forEach { index ->
+            val row = acceptedRows[index]
+            deadRows.add("$suiteName: ${BaselineNotes.render(row.key, row.note, emptyList())}")
+          }
     }
     if (deadRows.isNotEmpty()) {
       logger.lifecycle(
@@ -722,7 +826,6 @@ hardening.mutation.all {
     val toolVersionFile = layout.projectDirectory.file("config/pitest/$suiteName-pitest-version").asFile
     val pitToolVersion = hardening.pitestVersion
     // captured locally so the doLast lambda does not hold the script instance
-    val historyAssisted = mutationHistory
     val advisoryLog = hardeningAdvisoryLog
     val advisoryScope = suiteAdvisoryScope
     usesService(advisoryLog)
@@ -731,6 +834,20 @@ hardening.mutation.all {
     val testSourceDirs = sourceSets.test.get().java.srcDirs
     doLast {
       val csv = csvProvider.get().asFile
+      // The '.running' sentinel is written before PIT starts and cleared only
+      // after a clean exit, so a report left by a crashed or interrupted run —
+      // PIT writes the CSV incrementally, so a partial file looks complete —
+      // is refused as evidence instead of read as a smaller population. Without
+      // it, this verify runs as the failed task's finalizer and a same-invocation
+      // '-PpruneMutationBaseline' rewrites the baseline from whatever fraction of
+      // the population PIT reached before dying.
+      if (csv.parentFile.resolve(".running").isFile && csv.exists()) {
+        throw GradleException(
+            "pitest '$suiteName': the report at ${csv.parentFile} was left by an interrupted or " +
+                "failed run — a partial population is not evidence, for the ratchet or for any " +
+                "refresh flag. Re-run $pitestTaskName."
+        )
+      }
       if (!csv.exists()) {
         // As a finalizer this also fires when the pitest task itself just failed,
         // in which case the missing report is a symptom — don't let this message
@@ -831,12 +948,18 @@ hardening.mutation.all {
           add("${byStatus.getValue(s)} ${s.lowercase()} (not counted as detected)")
         }
       }
+      // With incremental analysis some of these statuses were reused, not
+      // re-earned this run — the tag keeps the two kinds of number distinct.
+      // Read from the report's own '.history-assisted' marker, not the
+      // configuration-time flag: the report on disk may predate this
+      // invocation's settings in either direction (a '-PnoMutationHistory'
+      // rerun after an assisted one, or the reverse), and the tag describes
+      // the REPORT.
+      val historyAssistedReport = csv.parentFile.resolve(".history-assisted").isFile
       logger.lifecycle(
           "pitest '$suiteName': $detected/$total detected ($percent%)" +
               (if (split.isEmpty()) "" else " — ${split.joinToString(", ")}") +
-              // With incremental analysis some of these statuses were reused, not
-              // re-earned this run — the marker keeps the two kinds of number distinct.
-              (if (historyAssisted) " [history]" else "")
+              (if (historyAssistedReport) " [history]" else "")
       )
 
       // A suite whose exclusions miss a test-source class mutates its own scaffolding:
@@ -1002,6 +1125,18 @@ hardening.mutation.all {
         )
         return@doLast
       }
+      // A history-assisted report is reuse, not observation — the same reason
+      // pitestModeSnapshot refuses to stash one as a mode's evidence. The checking
+      // path may read it (the summary's '[history]' tag names the reuse), but the
+      // record-writing flags may not: a baseline refresh or an audit seed written
+      // from reused results certifies numbers this run never earned.
+      if (historyAssistedReport && (update || union || prune || initTimeoutAudit)) {
+        throw GradleException(
+            "pitest '$suiteName': the report is arcmutate-history-assisted — reused results are " +
+                "not observation, and a baseline refresh or audit seed needs a full run. " +
+                "Re-run $pitestTaskName with -PnoMutationHistory first."
+        )
+      }
       // A baseline row may carry a trailing '# note' ('# untriaged' is the conventional
       // label for seeded debt; refreshes seed it on every new row) and a trailing
       // '# line' tag (metadata for triage and the line-drift advisory, never identity).
@@ -1010,13 +1145,43 @@ hardening.mutation.all {
       // number the build reports, not prose that drifts. Rows are parsed as an ordered
       // LIST of (key, note, lines): duplicate keys are sibling mutants and each keeps
       // its own note, which a note map keyed by row text used to collapse.
-      val acceptedRows: List<BaselineNotes.Row> = if (baselineFile.exists()) {
-        baselineFile.readLines()
-            .filter { it.isNotBlank() && !it.startsWith("#") }
-            .map { BaselineNotes.parse(it) }
-      } else {
-        emptyList()
+      // Comment lines are recognized after trimming — an INDENTED '# ...' line used
+      // to parse as a phantom row that matched nothing and read as since-killed —
+      // and a malformed row is named instead of silently becoming a key no mutant
+      // can match (the timeout membership's malformed-row diagnosis, applied to the
+      // file it always should have covered too).
+      val baselineLines = if (baselineFile.exists()) baselineFile.readLines() else emptyList()
+      val baselineCommentLines = baselineLines.filter {
+        it.isNotBlank() && it.trimStart().startsWith("#")
       }
+      val baselineRowLines = baselineLines.filter {
+        it.isNotBlank() && !it.trimStart().startsWith("#")
+      }
+      val malformedBaselineRows = baselineRowLines.filter { BaselineNotes.malformed(it) }
+      if (malformedBaselineRows.isNotEmpty()) {
+        logger.warn(
+            "pitest baseline '$suiteName': ${malformedBaselineRows.size} malformed row(s) in " +
+                "${baselineFile.name} — expected 'class,method,mutator,STATUS [# note] [# line N]' " +
+                "(legacy five-field rows still parse); a malformed row matches no mutant, reads as " +
+                "since killed, and a refresh would silently drop it:\n" +
+                malformedBaselineRows.joinToString("\n") { "  $it" }
+        )
+        // recorded only when it stays advisory: on a refresh run the same finding
+        // becomes the failure below, and the end-of-build summary's "none failed
+        // the build" must stay true (the strict-flag sites' own rule)
+        if (!(update || union || prune)) {
+          advisoryLog.get().record(advisoryScope, "${malformedBaselineRows.size} malformed baseline row(s)")
+        } else {
+          throw GradleException(
+              "pitest baseline '$suiteName': ${baselineFile.name} carries " +
+                  "${malformedBaselineRows.size} malformed row(s) (listed above) — a refresh rewrite " +
+                  "would silently drop them. Fix the row shape first."
+          )
+        }
+      }
+      val acceptedRows: List<BaselineNotes.Row> = baselineRowLines
+          .filterNot { BaselineNotes.malformed(it) }
+          .map { BaselineNotes.parse(it) }
       val accepted: List<String> = acceptedRows.map { it.key }
       // The line-less 'class,method,mutator' coordinate — the audited-timeout key.
       // Shared rather than recomputed per call site: prune's TIMED_OUT keep and the
@@ -1043,6 +1208,21 @@ hardening.mutation.all {
       if (undocumentedLabels.isNotEmpty()) {
         logger.warn(BaselineNotes.undocumentedLabelWarning(suiteName, undocumentedLabels))
         advisoryLog.get().record(advisoryScope, "${undocumentedLabels.size} undocumented family label(s)")
+      }
+
+      // The refresh flavours answer different questions and are mutually exclusive —
+      // the audit seed included, which writes a file the same way the baseline
+      // flavours do. Checked before the drift stash below and before any flavour
+      // writes (the seed is the first), so a refused combination leaves nothing
+      // half done AND consumes nothing: the stash rewrite used to land before
+      // this refusal, so a refused invocation still spent the drift comparison's
+      // previous state, and the next legitimate run compared against the refused
+      // run instead of the last meaningful one.
+      if (listOf(update, union, prune, initTimeoutAudit).count { it } > 1) {
+        throw GradleException(
+            "pass at most one of -PupdateMutationBaseline, -PunionMutationBaseline, " +
+                "-PpruneMutationBaseline, -PinitTimeoutAudit — they answer different questions (see HARDENING.md)."
+        )
       }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
@@ -1087,7 +1267,7 @@ hardening.mutation.all {
         val stashFormatHeader = "# stash format 2"
         val stashLines = if (statusStash.isFile) statusStash.readLines() else emptyList()
         val stashEntries = stashLines
-            .filter { it.isNotBlank() && !it.startsWith("#") }
+            .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
             .mapNotNull { line ->
               val sep = line.lastIndexOf(',')
               if (sep < 0) null else line.substring(0, sep) to line.substring(sep + 1)
@@ -1174,17 +1354,6 @@ hardening.mutation.all {
             rows.joinToString("\n", prefix = "$stashFormatHeader\n", postfix = "\n") {
               "${coordinate(it)},${it[5]}"
             }
-        )
-      }
-
-      // The refresh flavours answer different questions and are mutually exclusive —
-      // the audit seed included, which writes a file the same way the baseline
-      // flavours do. Checked before any of them writes (the seed below is the first),
-      // so a refused combination leaves nothing half done.
-      if (listOf(update, union, prune, initTimeoutAudit).count { it } > 1) {
-        throw GradleException(
-            "pass at most one of -PupdateMutationBaseline, -PunionMutationBaseline, " +
-                "-PpruneMutationBaseline, -PinitTimeoutAudit — they answer different questions (see HARDENING.md)."
         )
       }
 
@@ -1560,6 +1729,21 @@ hardening.mutation.all {
         }
         dispositions.map { checkNotNull(it) }
       }
+      // A refresh rewrite emits rows only: '#' comment lines and blank lines do
+      // not survive it. migrateMutationBaselines is the one path that preserves
+      // them, so a rewrite must at least be LOUD about the prose it is about to
+      // drop — every writer below calls this before touching the file.
+      fun warnDroppedComments() {
+        if (baselineCommentLines.isEmpty()) return
+        logger.warn(
+            "pitest baseline '$suiteName': ${baselineCommentLines.size} comment line(s) in " +
+                "${baselineFile.name} do not survive a refresh rewrite (migrateMutationBaselines " +
+                "preserves them) — move durable prose to config/pitest/README.md or a row's " +
+                "'# note':\n" + baselineCommentLines.joinToString("\n") { "  $it" }
+        )
+        advisoryLog.get().record(
+            advisoryScope, "${baselineCommentLines.size} comment line(s) dropped by a rewrite")
+      }
       if (prune) {
         // Shrink-only refresh: drop baseline rows matching nothing this run, add or
         // rewrite nothing. This is the one direction a refresh is always safe in —
@@ -1596,6 +1780,7 @@ hardening.mutation.all {
         } else if (kept.isEmpty()) {
           // every row dropped: remove the file rather than leave a one-newline
           // husk — no record and an empty record must read the same way
+          warnDroppedComments()
           baselineFile.delete()
           logger.lifecycle(
               "pitest baseline '$suiteName': prune dropped every row since killed — baseline file removed:\n" +
@@ -1604,6 +1789,7 @@ hardening.mutation.all {
         } else {
           // kept rows are re-rendered, which also migrates a legacy five-field file to
           // the line-less format (the legacy line field becomes a '# line' tag)
+          warnDroppedComments()
           BaselineFiles.writeAtomically(
               baselineFile, kept.joinToString("\n", postfix = "\n") { BaselineNotes.render(it) })
           logger.lifecycle(
@@ -1703,12 +1889,14 @@ hardening.mutation.all {
         // where there is no record at all, and clutters fully-detected suites.
         if (copies.isEmpty()) {
           if (baselineFile.isFile) {
+            warnDroppedComments()
             baselineFile.delete()
             logger.lifecycle("pitest baseline '$suiteName': nothing unkilled — baseline file removed")
           } else {
             logger.lifecycle("pitest baseline '$suiteName': nothing unkilled — no baseline to write")
           }
         } else {
+          warnDroppedComments()
           BaselineFiles.writeAtomically(baselineFile, written.joinToString("\n", postfix = "\n"))
           logger.lifecycle(
               "pitest baseline '$suiteName': wrote ${copies.size} accepted entries" +
@@ -1798,6 +1986,7 @@ hardening.mutation.all {
                       key, null, linePool[key]?.removeFirstOrNull()?.let { listOf(it) } ?: emptyList())
                 }
           }
+          warnDroppedComments()
           BaselineFiles.writeAtomically(baselineFile, merged.joinToString("\n", postfix = "\n"))
           logger.lifecycle(
               "pitest baseline '$suiteName': union added ${added.size} entries (baseline now $total):\n" +
@@ -2069,18 +2258,36 @@ hardening.mutation.all {
             statuses.count { it == "SURVIVED" } to statuses.count { it == "NO_COVERAGE" }
           }
 
-      // BaselineNotes handles both formats: line-less rows and legacy five-field ones
-      val baselinePairs = if (baselineFile.exists()) {
-        baselineFile.readLines()
-            .filter { it.isNotBlank() && !it.startsWith("#") }
-            .map { BaselineNotes.parse(it).key.split(',') }
-            .filter { it.size >= 4 }
-            .map { it[0] to it.last() }
+      // BaselineNotes handles both formats: line-less rows and legacy five-field ones.
+      // Malformed rows are named on the verify's terms and excluded from both the
+      // debt tally and the label breakdown below, so the two surfaces cannot report
+      // different row counts for one file — and Debt is the fleet canary's whole
+      // view of these files, so the diagnosis reaches pre-release review.
+      val baselineRowLines = if (baselineFile.exists()) {
+        baselineFile.readLines().filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
       } else {
         emptyList()
       }
+      val malformedRows = baselineRowLines.filter { BaselineNotes.malformed(it) }
+      if (malformedRows.isNotEmpty()) {
+        logger.warn(
+            "pitest '$suiteName': ${malformedRows.size} malformed row(s) in ${baselineFile.name} — " +
+                "expected 'class,method,mutator,STATUS [# note] [# line N]'; a malformed row matches " +
+                "no mutant, and a refresh would silently drop it:\n" +
+                malformedRows.joinToString("\n") { "  $it" }
+        )
+      }
+      val wellFormedRowLines = baselineRowLines.filterNot { BaselineNotes.malformed(it) }
+      val baselinePairs = wellFormedRowLines
+          .map { BaselineNotes.parse(it).key.split(',') }
+          .filter { it.size >= 4 }
+          .map { it[0] to it.last() }
       val csv = csvProvider.get().asFile
-      val reportPairs = if (csv.isFile && !csv.parentFile.resolve(".scoped").isFile) {
+      // scoped and interrupted-run reports both fall back to the baseline: a
+      // partial population under-counts debt exactly like a hand-picked one
+      val reportPairs = if (csv.isFile &&
+          !csv.parentFile.resolve(".scoped").isFile &&
+          !csv.parentFile.resolve(".running").isFile) {
         csv.readLines()
             .map { it.split(',') }
             .filter { it.size >= 6 && (it[5] == "SURVIVED" || it[5] == "NO_COVERAGE") }
@@ -2119,13 +2326,11 @@ hardening.mutation.all {
         val minutes = (System.currentTimeMillis() - csv.lastModified()) / 60_000
         if (minutes < 2) "" else ", ${minutes}m old — rerun $pitestTaskName if stale"
       }
-      // Label breakdown from the baseline (one read, the shared BaselineNotes parse):
+      // Label breakdown from the baseline (the well-formed rows parsed above):
       // triaged-accepted rows carry a family label, seeded debt reads '# untriaged',
       // and unlabeled rows predate seeding.
-      val baselineRows = if (!baselineFile.exists()) emptyList()
-      else baselineFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }
-      val baselineNotes = baselineRows.mapNotNull { BaselineNotes.parse(it).note }
-      val labelBreakdown = BaselineNotes.summarize(baselineNotes, baselineRows.size - baselineNotes.size)
+      val baselineNotes = wellFormedRowLines.mapNotNull { BaselineNotes.parse(it).note }
+      val labelBreakdown = BaselineNotes.summarize(baselineNotes, wellFormedRowLines.size - baselineNotes.size)
           ?.let { "\n  baseline labels: $it" } ?: ""
       logger.lifecycle(
           "pitest '$suiteName' debt ($source$age) — $totalSurvived survived, $totalNoCoverage no_coverage " +
@@ -2291,6 +2496,13 @@ hardening.mutation.all {
     // holder so doFirst can hand the execution-time filters to doLast without
     // the configuration cache trying to serialize a live stream
     val minionFilters = AtomicReference<MinionFilters?>()
+    // The '.running' sentinel: written before PIT starts, cleared only after a
+    // clean exit (below the assert, like the scope marker). PIT writes the CSV
+    // incrementally, so a crashed or interrupted run leaves a partial report
+    // that LOOKS complete — and the verify runs as this task's finalizer, so
+    // without the sentinel a same-invocation refresh flag rewrites the baseline
+    // from whatever fraction of the population PIT reached before dying.
+    val runningMarker = layout.buildDirectory.file("reports/pitest/$reportSubdir/.running")
     doFirst {
       this as JavaExec
       // the default (null) standard output and error both forward to the console; the
@@ -2299,7 +2511,12 @@ hardening.mutation.all {
       standardOutput = filters.out
       errorOutput = filters.err
       minionFilters.set(filters)
+      runningMarker.get().asFile.also {
+        it.parentFile.mkdirs()
+        it.writeText("")
+      }
     }
+    val historyActive = withHistory && mutationHistory
     doLast {
       // Close the filters first, before the deferred failure is re-raised, so the
       // summary and any buffered tail survive a failing run.
@@ -2313,24 +2530,33 @@ hardening.mutation.all {
         }
       }
       // Re-raise PIT's non-zero exit here (deferred by isIgnoreExitValue above). A
-      // failed run is not evidence, so its scope marker must not be rewritten — the
-      // marker update stays below the assert.
+      // failed run is not evidence, so its markers must not be rewritten — the
+      // marker updates stay below the assert, and the '.running' sentinel above
+      // survives a failure (or a hard interruption, which skips this doLast
+      // entirely) so every report-facing consumer refuses the partial report.
+      // Non-enforced flavours (the mutator trial: a zero-fire exit is a result)
+      // return instead of asserting, for the same reason — an exit code this task
+      // deliberately tolerates is still not a completed observation, so the
+      // sentinel stays and any partial CSV the failure left is refused rather
+      // than tabulated.
       if (enforceExit) executionResult.get().assertNormalExitValue()
+      if (executionResult.get().exitValue != 0) return@doLast
+      runningMarker.get().asFile.delete()
       val marker = scopedMarker.get().asFile
       if (mutateOnly.isPresent) marker.writeText(mutateOnly.get() + "\n") else marker.delete()
+      // A history-assisted report is reuse, not observation; the marker lets
+      // pitestModeSnapshot and the verify's record-writing flags refuse it. Kept
+      // in lockstep with the report like the scope marker — written when history
+      // was active, DELETED when it was not, so a '-PnoMutationHistory' rerun
+      // does not inherit the previous run's marker and read as reuse forever.
+      val historyMarker = marker.parentFile.resolve(".history-assisted")
+      if (historyActive) historyMarker.writeText("") else historyMarker.delete()
     }
-    val historyActive = withHistory && mutationHistory
     val historyFile = layout.projectDirectory.file(".pitest-history/${suite.name}.hist").asFile
     if (historyActive) {
       doFirst {
         historyFile.parentFile.mkdirs()
         logger.lifecycle("pitest '$suiteName': arcmutate history active — $historyFile")
-      }
-      // A history-assisted report is reuse, not observation; the marker lets
-      // pitestModeSnapshot refuse to stash one as a mode's evidence.
-      val markerDir = layout.buildDirectory.dir("reports/pitest/$reportSubdir")
-      doLast {
-        markerDir.get().asFile.resolve(".history-assisted").writeText("")
       }
     }
     argumentProviders.add {
@@ -2488,6 +2714,14 @@ hardening.mutation.all {
     val trialReportDir = layout.buildDirectory.dir("reports/pitest/$suiteName-trial")
     // captured locally so the doFirst lambda does not hold the script instance
     val trialMutators = trialMutatorsProperty
+    // A zero-fire trial is a result, not a failure: PIT exits non-zero when the mutator
+    // set generates nothing, and the aggregate reads a missing report as zero fired —
+    // so enforceExit stays off (pitestExec already runs with isIgnoreExitValue).
+    pitestExec("$suiteName-trial", trialMutatorsProperty, withHistory = false, enforceExit = false).invoke(this)
+    // Registered AFTER pitestExec on purpose: doFirst PREPENDS, so this wipe runs
+    // before the exec's '.running' sentinel write — registered the other way
+    // around, the wipe erased the freshly written sentinel and trial runs were
+    // the one pitestExec flavour with no interruption protection at all.
     doFirst {
       if (!trialMutators.isPresent) {
         throw GradleException(
@@ -2499,10 +2733,6 @@ hardening.mutation.all {
       // previous trial's numbers.
       trialReportDir.get().asFile.deleteRecursively()
     }
-    // A zero-fire trial is a result, not a failure: PIT exits non-zero when the mutator
-    // set generates nothing, and the aggregate reads a missing report as zero fired —
-    // so enforceExit stays off (pitestExec already runs with isIgnoreExitValue).
-    pitestExec("$suiteName-trial", trialMutatorsProperty, withHistory = false, enforceExit = false).invoke(this)
   }
   pitestMutatorTrial.configure { dependsOn(trialTaskName) }
 }

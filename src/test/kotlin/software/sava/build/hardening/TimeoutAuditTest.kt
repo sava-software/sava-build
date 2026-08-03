@@ -259,4 +259,63 @@ class TimeoutAuditTest {
       warning
     )
   }
+
+  @Test
+  fun `a fenced code block's hash lines do not split the section`() {
+    // '#' at column 0 inside a ``` fence is code, not a heading: a README quoting
+    // a shell command or properties snippet used to split its section mid-fence,
+    // and every cause argued below the fence read as undocumented — failing
+    // -PstrictTimeoutAudit over formatting.
+    val readme = """
+      ## Codec timeouts
+
+      ```shell
+      # reproduce the hang
+      ./gradlew pitestEncoding
+      ```
+
+      The encode loop's exit mutation hangs Codec.encode under MathMutator.
+    """.trimIndent()
+
+    val undocumented = TimeoutAudit.undocumentedCauses(
+      listOf("com.example.Codec,encode,MathMutator")
+    ) { readme }
+    assertEquals(emptyList<String>(), undocumented, "the fence split the section")
+  }
+
+  @Test
+  fun `a tilde fence neutralizes hash lines like a backtick fence`() {
+    val readme = """
+      ## Codec timeouts
+
+      ~~~properties
+      # threads=4
+      ~~~
+
+      The encode loop's exit mutation hangs Codec.encode under MathMutator.
+    """.trimIndent()
+
+    val undocumented = TimeoutAudit.undocumentedCauses(
+      listOf("com.example.Codec,encode,MathMutator")
+    ) { readme }
+    assertEquals(emptyList<String>(), undocumented, "the tilde fence split the section")
+  }
+
+  @Test
+  fun `a mention only inside a fenced block still documents its member`() {
+    // fence CONTENT is kept — a snippet may legitimately carry the member mention
+    // its section argues with; only the heading grammar is neutralized
+    val readme = """
+      ## Timeouts
+
+      ```
+      # Codec.encode under MathMutator loops forever
+      ```
+    """.trimIndent()
+
+    val undocumented = TimeoutAudit.undocumentedCauses(
+      listOf("com.example.Codec,encode,MathMutator")
+    ) { readme }
+    assertEquals(emptyList<String>(), undocumented, "fence content was discarded")
+  }
 }

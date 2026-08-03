@@ -136,7 +136,7 @@ internal object TimeoutAudit {
    */
   fun undocumentedCauses(members: Collection<String>, readme: () -> String): List<String> {
     if (members.isEmpty()) return emptyList()
-    val sections = readme().split(SECTION_BREAK)
+    val sections = neutralizeFences(readme()).split(SECTION_BREAK)
     return members.filter { member ->
       val fields = member.split(',')
       val simpleClass = fields[0].substringAfterLast('.')
@@ -153,6 +153,28 @@ internal object TimeoutAudit {
   // split at the heading marker, keeping the heading text with the block it
   // introduces — a section titled after its class documents that class
   private val SECTION_BREAK = Regex("""(?m)^#{1,6}\s""")
+
+  // A '#' at column 0 inside a fenced code block is code, not a heading — a
+  // README quoting a shell command or a properties snippet split its section
+  // mid-fence, and every cause argued below the fence read as undocumented
+  // (failing -PstrictTimeoutAudit). Fenced '#' lines are indented out of the
+  // heading grammar; their CONTENT is kept, because a snippet may legitimately
+  // carry the member mention its section argues with. Backtick and tilde
+  // fences both count — CommonMark treats them identically.
+  private fun neutralizeFences(text: String): String {
+    var fenced = false
+    return text.lineSequence().joinToString("\n") { line ->
+      val trimmed = line.trimStart()
+      when {
+        trimmed.startsWith("```") || trimmed.startsWith("~~~") -> {
+          fenced = !fenced
+          line
+        }
+        fenced && line.startsWith("#") -> " $line"
+        else -> line
+      }
+    }
+  }
 
   /**
    * Whole-word via lookarounds, not `\b`: a word boundary exists only between a

@@ -95,6 +95,13 @@ run cheaper. The cost model is directly optimisable:
   baseline-touching consumer (the ratchet, `-PupdateMutationBaseline`,
   `-PunionMutationBaseline`, mode snapshots) refuses it, so the shortcut
   cannot leak into the record. Coverage still runs the full test set.
+  A `.running` sentinel guards the same consumers against a *crashed or
+  interrupted* run: PIT writes its CSV incrementally, so a partial report
+  looks complete — the sentinel is written before PIT starts, cleared only
+  on a clean exit, and any report still carrying it is refused as evidence
+  (the verify runs as the failed task's finalizer, so without this a
+  same-invocation refresh flag would rewrite the baseline from whatever
+  fraction of the population PIT reached before dying).
 - **Tune the per-test timeout to the suite's real runtimes** — PIT's default
   allowance is `recorded time × 1.25 + 4000ms`; every hanging-mutant
   detection pays that flat fee. Rank the suite's tests by duration first: one
@@ -130,15 +137,18 @@ and no flags: PIT runs exactly as open source, so unlicenced machines and CI
 are unaffected.
 
 Two honesty rules come with it. Each assisted run announces itself — a
-lifecycle line at start and a `[history]` marker on the verify summary — so a
-reused number is never mistaken for a re-earned one; with history active
-*fast is the expected state*, and suspicion transfers to the exit code and
-the marker. And **anything that writes or certifies the record runs
-`-PnoMutationHistory`**: the pre-release gate (the release decision re-earns
-every status from scratch), baseline refreshes with
-`-PupdateMutationBaseline` (the accepted CSV is the gate's authority and must
-come from observed runs), and the convergence method's runs (two assisted
-runs agree by construction). Delete `.pitest-history/` to reset a machine's
+lifecycle line at start and a `[history]` marker on the verify summary, read
+from the report's own `.history-assisted` stamp so the tag describes the
+report on disk, not this invocation's settings — so a reused number is never
+mistaken for a re-earned one; with history active *fast is the expected
+state*, and suspicion transfers to the exit code and the marker. And
+**anything that writes or certifies the record runs `-PnoMutationHistory`**
+— enforced, not just prescribed: the record-writing flags
+(`-PupdateMutationBaseline`, `-PunionMutationBaseline`,
+`-PpruneMutationBaseline`, `-PinitTimeoutAudit`) refuse a history-assisted
+report outright, the pre-release gate re-earns every status from scratch,
+and the convergence method's runs refuse history too (two assisted runs
+agree by construction). Delete `.pitest-history/` to reset a machine's
 history wholesale.
 
 ## The mutation ratchet

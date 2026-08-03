@@ -296,4 +296,94 @@ class ExclusionAuditTest {
 
     assertTrue(swallowed.isEmpty(), swallowed.toString())
   }
+
+  @Test
+  fun `a secondary top-level class declared in a test file is test-owned, not swallowed`() {
+    // FooTests.java can declare 'class RecordingHelper' beside its test class; the
+    // compiled RecordingHelper.class has no RecordingHelper.java anywhere, so the
+    // exact-file check misread it as a swallowed production class. Ownership is
+    // declared in the same package's test sources.
+    writeClass("com.example.RecordingHelper")
+    val testFile = File(testSrcDir, "com/example/CodecTests.java")
+    testFile.parentFile.mkdirs()
+    testFile.writeText(
+      """
+        package com.example;
+
+        class CodecTests {}
+
+        final class RecordingHelper {}
+      """.trimIndent()
+    )
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.Recording*"),
+    )
+    assertTrue(swallowed.isEmpty(), "test-declared secondary class read as production: $swallowed")
+  }
+
+  @Test
+  fun `an inner class in a test file owns nothing top-level`() {
+    // an indented 'class Helper' inside a test class compiles to CodecTests${'$'}Helper,
+    // so it cannot be the owner of a top-level Helper.class — a whitespace-tolerant
+    // anchor silently exempted genuine production classes on the strength of an
+    // inner helper sharing the name
+    writeClass("com.example.RecordingHelper")
+    val testFile = File(testSrcDir, "com/example/CodecTests.java")
+    testFile.parentFile.mkdirs()
+    testFile.writeText(
+      """
+        package com.example;
+
+        class CodecTests {
+            private static final class RecordingHelper {}
+        }
+      """.trimIndent()
+    )
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.Recording*"),
+    )
+    assertEquals(listOf("com.example.RecordingHelper"), swallowed.map { it.binaryName })
+  }
+
+  @Test
+  fun `a same-line annotation on a test declaration still counts as ownership`() {
+    writeClass("com.example.RecordingHelper")
+    val testFile = File(testSrcDir, "com/example/CodecTests.java")
+    testFile.parentFile.mkdirs()
+    testFile.writeText(
+      """
+        package com.example;
+
+        class CodecTests {}
+
+        @SuppressWarnings("unused") final class RecordingHelper {}
+      """.trimIndent()
+    )
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.Recording*"),
+    )
+    assertTrue(swallowed.isEmpty(), "annotated test declaration read as production: $swallowed")
+  }
+
+  @Test
+  fun `a swallowed production class is still reported when no test source declares it`() {
+    // the control for the declaration scan: the same shape with no declaring test
+    // file anywhere stays a finding
+    writeClass("com.example.RecordingHelper")
+    val testFile = File(testSrcDir, "com/example/CodecTests.java")
+    testFile.parentFile.mkdirs()
+    testFile.writeText("package com.example;\n\nclass CodecTests {}\n")
+
+    val swallowed = audit(
+      targetGlobs = listOf("com.example.*"),
+      excludedGlobs = listOf("com.example.Recording*"),
+    )
+    assertEquals(listOf("com.example.RecordingHelper"), swallowed.map { it.binaryName })
+  }
 }

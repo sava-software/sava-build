@@ -741,9 +741,17 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
       ""
     )
+    // a refused combination must consume nothing: the stash rewrite used to land
+    // before the refusal, so the refused run spent the drift comparison's
+    // previous state and the next legitimate run compared against the refusal
+    val stash = File(fixtureDir, ".pitest-history/encoding.statuses")
+    stash.parentFile.mkdirs()
+    val stashBefore = "# stash format 2\ncom.example.Codec,decode,IncrementsMutator,SURVIVED\n"
+    stash.writeText(stashBefore)
     val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline", "-PupdateMutationBaseline")
       .buildAndFail().output
     assertTrue(output.contains("pass at most one of"), output)
+    assertEquals(stashBefore, stash.readText(), "a refused combination consumed the drift stash:\n$output")
 
     // the audit seed is a refresh flavour too — it writes a file the same way — and
     // the refusal must land before either flag does any work
@@ -753,6 +761,142 @@ $fuzzBlock
     assertFalse(
       File(fixtureDir, "config/pitest/encoding-timeouts.csv").exists(),
       "refused combination still seeded the audit:\n$seedCombo"
+    )
+  }
+
+  @Test
+  fun `an interrupted run's report is refused as evidence`() {
+    // The '.running' sentinel is written before PIT starts and cleared only after
+    // a clean exit. PIT writes the CSV incrementally, so a crashed or interrupted
+    // run leaves a partial file that looks complete — and the verify runs as the
+    // failed task's finalizer, so without the sentinel a same-invocation
+    // '-PpruneMutationBaseline' rewrites the baseline from whatever fraction of
+    // the population PIT reached before dying.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val baselineBefore =
+      "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n" +
+          "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 40\n"
+    baselineFile().writeText(baselineBefore)
+    // the partial report: only one of the two accepted mutants was reached
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
+      ""
+    )
+    File(fixtureDir, "build/reports/pitest/encoding/.running").writeText("")
+
+    val refused = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(refused.contains("interrupted or failed run"), refused)
+
+    val pruneRefused = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
+    assertTrue(pruneRefused.contains("interrupted or failed run"), pruneRefused)
+    assertEquals(baselineBefore, baselineFile().readText(), "a partial report pruned the baseline")
+  }
+
+  @Test
+  fun `a history-assisted report cannot refresh, and the summary tag reads the marker`() {
+    // Reused results are not observation: the checking path may read them (the
+    // '[history]' tag names the reuse, from the report's own marker rather than
+    // this invocation's configuration), but a baseline refresh or audit seed
+    // written from them certifies numbers the run never earned.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val baselineBefore = "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n"
+    baselineFile().writeText(baselineBefore)
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
+      ""
+    )
+    File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").writeText("")
+
+    val checking = runner("pitestEncodingVerify").build().output
+    assertTrue(checking.contains(" [history]"), "the summary tag must read the marker:\n$checking")
+
+    val refused = runner("pitestEncodingVerify", "-PupdateMutationBaseline").buildAndFail().output
+    assertTrue(refused.contains("history-assisted"), refused)
+    assertTrue(refused.contains("-PnoMutationHistory"), refused)
+    assertEquals(baselineBefore, baselineFile().readText(), "a reused report refreshed the baseline")
+
+    // without the marker the same report is a full run: no tag, refresh allowed
+    File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").delete()
+    val full = runner("pitestEncodingVerify").build().output
+    assertFalse(full.contains(" [history]"), "tag printed without the marker:\n$full")
+  }
+
+  @Test
+  fun `malformed baseline rows are named and block a refresh`() {
+    // A wrong-field-count row parses into a key no mutant can match: it read as
+    // "since killed" and the next refresh silently dropped it — the timeout
+    // membership's malformed-row diagnosis, applied to the file it always
+    // should have covered too.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val baselineBefore =
+      "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n" +
+          "com.example.Codec,encode\n"
+    baselineFile().writeText(baselineBefore)
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
+      ""
+    )
+
+    val checking = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      checking.contains("1 malformed row(s) in encoding-accepted.csv"),
+      "malformed row not named:\n$checking"
+    )
+    // Debt diagnoses the same row on the same terms — it is the fleet canary's
+    // whole view of these files — and its label breakdown excludes it, so the
+    // two surfaces report the same row count
+    val debt = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      debt.contains("1 malformed row(s) in encoding-accepted.csv"),
+      "Debt did not name the malformed row:\n$debt"
+    )
+    assertTrue(checking.contains("  com.example.Codec,encode"), checking)
+    assertFalse(
+      checking.contains("stale entries (since killed)"),
+      "a malformed row still read as since-killed debt:\n$checking"
+    )
+
+    val refused = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
+    assertTrue(refused.contains("Fix the row shape first"), refused)
+    assertEquals(baselineBefore, baselineFile().readText(), "a refresh dropped the malformed row")
+  }
+
+  @Test
+  fun `an indented comment is prose, not a phantom row, and a rewrite names what it drops`() {
+    // '  # ...' passed the column-0 comment filter and parsed as a row matching
+    // nothing — phantom since-killed debt. Recognized as a comment now; and since
+    // rewrites emit rows only, the refresh says what prose it is about to drop
+    // instead of silently destroying it (migrateMutationBaselines preserves it).
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "  # hand-written context for the row below\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n"
+    )
+    writeReport(
+      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
+      ""
+    )
+
+    val checking = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      checking.contains("stale entries (since killed)"),
+      "an indented comment read as a phantom row:\n$checking"
+    )
+
+    val updated = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    assertTrue(
+      updated.contains("1 comment line(s) in encoding-accepted.csv do not survive"),
+      "the dropped comment was not named:\n$updated"
+    )
+    assertTrue(updated.contains("  # hand-written context"), updated)
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,SURVIVED # line 10"),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "the rewrite must still emit rows only"
     )
   }
 
@@ -2310,6 +2454,80 @@ $fuzzBlock
     assertTrue(
       insured.output.contains("com.example.Codec,decode,MathMutator,SURVIVED # stale insurance"),
       "dead-row sweep missing:\n" + insured.output
+    )
+  }
+
+  @Test
+  fun `one slow mutant vouches for one row in the sweep, and never for the insured one`() {
+    // The dead-row sweep's timeout budget is the MIN across modes — a mutant that
+    // timed out in every mode is one physical mutant, so it accounts for one row,
+    // not one per mode — and plain rows claim it before insured rows (the keep
+    // plan's insurance-never-spends-the-budget rule): the insured row past the
+    // budget is exactly the "insurance that outlived its cause" the sweep names.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=KILLED, solo=SURVIVED)\n" +
+          "com.example.Codec,encode,MathMutator,SURVIVED # plain sibling\n"
+    )
+    fun mutant(line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    // both modes: one TIMED_OUT mutant + one KILLED at the coordinate, nothing gated
+    writeReport(listOf(mutant(12, "TIMED_OUT"), mutant(20, "KILLED")), "")
+    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    writeReport(listOf(mutant(12, "TIMED_OUT"), mutant(20, "KILLED")), "")
+    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+
+    val compare = runner("pitestModeCompare").build().output
+    assertTrue(
+      compare.contains("1 accepted row(s) unkilled in no snapshotted mode"),
+      "the single timeout budget must exempt exactly one row:\n$compare"
+    )
+    assertTrue(
+      compare.contains("com.example.Codec,encode,MathMutator,SURVIVED # flip insurance"),
+      "the swept row must be the insured one — plain rows claim the budget first:\n$compare"
+    )
+  }
+
+  @Test
+  fun `mode compare diagnoses comments and malformed rows on the verify's terms`() {
+    // modeCompare's -PunionModeFlips rewrite is a baseline writer like the
+    // verify's refresh flags: a malformed row would be silently dropped (refused
+    // instead), and comment lines that do not survive the rewrite are named.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "  # context for the row below\n" +
+          "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 50\n" +
+          "com.example.Codec,encode\n"
+    )
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant("KILLED")), "")
+    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+    writeReport(listOf(mutant("SURVIVED")), "")
+    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+
+    val refused = runner("pitestModeCompare", "-PunionModeFlips").buildAndFail().output
+    assertTrue(refused.contains("1 malformed row(s)"), refused)
+    assertTrue(refused.contains("Fix the row shape first"), refused)
+
+    // with the malformed row fixed, the union writes — and names the comment it drops
+    baselineFile().writeText(
+      "  # context for the row below\n" +
+          "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 50\n"
+    )
+    val unioned = runner("pitestModeCompare", "-PunionModeFlips").build().output
+    assertTrue(unioned.contains("flip insurance written"), unioned)
+    assertTrue(
+      unioned.contains("1 comment line(s) in encoding-accepted.csv do not survive the insurance rewrite"),
+      "the dropped comment was not named:\n$unioned"
+    )
+    assertFalse(
+      baselineFile().readText().contains("# context"),
+      "the rewrite must still emit rows only"
     )
   }
 
