@@ -145,11 +145,10 @@ The tool-bytecode releases default to the consuming Java toolchain rather than S
 toolchain; lower `bytecodeRelease` or `mutationBytecodeRelease` only if a bundled tool
 cannot yet read that class-file version. Generated corpus replay and shared-support
 sources require Java 17 or newer. Run `./gradlew hardeningInit`, complete its ownership
-and baseline checklist, and copy the agent-instructions block from the `HARDENING.md` at
-the Git tag matching `<sava-build-version>` before treating `hardeningCertify` as a release
-gate. For example, use
-`https://github.com/sava-software/sava-build/blob/<sava-build-version>/HARDENING.md#agent-instructions-template`,
-not the moving `main` copy, whose template digest may belong to an unreleased plugin.
+and baseline checklist, then run `./gradlew hardeningAgentTemplate` and copy the exact
+agent-instructions block printed by the installed plugin before treating
+`hardeningCertify` as a release gate. The task also prints the matching digest marker;
+there is no Git-tag lookup and no dependency on the moving `main` documentation.
 
 ### gradle/sava.properties
 
@@ -483,7 +482,10 @@ README causes, task registration, and settings snippets have historically suppli
 new post-release surprise one repo at a time. The canary publishes `0.0.0-test` and,
 under `-PsavaBuildLocalRepo`, runs lightweight debt and template checks in ordinary
 mode. Release mode requires every consumer's `hardeningCertify`, which freshly executes
-all registered mutation suites and writes provenance-bound per-project evidence.
+all registered mutation suites and writes provenance-bound per-project evidence; the
+retained certifications must exactly cover every project that exposed that task. Both
+release runners use `--configuration-cache` for discovery and execution, making cache
+serialization part of the real-consumer canary rather than only a synthetic fixture test.
 `--deep` remains an explicit repeated diagnostic, not a release soak or prerequisite.
 The separate local fuzz pass uses the plugin's `fuzzAll` aggregate; release mode requires
 both that aggregate and a nonempty registered target set in every consumer. Only ordinary

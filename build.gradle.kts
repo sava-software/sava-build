@@ -198,6 +198,41 @@ tasks.test {
   )
 }
 
+// The release runners replaced scheduled fuzz workflows, so their cheap parsers and
+// evidence-verifier fixtures belong on the ordinary plugin check rather than relying
+// on a maintainer remembering two manual commands before a release.
+val localFuzzScript = layout.projectDirectory.file("tools/local-fuzz.sh")
+val fleetCanaryScript = layout.projectDirectory.file("tools/fleet-canary.sh")
+val localFuzzSyntax = tasks.register<Exec>("localFuzzSyntax") {
+  group = "verification"
+  description = "Checks tools/local-fuzz.sh syntax."
+  inputs.file(localFuzzScript)
+  commandLine("bash", "-n", localFuzzScript.asFile.absolutePath)
+}
+val fleetCanarySyntax = tasks.register<Exec>("fleetCanarySyntax") {
+  group = "verification"
+  description = "Checks tools/fleet-canary.sh syntax."
+  inputs.file(fleetCanaryScript)
+  commandLine("bash", "-n", fleetCanaryScript.asFile.absolutePath)
+}
+val localFuzzSelfTest = tasks.register<Exec>("localFuzzSelfTest") {
+  group = "verification"
+  description = "Runs the local fuzz evidence runner's hermetic self-test."
+  dependsOn(localFuzzSyntax)
+  inputs.file(localFuzzScript)
+  commandLine("bash", localFuzzScript.asFile.absolutePath, "--self-test")
+}
+val fleetCanarySelfTest = tasks.register<Exec>("fleetCanarySelfTest") {
+  group = "verification"
+  description = "Runs the fleet canary evidence runner's hermetic self-test."
+  dependsOn(fleetCanarySyntax)
+  inputs.file(fleetCanaryScript)
+  commandLine("bash", fleetCanaryScript.asFile.absolutePath, "--self-test")
+}
+tasks.named("check") {
+  dependsOn(localFuzzSelfTest, fleetCanarySelfTest)
+}
+
 // Passes the fixture paths to the test JVM as '-D' arguments while declaring them with
 // path sensitivity that ignores where this checkout lives: HARDENING.md is hashed by
 // content alone, and the test repo by its Maven layout relative to the repo root.

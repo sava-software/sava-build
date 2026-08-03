@@ -23,21 +23,25 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
 
   private data class Attempt(val invocationId: String, val completed: VerifiedEvidence?)
 
-  @Volatile
-  private var activeSessionId: String? = null
+  // The service is Gradle-wide, but certification is a project-scoped workflow. A
+  // single active bit made :a:hardeningCertify silently disable history and enable
+  // strict verification in an unrelated :b:pitestFoo selected in the same graph.
+  private val activeSessions = mutableMapOf<String, String>()
   private val attempts = mutableMapOf<SuiteKey, Attempt>()
   private val verified = mutableMapOf<SuiteKey, VerifiedEvidence>()
 
   @Synchronized
-  fun activate(): String {
-    val current = activeSessionId
+  fun activate(projectPath: String): String {
+    val current = activeSessions[projectPath]
     if (current != null) return current
-    return UUID.randomUUID().toString().also { activeSessionId = it }
+    return UUID.randomUUID().toString().also { activeSessions[projectPath] = it }
   }
 
-  fun isActive(): Boolean = activeSessionId != null
+  @Synchronized
+  fun isActive(projectPath: String): Boolean = projectPath in activeSessions
 
-  fun sessionId(): String? = activeSessionId
+  @Synchronized
+  fun sessionId(projectPath: String): String? = activeSessions[projectPath]
 
   @Synchronized
   fun startAttempt(projectPath: String, suite: String, invocationId: String) {
@@ -55,7 +59,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
       "PIT suite '$projectPath:$suite' completed evidence for a different invocation"
     }
     val run = VerifiedEvidence(
-        activeSessionId.orEmpty(), evidence.invocationId, evidence.reportSha256,
+        activeSessions[projectPath].orEmpty(), evidence.invocationId, evidence.reportSha256,
         PitestEvidence.sha256(evidence.render()))
     attempts[key] = attempt.copy(completed = run)
   }
@@ -81,7 +85,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
 
   @Synchronized
   fun recordVerified(projectPath: String, suite: String, evidence: PitestEvidence) {
-    val session = activeSessionId ?: return
+    val session = activeSessions[projectPath] ?: return
     val key = SuiteKey(projectPath, suite)
     val expected = attempts[key]?.completed ?: throw IllegalStateException(
         "certification suite '$projectPath:$suite' was verified without completing PIT in this invocation")
@@ -101,11 +105,16 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
     suite: String,
     evidence: PitestEvidence,
   ): VerifiedEvidence {
-    val session = activeSessionId ?: throw IllegalStateException(
+    val session = activeSessions[projectPath] ?: throw IllegalStateException(
         "certification preflight did not activate an execution session")
     val expected = VerifiedEvidence(
         session, evidence.invocationId, evidence.reportSha256,
         PitestEvidence.sha256(evidence.render()))
+    val completed = attempts[SuiteKey(projectPath, suite)]?.completed ?: throw IllegalStateException(
+        "'$suite' did not complete its final PIT observation in this certification invocation")
+    check(completed == expected) {
+      "'$suite' final PIT observation does not match the evidence being certified"
+    }
     val actual = verified[SuiteKey(projectPath, suite)] ?: throw IllegalStateException(
         "'$suite' has no PIT execution plus successful verification recorded in this certification invocation")
     check(actual == expected) {

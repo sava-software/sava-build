@@ -150,6 +150,38 @@ class HardeningFeatureSmokeTest {
   }
 
   @Test
+  fun `unsafe suite names and replay target classes are rejected before path mutation`() {
+    writeFixture(
+      listOf(
+        """mutation.register("..") { targetClasses = listOf("com.example.*"); targetTests = "com.example.*Test*" }"""
+      ),
+      expectedMutationRelease = 21,
+      expectedFuzzRelease = 21,
+    )
+    val unsafeSuite = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("help", "--stacktrace").buildAndFail().output
+    assertTrue(unsafeSuite.contains("mutation suite name '..' is unsafe"), unsafeSuite)
+
+    writeFixture(
+      listOf(
+        """fuzz.register("escape") { targetClass = "../Escape"; seedCorpus = layout.projectDirectory.dir("corpus/escape") }"""
+      ),
+      expectedMutationRelease = 21,
+      expectedFuzzRelease = 21,
+    )
+    val sentinel = File(fixtureDir, "build/generated-sources/fuzz-replay/java/preserve.txt").apply {
+      parentFile.mkdirs()
+      writeText("preserve")
+    }
+    val unsafeClass = GradleRunner.create().withProjectDir(fixtureDir)
+      .withArguments("generateFuzzReplayTests", "--stacktrace").buildAndFail().output
+    assertTrue(
+      unsafeClass.contains("fuzz target 'escape' targetClass '../Escape' must be a dotted Java package name"),
+      unsafeClass)
+    assertTrue(sentinel.isFile, "invalid targetClass deleted the generator output before validation")
+  }
+
+  @Test
   fun `scheduled fuzz workflows are optional and local fuzz aggregate cannot drift`() {
     writeFixture(emptyList(), expectedMutationRelease = 21, expectedFuzzRelease = 21)
 
@@ -235,7 +267,10 @@ class HardeningFeatureSmokeTest {
     )
 
     val result = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzAll", "-PmaxFuzzTime=1", "--stacktrace").build()
+      .withArguments(
+        "clean", "fuzzAll", "generateFuzzReplayTests", "-PmaxFuzzTime=1",
+        "--configuration-cache", "--stacktrace")
+      .build()
     val receipt = File(fixtureDir, "build/hardening/local-fuzz.tsv")
 
     assertTrue(result.output.contains("fuzzAll: 0 local target(s) completed"), result.output)

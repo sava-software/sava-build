@@ -52,7 +52,10 @@ scheduled workflow or an arbitrary soak window. For a `sava-build` plugin releas
 make those records across the complete consumer roster. Starting either command
 invalidates the canonical pass with an `in_progress` pointer; success points it at an
 immutable ignored run bundle containing the receipt, preflight, retained logs, and inner
-per-project evidence. Each script's `--verify-receipt
+per-project evidence. Both release runners enable Gradle's configuration cache for task
+discovery and the consumer gate: storing that entry is part of the canary, so an
+execution-time action that captures a plugin script fails before release even when the
+consumer normally leaves the cache off. Each script's `--verify-receipt
 build/hardening/<name>-receipt.json` form rehashes that bundle and validates still-present
 plugin and consumer checkouts without rerunning Gradle. Keep the selected run directories
 with the release record, not in the Git tree they certify *(casebook: the canary that
@@ -73,6 +76,12 @@ mutant population, not with the size of the diff — so running it per change
 spends minutes re-learning results the change could not have moved. A suite
 produces new information only when the change can alter code it mutates or
 tests that cover that code.
+
+`./gradlew clean hardeningCertify` is a supported cold proof: certification preflight is
+ordered after `clean`, then fingerprints the sources and classes produced by the current
+task graph. It is useful when validating a new plugin's evidence plumbing, but it is not
+an extra release soak requirement; ordinary `hardeningCertify` is already a fresh PIT
+observation.
 
 Choosing the owning suites is a **reachability** question, not a file-path
 one:
@@ -1304,7 +1313,9 @@ the complete fleet, publishes the candidate plugin into the local test repositor
 requires every consumer to expose `fuzzAll` plus at least one registered target. It retains
 the publish log, per-repository logs, and every generated `local-fuzz.tsv` in an immutable,
 SHA-bound run bundle under `build/hardening/local-fuzz-runs/`; the canonical receipt is a
-pointer to that bundle. Ordinary mode accepts explicit repositories or available manifest
+pointer to that bundle. The runner enables the configuration cache and removes prior inner
+aggregate receipts before invoking Gradle, so a stale deterministic TSV cannot impersonate
+the current campaign if plugin-side invalidation regresses. Ordinary mode accepts explicit repositories or available manifest
 siblings and alone may fall back to individual tasks or `help`. This is evidence from the
 candidate being released; no soak window or cron tick is required.
 
@@ -1524,10 +1535,9 @@ toolchain, and the generated replay/support sources require Java 17+.
 4. Review the `config/pitest/README.md` written by `hardeningInit`, then record
    triaged equivalents (initially empty) and any seeded untriaged debt there.
 5. Add the agent-instructions block below to the repo's `AGENTS.md` with the
-   `hardening-template` marker (run `agentsTemplateInSync` — its message
-   prints the current digest). Read the template from the Git tag matching the plugin
-   version, never from moving `main`; a later `main` may carry a different, unreleased
-   digest. Then decide who owns the pre-release
+   `hardening-template` marker. Run `./gradlew hardeningAgentTemplate` to print the
+   exact block and digest carried by the installed plugin; `agentsTemplateInSync`
+   points to the same task when the marker is missing or stale. Then decide who owns the pre-release
    `hardeningCertify` run: wire it into CI if the runners can afford it, otherwise
    record it as a release-checklist item run locally (see the lifecycle
    section) — and say which in `AGENTS.md`.
@@ -1553,9 +1563,9 @@ toolchain, and the generated replay/support sources require Java 17+.
 
 ## Agent instructions template
 
-Copy into the repo's `AGENTS.md` (adjust file names). Use `HARDENING.md` from the
-Git tag matching the installed plugin version, never moving `main`: the digest is
-baked into a release, while `main` may already describe the next one. The copies
+Copy into the repo's `AGENTS.md` (adjust file names). Run
+`./gradlew hardeningAgentTemplate` to print the exact template baked into the installed
+plugin version; do not copy a possibly newer block from moving `main`. The copies
 drift, and a downstream block is an adapted snapshot, so no tooling can diff
 cross-repo prose semantically. The plugin makes the drift **visible** instead of
 trying: it carries a digest of this template's blockquote lines. When a root

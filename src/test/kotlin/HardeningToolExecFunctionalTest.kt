@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.hardening.PitestEvidence
 import java.io.File
 
 /**
@@ -25,7 +26,11 @@ class HardeningToolExecFunctionalTest {
    * the class to exist. [declineLines] is DSL spliced into the suite, so the recorded
    * decline travels the same path a consuming repo's would.
    */
-  private fun writeFixture(moneyMath: Boolean = false, declineLines: String = "") {
+  private fun writeFixture(
+    moneyMath: Boolean = false,
+    declineLines: String = "",
+    buildTail: String = "",
+  ) {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
         $savaBuildPluginManagement
@@ -94,6 +99,8 @@ class HardeningToolExecFunctionalTest {
             jvmArgs = listOf<String>()
           }
         }
+
+$buildTail
       """.trimIndent() + "\n"
     )
     val srcDir = File(fixtureDir, "src/main/java/com/example").apply { mkdirs() }
@@ -148,6 +155,7 @@ class HardeningToolExecFunctionalTest {
 
         import java.nio.file.Files;
         import java.nio.file.Path;
+        import java.nio.file.StandardOpenOption;
 
         public final class FakePit {
           public static void main(String[] args) throws Exception {
@@ -166,8 +174,14 @@ class HardeningToolExecFunctionalTest {
             }
             Path dir = Path.of(reportDir);
             Files.createDirectories(dir);
+            String status = mode.equals("timeout") ? "TIMED_OUT" : "KILLED";
             Files.writeString(dir.resolve("mutations.csv"),
-                "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,com.example.CodecTest\n");
+                "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12," +
+                    status + ",com.example.CodecTest\n");
+            if (mode.equals("mutate-input")) {
+              Files.writeString(Path.of("src/main/java/com/example/FakePit.java"),
+                  "\n// changed while PIT was running\n", StandardOpenOption.APPEND);
+            }
             if (mode.equals("fail")) {
               System.err.print("partial tail before crash");
               System.exit(3);
@@ -221,9 +235,18 @@ class HardeningToolExecFunctionalTest {
     corpus.resolve("seedB").writeText("beta-longer")
   }
 
+  /**
+   * Every invocation here runs with the configuration cache on, because consumers do
+   * and because this class is the only place the real tool tasks execute. Two defect
+   * shapes hide from a class that omits the flag, and both have shipped: an
+   * execution-time lambda that reaches a script-level declaration cannot be
+   * serialized, and 'Task.project' read from a task action is refused outright.
+   * Neither is scoped to the offending task — they fail the consumer's whole build,
+   * and a green run without the flag says nothing about either.
+   */
   private fun runner(vararg args: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*args, "--stacktrace")
+    .withArguments(*args, "--configuration-cache", "--stacktrace")
 
   private fun occurrences(haystack: String, needle: String) = haystack.split(needle).size - 1
 
@@ -264,7 +287,7 @@ class HardeningToolExecFunctionalTest {
     File(fixtureDir, "config/pitest/encoding-accepted.csv").writeText(
       "com.example.Codec,encode,MathMutator,SURVIVED # legacy accepted row\n")
 
-    val certified = runner("hardeningCertify").build()
+    val certified = runner("clean", "hardeningCertify").build()
     val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
     val evidence = reportDir.resolve(".evidence.tsv")
     val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
@@ -278,6 +301,19 @@ class HardeningToolExecFunctionalTest {
     assertTrue(receipt.readText().contains("suite\tencoding"), receipt.readText())
     assertTrue(receipt.readText().contains("\tlegacy-unversioned\n"), receipt.readText())
     assertTrue(certified.output.contains("committed record is legacy-unversioned"), certified.output)
+    val recordedEvidence = PitestEvidence.parse(evidence.readText())
+    assertEquals(
+      PitestEvidence.fingerprint(fixtureDir, listOf(File(fixtureDir, "build/mutation-classes"))),
+      recordedEvidence.classesSha256,
+      "certification compared against a pre-build classes fingerprint",
+    )
+    assertFalse(
+      recordedEvidence.classesSha256 == PitestEvidence.sha256(""),
+      "compiled classes were recorded as SHA-256(empty)",
+    )
+
+    val reused = runner("clean", "hardeningCertify").build()
+    assertTrue(reused.output.contains("Reusing configuration cache"), reused.output)
 
     File(fixtureDir, "src/main/java/com/example/Codec.java").appendText("\n// source changed after PIT\n")
     val stale = runner("pitestEncodingVerify").buildAndFail().output
@@ -336,6 +372,148 @@ class HardeningToolExecFunctionalTest {
     assertFalse(
       File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile,
       "PIT ran before certification preflight refused the scoped flag")
+  }
+
+  @Test
+  fun `certification aliases activate strict verification and reject task exclusions`() {
+    val alias = """
+      tasks.register("releaseGate") {
+        dependsOn("hardeningCertify")
+      }
+    """.trimIndent()
+    writeFixture(buildTail = alias)
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "arcmutate-licence.txt").writeText("fixture licence marker\n")
+
+    runner("pitestEncoding").build()
+    val evidence = File(fixtureDir, "build/reports/pitest/encoding/.evidence.tsv")
+    assertTrue(evidence.readText().contains("historyAssisted\ttrue"), evidence.readText())
+
+    val throughAbbreviatedAlias = runner("releaseG").build()
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    assertTrue(receipt.isFile, "alias did not produce a certification receipt:\n${throughAbbreviatedAlias.output}")
+    assertTrue(receipt.readText().contains("session\t"), receipt.readText())
+    assertTrue(evidence.readText().contains("historyAssisted\tfalse"), evidence.readText())
+
+    val excluded = runner("releaseG", "-x", "pitestEncodingVerify").buildAndFail().output
+    assertTrue(excluded.contains("task exclusion(s): -x pitestEncodingVerify"), excluded)
+    assertFalse(receipt.exists(), "a refused certification left its prior receipt looking current")
+    assertTrue(
+      File(fixtureDir, "build/hardening/pitest-certification.running").isFile,
+      "a refused certification must retain its invalidation sentinel")
+
+    File(fixtureDir, "fake-pit-mode.txt").writeText("timeout\n")
+    val strict = runner("releaseG").buildAndFail().output
+    assertTrue(strict.contains("timed-out mutant(s) and no audited set"), strict)
+    assertFalse(receipt.exists(), "strict verification failure produced a receipt")
+  }
+
+  @Test
+  fun `certification refuses a skipped PIT even when matching evidence already exists`() {
+    writeFixture(buildTail = """
+      tasks.register("releaseGate") { dependsOn("hardeningCertify") }
+      tasks.named("pitestEncoding") {
+        val skipPit = providers.gradleProperty("skipPit").isPresent
+        onlyIf { !skipPit }
+      }
+    """.trimIndent())
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    runner("releaseGate").build()
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    assertTrue(receipt.isFile)
+
+    val skipped = runner("releaseGate", "-PskipPit").buildAndFail().output
+    assertTrue(
+      skipped.contains("without completing PIT in this invocation") ||
+          skipped.contains("no PIT execution plus successful verification recorded"),
+      skipped)
+    assertFalse(receipt.exists(), "failed certification retained a prior receipt")
+    assertTrue(File(fixtureDir, "build/hardening/pitest-certification.running").isFile)
+
+    val reused = runner("releaseGate", "-PskipPit").buildAndFail().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+  }
+
+  @Test
+  fun `certification refuses convergence before an unverified round two can replace its evidence`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val failed = runner("hardeningCertify", "pitestConverge").buildAndFail().output
+
+    assertTrue(failed.contains("pitestConverge cannot run inside hardeningCertify"), failed)
+    assertTrue(failed.contains("separate Gradle invocations"), failed)
+    assertFalse(File(fixtureDir, "build/hardening/pitest-certification.tsv").exists())
+    assertTrue(File(fixtureDir, "build/hardening/pitest-certification.running").isFile)
+  }
+
+  @Test
+  fun `certification refuses a directly selected convergence round two before writing a receipt`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val failed = runner("hardeningCertify", "pitestEncodingConvergeRound2").buildAndFail().output
+
+    assertTrue(failed.contains("pitestConverge cannot run inside hardeningCertify"), failed)
+    assertFalse(File(fixtureDir, "build/hardening/pitest-certification.tsv").exists())
+    assertTrue(File(fixtureDir, "build/hardening/pitest-certification.running").isFile)
+  }
+
+  @Test
+  fun `certification state is isolated between subprojects`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "settings.gradle.kts").appendText("\ninclude(\"a\", \"b\")\n")
+    File(fixtureDir, "arcmutate-licence.txt").writeText("fixture licence marker\n")
+
+    val sharedBuild = File(fixtureDir, "build.gradle.kts").readText()
+    listOf("a", "b").forEach { name ->
+      val subproject = File(fixtureDir, name).apply { mkdirs() }
+      subproject.resolve("build.gradle.kts").writeText(
+        sharedBuild + if (name == "b") {
+          """
+
+            tasks.named("pitestEncoding") {
+              mustRunAfter(":a:hardeningCertifyPreflight")
+            }
+          """.trimIndent() + "\n"
+        } else {
+          ""
+        }
+      )
+      File(fixtureDir, "src").copyRecursively(subproject.resolve("src"))
+      File(fixtureDir, "corpus").copyRecursively(subproject.resolve("corpus"))
+    }
+
+    val result = runner(":a:hardeningCertify", ":b:pitestEncoding").build()
+    val aEvidence = PitestEvidence.parse(
+      File(fixtureDir, "a/build/reports/pitest/encoding/.evidence.tsv").readText())
+    val bEvidence = PitestEvidence.parse(
+      File(fixtureDir, "b/build/reports/pitest/encoding/.evidence.tsv").readText())
+
+    assertFalse(aEvidence.historyAssisted, result.output)
+    assertTrue(bEvidence.historyAssisted, result.output)
+    assertTrue(File(fixtureDir, "a/build/hardening/pitest-certification.tsv").isFile)
+    assertFalse(File(fixtureDir, "b/build/hardening/pitest-certification.tsv").exists())
+  }
+
+  @Test
+  fun `PIT refuses to commit evidence when an input changes during execution`() {
+    writeFixture()
+    File(fixtureDir, "fake-pit-mode.txt").writeText("mutate-input\n")
+
+    val failed = runner("pitestEncoding").buildAndFail().output
+    val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    assertTrue(failed.contains("evidence inputs changed while PIT was running"), failed)
+    assertTrue(failed.contains("sourceSha256"), failed)
+    assertFalse(reportDir.resolve(".evidence.tsv").exists(), "drifting inputs committed evidence")
+    assertTrue(reportDir.resolve(".running").isFile, "drifting inputs exposed the report")
   }
 
   @Test

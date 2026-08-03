@@ -42,7 +42,8 @@ class HardeningRatchetFunctionalTest {
     // swallow with; extraSuites appends sibling registrations verbatim
     encodingTargets: List<String> = listOf("com.example.Codec"),
     encodingExcludes: List<String> = emptyList(),
-    extraSuites: String = ""
+    extraSuites: String = "",
+    beforeHardening: String = "",
   ) {
     val releaseLine = if (bytecodeRelease != null) "bytecodeRelease = $bytecodeRelease" else ""
     val fuzzBlock = if (registerFuzz) {
@@ -87,6 +88,7 @@ class HardeningRatchetFunctionalTest {
           mavenCentral()
         }
 
+$beforeHardening
         hardening {
           $releaseLine
           generateTestSupport = $generateTestSupport
@@ -2739,8 +2741,89 @@ $fuzzBlock
     assertTrue(assisted.output.contains("history-assisted"), assisted.output)
     assertTrue(assisted.output.contains("-PnoMutationHistory"), assisted.output)
 
+    val report = File(fixtureDir, "build/reports/pitest/encoding/mutations.csv")
+    val evidenceFile = report.parentFile.resolve(".evidence.tsv")
+    report.parentFile.resolve(".history-assisted").delete()
+    fun evidence(scope: String, historyAssisted: Boolean) = PitestEvidence(
+      suite = "encoding",
+      invocationId = UUID.randomUUID().toString(),
+      pitestVersion = "fixture-pit",
+      junitPluginVersion = "fixture-junit",
+      pluginSha256 = "fixture-plugin",
+      identitySchema = PitestEvidence.CURRENT_IDENTITY_SCHEMA,
+      javaVersion = "fixture-java",
+      sourceSha256 = "fixture-source",
+      classesSha256 = "fixture-classes",
+      classpathSha256 = "fixture-classpath",
+      toolClasspathSha256 = "fixture-tool-classpath",
+      configurationSha256 = "fixture-configuration",
+      reportSha256 = PitestEvidence.sha256(report),
+      scope = scope,
+      historyAssisted = historyAssisted,
+    ).render()
+    evidenceFile.writeText(evidence("com.example.Codec", false))
+    val markerlessScoped = runner("pitestModeSnapshot", "-PpitestMode=solo").buildAndFail().output
+    assertTrue(markerlessScoped.contains("evidence manifest says the report is scoped"), markerlessScoped)
+    assertTrue(report.isFile, "markerless scoped evidence cleared its report")
+
+    evidenceFile.writeText(evidence(PitestEvidence.FULL_SCOPE, true))
+    val markerlessHistory = runner("pitestModeSnapshot", "-PpitestMode=solo").buildAndFail().output
+    assertTrue(
+      markerlessHistory.contains("evidence manifest says the report is history-assisted"),
+      markerlessHistory,
+    )
+    assertTrue(report.isFile, "markerless history evidence cleared its report")
+
     val single = runner("pitestModeCompare").buildAndFail()
     assertTrue(single.output.contains("at least two labeled snapshots"), single.output)
+  }
+
+  @Test
+  fun `mode snapshot rejects traversal labels before deleting anything`() {
+    writeFixture()
+    val sentinel = File(fixtureDir, "build/preserve.txt").apply {
+      parentFile.mkdirs()
+      writeText("preserve")
+    }
+
+    val failed = runner("pitestModeSnapshot", "-PpitestMode=..").buildAndFail().output
+
+    assertTrue(failed.contains("pitestModeSnapshot label name '..' is unsafe"), failed)
+    assertTrue(sentinel.isFile, "snapshot label escaped its root:\n$failed")
+    assertEquals("preserve", sentinel.readText())
+  }
+
+  @Test
+  fun `mode snapshot validates every suite before replacing or clearing anything`() {
+    writeFixture(
+      extraSuites = """
+        mutation.register("parsing") {
+          targetClasses = listOf("com.example.Parser")
+          targetTests = "com.example.*Test*"
+        }
+      """.trimIndent(),
+    )
+    val row =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,12,KILLED,com.example.CodecTest"
+    writeReport(listOf(row), "")
+    val parsingDir = File(fixtureDir, "build/reports/pitest/parsing").apply { mkdirs() }
+    parsingDir.resolve("mutations.csv").writeText(row.replace("Codec", "Parser") + "\n")
+    parsingDir.resolve(".running").writeText("")
+    val prior = File(fixtureDir, "build/pitest-modes/solo/prior.txt").apply {
+      parentFile.mkdirs()
+      writeText("prior snapshot")
+    }
+
+    val failed = runner("pitestModeSnapshot", "-PpitestMode=solo").buildAndFail().output
+
+    assertTrue(failed.contains("'parsing' report was left by an interrupted or failed run"), failed)
+    assertEquals("prior snapshot", prior.readText(), "validation destroyed the prior snapshot")
+    assertTrue(
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile,
+      "validation of a later suite deleted the earlier suite report",
+    )
+    assertTrue(parsingDir.resolve("mutations.csv").isFile)
   }
 
   @Test
@@ -2817,6 +2900,32 @@ $fuzzBlock
     val pathBased = generatedRoot.resolve("OutsideFuzzSeedReplayTest.java").readText()
     assertTrue(pathBased.contains("Files.isDirectory"), pathBased)
     assertTrue(pathBased.contains("assertFalse(seeds.isEmpty()"), pathBased)
+  }
+
+  @Test
+  fun `replay generation rejects duplicate harness classes before replacing output`() {
+    writeFixture()
+    runner("generateFuzzReplayTests").build()
+    val replay = File(
+      fixtureDir,
+      "build/generated-sources/fuzz-replay/java/com/example/CodecFuzzSeedReplayTest.java",
+    )
+    val preserved = replay.readText()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        hardening.fuzz.register("codecCopy") {
+          targetClass = "com.example.CodecFuzz"
+          seedCorpus = layout.projectDirectory.dir("corpus/codec-copy")
+        }
+      """.trimIndent() + "\n"
+    )
+
+    val failed = runner("generateFuzzReplayTests").buildAndFail().output
+
+    assertTrue(failed.contains("corpus-backed targets share a targetClass"), failed)
+    assertTrue(failed.contains("com.example.CodecFuzz (codec, codecCopy)"), failed)
+    assertEquals(preserved, replay.readText(), "duplicate replay targets erased the last good output")
   }
 
   @Test
@@ -2899,6 +3008,7 @@ $fuzzBlock
         customDir.resolve("$name.java").readText().contains("package com.example.hardening.support;"),
         "$name.java retained the foreign default package")
     }
+    val preservedSupport = customDir.resolve("Ports.java").readText()
 
     writeFixture(generateTestSupport = true, testSupportPackage = "not-a-package")
     val invalid = runner("generateHardeningTestSupport").buildAndFail().output
@@ -2906,6 +3016,85 @@ $fuzzBlock
       invalid.contains(
         "hardening.testSupportPackage 'not-a-package' must be a dotted Java package name"),
       invalid)
+    assertEquals(
+      preservedSupport,
+      customDir.resolve("Ports.java").readText(),
+      "invalid support package erased the last good generated tree",
+    )
+  }
+
+  @Test
+  fun `source generators honor hardening configuration after early task realization`() {
+    writeFixture(
+      generateTestSupport = true,
+      testSupportPackage = "com.example.late.support",
+      beforeHardening = """
+        tasks.named("generateHardeningTestSupport").get()
+        tasks.named("generateFuzzReplayTests").get()
+      """.trimIndent(),
+    )
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        sourceSets.named("test") {
+          resources.setSrcDirs(listOf("custom-test-resources"))
+        }
+        hardening.fuzz.named("codec") {
+          seedCorpus = layout.projectDirectory.dir("custom-test-resources/fuzz/codec")
+        }
+      """.trimIndent() + "\n"
+    )
+    File(fixtureDir, "custom-test-resources/fuzz/codec").mkdirs()
+
+    val generated = runner(
+      "generateHardeningTestSupport", "generateFuzzReplayTests", "--configuration-cache").build()
+
+    assertTrue(
+      File(
+        fixtureDir,
+        "build/generated-sources/hardening-support/java/com/example/late/support/Ports.java",
+      ).isFile,
+      generated.output,
+    )
+    val replay = File(
+      fixtureDir,
+      "build/generated-sources/fuzz-replay/java/com/example/CodecFuzzSeedReplayTest.java",
+    ).readText()
+    assertTrue(replay.contains("getResource(\"/fuzz/codec\")"), replay)
+    assertFalse(replay.contains(fixtureDir.absolutePath), replay)
+    assertTrue(
+      File(
+        fixtureDir,
+        "build/generated-sources/fuzz-replay/java/com/example/CodecFuzzSeedReplayTest.java",
+      ).isFile,
+      generated.output,
+    )
+    val reused = runner(
+      "generateHardeningTestSupport", "generateFuzzReplayTests", "--configuration-cache").build()
+    assertTrue(reused.output.contains("Reusing configuration cache"), reused.output)
+  }
+
+  @Test
+  fun `the source generators store a configuration cache entry`() {
+    // Consumers run with the configuration cache on, and a task whose execution-time
+    // lambda reaches a script-level helper cannot be serialized — the whole build fails
+    // with "cannot serialize Gradle script object references", not just the task. It is
+    // invisible to every other test here because they never pass the flag, and invisible
+    // to the disabled path too: both generators are registered, realized as test
+    // sources, and stored either way, so a repo that generates nothing still pays for
+    // the capture. Both are covered because both have taken this defect: validating a
+    // name from a 'doLast'/'doFirst' reads naturally and captures the whole script.
+    listOf(false, true).forEach { enabled ->
+      writeFixture(generateTestSupport = enabled)
+      val tasks = arrayOf("generateHardeningTestSupport", "generateFuzzReplayTests")
+      val stored = runner(*tasks, "--configuration-cache").build().output
+      assertFalse(stored.contains("problems were found storing the configuration cache"), stored)
+      assertFalse(stored.contains("cannot serialize Gradle script object references"), stored)
+
+      // Without reuse the assertion above proves only that one run tolerated the flag.
+      val reused = runner(*tasks, "--configuration-cache").build().output
+      assertTrue(reused.contains("Reusing configuration cache"), reused)
+    }
   }
 
   @Test

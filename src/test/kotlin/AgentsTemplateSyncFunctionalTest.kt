@@ -21,16 +21,18 @@ class AgentsTemplateSyncFunctionalTest {
   // Mirrors 'generateHardeningTemplateDigest' in sava-build's build.gradle.kts: only
   // the '>' blockquote lines of the template section are hashed, trailing whitespace
   // stripped, first 12 hex chars of the SHA-256.
-  private val expectedDigest: String = run {
+  private val expectedTemplate: String = run {
     val lines = File(savaBuildTestProperty("savaBuild.root"), "HARDENING.md").readLines()
     val start = lines.indexOfFirst { it.trim() == "## Agent instructions template" }
     check(start >= 0) { "HARDENING.md has no '## Agent instructions template' section" }
-    val template = lines.drop(start + 1)
+    lines.drop(start + 1)
       .takeWhile { !it.startsWith("## ") }
       .filter { it.startsWith(">") }
       .joinToString("\n") { it.trimEnd() }
+  }
+  private val expectedDigest: String = run {
     MessageDigest.getInstance("SHA-256")
-      .digest(template.toByteArray(Charsets.UTF_8))
+      .digest(expectedTemplate.toByteArray(Charsets.UTF_8))
       .joinToString("") { "%02x".format(it) }
       .take(12)
   }
@@ -69,6 +71,7 @@ class AgentsTemplateSyncFunctionalTest {
     // the marker to add instead of failing
     val missing = runner("agentsTemplateInSync").build()
     assertTrue(missing.output.contains("no AGENTS.md"), missing.output)
+    assertTrue(missing.output.contains("hardeningAgentTemplate"), missing.output)
     assertTrue(
       missing.output.contains("<!-- hardening-template sha256:$expectedDigest -->"),
       "the warning must hand over the exact marker line:\n" + missing.output
@@ -89,6 +92,17 @@ class AgentsTemplateSyncFunctionalTest {
       stale.output.contains("marker 000000000000, current $expectedDigest"),
       "expected the stale/current digest pair:\n" + stale.output
     )
+  }
+
+  @Test
+  fun `template task prints the exact version-matched baked template`() {
+    writeFixture()
+
+    val printed = runner("hardeningAgentTemplate").build().output
+
+    assertTrue(printed.contains(expectedTemplate), printed)
+    assertTrue(printed.contains("<!-- hardening-template sha256:$expectedDigest -->"), printed)
+    assertFalse(printed.contains("github.com/sava-software/sava-build/blob/main"), printed)
   }
 
   @Test

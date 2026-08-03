@@ -1,8 +1,10 @@
 import org.gradle.testkit.runner.GradleRunner
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.hardening.PitestEvidence
 import java.io.File
 
 /**
@@ -58,6 +60,33 @@ class HardeningConvergeFunctionalTest {
     reportDir.mkdirs()
     reportDir.resolve("mutations.csv").writeText(
       if (csvRows.isEmpty()) "" else csvRows.joinToString("\n", postfix = "\n")
+    )
+  }
+
+  private fun writeEvidence(
+    reportDirName: String,
+    scope: String = PitestEvidence.FULL_SCOPE,
+    historyAssisted: Boolean = false,
+  ) {
+    val report = File(fixtureDir, "build/reports/pitest/$reportDirName/mutations.csv")
+    report.parentFile.resolve(".evidence.tsv").writeText(
+      PitestEvidence(
+        suite = reportDirName,
+        invocationId = "fixture-invocation",
+        pitestVersion = "fixture-pit",
+        junitPluginVersion = "fixture-junit",
+        pluginSha256 = "fixture-plugin",
+        identitySchema = PitestEvidence.CURRENT_IDENTITY_SCHEMA,
+        javaVersion = "fixture-java",
+        sourceSha256 = "fixture-source",
+        classesSha256 = "fixture-classes",
+        classpathSha256 = "fixture-classpath",
+        toolClasspathSha256 = "fixture-tool-classpath",
+        configurationSha256 = "fixture-configuration",
+        reportSha256 = PitestEvidence.sha256(report),
+        scope = scope,
+        historyAssisted = historyAssisted,
+      ).render()
     )
   }
 
@@ -205,6 +234,16 @@ class HardeningConvergeFunctionalTest {
     )
     assertTrue(assisted.output.contains("-PnoMutationHistory"), assisted.output)
 
+    // The report's own manifest remains authoritative when a stale/tampered producer
+    // omitted the matching marker.
+    File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").delete()
+    writeEvidence("encoding", historyAssisted = true)
+    val markerlessAssisted = snapshotRun().buildAndFail()
+    assertTrue(
+      markerlessAssisted.output.contains("round one is arcmutate-history-assisted"),
+      markerlessAssisted.output,
+    )
+
     // the escape hatch reaches the per-suite report check, which names the first
     // suite missing its round-one report
     File(fixtureDir, "build/reports/pitest").deleteRecursively()
@@ -225,6 +264,16 @@ class HardeningConvergeFunctionalTest {
     assertTrue(converge.output.contains("scoped population cannot prove suite convergence"), converge.output)
     assertTrue(converge.output.contains("without -PmutateOnly"), converge.output)
 
+    val encodingReport = File(fixtureDir, "build/reports/pitest/encoding/mutations.csv")
+    encodingReport.parentFile.resolve(".scoped").delete()
+    writeEvidence("encoding", scope = "com.example.Codec")
+    val markerlessScoped = snapshotRun().buildAndFail()
+    assertTrue(
+      markerlessScoped.output.contains("evidence manifest says the round-one report is scoped"),
+      markerlessScoped.output,
+    )
+    assertTrue(encodingReport.isFile, "markerless scoped evidence cleared its report")
+
     // Exclude the aggregate's expensive dependencies: this isolates the aggregate
     // task's own certification guard, which must still fail rather than print green.
     val gate = runner(
@@ -232,6 +281,29 @@ class HardeningConvergeFunctionalTest {
       "-x", "test", "-x", "agentsTemplateInSync", "-x", "pitestEncoding", "-x", "pitestParsing"
     ).buildAndFail()
     assertTrue(gate.output.contains("qualityGate cannot certify a scoped mutation population"), gate.output)
+  }
+
+  @Test
+  fun `converge snapshot validates every suite before replacing or clearing anything`() {
+    writeFixture()
+    writeReport("encoding", "Codec.java,com.example.Codec,$mathMutator,encode,8,KILLED,com.example.CodecTest")
+    writeReport("parsing", "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest")
+    val parsingDir = File(fixtureDir, "build/reports/pitest/parsing")
+    parsingDir.resolve(".running").writeText("")
+    val prior = File(fixtureDir, "build/pitest-converge/round1/prior.txt").apply {
+      parentFile.mkdirs()
+      writeText("prior snapshot")
+    }
+
+    val failed = snapshotRun().buildAndFail()
+
+    assertTrue(failed.output.contains("'parsing' round-one report was left"), failed.output)
+    assertEquals("prior snapshot", prior.readText(), "validation destroyed the prior snapshot")
+    assertTrue(
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile,
+      "validation of a later suite deleted the earlier suite report",
+    )
+    assertTrue(parsingDir.resolve("mutations.csv").isFile)
   }
 
   @Test

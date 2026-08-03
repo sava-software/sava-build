@@ -7,6 +7,7 @@
 # any preflight or publication, so an interrupted rerun cannot leave an older
 # pass looking current.
 set -euo pipefail
+export LC_ALL=C
 
 sava_build_dir=$(cd "$(dirname "$0")/.." && pwd -P)
 manifest="$sava_build_dir/tools/fleet-manifest.txt"
@@ -35,12 +36,16 @@ local-fuzz.tsv receipts in a run-specific evidence bundle.
 EOF
 }
 
-sha256_file() {
+sha256_stream() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    sha256sum | awk 'NR == 1 { print $1; exit }'
   else
-    shasum -a 256 "$1" | awk '{print $1}'
+    shasum -a 256 | awk 'NR == 1 { print $1; exit }'
   fi
+}
+
+sha256_file() {
+  sha256_stream < "$1"
 }
 
 require_jq() {
@@ -65,28 +70,54 @@ origin_slug() {
   esac
 }
 
+# A fixed digest is path-safe without doubling arbitrarily long repository and
+# Gradle-project names past the filesystem's per-component limit. Retained inner
+# evidence destinations are checked before use, so a duplicate key fails closed.
+artifact_key() {
+  printf '%s' "$1" | sha256_stream
+}
+
+artifact_path_matches_slug() {
+  local kind=$1 slug=$2 relative=$3 key
+  key=$(artifact_key "$slug")
+  case "$relative" in
+    "$kind/$key/"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+log_path_matches_slug() {
+  local slug=$1 relative=$2 key
+  key=$(artifact_key "$slug")
+  [ "$relative" = "logs/$key.log" ]
+}
+
 registered_fuzz_tasks() {
   awk '
-    $1 !~ /^-/ {
-      name=$1
-      sub(/^.*:/, "", name)
-      if (name !~ /^fuzz./ || name == "fuzzAll" || name == "fuzzAllPreflight" ||
-          name == "fuzzWorkflowInSync" ||
-          name ~ /Minimize$/ || name ~ /SeedLenCheck$/) next
-      print name
+    function normalize(task) {
+      return task ~ /^:/ ? task : ":" task
+    }
+    / - Coverage-guided fuzzing of .* target with Jazzer;/ {
+      task=$0
+      sub(/ - Coverage-guided fuzzing of .*$/, "", task)
+      print normalize(task)
     }
   ' "$1" | sort -u
 }
 
-has_fuzz_all() {
+registered_fuzz_projects() {
   awk '
-    {
-      name=$1
-      sub(/^.*:/, "", name)
-      if (name == "fuzzAll") found=1
+    function normalize(task) {
+      return task ~ /^:/ ? task : ":" task
     }
-    END { exit found ? 0 : 1 }
-  ' "$1"
+    / - Runs every registered fuzz target locally;/ {
+      task=$0
+      sub(/ - Runs every registered fuzz target locally;.*$/, "", task)
+      task=normalize(task)
+      sub(/:fuzzAll$/, "", task)
+      print (task == "" ? ":" : task)
+    }
+  ' "$1" | sort -u
 }
 
 reject_symlink_components() {
@@ -126,7 +157,7 @@ prepare_pointer_destination() {
   esac
   case "$receipt_path" in
     "$sava_build_dir"/*)
-      rel=$(printf '%s\n' "$receipt_path" | sed "s|^$sava_build_dir/||")
+      rel=${receipt_path#"$sava_build_dir"/}
       if ! git -C "$sava_build_dir" check-ignore -q -- "$rel"; then
         echo "local-fuzz: receipt inside the plugin checkout must be git-ignored: $rel" >&2
         return 1
@@ -171,7 +202,9 @@ validate_aggregate_receipt() {
       schemaRows++; if (NF != 2 || $2 != "1") invalid=1; next
     }
     $1 == "project" {
-      projectRows++; if (NF != 2 || $2 == "") invalid=1; next
+      projectRows++
+      if (NF != 2 || $2 !~ /^:/ || $2 ~ /::/ || ($2 != ":" && $2 ~ /:$/)) invalid=1
+      next
     }
     $1 == "maxFuzzTimeSeconds" {
       budgetRows++; if (NF != 2 || $2 != expected) invalid=1; next
@@ -193,52 +226,167 @@ aggregate_target_names() {
   awk -F '\t' '$1 == "target" { print $2 }' "$1" | sort -u
 }
 
+aggregate_project() {
+  awk -F '\t' '$1 == "project" { print $2 }' "$1"
+}
+
+aggregate_evidence_matches() {
+  local expected_projects=$1 expected_targets=$2 records=$3 actual_projects actual_targets
+  actual_projects=$(jq -sr 'map(.project) | sort | .[]' "$records") || return 1
+  actual_targets=$(jq -sr '
+    [.[] as $aggregate | $aggregate.targets[] |
+      if $aggregate.project == ":" then ":" + .
+      else $aggregate.project + ":" + . end] | sort | .[]
+  ' "$records") || return 1
+  [ "$actual_projects" = "$expected_projects" ] &&
+    [ "$actual_targets" = "$expected_targets" ]
+}
+
+invalidate_aggregate_receipts() {
+  local repo=$1 repo_root file remaining
+  repo_root=$(cd "$repo" && pwd -P) || return 1
+  while IFS= read -r file; do
+    reject_symlink_components "$file" "prior inner fuzz receipt" || return 1
+    if ! rm -f "$file" || [ -e "$file" ]; then
+      echo "local-fuzz: could not invalidate prior inner fuzz receipt: $file" >&2
+      return 1
+    fi
+  done < <(find "$repo_root" -type f -path '*/build/hardening/local-fuzz.tsv' -print \
+    2>/dev/null | sort)
+  remaining=$(find "$repo_root" -type f -path '*/build/hardening/local-fuzz.tsv' -print \
+    2>/dev/null | sort)
+  if [ -n "$remaining" ]; then
+    echo "local-fuzz: prior inner fuzz receipt(s) survived invalidation:" >&2
+    printf '  %s\n' "$remaining" >&2
+    return 1
+  fi
+}
+
 resolve_receipt() {
   local requested=$1 input_parent pointer_bundle expected target
+  local pointer_before pointer_after pointer_json
   pointer_run_id=""
   pointer_plugin_sha=""
+  pointer_input_path=""
+  pointer_input_sha=""
+  resolved_receipt_initial_sha=""
+  verified_artifact_paths=()
+  verified_artifact_hashes=()
+  verified_artifact_labels=()
   case "$requested" in /*) ;; *) requested="$PWD/$requested" ;; esac
   reject_symlink_components "$requested" "receipt" || return 1
   if [ ! -f "$requested" ]; then
     echo "local-fuzz: no certification receipt at $requested" >&2
     return 1
   fi
-  if jq -e '.schema == 2 and .kind == "local-fuzz-pointer"' "$requested" >/dev/null 2>&1; then
+  pointer_before=$(sha256_file "$requested") || return 1
+  pointer_json=$(<"$requested")
+  pointer_after=$(sha256_file "$requested") || return 1
+  if [ "$pointer_before" != "$pointer_after" ]; then
+    echo "local-fuzz: receipt changed while it was being resolved: $requested" >&2
+    return 1
+  fi
+  if jq -e '.schema == 2 and .kind == "local-fuzz-pointer"' <<< "$pointer_json" >/dev/null 2>&1; then
     if ! jq -e '
         .mode == "release" and .result == "passed" and
         (.run_id | test("^run[.][A-Za-z0-9]+$")) and
         .bundle == ("local-fuzz-runs/" + .run_id + "/receipt.json") and
         (.plugin_sha | test("^[0-9a-f]{40}$")) and
         (.receipt_sha256 | test("^[0-9a-f]{64}$"))
-      ' "$requested" >/dev/null; then
+      ' <<< "$pointer_json" >/dev/null; then
       echo "local-fuzz: canonical pointer is not a completed passing release run: $requested" >&2
       return 1
     fi
     input_parent=$(cd "$(dirname "$requested")" && pwd -P)
-    pointer_bundle=$(jq -r '.bundle' "$requested")
+    pointer_bundle=$(jq -r '.bundle' <<< "$pointer_json")
     target="$input_parent/$pointer_bundle"
     reject_symlink_components "$target" "bundle receipt" || return 1
     if [ ! -f "$target" ]; then
       echo "local-fuzz: pointed-to bundle receipt is missing: $target" >&2
       return 1
     fi
-    expected=$(jq -r '.receipt_sha256' "$requested")
+    expected=$(jq -r '.receipt_sha256' <<< "$pointer_json")
     if [ "$(sha256_file "$target")" != "$expected" ]; then
       echo "local-fuzz: bundle receipt hash does not match the canonical pointer: $target" >&2
       return 1
     fi
-    pointer_run_id=$(jq -r '.run_id' "$requested")
-    pointer_plugin_sha=$(jq -r '.plugin_sha' "$requested")
+    pointer_run_id=$(jq -r '.run_id' <<< "$pointer_json")
+    pointer_plugin_sha=$(jq -r '.plugin_sha' <<< "$pointer_json")
+    pointer_input_path=$requested
+    pointer_input_sha=$pointer_after
     resolved_receipt=$target
+    resolved_receipt_initial_sha=$expected
   else
     resolved_receipt=$requested
+    resolved_receipt_initial_sha=$pointer_after
   fi
   bundle_dir=$(cd "$(dirname "$resolved_receipt")" && pwd -P)
 }
 
+verification_inputs_unchanged() {
+  local current i
+  for ((i=0; i<${#verified_artifact_paths[@]}; i++)); do
+    verify_artifact_unchanged "${verified_artifact_paths[$i]}" \
+      "${verified_artifact_hashes[$i]}" "${verified_artifact_labels[$i]}" || return 1
+  done
+  reject_symlink_components "$resolved_receipt" "bundle receipt" || return 1
+  if [ ! -f "$resolved_receipt" ]; then
+    echo "local-fuzz: bundle receipt disappeared during verification: $resolved_receipt" >&2
+    return 1
+  fi
+  current=$(sha256_file "$resolved_receipt") || return 1
+  if [ "$current" != "$resolved_receipt_initial_sha" ]; then
+    echo "local-fuzz: bundle receipt changed during verification: $resolved_receipt" >&2
+    return 1
+  fi
+  if [ -n "$pointer_input_path" ]; then
+    reject_symlink_components "$pointer_input_path" "receipt" || return 1
+    if [ ! -f "$pointer_input_path" ]; then
+      echo "local-fuzz: canonical pointer disappeared during verification: $pointer_input_path" >&2
+      return 1
+    fi
+    current=$(sha256_file "$pointer_input_path") || return 1
+    if [ "$current" != "$pointer_input_sha" ]; then
+      echo "local-fuzz: canonical pointer was superseded during verification: $pointer_input_path" >&2
+      return 1
+    fi
+  fi
+}
+
+bundle_artifact_path() {
+  local relative=$1 label=$2 candidate parent physical_parent
+  case "$relative" in
+    ''|/*)
+      echo "local-fuzz: refusing invalid $label path: $relative" >&2
+      return 1
+      ;;
+  esac
+  case "/$relative/" in
+    */../*|*/./*|*//*)
+      echo "local-fuzz: refusing $label path outside its bundle: $relative" >&2
+      return 1
+      ;;
+  esac
+  candidate="$bundle_dir/$relative"
+  reject_symlink_components "$candidate" "$label" || return 1
+  parent=$(dirname "$candidate")
+  if [ -d "$parent" ]; then
+    physical_parent=$(cd "$parent" && pwd -P) || return 1
+    case "$physical_parent" in
+      "$bundle_dir"|"$bundle_dir"/*) ;;
+      *)
+        echo "local-fuzz: refusing $label path outside its bundle: $relative" >&2
+        return 1
+        ;;
+    esac
+  fi
+  printf '%s\n' "$candidate"
+}
+
 verify_artifact() {
   local relative=$1 expected=$2 label=$3 path
-  path="$bundle_dir/$relative"
+  verified_artifact_path=""
+  path=$(bundle_artifact_path "$relative" "$label") || return 1
   reject_symlink_components "$path" "$label" || return 1
   if [ ! -f "$path" ]; then
     echo "local-fuzz: missing $label: $path" >&2
@@ -248,13 +396,31 @@ verify_artifact() {
     echo "local-fuzz: $label hash mismatch: $path" >&2
     return 1
   fi
+  verified_artifact_path=$path
+  verified_artifact_paths+=("$path")
+  verified_artifact_hashes+=("$expected")
+  verified_artifact_labels+=("$label")
+}
+
+verify_artifact_unchanged() {
+  local path=$1 expected=$2 label=$3 current
+  reject_symlink_components "$path" "$label" || return 1
+  if [ ! -f "$path" ]; then
+    echo "local-fuzz: $label disappeared during verification: $path" >&2
+    return 1
+  fi
+  current=$(sha256_file "$path") || return 1
+  if [ "$current" != "$expected" ]; then
+    echo "local-fuzz: $label changed during verification: $path" >&2
+    return 1
+  fi
 }
 
 verify_receipt() {
   local requested=$1 certified_sha certified_tree actual_tree plugin_origin
   local manifest_count receipt_count unexpected changed slug log_file log_hash
-  local aggregate_file aggregate_hash aggregate_targets actual_targets
-  local recorded_names actual_names
+  local aggregate_file aggregate_hash aggregate_targets aggregate_path
+  local recorded_project actual_project recorded_names actual_names actual_targets
   local repo recorded_sha recorded_origin current_sha current_origin
   require_jq
   resolve_receipt "$requested" || return 1
@@ -273,6 +439,9 @@ verify_receipt() {
       .publish_log_file == "plugin-publish.log" and
       (.publish_output_sha256 | test("^[0-9a-f]{64}$")) and
       (.repositories | type == "array" and length > 0) and
+      (([.repositories[].log_file] | unique | length) == (.repositories | length)) and
+      (([.repositories[].aggregates[].path] | unique | length) ==
+        ([.repositories[].aggregates[].path] | length)) and
       all(.repositories[];
         .result == "passed" and .dirty_before == false and .dirty_after == false and
         (.sha | test("^[0-9a-f]{40}$")) and
@@ -280,14 +449,29 @@ verify_receipt() {
         (.origin | type == "string" and length > 0) and
         .task_mode == "aggregate" and
         (.tasks | type == "array" and any(.[]; . == "fuzzAll")) and
+        (.registered_projects | type == "array" and length > 0) and
+        all(.registered_projects[];
+          type == "string" and test("^(:|:[^:\\t\\r\\n]+(:[^:\\t\\r\\n]+)*)$")) and
+        ((.registered_projects | unique | length) == (.registered_projects | length)) and
         (.registered_targets | type == "array" and length > 0) and
+        all(.registered_targets[];
+          type == "string" and test("^:([^:\\t\\r\\n]+:)*fuzz[A-Za-z0-9._-]+$")) and
+        ((.registered_targets | unique | length) == (.registered_targets | length)) and
         (.log_file | test("^logs/[A-Za-z0-9._-]+[.]log$")) and
         (.output_sha256 | test("^[0-9a-f]{64}$")) and
         (.aggregates | type == "array" and length > 0) and
+        (([.aggregates[].path] | unique | length) == (.aggregates | length)) and
         ([.aggregates[].target_count] | add > 0) and
-        (([.aggregates[].targets[]] | unique) == (.registered_targets | unique)) and
+        (([.aggregates[].project] | sort) == (.registered_projects | sort)) and
+        (([.aggregates[] as $aggregate | $aggregate.targets[] |
+            if $aggregate.project == ":" then ":" + .
+            else $aggregate.project + ":" + . end] | sort) ==
+          (.registered_targets | sort)) and
         all(.aggregates[];
+          (.project | type == "string" and
+            test("^(:|:[^:\\t\\r\\n]+(:[^:\\t\\r\\n]+)*)$")) and
           (.path | test("^aggregates/[A-Za-z0-9._/-]+[.]tsv$")) and
+          (.path | split("/") | all(.[]; . != "" and . != "." and . != "..")) and
           (.sha256 | test("^[0-9a-f]{64}$")) and
           (.target_count | type == "number" and . >= 0) and
           (.targets | type == "array") and (.targets | length) == .target_count and
@@ -367,29 +551,44 @@ $changed"; else unexpected=$changed; fi
     "preflight inventory" || return 1
   verify_artifact "plugin-publish.log" "$(jq -r '.publish_output_sha256' "$resolved_receipt")" \
     "plugin publish log" || return 1
-  while IFS=$'\t' read -r log_file log_hash; do
+  while IFS=$'\t' read -r slug log_file log_hash; do
+    if ! log_path_matches_slug "$slug" "$log_file"; then
+      echo "local-fuzz: consumer log is not bound to repository $slug: $log_file" >&2
+      return 1
+    fi
     verify_artifact "$log_file" "$log_hash" "consumer fuzz log" || return 1
-  done < <(jq -r '.repositories[] | [.log_file,.output_sha256] | @tsv' "$resolved_receipt")
-  while IFS=$'\t' read -r aggregate_file aggregate_hash aggregate_targets; do
+  done < <(jq -r '.repositories[] | [.slug,.log_file,.output_sha256] | @tsv' "$resolved_receipt")
+  while IFS=$'\t' read -r slug aggregate_file aggregate_hash aggregate_targets recorded_project; do
+    if ! artifact_path_matches_slug "aggregates" "$slug" "$aggregate_file"; then
+      echo "local-fuzz: inner fuzz receipt is not bound to repository $slug: $aggregate_file" >&2
+      return 1
+    fi
     verify_artifact "$aggregate_file" "$aggregate_hash" "inner fuzz receipt" || return 1
-    actual_targets=$(validate_aggregate_receipt "$bundle_dir/$aggregate_file" \
+    aggregate_path=$verified_artifact_path
+    actual_targets=$(validate_aggregate_receipt "$aggregate_path" \
       "$(jq -r '.seconds_per_target' "$resolved_receipt")") || {
-      echo "local-fuzz: invalid inner fuzz receipt: $bundle_dir/$aggregate_file" >&2
+      echo "local-fuzz: invalid inner fuzz receipt: $aggregate_path" >&2
       return 1
     }
     if [ "$actual_targets" != "$aggregate_targets" ]; then
-      echo "local-fuzz: inner fuzz receipt target count changed: $bundle_dir/$aggregate_file" >&2
+      echo "local-fuzz: inner fuzz receipt target count changed: $aggregate_path" >&2
       return 1
     fi
-    actual_names=$(aggregate_target_names "$bundle_dir/$aggregate_file")
+    actual_project=$(aggregate_project "$aggregate_path")
+    if [ "$actual_project" != "$recorded_project" ]; then
+      echo "local-fuzz: inner fuzz receipt project changed: $aggregate_path" >&2
+      return 1
+    fi
+    actual_names=$(aggregate_target_names "$aggregate_path")
     recorded_names=$(jq -r --arg path "$aggregate_file" \
       '.repositories[].aggregates[] | select(.path == $path) | .targets[]' "$resolved_receipt")
     if [ "$actual_names" != "$recorded_names" ]; then
-      echo "local-fuzz: inner fuzz receipt target names changed: $bundle_dir/$aggregate_file" >&2
+      echo "local-fuzz: inner fuzz receipt target names changed: $aggregate_path" >&2
       return 1
     fi
-  done < <(jq -r '.repositories[].aggregates[] | [.path,.sha256,.target_count] | @tsv' \
-    "$resolved_receipt")
+    verify_artifact_unchanged "$aggregate_path" "$aggregate_hash" "inner fuzz receipt" || return 1
+  done < <(jq -r '.repositories[] as $repository | $repository.aggregates[] |
+      [$repository.slug,.path,.sha256,.target_count,.project] | @tsv' "$resolved_receipt")
 
   while IFS=$'\t' read -r slug repo recorded_sha recorded_origin; do
     if [ ! -e "$repo" ]; then
@@ -417,26 +616,61 @@ $changed"; else unexpected=$changed; fi
     fi
   done < <(jq -r '.repositories[] | [.slug,.path,.sha,.origin] | @tsv' "$resolved_receipt")
 
+  verification_inputs_unchanged || return 1
   echo "local-fuzz: verified $receipt_count-repo fuzz bundle for plugin $certified_sha"
 }
 
 self_test() {
-  local fixture aggregate targets slugs basenames count
+  local fixture aggregate records targets projects slugs basenames count
+  local path_fixture pointer_file target_receipt artifact_file symlink_file stale_file
+  local target_hash artifact_hash resolved_path saved_pwd long_name key
+  require_jq
   fixture=$(mktemp)
   aggregate=$(mktemp)
-  trap 'rm -f "$fixture" "$aggregate"' RETURN
+  records=$(mktemp)
+  path_fixture=$(mktemp -d)
+  path_fixture=$(cd "$path_fixture" && pwd -P)
+  pointer_file="$path_fixture/pointer.json"
+  target_receipt="$path_fixture/local-fuzz-runs/run.A/receipt.json"
+  artifact_file="$path_fixture/local-fuzz-runs/run.A/logs/ok.log"
+  symlink_file="$path_fixture/local-fuzz-runs/run.A/logs/link.log"
+  stale_file="$path_fixture/repo/module/build/hardening/local-fuzz.tsv"
+  trap '
+    rm -f "$fixture" "$aggregate" "$records" "$symlink_file" "$artifact_file" \
+      "$target_receipt" "$pointer_file" "$stale_file"
+    rmdir "$path_fixture/repo/module/build/hardening" "$path_fixture/repo/module/build" \
+      "$path_fixture/repo/module" "$path_fixture/repo" \
+      "$path_fixture/local-fuzz-runs/run.A/logs" "$path_fixture/local-fuzz-runs/run.A" \
+      "$path_fixture/local-fuzz-runs" "$path_fixture" 2>/dev/null || true
+  ' RETURN
   printf '%s\n' \
-    "fuzzAll - Runs every target" \
+    "fuzzAll - Runs every registered fuzz target locally; -PmaxFuzzTime=<seconds> applies to each target." \
+    ":alpha:fuzzAll - Runs every registered fuzz target locally; -PmaxFuzzTime=<seconds> applies to each target." \
+    "api+client:fuzzAll - Runs every registered fuzz target locally; -PmaxFuzzTime=<seconds> applies to each target." \
+    "space project:fuzzAll - Runs every registered fuzz target locally; -PmaxFuzzTime=<seconds> applies to each target." \
     "fuzzAllPreflight - Invalidates old receipts" \
-    "fuzzCodec - Runs codec" \
-    ":wire:fuzzWire - Runs wire" \
+    "fuzzFOO - Coverage-guided fuzzing of the 'FOO' target with Jazzer; bounded." \
+    "fuzzFoo - Coverage-guided fuzzing of the 'foo' target with Jazzer; bounded." \
+    ":alpha:fuzzCodecMinimize - Coverage-guided fuzzing of the 'codecMinimize' target with Jazzer; bounded." \
+    "api+client:fuzzWireSeedLenCheck - Coverage-guided fuzzing of the 'wireSeedLenCheck' target with Jazzer; bounded." \
+    "space project:fuzzCodec - Coverage-guided fuzzing of the 'codec' target with Jazzer; bounded." \
     "fuzzCodecMinimize - Minimizes codec" \
     "fuzzWireSeedLenCheck - Checks seeds" \
     "fuzzWorkflowInSync - Compatibility" > "$fixture"
-  has_fuzz_all "$fixture" || { echo "local-fuzz self-test: fuzzAll not found" >&2; return 1; }
+  projects=$(registered_fuzz_projects "$fixture")
+  if [ "$projects" != ":
+:alpha
+:api+client
+:space project" ]; then
+    echo "local-fuzz self-test: project parser produced: $projects" >&2
+    return 1
+  fi
   targets=$(registered_fuzz_tasks "$fixture")
-  if [ "$targets" != "fuzzCodec
-fuzzWire" ]; then
+  if [ "$targets" != ":alpha:fuzzCodecMinimize
+:api+client:fuzzWireSeedLenCheck
+:fuzzFOO
+:fuzzFoo
+:space project:fuzzCodec" ]; then
     echo "local-fuzz self-test: target parser produced: $targets" >&2
     return 1
   fi
@@ -455,6 +689,107 @@ fuzzWire" ]; then
   printf 'target\tfuzzCodec\n' >> "$aggregate"
   if validate_aggregate_receipt "$aggregate" 17 >/dev/null 2>&1; then
     echo "local-fuzz self-test: duplicate target evidence was accepted" >&2
+    return 1
+  fi
+  printf '%s\n' \
+    '{"project":":","targets":["fuzzFOO","fuzzFoo"]}' \
+    '{"project":":alpha","targets":["fuzzCodecMinimize"]}' > "$records"
+  if aggregate_evidence_matches "$projects" "$targets" "$records"; then
+    echo "local-fuzz self-test: missing project evidence was accepted" >&2
+    return 1
+  fi
+  printf '%s\n' \
+    '{"project":":api+client","targets":["fuzzWireSeedLenCheck"]}' \
+    '{"project":":space project","targets":["fuzzCodec"]}' >> "$records"
+  if ! aggregate_evidence_matches "$projects" "$targets" "$records"; then
+    echo "local-fuzz self-test: qualified aggregate evidence was rejected" >&2
+    return 1
+  fi
+  printf '%s\n' '{"project":":alpha","targets":["fuzzCodecMinimize"]}' >> "$records"
+  if aggregate_evidence_matches "$projects" "$targets" "$records"; then
+    echo "local-fuzz self-test: duplicate project evidence was accepted" >&2
+    return 1
+  fi
+  if bundle_artifact_path "../escape" "self-test artifact" >/dev/null 2>&1 ||
+      bundle_artifact_path "logs/../../escape" "self-test artifact" >/dev/null 2>&1; then
+    echo "local-fuzz self-test: bundle traversal was accepted" >&2
+    return 1
+  fi
+  if [ "$(artifact_key 'a_b/c')" = "$(artifact_key 'a/b_c')" ]; then
+    echo "local-fuzz self-test: artifact key collision" >&2
+    return 1
+  fi
+  if artifact_path_matches_slug "aggregates" "a_b/c" \
+      "aggregates/$(artifact_key 'a/b_c')/receipt.tsv"; then
+    echo "local-fuzz self-test: cross-repository artifact alias was accepted" >&2
+    return 1
+  fi
+  long_name=$(printf '%0200d' 0)
+  key=$(artifact_key "$long_name")
+  [ "${#key}" = 64 ] || {
+    echo "local-fuzz self-test: long artifact key has ${#key} characters" >&2; return 1;
+  }
+  artifact_path_matches_slug "aggregates" "a_b/c" \
+    "aggregates/$(artifact_key 'a_b/c')/receipt.tsv" || {
+      echo "local-fuzz self-test: matching repository artifact path was rejected" >&2; return 1;
+    }
+  log_path_matches_slug "a_b/c" "logs/$(artifact_key 'a_b/c').log" || {
+    echo "local-fuzz self-test: matching repository log path was rejected" >&2; return 1;
+  }
+  if log_path_matches_slug "a_b/c" "logs/$(artifact_key 'a/b_c').log"; then
+    echo "local-fuzz self-test: cross-repository log alias was accepted" >&2
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$artifact_file")" "$(dirname "$stale_file")"
+  printf '{}\n' > "$target_receipt"
+  printf 'artifact\n' > "$artifact_file"
+  printf 'stale\n' > "$stale_file"
+  target_hash=$(sha256_file "$target_receipt")
+  artifact_hash=$(sha256_file "$artifact_file")
+  jq -n --arg receipt_sha256 "$target_hash" \
+    '{schema:2,kind:"local-fuzz-pointer",mode:"release",result:"passed",
+      run_id:"run.A",plugin_sha:"0000000000000000000000000000000000000000",
+      bundle:"local-fuzz-runs/run.A/receipt.json",receipt_sha256:$receipt_sha256}' \
+    > "$pointer_file"
+  saved_pwd=$PWD
+  cd /
+  if ! resolve_receipt "$pointer_file"; then
+    cd "$saved_pwd"
+    return 1
+  fi
+  cd "$saved_pwd"
+  [ "$bundle_dir" = "$path_fixture/local-fuzz-runs/run.A" ] || {
+    echo "local-fuzz self-test: pointer resolved bundle base to $bundle_dir" >&2; return 1;
+  }
+  resolved_path=$(bundle_artifact_path "logs/ok.log" "self-test artifact")
+  [ "$resolved_path" = "$artifact_file" ] || {
+    echo "local-fuzz self-test: contained artifact resolved to $resolved_path" >&2; return 1;
+  }
+  verify_artifact "logs/ok.log" "$artifact_hash" "self-test artifact" || return 1
+  [ "$verified_artifact_path" = "$artifact_file" ] || return 1
+  ln -s "$fixture" "$symlink_file"
+  if bundle_artifact_path "logs/link.log" "self-test artifact" >/dev/null 2>&1; then
+    echo "local-fuzz self-test: symlinked artifact was accepted" >&2
+    return 1
+  fi
+  verification_inputs_unchanged || return 1
+  printf 'changed\n' > "$artifact_file"
+  if verification_inputs_unchanged >/dev/null 2>&1; then
+    echo "local-fuzz self-test: artifact mutation after verification was accepted" >&2
+    return 1
+  fi
+  printf 'artifact\n' > "$artifact_file"
+  verification_inputs_unchanged || return 1
+  jq -n '{schema:2,kind:"local-fuzz-pointer",mode:"release",result:"in_progress"}' \
+    > "$pointer_file"
+  if verification_inputs_unchanged >/dev/null 2>&1; then
+    echo "local-fuzz self-test: superseded canonical pointer remained valid" >&2
+    return 1
+  fi
+  invalidate_aggregate_receipts "$path_fixture/repo" || return 1
+  if [ -e "$stale_file" ]; then
+    echo "local-fuzz self-test: prior aggregate receipt survived invalidation" >&2
     return 1
   fi
   [ "$(origin_slug git@github.com:sava-software/sava.git)" = "sava-software/sava" ] || return 1
@@ -536,9 +871,6 @@ if [ "$digits" -gt 10 ] || { [ "$digits" -eq 10 ] && [ "$seconds" -gt 2147483647
   exit 2
 fi
 if $release_mode; then
-  if [ ! -x "$sava_build_dir/gradlew" ]; then
-    preflight_failed="$preflight_failed sava-build(gradlew_not_executable)"
-  fi
   receipt_mode=release
   if ! $seconds_set; then
     echo "local-fuzz: --release requires an explicit --seconds budget" >&2
@@ -613,6 +945,9 @@ preflight_file="$run_dir/preflight.tsv"
 printf 'slug\tpath\tsha\torigin\tdirty\tresult\n' > "$preflight_file"
 preflight_failed=""
 if $release_mode; then
+  if [ ! -x "$sava_build_dir/gradlew" ]; then
+    preflight_failed="$preflight_failed sava-build(gradlew_not_executable)"
+  fi
   if [ "$(origin_slug "$plugin_origin")" != "$plugin_expected_slug" ]; then
     preflight_failed="$preflight_failed sava-build(remote_mismatch)"
   fi
@@ -674,7 +1009,9 @@ fi
 
 collect_aggregate_receipts() {
   local slug=$1 repo=$2 output_file=$3 safe_slug=$4
-  local source relative relative_dest destination source_hash copy_hash targets target_names running
+  local expected_projects=$5 expected_targets=$6
+  local source relative relative_dest destination source_before_hash source_after_hash copy_hash
+  local targets target_names project project_key running
   local total=0 count=0
   : > "$output_file"
   running=$(find "$repo" -type f -path '*/build/hardening/local-fuzz.running' -print \
@@ -686,30 +1023,43 @@ collect_aggregate_receipts() {
   fi
   while IFS= read -r source; do
     reject_symlink_components "$source" "inner fuzz receipt" || return 1
-    targets=$(validate_aggregate_receipt "$source" "$seconds") || {
-      echo "local-fuzz: invalid inner fuzz receipt: $source" >&2; return 1;
-    }
-    target_names=$(aggregate_target_names "$source")
-    relative=$(printf '%s\n' "$source" | sed "s|^$repo/||")
-    if [ "$relative" = "$source" ] || ! printf '%s\n' "$relative" |
-        grep -Eq '^[A-Za-z0-9._/-]+$'; then
-      echo "local-fuzz: inner fuzz receipt has unsafe path: $source" >&2
+    relative=${source#"$repo"/}
+    case "$relative" in "$source"|../*|*/../*)
+      echo "local-fuzz: inner fuzz receipt is outside its repository: $source" >&2
       return 1
-    fi
-    relative_dest="aggregates/$safe_slug/$relative"
+      ;;
+    esac
+    source_before_hash=$(sha256_file "$source") || return 1
+    # The destination key comes from the project recorded by the producer, but
+    # all trusted metadata below is re-read from the retained private copy.
+    project=$(aggregate_project "$source")
+    project_key=$(artifact_key "$project")
+    relative_dest="aggregates/$safe_slug/$project_key.tsv"
     destination="$run_dir/$relative_dest"
     reject_symlink_components "$destination" "retained fuzz receipt" || return 1
+    if [ -e "$destination" ]; then
+      echo "local-fuzz: duplicate aggregate evidence for $slug project $project" >&2
+      return 1
+    fi
     mkdir -p "$(dirname "$destination")"
-    source_hash=$(sha256_file "$source")
     cp "$source" "$destination"
+    reject_symlink_components "$source" "inner fuzz receipt" || return 1
+    source_after_hash=$(sha256_file "$source") || return 1
     copy_hash=$(sha256_file "$destination")
-    if [ "$copy_hash" != "$source_hash" ]; then
+    if [ "$source_before_hash" != "$source_after_hash" ] ||
+        [ "$copy_hash" != "$source_after_hash" ]; then
       echo "local-fuzz: inner fuzz receipt changed while being retained: $source" >&2
       return 1
     fi
-    jq -cn --arg path "$relative_dest" --arg sha256 "$copy_hash" \
+    targets=$(validate_aggregate_receipt "$destination" "$seconds") || {
+      echo "local-fuzz: invalid retained inner fuzz receipt: $destination" >&2; return 1;
+    }
+    project=$(aggregate_project "$destination")
+    target_names=$(aggregate_target_names "$destination")
+    verify_artifact_unchanged "$destination" "$copy_hash" "retained inner fuzz receipt" || return 1
+    jq -cn --arg project "$project" --arg path "$relative_dest" --arg sha256 "$copy_hash" \
       --arg target_names "$target_names" --argjson target_count "$targets" \
-      '{path:$path,sha256:$sha256,target_count:$target_count,
+      '{project:$project,path:$path,sha256:$sha256,target_count:$target_count,
         targets:($target_names|split("\n")|map(select(length>0)))}' >> "$output_file"
     total=$((total + targets))
     count=$((count + 1))
@@ -722,30 +1072,38 @@ collect_aggregate_receipts() {
     echo "local-fuzz: $slug produced only zero-target aggregate evidence" >&2
     return 1
   fi
+  if ! aggregate_evidence_matches "$expected_projects" "$expected_targets" "$output_file"; then
+    echo "local-fuzz: $slug aggregate receipts do not exactly cover discovered fuzzAll projects and targets" >&2
+    return 1
+  fi
 }
 
 record_repo() {
   local slug=$1 repo=$2 sha=$3 origin=$4 dirty_before=$5 dirty_after=$6
-  local tasks=$7 targets=$8 task_mode=$9
+  local tasks=$7 targets=$8 projects=$9
   shift 9
-  local result=$1 output_hash=$2 log_file=$3 aggregates_file=$4
+  local task_mode=$1 result=$2 output_hash=$3 log_file=$4 aggregates_file=$5
   jq -cn \
     --arg slug "$slug" --arg path "$repo" --arg sha "$sha" --arg origin "$origin" \
     --argjson dirty_before "$dirty_before" --argjson dirty_after "$dirty_after" \
-    --arg tasks "$tasks" --arg targets "$targets" --arg task_mode "$task_mode" \
+    --arg tasks "$tasks" --arg targets "$targets" --arg projects "$projects" \
+    --arg task_mode "$task_mode" \
     --arg result "$result" --arg output_sha256 "$output_hash" --arg log_file "$log_file" \
     --slurpfile aggregates "$aggregates_file" \
     '{slug:$slug,path:$path,sha:$sha,origin:$origin,
       dirty_before:$dirty_before,dirty_after:$dirty_after,
       tasks:($tasks|split("\n")|map(select(length>0))),
+      registered_projects:($projects|split("\n")|map(select(length>0))),
       registered_targets:($targets|split("\n")|map(select(length>0))),
       task_mode:$task_mode,result:$result,output_sha256:$output_sha256,
       log_file:$log_file,aggregates:$aggregates}' >> "$records_file"
 }
 
 failed=""
+consumer_cache_args=()
+if $release_mode; then consumer_cache_args+=(--configuration-cache); fi
 while IFS=$'\t' read -r slug repo pre_sha pre_origin; do
-  safe_slug=$(printf '%s' "$slug" | tr '/:' '__')
+  safe_slug=$(artifact_key "$slug")
   log_file="logs/$safe_slug.log"
   log_path="$run_dir/$log_file"
   reject_symlink_components "$log_path" "consumer log"
@@ -758,6 +1116,7 @@ while IFS=$'\t' read -r slug repo pre_sha pre_origin; do
   dirty_after=false
   tasks=""
   targets=""
+  fuzz_projects=""
   task_mode=undiscovered
   status_before=""
 
@@ -777,13 +1136,15 @@ while IFS=$'\t' read -r slug repo pre_sha pre_origin; do
   fi
 
   if [ "$repo_result" = passed ]; then
-    if ! (cd "$repo" && ./gradlew --console=plain -PsavaBuildLocalRepo="$local_repo" tasks --all) \
+    if ! (cd "$repo" && ./gradlew --console=plain "${consumer_cache_args[@]}" \
+        -PsavaBuildLocalRepo="$local_repo" tasks --all) \
         > "$out_file" 2>&1; then
       repo_result=task_discovery_failed
     else
+      fuzz_projects=$(registered_fuzz_projects "$out_file")
       targets=$(registered_fuzz_tasks "$out_file")
       aggregate_present=false
-      if has_fuzz_all "$out_file"; then aggregate_present=true; fi
+      if [ -n "$fuzz_projects" ]; then aggregate_present=true; fi
       if ! grep -qF "$resolution_notice" "$out_file"; then
         repo_result=resolution_missing
       elif $release_mode && ! $aggregate_present; then
@@ -805,10 +1166,16 @@ while IFS=$'\t' read -r slug repo pre_sha pre_origin; do
   fi
 
   if [ "$repo_result" = passed ]; then
+    if [ "$task_mode" = aggregate ] && ! invalidate_aggregate_receipts "$repo"; then
+      repo_result=aggregate_invalidation_failed
+    fi
+  fi
+
+  if [ "$repo_result" = passed ]; then
     echo "local-fuzz: $slug@$repo_sha — $task_mode; ${targets:-no registered targets}"
     task_args=()
     while IFS= read -r task; do [ -n "$task" ] && task_args+=("$task"); done <<< "$tasks"
-    if ! (cd "$repo" && ./gradlew --console=plain --continue \
+    if ! (cd "$repo" && ./gradlew --console=plain "${consumer_cache_args[@]}" --continue \
         -PsavaBuildLocalRepo="$local_repo" -PmaxFuzzTime="$seconds" "${task_args[@]}") \
         > "$out_file" 2>&1; then
       repo_result=fuzz_failed
@@ -835,13 +1202,14 @@ while IFS=$'\t' read -r slug repo pre_sha pre_origin; do
   fi
 
   if [ "$repo_result" = passed ] && [ "$task_mode" = aggregate ]; then
-    if ! collect_aggregate_receipts "$slug" "$repo" "$aggregate_records_file" "$safe_slug"; then
+    if ! collect_aggregate_receipts "$slug" "$repo" "$aggregate_records_file" "$safe_slug" \
+        "$fuzz_projects" "$targets"; then
       repo_result=aggregate_evidence_invalid
     fi
   fi
   output_hash=$(sha256_file "$log_path")
   record_repo "$slug" "$repo" "$repo_sha" "$remote" "$dirty_before" "$dirty_after" \
-    "$tasks" "$targets" "$task_mode" "$repo_result" "$output_hash" "$log_file" \
+    "$tasks" "$targets" "$fuzz_projects" "$task_mode" "$repo_result" "$output_hash" "$log_file" \
     "$aggregate_records_file"
   if [ "$repo_result" != passed ]; then
     failed="$failed $slug($repo_result)"
