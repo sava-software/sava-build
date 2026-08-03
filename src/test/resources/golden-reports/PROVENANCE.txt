@@ -1,0 +1,5 @@
+json-iterator-util-mutations.csv: a real PIT CSV report of json-iterator's 'util'
+suite, produced by the fleet canary's deep leg on 2026-08-02 against the repo's
+committed state (see golden-fleet/MANIFEST.txt for the corpus commit). Vendored
+verbatim so mutant interpretation — column splitting, status vocabulary, key
+derivations — is pinned against genuine PIT output instead of hand-written rows.

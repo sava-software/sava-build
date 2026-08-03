@@ -86,9 +86,33 @@ reprint_findings() {
 # names this line before the canary starts flagging every healthy repo.
 resolution_notice="resolved every 'software.sava.build*' plugin to 0.0.0-test"
 
-if [ "$#" -eq 0 ]; then
-  echo "usage: tools/fleet-canary.sh <consumer-repo-dir>..." >&2
-  exit 2
+# No arguments: run the whole fleet from tools/fleet-manifest.txt, resolving
+# each <org>/<repo> as a sibling checkout (../<repo> from this script's repo).
+# '--deep' honours the manifest's ' deep=<pitestSuiteTask>' annotations; a
+# missing sibling checkout is skipped with a notice, never a failure — the
+# manifest is the roster, the local disk decides what is reachable today.
+if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "${1:-}" = '--deep' ]; }; then
+  deep_run="${1:-}"
+  manifest="$sava_build_dir/tools/fleet-manifest.txt"
+  set --
+  while read -r slug annot _rest; do
+    case "$slug" in ''|\#*) continue ;; esac
+    case "$annot" in \#*) annot='' ;; esac
+    repo_dir="$sava_build_dir/../${slug##*/}"
+    if [ ! -d "$repo_dir" ]; then
+      echo "fleet-canary: SKIP $slug — no sibling checkout at $repo_dir" >&2
+      continue
+    fi
+    arg="$repo_dir"
+    if [ "$deep_run" = '--deep' ]; then
+      case "$annot" in deep=*) arg="$arg:${annot#deep=}" ;; esac
+    fi
+    set -- "$@" "$arg"
+  done < "$manifest"
+  if [ "$#" -eq 0 ]; then
+    echo "fleet-canary: nothing to run — no manifest repo has a sibling checkout" >&2
+    exit 2
+  fi
 fi
 
 echo "fleet-canary: publishing 0.0.0-test from $sava_build_dir"

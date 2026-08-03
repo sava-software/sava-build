@@ -6,6 +6,8 @@ import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
+import software.sava.build.hardening.Mutant
+import software.sava.build.hardening.MutantStatus
 import software.sava.build.hardening.MutatorAdvice
 import software.sava.build.hardening.TimeoutAudit
 import java.io.ByteArrayOutputStream
@@ -240,19 +242,14 @@ val pitestConverge = tasks.register("pitestConverge") {
   val snapshotRoot = convergeSnapshotDir
   val names = convergeSuiteNames
   doLast {
-    val gated = setOf("SURVIVED", "NO_COVERAGE")
+    val gated = MutantStatus.entries.filter { it.gated }.mapTo(HashSet()) { it.name }
     // Rows can share a (class,method,line,mutator) key, so statuses are compared as
     // sorted multisets per key rather than single values. Converge deliberately KEEPS
     // the line in its key while the baseline and modeCompare dropped it: both rounds
     // run identical code, so lines cannot churn here, and the finer key localizes a
     // flip to the exact mutant instead of a sibling group.
-    fun statuses(csv: File): Map<String, List<String>> = csv.readLines()
-        .mapNotNull { line ->
-          val parts = line.split(',')
-          if (parts.size < 6) null
-          else listOf(parts[1], parts[3], parts[4], parts[2].substringAfterLast('.')).joinToString(",") to parts[5]
-        }
-        .groupBy({ it.first }, { it.second })
+    fun statuses(csv: File): Map<String, List<String>> = Mutant.parseReport(csv.readLines())
+        .groupBy({ it.lineFullKey }, { it.rawStatus })
         .mapValues { (_, statusList) -> statusList.sorted() }
     var boundaryFlips = 0
     var benignFlips = 0
@@ -330,19 +327,15 @@ val pitestMutatorTrial = tasks.register("pitestMutatorTrial") {
                 "run — partial numbers must not be recorded. Re-run the trial."
         )
       }
-      val rows = if (csv.isFile) csv.readLines().mapNotNull { line ->
-        val parts = line.split(',')
-        if (parts.size < 6) null else parts
-      } else emptyList()
+      val rows = if (csv.isFile) Mutant.parseReport(csv.readLines()) else emptyList()
       if (rows.isEmpty()) {
         "  ${name.padEnd(width)}0 generated" +
             (if (csv.isFile) "" else " (no report — cannot fire here, or the run failed above)")
       } else {
         fired++
-        val byStatus = rows.groupingBy { it[5] }.eachCount()
-        val detected = (byStatus["KILLED"] ?: 0) + (byStatus["TIMED_OUT"] ?: 0)
-        val unkilled = (byStatus["SURVIVED"] ?: 0) + (byStatus["NO_COVERAGE"] ?: 0)
-        val perMutator = rows.groupingBy { it[2].substringAfterLast('.') }.eachCount()
+        val detected = rows.count { it.detected }
+        val unkilled = rows.count { it.gated }
+        val perMutator = rows.groupingBy { it.mutatorSimpleName }.eachCount()
             .entries.sortedBy { it.key }.joinToString(", ") { "${it.key} x${it.value}" }
         "  ${name.padEnd(width)}${rows.size} generated — $detected killed by existing tests, $unkilled unkilled ($perMutator)"
       }
@@ -429,7 +422,7 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
   val unionFlips = providers.gradleProperty("unionModeFlips").isPresent
   val baselineDir = layout.projectDirectory.dir("config/pitest")
   doLast {
-    val gated = setOf("SURVIVED", "NO_COVERAGE")
+    val gated = MutantStatus.entries.filter { it.gated }.mapTo(HashSet()) { it.name }
     val modes = snapshotRoot.get().asFile.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sorted()
         ?: emptyList()
     if (modes.size < 2) {
@@ -443,13 +436,8 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
     // Line-less keys, like the baseline itself: the two modes ran the same code, so
     // per-key status multisets compare cleanly without lines, and an insurance row
     // written here is a row the verify's comparison must recognize.
-    fun statuses(csv: File): Map<String, List<String>> = csv.readLines()
-        .mapNotNull { line ->
-          val parts = line.split(',')
-          if (parts.size < 6) null
-          else listOf(parts[1], parts[3], parts[2].substringAfterLast('.')).joinToString(",") to parts[5]
-        }
-        .groupBy({ it.first }, { it.second })
+    fun statuses(csv: File): Map<String, List<String>> = Mutant.parseReport(csv.readLines())
+        .groupBy({ it.coordinate }, { it.rawStatus })
         .mapValues { (_, statusList) -> statusList.sorted() }
     var benignFlips = 0
     var insuredFlips = 0
@@ -513,12 +501,8 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
       // an untagged row would put its whole key on the advisory's partial-tag
       // fallback path, weakening the row-level check for its siblings too.
       val rowLines: Map<String, Set<Int>> = if (!unionFlips) emptyMap() else modes.flatMap { label ->
-        snapshotRoot.get().asFile.resolve("$label/$suiteName.csv").readLines().mapNotNull { line ->
-          val parts = line.split(',')
-          if (parts.size < 6 || parts[5] !in gated) null
-          else listOf(parts[1], parts[3], parts[2].substringAfterLast('.'), parts[5])
-              .joinToString(",") to parts[4].toIntOrNull()
-        }
+        Mutant.parseReport(snapshotRoot.get().asFile.resolve("$label/$suiteName.csv").readLines())
+            .mapNotNull { if (!it.gated) null else it.baselineKey to it.line }
       }.groupBy({ it.first }, { it.second }).mapValues { (_, l) -> l.filterNotNull().toSet() }
       var unionedHere = false
       val keys = perMode.values.flatMap { it.keys }.toSortedSet()
@@ -919,35 +903,49 @@ hardening.mutation.all {
               "pitest baseline '$suiteName': ${toolVersionFile.name} removed with the record it certified")
         }
       }
-      val gated = setOf("SURVIVED", "NO_COVERAGE")
-      // Status is field 5 (0-based); the trailing killing-test field can itself contain
-      // commas, so counting back from the end is not safe.
-      val rows = csv.readLines().mapNotNull { line ->
-        val parts = line.split(',')
-        if (parts.size < 6) null else parts
+      // One interpretation of the report: every column split, key derivation, and
+      // status semantic lives on Mutant/MutantStatus — the casebook's recurring
+      // incident class is a mutant read differently at two sites, and a per-site
+      // parts[] index is how that class reproduces.
+      val rows = Mutant.parseReport(csv.readLines())
+      // A status the plugin does not know is a PIT upgrade talking past the
+      // ratchet: it used to fall silently into every "neither" bucket at each
+      // call site independently — name it once, here, instead.
+      val unknownStatuses = rows.filter { it.status == null }.map { it.rawStatus }.distinct().sorted()
+      if (unknownStatuses.isNotEmpty()) {
+        logger.warn(
+            "pitest '$suiteName': PIT emitted status(es) this plugin does not recognize — " +
+                unknownStatuses.joinToString(", ") +
+                " — treated as neither detected nor gated; a PIT upgrade may have added " +
+                "semantics the ratchet cannot interpret yet"
+        )
+        advisoryLog.get().record(advisoryScope, "${unknownStatuses.size} unrecognized PIT status(es)")
       }
 
-      val byStatus = rows.groupingBy { it[5] }.eachCount()
+      val byStatus = rows.groupingBy { it.rawStatus }.eachCount()
       val total = rows.size
       // TIMED_OUT counts as detected, the same as PIT's own summary — a mutant that
       // hangs the suite was caught. Reported separately because that detection is
       // load-dependent: the same row can read SURVIVED when the suite runs alone.
       val timedOut = byStatus["TIMED_OUT"] ?: 0
-      val detected = (byStatus["KILLED"] ?: 0) + timedOut
+      val detected = rows.count { it.detected }
       // Rounded down deliberately: a coverage figure should never read better than it
       // is, so 441/498 is 88% here and not 89%. PIT's own summary line rounds, so this
       // can sit one point below it — the counts either side of the slash are the same.
       val percent = if (total == 0) 0 else detected * 100 / total
       val split = buildList {
-        gated.forEach { s -> byStatus[s]?.let { add("$it ${s.lowercase()}") } }
-        if (timedOut > 0) add("$timedOut timed out (load-dependent)")
-        // Anything else (RUN_ERROR, MEMORY_ERROR, ...) is neither detected nor
-        // gated here — usually a load-dependent flake, but it lowers the detected
-        // count, so the summary must account for it or the number reads as a
-        // regression with no visible cause.
-        (byStatus.keys - gated - setOf("KILLED", "TIMED_OUT")).sorted().forEach { s ->
-          add("${byStatus.getValue(s)} ${s.lowercase()} (not counted as detected)")
+        MutantStatus.entries.filter { it.gated }.forEach { s ->
+          byStatus[s.name]?.let { add("$it ${s.name.lowercase()}") }
         }
+        if (timedOut > 0) add("$timedOut timed out (load-dependent)")
+        // Anything else (RUN_ERROR, MEMORY_ERROR, ..., and the unknowns named
+        // above) is neither detected nor gated — usually a load-dependent flake,
+        // but it lowers the detected count, so the summary must account for it or
+        // the number reads as a regression with no visible cause.
+        byStatus.keys
+            .filterNot { MutantStatus.of(it)?.let { s -> s.detected || s.gated } == true }
+            .sorted()
+            .forEach { s -> add("${byStatus.getValue(s)} ${s.lowercase()} (not counted as detected)") }
       }
       // With incremental analysis some of these statuses were reused, not
       // re-earned this run — the tag keeps the two kinds of number distinct.
@@ -969,7 +967,7 @@ hardening.mutation.all {
       // so a '*Test*' exclusion does not match them. Warned rather than failed: an
       // existing repo upgrading the plugin has these accepted in its baseline already.
       val scaffolding = rows.asSequence()
-          .map { it[1] }
+          .map { it.className }
           .distinct()
           .filter { fqcn ->
             val relative = fqcn.substringBefore('$').replace('.', '/') + ".java"
@@ -1026,12 +1024,8 @@ hardening.mutation.all {
       // new mutant of an already-accepted key is visible only as a count change.
       // Observed lines ride alongside for line tags, sibling hints, and the
       // line-drift advisory.
-      val currentWithLines = rows.mapNotNull { parts ->
-        if (parts[5] !in gated) {
-          null
-        } else {
-          "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')},${parts[5]}" to parts[4]
-        }
+      val currentWithLines = rows.mapNotNull { mutant ->
+        if (!mutant.gated) null else mutant.baselineKey to mutant.lineText
       }
       val current = currentWithLines.map { it.first }.sorted()
       val currentLines: Map<String, List<String>> =
@@ -1046,14 +1040,16 @@ hardening.mutation.all {
       // style suffix, so the IF/ELSE cross-pair is matched too.
       fun mutatorFamily(mutator: String) = mutator.substringBefore('_')
       val detectedSiblings: Map<String, List<String>> = rows
-          .filter { it[5] == "KILLED" || it[5] == "TIMED_OUT" }
+          .filter { it.detected }
           .groupBy(
-              { "${it[1]},${it[3]},${it[4]},${mutatorFamily(it[2].substringAfterLast('.'))}" },
+              { it.familyLineKey },
               {
-                val killer = it.drop(6).joinToString(",")
-                val test = Regex("method:([^(\\]]+)").find(killer)?.groupValues?.get(1)
-                val mutator = it[2].substringAfterLast('.')
-                if (it[5] == "KILLED" && test != null) "$mutator KILLED by $test" else "$mutator ${it[5]}"
+                val test = Regex("method:([^(\\]]+)").find(it.killerText)?.groupValues?.get(1)
+                if (it.status == MutantStatus.KILLED && test != null) {
+                  "${it.mutatorSimpleName} KILLED by $test"
+                } else {
+                  "${it.mutatorSimpleName} ${it.rawStatus}"
+                }
               }
           )
       fun siblingHint(row: String): String {
@@ -1174,15 +1170,10 @@ hardening.mutation.all {
           .filterNot { BaselineNotes.malformed(it) }
           .map { BaselineNotes.parse(it) }
       val accepted: List<String> = acceptedRows.map { it.key }
-      // The line-less 'class,method,mutator' coordinate — the audited-timeout key.
-      // Shared rather than recomputed per call site: prune's TIMED_OUT keep and the
-      // verify's stale-entry hint both budget from 'timedOutByAuditKey' below —
-      // prune keeps at most that many unmatched rows per coordinate and the hint
-      // promises exactly that ("prune keeps them") — so the two must decide
-      // membership identically, a promise that holds only by coincidence when each
-      // site carries its own copy of the key shape.
-      fun mutantCoordinate(parts: List<String>) =
-          "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
+      // The line-less 'class,method,mutator' coordinate is Mutant.coordinate —
+      // one derivation for the audited-timeout key, prune's TIMED_OUT keep, the
+      // stale-entry hint, and the drift stash, so no two sites can carry their
+      // own copy of the key shape and drift apart.
       // Per-label breakdown so triage state is a number the build prints (BaselineNotes
       // owns the label semantics: carry/flip parentheticals stripped, unlabeled rows —
       // which predate seeding — named rather than folded into a bucket).
@@ -1236,7 +1227,6 @@ hardening.mutation.all {
       // timeout count rose *and* whose survivor count fell.
       val statusStash = statusStashFile
       run {
-        val coordinate = ::mutantCoordinate
         fun tally(pairs: List<Pair<String, String>>): Map<String, Map<String, Int>> = pairs
             .groupBy({ it.first }, { it.second })
             .mapValues { (_, statuses) -> statuses.groupingBy { it }.eachCount() }
@@ -1273,7 +1263,7 @@ hardening.mutation.all {
           )
         }
         val previous = if (staleFormat) emptyMap() else tally(stashEntries)
-        val current = tally(rows.map { coordinate(it) to it[5] })
+        val current = tally(rows.map { it.coordinate to it.rawStatus })
         if (previous.isNotEmpty()) {
           // classification semantics live in BaselineEngine.driftCompare: the
           // dangerous flavours name each lost-unkilled origin (a key can lose
@@ -1310,7 +1300,7 @@ hardening.mutation.all {
         BaselineFiles.writeAtomically(
             statusStash,
             rows.joinToString("\n", prefix = "$stashFormatHeader\n", postfix = "\n") {
-              "${coordinate(it)},${it[5]}"
+              "${it.coordinate},${it.rawStatus}"
             }
         )
       }
@@ -1325,13 +1315,12 @@ hardening.mutation.all {
       // on any run and both flavours are still detection, but an unaudited newcomer
       // is a change to stop on, not noise to absorb. Absent file, absent check —
       // adoption is per-repo.
-      fun auditKey(parts: List<String>) = "${parts[1]},${parts[3]},${parts[2].substringAfterLast('.')}"
-      val timedOutByAuditKey = rows.filter { it[5] == "TIMED_OUT" }.groupBy(::auditKey)
+      val timedOutByAuditKey = rows.filter { it.status == MutantStatus.TIMED_OUT }.groupBy { it.coordinate }
       // One membership row per key, sibling lines collapsed into the '# line' comment —
       // the shape the seeder writes, the unaudited warning prints, and a hand paste must
       // satisfy verbatim. Every surface that offers a row to paste renders it here.
       fun pasteReadyMemberRows(indent: String) = timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
-        val lines = timedOutByAuditKey.getValue(key).map { it[4] }.distinct()
+        val lines = timedOutByAuditKey.getValue(key).map { it.lineText }.distinct()
         "$indent$key # line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
       }
       if (initTimeoutAudit) {
@@ -1403,7 +1392,7 @@ hardening.mutation.all {
           }
         }
         val members = membership.members
-        val unaudited = rows.filter { it[5] == "TIMED_OUT" && auditKey(it) !in members }
+        val unaudited = rows.filter { it.status == MutantStatus.TIMED_OUT && it.coordinate !in members }
         if (unaudited.isNotEmpty()) {
           // rows print paste-ready: the membership key verbatim, the line riding in a
           // '#' comment — pasting the printed row into the set must satisfy the check,
@@ -1414,13 +1403,13 @@ hardening.mutation.all {
                   "behind \"detected\"; identify the structural cause (the removed loop exit, the " +
                   "reversed cursor), add the row below to the set and the cause to " +
                   "config/pitest/README.md:\n" +
-                  unaudited.joinToString("\n") { "  ${auditKey(it)} # line ${it[4]}" }
+                  unaudited.joinToString("\n") { "  ${it.coordinate} # line ${it.lineText}" }
           )
           if (!strictTimeoutAudit) {
             advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
           }
         }
-        val allKeys = rows.map(::auditKey).toSet()
+        val allKeys = rows.mapTo(HashSet()) { it.coordinate }
         val staleMembers = members.filterNot { it in allKeys }
         if (staleMembers.isNotEmpty()) {
           // Warn-level like the other membership findings: 'retire or fix' is a
@@ -1446,7 +1435,7 @@ hardening.mutation.all {
         val drifted = TimeoutAudit.lineDrift(
             membership.recordedLines,
             timedOutByAuditKey.filterKeys { it in members }
-                .mapValues { (_, timedOut) -> timedOut.mapNotNull { it[4].toIntOrNull() }.toSet() }
+                .mapValues { (_, timedOut) -> timedOut.mapNotNull { it.line }.toSet() }
         )
         if (drifted.isNotEmpty()) {
           logger.warn(TimeoutAudit.lineDriftWarning(suiteName, timeoutsFile.name, drifted))
@@ -1561,7 +1550,7 @@ hardening.mutation.all {
         // -PinitTimeoutAudit then rightly refuses to seed from it, and without the rows
         // here the coordinate that timed out is recoverable only from the daemon log.
         val hint =
-            "pitest '$suiteName': ${rows.count { it[5] == "TIMED_OUT" }} timed-out mutant(s) and no audited " +
+            "pitest '$suiteName': ${rows.count { it.status == MutantStatus.TIMED_OUT }} timed-out mutant(s) and no audited " +
                 "set — a timeout detects slowness, not wrongness, so the ratchet cannot see a weakened " +
                 "covering assertion behind one. Adopt the audit with -PinitTimeoutAudit (seeds " +
                 "config/pitest/${timeoutsFile.name} from this run), or paste the row(s) below — " +
@@ -1585,8 +1574,8 @@ hardening.mutation.all {
       val keepPlan: List<BaselineEngine.Disposition> = BaselineEngine.keepPlan(
           acceptedRows,
           currentLines,
-          timedOutByAuditKey.mapValues { (_, mutants) -> mutants.map { it[4].toIntOrNull() } },
-          rows.filter { it[5] == "KILLED" }.groupBy(::mutantCoordinate) { it[4].toIntOrNull() },
+          timedOutByAuditKey.mapValues { (_, mutants) -> mutants.map { it.line } },
+          rows.filter { it.status == MutantStatus.KILLED }.groupBy({ it.coordinate }, { it.line }),
       )
       // A refresh rewrite emits rows only: '#' comment lines and blank lines do
       // not survive it. migrateMutationBaselines is the one path that preserves
@@ -2037,10 +2026,9 @@ hardening.mutation.all {
       val reportPairs = if (csv.isFile &&
           !csv.parentFile.resolve(".scoped").isFile &&
           !csv.parentFile.resolve(".running").isFile) {
-        csv.readLines()
-            .map { it.split(',') }
-            .filter { it.size >= 6 && (it[5] == "SURVIVED" || it[5] == "NO_COVERAGE") }
-            .map { it[1] to it[5] }
+        Mutant.parseReport(csv.readLines())
+            .filter { it.gated }
+            .map { it.className to it.rawStatus }
       } else {
         null
       }
