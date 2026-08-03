@@ -2,11 +2,14 @@ package software.sava.build.hardening
 
 /**
  * PIT's status vocabulary with the two semantic partitions the ratchet reasons
- * about, encoded ONCE. "Detected" is PIT's own accounting (a timed-out mutant was
- * caught, load-dependently); "gated" is the ratchet's unkilled population — the
- * statuses a baseline row may carry. Everything else (errors, non-viable,
- * scheduling states) is neither: it lowers the detected count and the summary
- * names it, but it can never enter a baseline or claim a keep.
+ * about, encoded ONCE. "Detected" is deliberately NARROWER than PIT's own
+ * scoring: only KILLED and TIMED_OUT (a timed-out mutant was caught,
+ * load-dependently), where PIT also scores NON_VIABLE and the error statuses as
+ * detected — this plugin counts those as neither, so its percent can sit below
+ * PIT's summary line with the difference named "(not counted as detected)".
+ * "Gated" is the ratchet's unkilled population — the statuses a baseline row may
+ * carry. Everything else lowers the detected count and the summary names it,
+ * but it can never enter a baseline or claim a keep.
  *
  * A status this enum does not know is a PIT upgrade talking past the plugin —
  * [Mutant.status] reads null and the verify names it loudly, because the old

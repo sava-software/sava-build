@@ -24,7 +24,9 @@
 #      consumer build failed (advisory findings are reported, never failures)
 #
 # Usage:
-#   tools/fleet-canary.sh <consumer-repo-dir>[:<pitestSuiteTask>]...
+#   tools/fleet-canary.sh                                    # whole fleet from tools/fleet-manifest.txt
+#   tools/fleet-canary.sh --deep                             # fleet, honouring the manifest's deep= annotations
+#   tools/fleet-canary.sh <consumer-repo-dir>[:<pitestSuiteTask>]...   # explicit subset
 #
 # The optional :<pitestSuiteTask> (e.g. json-iterator:pitestUtil) is the deep
 # leg: the named suite runs TWICE as a real mutation run, then its verify.
@@ -114,6 +116,19 @@ if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "${1:-}" = '--deep' ]; }; then
     exit 2
   fi
 fi
+# Any other flag-shaped argument is refused, never treated as a repo dir: a
+# '--deep ../repo' invocation used to skip the flag as not-a-repo and end
+# green with the requested deep leg silently unexercised — green that
+# certifies nothing, the exact shape this script exists to refuse.
+for arg in "$@"; do
+  case "$arg" in
+    --*)
+      echo "fleet-canary: unrecognized flag '$arg' — '--deep' is only valid as the sole" \
+        "argument (manifest mode); for explicit repos, append :<pitestSuiteTask> to run a deep leg" >&2
+      exit 2
+      ;;
+  esac
+done
 
 echo "fleet-canary: publishing 0.0.0-test from $sava_build_dir"
 (cd "$sava_build_dir" && ./gradlew --console=plain publishSavaBuildTestPublicationToSavaTestRepoRepository) > /dev/null

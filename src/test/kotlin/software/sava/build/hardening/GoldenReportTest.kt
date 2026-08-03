@@ -66,6 +66,7 @@ class GoldenReportTest {
     val killedLines = report.filter { it.status == MutantStatus.KILLED }
       .groupBy({ it.coordinate }, { it.line })
     val plan = BaselineEngine.keepPlan(written, currentLines, timedOutLines, killedLines)
+    assertEquals(written.size, plan.size, "one disposition per row — an empty plan is not a green plan")
     assertTrue(
       plan.all { it == BaselineEngine.Disposition.MATCHED },
       "a baseline written from the real run must match the run that wrote it"
