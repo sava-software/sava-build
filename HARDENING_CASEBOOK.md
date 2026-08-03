@@ -53,6 +53,29 @@ so the verify step read it and printed a full, plausible `58/94 detected
 without getting narrower is a bug report*; *delete report directories when
 comparing runs*.
 
+## The fresh flag that changed the population
+
+A Jetty dispatch suite measured 72 mutants on an ordinary licensed run and 72
+under `hardeningCertify`, but 76 with `-PnoMutationHistory`. The flag intended
+to disable reuse was wired to ArcMutate *availability*, so it removed
+`com.arcmutate:base` from PIT's tool classpath. Certification already disabled
+only the history feature and therefore kept the licensed population.
+
+This was not merely a misleading comparison. Mode snapshots, convergence, and
+the solo/gate recipe prescribe `-PnoMutationHistory`; their results can feed
+`-PunionModeFlips` into accepted baselines. Both mode runs could agree on the
+wrong 76-mutant toolchain and record rows for mutants absent from the
+72-mutant toolchain certification later proved. Nothing in the mode output
+named the four-mutant population change.
+
+The repair separated the two levers: licence presence selects the PIT
+toolchain, while the flag and certification suppress only the history feature
+and its input/output arguments. A regression fixture now compares the ordinary,
+explicitly fresh, and certification classpaths, evidence-bound tool hashes, and
+populations. Rules: *freshness controls must not change engine identity*;
+*when evidence moves between workflows, bind and compare the toolchain that
+defined its mutant population*.
+
 ## Loop-speed measurements
 
 The cost model is `mutants × time to run the covering tests`, and both

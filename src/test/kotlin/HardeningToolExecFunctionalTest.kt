@@ -268,6 +268,78 @@ $buildTail
   }
 
   /**
+   * Keeps the real PIT tool configuration on the fake process classpath so this one
+   * fixture can observe the two ArcMutate levers independently. The fake emits a
+   * second killed mutant when com.arcmutate:base is absent: that makes an accidental
+   * tool-classpath change observable as the population drift it causes in a real PIT
+   * engine, while keeping every variant acceptable to the ratchet.
+   */
+  private fun writeHistoryClasspathProbeFixture() {
+    writeFixture(
+      buildTail = """
+        tasks.named<JavaExec>("pitestEncoding") {
+          classpath = files(sourceSets["main"].output, configurations["pitest"])
+        }
+      """.trimIndent()
+    )
+    File(fixtureDir, "src/main/java/com/example/FakePit.java").writeText(
+      """
+        package com.example;
+
+        import java.io.File;
+        import java.nio.file.Files;
+        import java.nio.file.Path;
+        import java.util.Arrays;
+        import java.util.List;
+        import java.util.regex.Pattern;
+
+        public final class FakePit {
+          public static void main(String[] args) throws Exception {
+            List<String> classpath = Arrays.stream(
+                    System.getProperty("java.class.path").split(
+                        Pattern.quote(File.pathSeparator)))
+                .map(Path::of)
+                .map(path -> path.getFileName().toString())
+                .sorted()
+                .toList();
+            boolean hasArcMutateBase = classpath.stream()
+                .anyMatch(name -> name.startsWith("base-") && name.endsWith(".jar"));
+
+            Path captureDir = Path.of("build/fake-pit-probe");
+            Files.createDirectories(captureDir);
+            Files.writeString(captureDir.resolve("args.txt"), String.join("\n", args) + "\n");
+            Files.writeString(captureDir.resolve("classpath.txt"),
+                String.join("\n", classpath) + "\n");
+
+            String reportDir = null;
+            for (String arg : args) {
+              if (arg.startsWith("--reportDir=")) {
+                reportDir = arg.substring("--reportDir=".length());
+              }
+            }
+            Path dir = Path.of(reportDir);
+            Files.createDirectories(dir);
+            String report =
+                "FakePit.java,com.example.FakePit," +
+                    "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+                    "main,12,KILLED,com.example.FakePitTest\n";
+            if (!hasArcMutateBase) {
+              report +=
+                  "FakePit.java,com.example.FakePit," +
+                      "org.pitest.mutationtest.engine.gregor.mutators.returns.BooleanFalseReturnValsMutator," +
+                      "main,13,KILLED,com.example.FakePitTest\n";
+            }
+            Files.writeString(dir.resolve("mutations.csv"), report);
+          }
+        }
+      """.trimIndent() + "\n"
+    )
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "arcmutate-licence.txt").writeText("fixture licence marker\n")
+  }
+
+  /**
    * Reproduces the cold-cache shape used by modular multi-project consumers. The
    * extra-module-info plugin transforms the producer's project JAR on the consumer's
    * runtime classpath. It is runtime-only so compileForPitest does not schedule its
@@ -489,6 +561,66 @@ $buildTail
       "standalone mode snapshot did not schedule the runtime-only JAR producer:\n${snapshot.output}",
     )
     assertTrue(snapshot.output.contains("stashed as 'standalone'"), snapshot.output)
+  }
+
+  @Test
+  fun `noMutationHistory and certification retain the licensed PIT tool population`() {
+    writeHistoryClasspathProbeFixture()
+    val evidenceFile = File(fixtureDir, "build/reports/pitest/encoding/.evidence.tsv")
+    val reportFile = File(fixtureDir, "build/reports/pitest/encoding/mutations.csv")
+    val argsFile = File(fixtureDir, "build/fake-pit-probe/args.txt")
+    val classpathFile = File(fixtureDir, "build/fake-pit-probe/classpath.txt")
+
+    val assisted = runner("clean", "pitestEncoding").build()
+    val assistedEvidence = PitestEvidence.parse(evidenceFile.readText())
+    val assistedArgs = argsFile.readLines()
+    val assistedClasspath = classpathFile.readLines()
+    val assistedPopulation = reportFile.readLines().size
+    assertTrue(
+      assistedClasspath.any { it.startsWith("base-") && it.endsWith(".jar") },
+      "licensed ordinary PIT did not carry com.arcmutate:base:\n${assistedClasspath.joinToString("\n")}",
+    )
+    assertTrue(assistedArgs.contains("--features=+arcmutate_history"), assistedArgs.toString())
+    assertTrue(assistedArgs.any { it.startsWith("--historyOutputLocation=") }, assistedArgs.toString())
+    assertTrue(assistedEvidence.historyAssisted, assisted.output)
+    assertEquals(1, assistedPopulation, "the classpath-sensitive population probe did not activate")
+
+    val fresh = runner("clean", "pitestEncoding", "-PnoMutationHistory").build()
+    val freshEvidence = PitestEvidence.parse(evidenceFile.readText())
+    val freshArgs = argsFile.readLines()
+    val freshClasspath = classpathFile.readLines()
+    val freshPopulation = reportFile.readLines().size
+    assertTrue(
+      freshClasspath.any { it.startsWith("base-") && it.endsWith(".jar") },
+      "-PnoMutationHistory dropped com.arcmutate:base from the PIT tool classpath:\n" +
+          freshClasspath.joinToString("\n"),
+    )
+    assertFalse(freshArgs.any { it.startsWith("--history") }, freshArgs.toString())
+    assertFalse(freshArgs.contains("--features=+arcmutate_history"), freshArgs.toString())
+    assertFalse(freshEvidence.historyAssisted, fresh.output)
+    assertEquals(assistedClasspath, freshClasspath, "the flag changed the licensed PIT tool classpath")
+    assertEquals(assistedPopulation, freshPopulation, "the flag changed the mutation population")
+    assertEquals(
+      assistedEvidence.toolClasspathSha256,
+      freshEvidence.toolClasspathSha256,
+      "the flag changed the evidence-bound PIT tool classpath",
+    )
+
+    val certified = runner("clean", "hardeningCertify").build()
+    val certifiedEvidence = PitestEvidence.parse(evidenceFile.readText())
+    val certifiedArgs = argsFile.readLines()
+    val certifiedClasspath = classpathFile.readLines()
+    val certifiedPopulation = reportFile.readLines().size
+    assertFalse(certifiedArgs.any { it.startsWith("--history") }, certifiedArgs.toString())
+    assertFalse(certifiedArgs.contains("--features=+arcmutate_history"), certifiedArgs.toString())
+    assertFalse(certifiedEvidence.historyAssisted, certified.output)
+    assertEquals(freshClasspath, certifiedClasspath, "fresh workflows used different PIT tool classpaths")
+    assertEquals(freshPopulation, certifiedPopulation, "fresh workflows observed different populations")
+    assertEquals(
+      freshEvidence.toolClasspathSha256,
+      certifiedEvidence.toolClasspathSha256,
+      "fresh workflows bound different PIT tool classpaths into their evidence",
+    )
   }
 
   @Test

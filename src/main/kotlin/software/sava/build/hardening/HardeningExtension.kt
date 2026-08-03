@@ -41,10 +41,12 @@ abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
   abstract val pitestJunit5PluginVersion: Property<String>
   abstract val jazzerVersion: Property<String>
 
-  /** Version of arcmutate's base plugin ('com.arcmutate:base'), which provides PIT
-   *  incremental analysis. Only resolved when an 'arcmutate-licence.txt' is present at
-   *  the project or root-project directory — without one the dependency is never added
-   *  and PIT runs exactly as open source. */
+  /** Version of arcmutate's base plugin ('com.arcmutate:base'), which provides PIT's
+   *  licensed plugin set, including incremental analysis. Resolved whenever an
+   *  'arcmutate-licence.txt' is present at the project or root-project directory, even
+   *  when history reuse is disabled, so a fresh run keeps the licensed mutant
+   *  population. Without a licence the dependency is never added and PIT runs exactly
+   *  as open source. */
   abstract val arcmutateBaseVersion: Property<String>
 
   /** Generate the shared test-support sources — ConcurrencyHarness, Ports.freePort,

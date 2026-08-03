@@ -165,7 +165,7 @@ run cheaper. The cost model is directly optimisable:
 
 *(casebook: loop-speed measurements)*
 
-### ArcMutate is an optional eligible-OSS accelerator, not a prerequisite
+### ArcMutate is an optional eligible-OSS toolchain, not a prerequisite
 
 Open-source PIT accepts `--historyInputLocation`/`--historyOutputLocation`
 but its only registered history factory throws — do not re-attempt on the
@@ -174,17 +174,22 @@ previous report in place for the verify step to read *(casebook: the 11×
 "speedup" that did no work)*.
 
 The hardening plugin and this process are package-agnostic: any Java project can
-adopt them. ArcMutate changes only the speed of eligible mutation runs. Without a
-licence file, no ArcMutate dependency or flags are added and PIT runs fully from
-scratch using its open-source engine.
+adopt them. ArcMutate is optional, but in an eligible licensed project its base
+plugin is part of the effective PIT toolchain and can affect the mutant population,
+not only run speed. Assisted and fresh runs in that project must therefore retain
+the same base plugin. Without a licence file, no ArcMutate dependency or flags are
+added and PIT runs fully from scratch using its open-source engine.
 
 **With an applicable licence, activation is dropping one file.** The plugin keys
 everything off `arcmutate-licence.txt` at the project or root-project directory:
 when present, `com.arcmutate:base` (version pinned in the plugin, overridable via
-`hardening.arcmutateBaseVersion`) joins PIT's classpath and every suite runs
-`+arcmutate_history` against a rolling per-suite file at
+`hardening.arcmutateBaseVersion`) always joins PIT's classpath. Ordinary suite runs
+also enable `+arcmutate_history` against a rolling per-suite file at
 `<module>/.pitest-history/<suite>.hist` — outside `build/` so `clean` cannot erase
-it, git-ignored as machine-local state.
+it, git-ignored as machine-local state. A suite run with `-PnoMutationHistory` or
+inside certification suppresses that feature and its history input/output arguments;
+it does not remove the licensed base plugin. Mode snapshots and convergence refuse
+assisted evidence and direct the operator to that explicit flag.
 
 The certificate committed at the `sava-build` repository root is a signed,
 self-contained OSS certificate scoped to `software.sava.*`. It is not an access token.
@@ -211,8 +216,11 @@ state*, and suspicion transfers to the exit code and the marker. And
 report outright, `hardeningCertify` disables history automatically and re-earns
 every status from scratch, and the convergence method's runs refuse history too
 (two assisted runs agree by construction). `-PnoMutationHistory` remains the
-explicit override for other fresh runs. Delete `.pitest-history/` to reset a
-machine's history wholesale.
+explicit override for other fresh runs. Both mechanisms disable only reuse while
+retaining `com.arcmutate:base`, so ordinary, mode-comparison, convergence, and
+certification populations share one licensed tool identity (bound in evidence as
+`toolClasspathSha256`). Delete `.pitest-history/` to reset a machine's history
+wholesale.
 
 ## The mutation ratchet
 
@@ -1549,12 +1557,12 @@ regenerated every build.
 
 The plugin has no package-namespace requirement. Any Java project can apply
 `software.sava.build.feature.hardening`; the ArcMutate certificate described above is
-an optional accelerator with its own, separate eligibility rules. A standalone adopter
-must resolve the versioned plugin marker. A JUnit Platform consumer configures its chosen
-engine normally, while a registered corpus additionally requires Jupiter for the generated
-replay test. The minimal hardening-only build in the README shows that shape without
-applying the other Sava conventions. Tool-bytecode releases follow the adopter's Java
-toolchain, and the generated replay/support sources require Java 17+.
+an optional licensed PIT toolchain with its own, separate eligibility rules. A standalone
+adopter must resolve the versioned plugin marker. A JUnit Platform consumer configures its
+chosen engine normally, while a registered corpus additionally requires Jupiter for the
+generated replay test. The minimal hardening-only build in the README shows that shape
+without applying the other Sava conventions. Tool-bytecode releases follow the adopter's
+Java toolchain, and the generated replay/support sources require Java 17+.
 
 1. Apply `software.sava.build.feature.hardening` and register mutation suites
    (wildcard targets + exclusions) and fuzz targets. `hardeningInit` scaffolds

@@ -220,11 +220,14 @@ register its own production namespaces, mutation suites, exclusions, and fuzz ta
 `fuzzAll` derives a local campaign from every registered target, while
 `hardeningCertify` performs fresh, full, provenance-bound mutation runs with strict
 timeout and production-ownership audits. The ArcMutate certificate committed at this
-repository's root is a separate optional accelerator: it applies only to eligible public
-`software.sava.*` projects, not GLAM, private `idl-src-gen`, or unrelated adopters. It is not
-packaged into the published Gradle plugin and the plugin never copies it into a consumer. An
-eligible Sava repository activates it only after someone deliberately copies the certificate to
-that repository's root; ineligible projects use the same process with open-source PIT.
+repository's root enables an optional licensed PIT toolchain: it applies only to eligible public
+`software.sava.*` projects, not GLAM, private `idl-src-gen`, or unrelated adopters. In a licensed
+consumer, `com.arcmutate:base` remains on PIT's tool classpath for both assisted and fresh runs
+because it can affect the mutant population; `-PnoMutationHistory` and certification disable only
+history reuse. The certificate is not packaged into the published Gradle plugin and the plugin
+never copies it into a consumer. An eligible Sava repository activates it only after someone
+deliberately copies the certificate to that repository's root; ineligible projects use the same
+process with open-source PIT.
 
 ## Configuration
 

@@ -56,24 +56,26 @@ hardening.recompileExcludes.convention(emptyList())
 // Arcmutate incremental analysis ("history"): reuses per-mutant results across runs
 // when neither the mutated class nor its covering tests changed. Open-source PIT
 // accepts the history flags but cannot honour them — its only registered history
-// factory throws — so everything below keys off the licence certificate: without an
-// 'arcmutate-licence.txt' at the project or root-project directory, no dependency is
-// added and no flags are passed, and PIT runs exactly as open source.
-// '-PnoMutationHistory' forces a from-scratch run with the licence present.
+// factory throws — so the licence certificate controls whether com.arcmutate:base is
+// part of the PIT toolchain. Keep that classpath decision independent from reuse:
+// ArcMutate's base plugin can change the effective mutant population even with history
+// disabled. '-PnoMutationHistory' therefore suppresses only the history feature and
+// its input/output files; it must not silently switch a licensed run back to a different
+// open-source-PIT population.
 // Certification is a fresh observation by definition. Whether this invocation is a
 // certification is decided at execution time by hardeningCertifyPreflight's build
 // service, so aliases, abbreviations and aggregate tasks cannot accidentally retain
 // history merely because their command-line spelling differs.
-val mutationHistoryAvailable = (layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile ||
-    rootProject.layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile) &&
-    !providers.gradleProperty("noMutationHistory").isPresent
+val arcMutateLicencePresent = layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile ||
+    rootProject.layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile
+val mutationHistoryExplicitlyDisabled = providers.gradleProperty("noMutationHistory").isPresent
 
 val pitest = configurations.create("pitest") {
   isCanBeConsumed = false
   defaultDependencies {
     add(project.dependencies.create("org.pitest:pitest-command-line:${hardening.pitestVersion.get()}"))
     add(project.dependencies.create("org.pitest:pitest-junit5-plugin:${hardening.pitestJunit5PluginVersion.get()}"))
-    if (mutationHistoryAvailable) {
+    if (arcMutateLicencePresent) {
       add(project.dependencies.create("com.arcmutate:base:${hardening.arcmutateBaseVersion.get()}"))
     }
   }
@@ -2975,7 +2977,8 @@ hardening.mutation.all {
     javaLauncher.convention(evidenceJavaLauncher)
     usesService(pitestExecutionLock)
     usesService(hardeningCertificationSession)
-    val historyLicensed = mutationHistoryAvailable
+    val historyLicensed = arcMutateLicencePresent
+    val historyExplicitlyDisabled = mutationHistoryExplicitlyDisabled
     // This edge is inert in ordinary runs (preflight is not scheduled), but when
     // any alias/abbreviation reaches hardeningCertify it orders activation before
     // every PIT flavour without making normal qualityGate depend on certification.
@@ -3048,7 +3051,7 @@ hardening.mutation.all {
     // from whatever fraction of the population PIT reached before dying.
     val runningMarker = layout.buildDirectory.file("reports/pitest/$reportSubdir/.running")
     val historyFile = layout.projectDirectory.file(".pitest-history/${suite.name}.hist").asFile
-    fun historyActiveNow() = withHistory && historyLicensed &&
+    fun historyActiveNow() = withHistory && historyLicensed && !historyExplicitlyDisabled &&
         !certificationSession.get().isActive(certifyingProjectPath)
     doFirst {
       this as JavaExec
