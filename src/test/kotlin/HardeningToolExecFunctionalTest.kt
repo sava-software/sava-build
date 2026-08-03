@@ -268,6 +268,135 @@ $buildTail
   }
 
   /**
+   * Reproduces the cold-cache shape used by modular multi-project consumers. The
+   * extra-module-info plugin transforms the producer's project JAR on the consumer's
+   * runtime classpath. It is runtime-only so compileForPitest does not schedule its
+   * producer as a compile dependency. During configuration-cache storage that JAR is
+   * deliberately absent: the PIT/evidence graph itself must schedule ':library:jar'.
+   */
+  private fun writeModularProjectDependencyFixture() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "hardening-modular-project-dependency-smoke-test"
+        include("library", "consumer")
+      """.trimIndent() + "\n"
+    )
+    File(fixtureDir, "library/build.gradle.kts").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText(
+        """
+          plugins {
+            `java-library`
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+    File(fixtureDir, "library/src/main/java/module-info.java").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText("module com.example.library { exports com.example.library; }\n")
+    }
+    File(fixtureDir, "library/src/main/java/com/example/library/Library.java").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText(
+        """
+          package com.example.library;
+
+          public final class Library {
+            public static int value() { return 7; }
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+    File(fixtureDir, "consumer/build.gradle.kts").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText(
+        """
+          plugins {
+            java
+            id("software.sava.build.feature.hardening")
+          }
+
+          // The dependency is already on the sava-build plugin's implementation
+          // classpath; applying it this way avoids a second plugin-marker resolution.
+          pluginManager.apply("org.gradlex.extra-java-module-info")
+
+          repositories {
+            mavenCentral()
+          }
+
+          dependencies {
+            runtimeOnly(project(":library"))
+          }
+
+          hardening {
+            mutation.register("encoding") {
+              targetClasses = listOf("com.example.*")
+              targetTests = "com.example.*Test*"
+            }
+          }
+
+          tasks.named<JavaExec>("pitestEncoding") {
+            mainClass = "com.example.consumer.FakePit"
+            classpath = sourceSets["main"].output
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+    File(fixtureDir, "consumer/src/main/java/module-info.java").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText(
+        """
+          module com.example.consumer {
+            exports com.example.consumer;
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+    File(fixtureDir, "consumer/src/main/java/com/example/consumer/Consumer.java").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText(
+        """
+          package com.example.consumer;
+
+          public final class Consumer {
+            public static int value() { return 7; }
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+    File(fixtureDir, "consumer/src/main/java/com/example/consumer/FakePit.java").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText(
+        """
+          package com.example.consumer;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+
+          public final class FakePit {
+            public static void main(String[] args) throws Exception {
+              String reportDir = null;
+              for (String arg : args) {
+                if (arg.startsWith("--reportDir=")) {
+                  reportDir = arg.substring("--reportDir=".length());
+                }
+              }
+              Path dir = Path.of(reportDir);
+              Files.createDirectories(dir);
+              Files.writeString(dir.resolve("mutations.csv"),
+                  "Consumer.java,com.example.consumer.Consumer," +
+                      "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+                      "value,7,KILLED,com.example.consumer.ConsumerTest\\n");
+            }
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+  }
+
+  /**
    * Every invocation here runs with the configuration cache on, because consumers do
    * and because this class is the only place the real tool tasks execute. Two defect
    * shapes hide from a class that omits the flag, and both have shipped: an
@@ -320,6 +449,46 @@ $buildTail
     val second = runner("fuzzPlain", "-PmaxFuzzTime=1").build()
     assertTrue(second.output.contains("Configuration cache entry reused."), second.output)
     assertTrue(second.output.contains("fixture fuzz executed"), second.output)
+  }
+
+  @Test
+  fun `cold and standalone evidence graphs schedule transformed runtime project jars`() {
+    writeModularProjectDependencyFixture()
+    val libraryJar = File(fixtureDir, "library/build/libs/library.jar")
+    assertFalse(libraryJar.exists(), "fixture producer JAR unexpectedly existed before the cold build")
+
+    val result = runner(":consumer:pitestEncoding").build()
+
+    assertTrue(libraryJar.isFile, "producer task did not create the transformed project dependency JAR")
+    assertTrue(
+      result.output.contains("> Task :library:jar"),
+      "PIT did not schedule the runtime-only project JAR producer:\n${result.output}",
+    )
+    assertTrue(result.output.contains("Configuration cache entry stored."), result.output)
+    assertTrue(
+      File(fixtureDir, "consumer/build/reports/pitest/encoding/.evidence.tsv").isFile,
+      "PIT execution did not commit evidence:\n${result.output}",
+    )
+
+    assertTrue(libraryJar.delete(), "could not remove the runtime-only JAR before standalone verify")
+    val verify = runner(":consumer:pitestEncodingVerify").build()
+    assertTrue(libraryJar.isFile, "standalone verify did not rebuild its runtime-only evidence input")
+    assertTrue(
+      verify.output.contains("> Task :library:jar"),
+      "standalone verify did not schedule the runtime-only JAR producer:\n${verify.output}",
+    )
+
+    assertTrue(libraryJar.delete(), "could not remove the runtime-only JAR before mode snapshot")
+    val snapshot = runner(
+      ":consumer:pitestModeSnapshot",
+      "-PpitestMode=standalone",
+    ).build()
+    assertTrue(libraryJar.isFile, "standalone mode snapshot did not rebuild its evidence input")
+    assertTrue(
+      snapshot.output.contains("> Task :library:jar"),
+      "standalone mode snapshot did not schedule the runtime-only JAR producer:\n${snapshot.output}",
+    )
+    assertTrue(snapshot.output.contains("stashed as 'standalone'"), snapshot.output)
   }
 
   @Test

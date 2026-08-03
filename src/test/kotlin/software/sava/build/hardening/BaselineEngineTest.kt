@@ -145,25 +145,6 @@ class BaselineEngineTest {
           minOf(indices.size, p.currentLines[key].orEmpty().size), matched,
           "seed $seed: matched budget at $key"
         )
-
-        // Once maximum exact affinity is exhausted, the moved-anchor fallback
-        // must not retain a stale/bare row while dropping a sibling whose tag
-        // still names any live line. This is deliberately a row-selection law,
-        // not a tag-counter subtraction: multi-line rows and genuinely moved
-        // anchors make the latter ambiguous.
-        val liveLines = p.currentLines[key].orEmpty().mapNotNullTo(HashSet()) { it.toIntOrNull() }
-        val unmatchedLiveAnchor = indices.any { index ->
-          plan[index] != BaselineEngine.Disposition.MATCHED &&
-              p.acceptedRows[index].recordedLines.any { it in liveLines }
-        }
-        val matchedWithoutLiveAnchor = indices.any { index ->
-          plan[index] == BaselineEngine.Disposition.MATCHED &&
-              p.acceptedRows[index].recordedLines.none { it in liveLines }
-        }
-        assertTrue(
-          !unmatchedLiveAnchor || !matchedWithoutLiveAnchor,
-          "seed $seed: moved-anchor fallback kept a stale row ahead of a live anchor at $key",
-        )
       }
 
       // per coordinate, timeout keeps never exceed the mutants that timed out —
@@ -231,6 +212,7 @@ class BaselineEngineTest {
   fun `assignment reaches maximum exact affinity over wider random graphs`() {
     val key = "com.example.Codec,encode,MathMutator,SURVIVED"
     var displacementCases = 0
+    var fallbackSelectionCases = 0
     repeat(1000) { seed ->
       val rnd = Random(seed)
       val rows = List(rnd.nextInt(0, 7)) { rowIndex ->
@@ -260,10 +242,54 @@ class BaselineEngineTest {
         "seed $seed: report order changed a deterministic assignment",
       )
 
+      // Recover the exact-match rows from update's observable note-to-line
+      // assignments, then independently apply the documented fallback: among
+      // rows left by a maximum exact match, live anchors precede bare/stale rows
+      // and file order breaks ties. A tag-counter subtraction is not a valid
+      // oracle here because one production row can carry several historical tags.
+      val assignments = update.written.mapNotNull { rendered ->
+        val output = BaselineNotes.parse(rendered)
+        val rowIndex = output.note
+            ?.removePrefix("# oracle row ")
+            ?.toIntOrNull()
+            ?: return@mapNotNull null
+        rowIndex to output.recordedLines.singleOrNull()
+      }
+      val exactRows = assignments.mapNotNullTo(HashSet()) { (rowIndex, line) ->
+        rowIndex.takeIf { line != null && line in rows[rowIndex].recordedLines }
+      }
+      val liveLines = observed.mapNotNullTo(HashSet()) { it.toIntOrNull() }
+      val unmatchedRows = rows.indices.filter { it !in exactRows }
+      val fallbackSlots = minOf(rows.size, observed.size) - expected
+      val expectedFallbackRows = unmatchedRows
+          .sortedBy { rowIndex ->
+            if (rows[rowIndex].recordedLines.any { it in liveLines }) 0 else 1
+          }
+          .take(fallbackSlots)
+          .toSet()
+      val fileOrderFallbackRows = unmatchedRows.take(fallbackSlots).toSet()
+      if (expectedFallbackRows != fileOrderFallbackRows) fallbackSelectionCases++
+      val expectedMatchedRows = exactRows + expectedFallbackRows
+      val updateMatchedRows = rows.indices.filterTo(HashSet()) { it !in update.droppedIdx }
+      assertEquals(
+        expectedMatchedRows,
+        updateMatchedRows,
+        "seed $seed: update fallback did not retain live anchors before bare/stale rows",
+      )
+
+      val plan = BaselineEngine.keepPlan(rows, mapOf(key to observed), emptyMap(), emptyMap())
+      val planMatchedRows = rows.indices.filterTo(HashSet()) {
+        plan[it] == BaselineEngine.Disposition.MATCHED
+      }
+      assertEquals(
+        expectedMatchedRows,
+        planMatchedRows,
+        "seed $seed: keep fallback did not retain live anchors before bare/stale rows",
+      )
+
       // A green prune has at most one accepted row per current copy; in that
       // shape its note-to-line assignment must reach the same optimum as update.
       if (observed.size <= rows.size) {
-        val plan = BaselineEngine.keepPlan(rows, mapOf(key to observed), emptyMap(), emptyMap())
         val prune = BaselineEngine.pruneRewrite(rows, plan, mapOf(key to observed))
         assertEquals(
           expected,
@@ -275,6 +301,10 @@ class BaselineEngineTest {
     assertTrue(
       displacementCases > 0,
       "seeded population never exercised a graph where augmenting displacement beats greedy matching",
+    )
+    assertTrue(
+      fallbackSelectionCases > 0,
+      "seeded population never distinguished live-priority fallback from raw file order",
     )
   }
 
@@ -395,6 +425,40 @@ class BaselineEngineTest {
       update.written,
       "update must make the same note-to-line choice as keep/prune",
     )
+  }
+
+  @Test
+  fun `moved anchor fallback drops a bare row before duplicate live anchors`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# bare oldest", emptyList()),
+      BaselineNotes.Row(key, "# first live sibling", listOf(10)),
+      BaselineNotes.Row(key, "# duplicate live sibling", listOf(10)),
+      BaselineNotes.Row(key, "# second duplicate live sibling", listOf(10)),
+    )
+    val currentLines = mapOf(key to listOf("10", "20", "30"))
+
+    val plan = BaselineEngine.keepPlan(accepted, currentLines, emptyMap(), emptyMap())
+    assertEquals(
+      listOf(
+        BaselineEngine.Disposition.DROP,
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.MATCHED,
+      ),
+      plan,
+      "a bare row must not consume a moved copy while a duplicate live anchor remains",
+    )
+    val expected = listOf(
+      "$key # first live sibling # line 10",
+      "$key # duplicate live sibling # line 20",
+      "$key # second duplicate live sibling # line 30",
+    )
+    assertEquals(expected, BaselineEngine.pruneRewrite(accepted, plan, currentLines).written)
+
+    val update = BaselineEngine.updateRewrite(accepted, currentLines)
+    assertEquals(listOf(0), update.droppedIdx)
+    assertEquals(expected, update.written)
   }
 
   @Test

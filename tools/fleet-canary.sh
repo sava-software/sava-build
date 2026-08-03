@@ -694,7 +694,7 @@ self_test() {
   local probe_slug probe_repo probe_deep probe_sha probe_origin
   local plugin_checkout consumer_checkout unavailable_checkout manifest_fixture bundle_fixture
   local preflight_file publish_file jar_file log_file root_cert_file empty_cert_file
-  local empty_path_log_file empty_path_cert_file verify_output_file saved_pwd
+  local empty_path_log_file empty_path_cert_file verify_output_file verify_cwd saved_pwd
   local plugin_commit plugin_tree consumer_commit plugin_hash preflight_hash publish_hash
   local log_hash root_cert_hash empty_cert_hash empty_path_log_hash empty_path_cert_hash
   local manifest_hash verify_output
@@ -854,13 +854,14 @@ self_test() {
   unavailable_checkout="$path_fixture/consumer-checkout.unavailable"
   manifest_fixture="$path_fixture/fleet-manifest.txt"
   bundle_fixture="$path_fixture/fleet-canary-runs/run.A"
+  verify_cwd="$path_fixture/cwd"
   empty_path_sha=$(printf '%040d' 1)
   empty_path_key=$(artifact_key "sava-software/unavailable")
   mkdir -p "$plugin_checkout" "$consumer_checkout" "$bundle_fixture/logs"
   repo_key=$(artifact_key "sava-software/example")
   mkdir -p "$bundle_fixture/certifications/$repo_key" \
     "$bundle_fixture/certifications/$empty_path_key" \
-    "$path_fixture/$empty_path_sha"
+    "$verify_cwd/$empty_path_sha"
 
   printf 'plugin source\n' > "$plugin_checkout/source.txt"
   git -C "$plugin_checkout" init -q
@@ -967,11 +968,12 @@ self_test() {
     > "$pointer_file"
 
   # The second receipt row deliberately has an empty, non-final checkout path.
-  # Running from this directory makes its SHA-named decoy visible if a future
-  # @tsv/IFS parser collapses that empty field and shifts the remaining values.
+  # Running away from the pointer makes its SHA-named decoy visible if a future
+  # @tsv/IFS parser collapses that empty field, while also pinning bundle
+  # resolution to dirname(pointer) instead of PWD.
   verify_output_file="$path_fixture/verify-output"
   saved_pwd=$PWD
-  cd "$path_fixture"
+  cd "$verify_cwd"
   if ! sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
       plugin_expected_slug='sava-software/sava-build' \
       verify_receipt "$pointer_file" > "$verify_output_file" 2>&1; then
@@ -983,13 +985,19 @@ self_test() {
   fi
   cd "$saved_pwd"
   verify_output=$(<"$verify_output_file")
+  if [ "$pointer_input_path" != "$pointer_file" ] || \
+      [ "$resolved_receipt" != "$target_receipt" ] || \
+      [ "$bundle_dir" != "$bundle_fixture" ]; then
+    echo "fleet-canary self-test: pointer bundle was not resolved relative to its own directory" >&2
+    return 1
+  fi
   case "$verify_output" in
     *"revalidated 1 consumer checkout(s), 1 unavailable"*) ;;
     *) echo "fleet-canary self-test: verifier summary was incomplete: $verify_output" >&2; return 1 ;;
   esac
 
   printf 'tampered jar\n' > "$jar_file"
-  if verify_output=$(cd "$path_fixture" && \
+  if verify_output=$(cd "$verify_cwd" && \
       sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
       plugin_expected_slug='sava-software/sava-build' verify_receipt "$pointer_file" 2>&1); then
     echo "fleet-canary self-test: retained plugin jar corruption was accepted" >&2
@@ -1002,7 +1010,7 @@ self_test() {
   printf 'plugin jar\n' > "$jar_file"
 
   mv "$consumer_checkout" "$unavailable_checkout"
-  if verify_output=$(cd "$path_fixture" && \
+  if verify_output=$(cd "$verify_cwd" && \
       sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
       plugin_expected_slug='sava-software/sava-build' verify_receipt "$pointer_file" 2>&1); then
     mv "$unavailable_checkout" "$consumer_checkout"

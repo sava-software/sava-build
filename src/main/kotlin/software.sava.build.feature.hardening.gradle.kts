@@ -1336,8 +1336,19 @@ hardening.mutation.all {
   val evidenceThreads = suite.threads
   val evidenceTimeoutFactor = suite.timeoutFactor
   val evidenceTimeoutConst = suite.timeoutConst
-  val evidenceConfigurationText = providers.provider {
-    buildString {
+  fun evidenceSnapshot(
+    invocationId: String,
+    reportSha256: String,
+    scope: String,
+    historyAssisted: Boolean,
+    javaVersion: String,
+  ): PitestEvidence {
+    // This must be assembled at the same execution-time boundary as the content
+    // fingerprints below. Wrapping it in a Provider lets configuration-cache storage
+    // realize the captured runtime classpath before producer tasks have created their
+    // artifacts. In a modular multi-project build, ExtraJavaModuleInfoTransform then
+    // tries to open a project JAR that cannot exist until execution starts.
+    val configurationText = buildString {
       appendLine("targetClasses=${evidenceTargetClasses.get().sorted().joinToString(",")}")
       appendLine("excludedClasses=${evidenceExcludedClasses.get().sorted().joinToString(",")}")
       appendLine("targetTests=${evidenceTargetTests.get()}")
@@ -1356,14 +1367,7 @@ hardening.mutation.all {
           "toolClasspathOrderSha256=" + PitestEvidence.sha256(
               evidenceToolFiles.files.joinToString("\n") { it.absoluteFile.normalize().path }))
     }
-  }
-  fun evidenceSnapshot(
-    invocationId: String,
-    reportSha256: String,
-    scope: String,
-    historyAssisted: Boolean,
-    javaVersion: String,
-  ) = PitestEvidence(
+    return PitestEvidence(
       suite = suiteName,
       invocationId = invocationId,
       pitestVersion = evidencePitestVersion.get(),
@@ -1375,11 +1379,12 @@ hardening.mutation.all {
       classesSha256 = PitestEvidence.fingerprint(evidenceProjectDir, evidenceClassFiles.files),
       classpathSha256 = PitestEvidence.fingerprint(evidenceProjectDir, evidenceClasspathFiles.files),
       toolClasspathSha256 = PitestEvidence.fingerprint(evidenceProjectDir, evidenceToolFiles.files),
-      configurationSha256 = PitestEvidence.sha256(evidenceConfigurationText.get()),
+      configurationSha256 = PitestEvidence.sha256(configurationText),
       reportSha256 = reportSha256,
       scope = scope,
       historyAssisted = historyAssisted,
-  )
+    )
+  }
   val evidenceProjectPath = project.path
   val evidenceCertificationSession = hardeningCertificationSession
   val evidenceCertificationRunning = certificationReceiptRunning
@@ -1428,6 +1433,10 @@ hardening.mutation.all {
   }
   val evidenceMode = pitestModeProperty
   pitestModeSnapshot.configure {
+    // Snapshot and verify may reuse an existing report without running PIT first;
+    // schedule every project artifact they fingerprint before their actions execute.
+    // hardeningCertify already inherits this edge through qualityGate -> pitest*.
+    dependsOn(evidenceClasspathFiles)
     doFirst {
       val label = evidenceMode.orNull ?: return@doFirst
       if (!HardeningNames.isSafeName(label)) return@doFirst
@@ -1466,6 +1475,7 @@ hardening.mutation.all {
   val verify = tasks.register("${pitestTaskName}Verify") {
     group = "verification"
     description = "Fails when the '$suiteName' PIT run left unkilled mutants missing from config/pitest/$suiteName-accepted.csv."
+    dependsOn(evidenceClasspathFiles)
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
     val xmlProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.xml")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
@@ -2955,6 +2965,13 @@ hardening.mutation.all {
       enforceExit: Boolean = true
   ): JavaExec.() -> Unit = {
     dependsOn(compileForPitest)
+    // compileForPitest's compile classpath schedules compile-time project JARs, but
+    // PIT and its evidence fingerprint consume the full test runtime classpath too.
+    // Declare that FileCollection's build dependencies explicitly: a runtimeOnly
+    // project dependency otherwise remains absent until evidenceSnapshot resolves it
+    // in doFirst (too late for Gradle to add the producer), and modular consumers then
+    // fail inside ExtraJavaModuleInfoTransform while opening the missing JAR.
+    dependsOn(evidenceClasspathFiles)
     javaLauncher.convention(evidenceJavaLauncher)
     usesService(pitestExecutionLock)
     usesService(hardeningCertificationSession)
