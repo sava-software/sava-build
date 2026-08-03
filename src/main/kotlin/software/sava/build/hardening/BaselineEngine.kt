@@ -15,6 +15,68 @@ package software.sava.build.hardening
  */
 internal object BaselineEngine {
 
+  /** One observed mutant copy, paired at most once with one accepted sibling row. */
+  private data class ObservedCopy(
+    val line: Int?,
+    val rowIndex: Int?,
+  )
+
+  /**
+   * Assigns observed copies to accepted rows at one key. A deterministic maximum
+   * bipartite match consumes every exact line affinity that can coexist — a row
+   * carrying several historical anchors cannot steal the sole anchor of a narrower
+   * sibling. Copies still unpaired then consume rows in file order; that second
+   * phase is the intentional moved-anchor fallback. Keeping this allocator shared
+   * by planning and rewriting prevents either surface from selecting a different
+   * same-key sibling when recorded line tags repeat.
+   */
+  private fun assignObservedCopies(
+    acceptedRows: List<BaselineNotes.Row>,
+    rowIndices: List<Int>,
+    observedLines: List<String>,
+  ): List<ObservedCopy> {
+    class MutableCopy(val line: Int?) {
+      var rowIndex: Int? = null
+    }
+    val copies = observedLines
+        .map { MutableCopy(it.toIntOrNull()) }
+        .sortedWith(compareBy(nullsLast(naturalOrder<Int>())) { it.line })
+    val rowToCopy = HashMap<Int, Int>()
+    fun augment(copyIndex: Int, visitedRows: MutableSet<Int>): Boolean {
+      val line = copies[copyIndex].line ?: return false
+      // Prefer a free exact row before displacing an earlier copy. Besides doing
+      // less work, this keeps equal-line siblings in file order, so a rewrite is
+      // a fixed point even when several observed copies share the same line.
+      for (rowIndex in rowIndices) {
+        if (line !in acceptedRows[rowIndex].recordedLines || rowIndex in visitedRows) continue
+        if (rowIndex !in rowToCopy) {
+          visitedRows.add(rowIndex)
+          rowToCopy[rowIndex] = copyIndex
+          copies[copyIndex].rowIndex = rowIndex
+          return true
+        }
+      }
+      for (rowIndex in rowIndices) {
+        if (line !in acceptedRows[rowIndex].recordedLines || !visitedRows.add(rowIndex)) continue
+        val incumbent = rowToCopy.getValue(rowIndex)
+        if (augment(incumbent, visitedRows)) {
+          rowToCopy[rowIndex] = copyIndex
+          copies[copyIndex].rowIndex = rowIndex
+          return true
+        }
+      }
+      return false
+    }
+    copies.indices.forEach { augment(it, HashSet()) }
+
+    val unmatchedRows = rowIndices.filterTo(mutableListOf()) { it !in rowToCopy }
+    for (copy in copies) {
+      if (copy.rowIndex != null || unmatchedRows.isEmpty()) continue
+      copy.rowIndex = unmatchedRows.removeAt(0)
+    }
+    return copies.map { ObservedCopy(it.line, it.rowIndex) }
+  }
+
   /** Multiset difference: the elements of [a] left after each match in [b] consumes one. */
   fun multisetDiff(a: List<String>, b: List<String>): List<String> {
     val remaining = b.groupingBy { it }.eachCount().toMutableMap()
@@ -66,20 +128,9 @@ internal object BaselineEngine {
     fun coordinate(key: String) = key.substringBeforeLast(',')
     val dispositions = arrayOfNulls<Disposition>(acceptedRows.size)
     for ((key, keyIndices) in acceptedRows.indices.groupBy { acceptedRows[it].key }) {
-      var remaining = currentLines[key].orEmpty().size
-      if (remaining >= keyIndices.size) {
-        keyIndices.forEach { dispositions[it] = Disposition.MATCHED }
-        continue
-      }
-      val liveLines = currentLines[key].orEmpty().toSet()
-      val (affine, bare) = keyIndices.partition { index ->
-        acceptedRows[index].recordedLines.any { it.toString() in liveLines }
-      }
-      for (index in affine + bare) {
-        if (remaining == 0) break
-        dispositions[index] = Disposition.MATCHED
-        --remaining
-      }
+      assignObservedCopies(acceptedRows, keyIndices, currentLines[key].orEmpty())
+          .mapNotNull { it.rowIndex }
+          .forEach { dispositions[it] = Disposition.MATCHED }
     }
     val flipInsuredKeys = acceptedRows
         .filter { it.note?.contains("flip insurance") == true }
@@ -165,27 +216,9 @@ internal object BaselineEngine {
         .filter { keepPlan[it] == Disposition.MATCHED }
         .groupBy { acceptedRows[it].key }
     for ((key, rowIndices) in matchedByKey) {
-      class Copy(val line: Int?) {
-        var rowIndex: Int? = null
-      }
-      val copies = currentLines[key].orEmpty()
-          .map { Copy(it.toIntOrNull()) }
-          .sortedWith(compareBy(nullsLast(naturalOrder<Int>())) { it.line })
+      val copies = assignObservedCopies(acceptedRows, rowIndices, currentLines[key].orEmpty())
       require(copies.size == rowIndices.size) {
         "prune matched ${rowIndices.size} row(s) at '$key' but observed ${copies.size} current copy/copies"
-      }
-      val unassignedRows = rowIndices.toMutableList()
-      for (copy in copies) {
-        val line = copy.line ?: continue
-        val affine = unassignedRows.firstOrNull { line in acceptedRows[it].recordedLines }
-        if (affine != null) {
-          copy.rowIndex = affine
-          unassignedRows.remove(affine)
-        }
-      }
-      for (copy in copies) {
-        if (copy.rowIndex != null) continue
-        copy.rowIndex = unassignedRows.removeAt(0)
       }
       copies.forEach { copy ->
         refreshedLines[checkNotNull(copy.rowIndex)] = copy.line?.let(::listOf).orEmpty()
@@ -279,35 +312,16 @@ internal object BaselineEngine {
     acceptedRows: List<BaselineNotes.Row>,
     currentLines: Map<String, List<String>>,
   ): UpdateRewrite {
-    val pairIdxByKey = HashMap<String, MutableList<Int>>()
-    acceptedRows.forEachIndexed { idx, row -> pairIdxByKey.getOrPut(row.key) { mutableListOf() }.add(idx) }
-    val chosenIdx = mutableSetOf<Int>()
-    class Copy(val key: String, val line: Int?) {
-      var pair: Int? = null
-    }
+    val rowIndicesByKey = acceptedRows.indices.groupBy { acceptedRows[it].key }
+    data class Copy(val key: String, val line: Int?, val pair: Int?)
     val copies = currentLines.keys.sorted().flatMap { key ->
-      currentLines.getValue(key).map { it.toIntOrNull() }
-          .sortedWith(nullsLast(naturalOrder()))
-          .map { Copy(key, it) }
+      assignObservedCopies(
+          acceptedRows,
+          rowIndicesByKey[key].orEmpty(),
+          currentLines.getValue(key),
+      ).map { Copy(key, it.line, it.rowIndex) }
     }
-    for (copy in copies) {
-      val pairs = pairIdxByKey[copy.key] ?: continue
-      val line = copy.line ?: continue
-      val hit = pairs.firstOrNull { line in acceptedRows[it].recordedLines }
-      if (hit != null) {
-        copy.pair = hit
-        chosenIdx.add(hit)
-        pairs.remove(hit)
-      }
-    }
-    for (copy in copies) {
-      if (copy.pair != null) continue
-      val pairs = pairIdxByKey[copy.key] ?: continue
-      if (pairs.isEmpty()) continue
-      val idx = pairs.removeAt(0)
-      copy.pair = idx
-      chosenIdx.add(idx)
-    }
+    val chosenIdx = copies.mapNotNullTo(mutableSetOf()) { it.pair }
     val droppedIdx = acceptedRows.indices.filter { it !in chosenIdx }
     val flipPool = droppedIdx.filter { acceptedRows[it].note != null }.toMutableList()
     val carriedIdx = mutableSetOf<Int>()
@@ -346,10 +360,9 @@ internal object BaselineEngine {
   /**
    * `-PunionMutationBaseline`: multiset union — per key, the larger of the two
    * occurrence counts. Existing rows keep their notes and tags verbatim and
-   * consume their own tagged lines from the pool (fewest live options first, so a
-   * multi-line insurance tag cannot steal the only copy of a line a sibling row
-   * tags exactly; rows without a live tagged line consume oldest-first — the
-   * documented same-key blind spot). Added copies land bare with the genuinely
+   * consume observed copies through the same maximum exact-affinity assignment as
+   * prune and update; only rows with no possible exact match consume oldest-first
+   * through the moved-anchor fallback. Added copies land bare with the genuinely
    * unclaimed observed lines.
    */
   fun unionMerge(
@@ -359,35 +372,22 @@ internal object BaselineEngine {
   ): UnionMerge {
     val added = multisetDiff(current, acceptedRows.map { it.key })
     if (added.isEmpty()) return UnionMerge(emptyList(), emptyList(), acceptedRows.size)
-    val pairsByKey = acceptedRows.groupBy { it.key }
+    val rowIndicesByKey = acceptedRows.indices.groupBy { acceptedRows[it].key }
     val currentCounts = current.groupingBy { it }.eachCount()
-    val linePool = HashMap<String, ArrayDeque<Int>>()
-    currentLines.forEach { (key, lines) ->
-      linePool[key] = ArrayDeque(lines.mapNotNull { it.toIntOrNull() }.sorted())
-    }
     var total = 0
-    val merged = (pairsByKey.keys + currentCounts.keys).sorted().flatMap { key ->
-      val existing = pairsByKey[key].orEmpty()
+    val merged = (rowIndicesByKey.keys + currentCounts.keys).sorted().flatMap { key ->
+      val rowIndices = rowIndicesByKey[key].orEmpty()
+      val existing = rowIndices.map { acceptedRows[it] }
       val extra = maxOf(0, (currentCounts[key] ?: 0) - existing.size)
-      linePool[key]?.let { pool ->
-        val pending = existing.toMutableList()
-        var blind = 0
-        while (pending.isNotEmpty()) {
-          val next = checkNotNull(pending.minByOrNull { row ->
-            val live = row.recordedLines.count { pool.contains(it) }
-            if (live == 0) Int.MAX_VALUE else live
-          })
-          pending.remove(next)
-          val claimed = next.recordedLines.firstOrNull { pool.contains(it) }
-          if (claimed != null) pool.remove(claimed) else ++blind
-        }
-        repeat(blind) { pool.removeFirstOrNull() }
-      }
+      val unclaimed = ArrayDeque(
+          assignObservedCopies(acceptedRows, rowIndices, currentLines[key].orEmpty())
+              .filter { it.rowIndex == null }
+              .map { it.line })
       total += existing.size + extra
       existing.map { BaselineNotes.render(it) } +
           List(extra) {
             BaselineNotes.render(
-                key, null, linePool[key]?.removeFirstOrNull()?.let { listOf(it) } ?: emptyList())
+                key, null, unclaimed.removeFirstOrNull()?.let { listOf(it) } ?: emptyList())
           }
     }
     return UnionMerge(added, merged, total)

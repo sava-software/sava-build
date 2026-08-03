@@ -50,6 +50,26 @@ sha256_file() {
   sha256_stream < "$1"
 }
 
+append_execution_plan_row() {
+  local destination=$1 value separator=""
+  shift
+  for value in "$@"; do
+    case "$value" in
+      *$'\037'*|*$'\n'*)
+        echo "local-fuzz: execution-plan field contains a reserved delimiter" >&2
+        return 1
+        ;;
+    esac
+    printf '%s%s' "$separator" "$value" >> "$destination"
+    separator=$'\037'
+  done
+  printf '\n' >> "$destination"
+}
+
+read_execution_plan_row() {
+  IFS=$'\037' read -r -u 3 "$@"
+}
+
 snapshot_published_plugin_jar() {
   local source_before source_after retained_hash destination
   reject_symlink_components "$published_plugin_jar" "published plugin jar" || return 1
@@ -517,6 +537,7 @@ verify_receipt() {
   local recorded_project actual_project recorded_names actual_names actual_targets
   local recorded_plugin actual_plugin
   local repo recorded_sha recorded_origin current_sha current_origin
+  local row
   local checkout_count=0 unavailable_count=0
   require_jq
   resolve_receipt "$requested" || return 1
@@ -597,14 +618,23 @@ $changed"; else unexpected=$changed; fi
   verify_artifact "$(jq -r '.plugin.test_jar_file' "$resolved_receipt")" \
     "$(jq -r '.plugin.test_jar_sha256' "$resolved_receipt")" \
     "published 0.0.0-test plugin jar" || return 1
-  while IFS=$'\t' read -r slug log_file log_hash; do
+  while IFS= read -r row; do
+    slug=$(jq -r '.slug' <<< "$row")
+    log_file=$(jq -r '.log_file' <<< "$row")
+    log_hash=$(jq -r '.output_sha256' <<< "$row")
     if ! log_path_matches_slug "$slug" "$log_file"; then
       echo "local-fuzz: consumer log is not bound to repository $slug: $log_file" >&2
       return 1
     fi
     verify_artifact "$log_file" "$log_hash" "consumer fuzz log" || return 1
-  done < <(jq -r '.repositories[] | [.slug,.log_file,.output_sha256] | @tsv' "$resolved_receipt")
-  while IFS=$'\t' read -r slug aggregate_file aggregate_hash aggregate_targets recorded_project recorded_plugin; do
+  done < <(jq -c '.repositories[] | {slug,log_file,output_sha256}' "$resolved_receipt")
+  while IFS= read -r row; do
+    slug=$(jq -r '.slug' <<< "$row")
+    aggregate_file=$(jq -r '.path' <<< "$row")
+    aggregate_hash=$(jq -r '.sha256' <<< "$row")
+    aggregate_targets=$(jq -r '.target_count' <<< "$row")
+    recorded_project=$(jq -r '.project' <<< "$row")
+    recorded_plugin=$(jq -r '.plugin_sha256' <<< "$row")
     if ! artifact_path_matches_slug "aggregates" "$slug" "$aggregate_file"; then
       echo "local-fuzz: inner fuzz receipt is not bound to repository $slug: $aggregate_file" >&2
       return 1
@@ -639,10 +669,14 @@ $changed"; else unexpected=$changed; fi
       return 1
     fi
     verify_artifact_unchanged "$aggregate_path" "$aggregate_hash" "inner fuzz receipt" || return 1
-  done < <(jq -r '.repositories[] as $repository | $repository.aggregates[] |
-      [$repository.slug,.path,.sha256,.target_count,.project,.plugin_sha256] | @tsv' "$resolved_receipt")
+  done < <(jq -c '.repositories[] as $repository | $repository.aggregates[] |
+      {slug:$repository.slug,path,sha256,target_count,project,plugin_sha256}' "$resolved_receipt")
 
-  while IFS=$'\t' read -r slug repo recorded_sha recorded_origin; do
+  while IFS= read -r row; do
+    slug=$(jq -r '.slug' <<< "$row")
+    repo=$(jq -r '.path' <<< "$row")
+    recorded_sha=$(jq -r '.sha' <<< "$row")
+    recorded_origin=$(jq -r '.origin' <<< "$row")
     if [ ! -e "$repo" ]; then
       echo "local-fuzz: NOTE $slug checkout unavailable; retained artifacts were verified" >&2
       unavailable_count=$((unavailable_count + 1))
@@ -668,7 +702,7 @@ $changed"; else unexpected=$changed; fi
       return 1
     fi
     checkout_count=$((checkout_count + 1))
-  done < <(jq -r '.repositories[] | [.slug,.path,.sha,.origin] | @tsv' "$resolved_receipt")
+  done < <(jq -c '.repositories[] | {slug,path,sha,origin}' "$resolved_receipt")
 
   verification_inputs_unchanged || return 1
   if [ "$checkout_count" -eq 0 ]; then
@@ -680,30 +714,29 @@ $changed"; else unexpected=$changed; fi
 
 self_test() {
   local fixture aggregate records targets projects slugs basenames count
-  local path_fixture pointer_file target_receipt artifact_file symlink_file stale_file plan_probe stdin_probe
-  local target_hash artifact_hash resolved_path saved_pwd long_name key plugin_hash repo_key
+  local path_fixture pointer_file target_receipt stale_file plan_probe stdin_probe
+  local target_hash long_name key plugin_hash repo_key
   local plan_rows _stolen probe_slug probe_repo probe_sha probe_origin
+  local plugin_checkout consumer_checkout unavailable_checkout manifest_fixture bundle_fixture
+  local preflight_file publish_file jar_file log_file aggregate_file
+  local plugin_commit plugin_tree consumer_commit preflight_hash publish_hash
+  local log_hash aggregate_hash manifest_hash verify_output
   require_jq
-  fixture=$(mktemp)
-  aggregate=$(mktemp)
-  records=$(mktemp)
-  path_fixture=$(mktemp -d)
-  plan_probe=$(mktemp)
-  stdin_probe=$(mktemp)
+  path_fixture=$(mktemp -d "${TMPDIR:-/tmp}/local-fuzz-self-test.XXXXXX")
   path_fixture=$(cd "$path_fixture" && pwd -P)
+  fixture="$path_fixture/fixture"
+  aggregate="$path_fixture/aggregate"
+  records="$path_fixture/records"
+  plan_probe="$path_fixture/execution-plan"
+  stdin_probe="$path_fixture/stdin"
   pointer_file="$path_fixture/pointer.json"
   target_receipt="$path_fixture/local-fuzz-runs/run.A/receipt.json"
-  artifact_file="$path_fixture/local-fuzz-runs/run.A/logs/ok.log"
-  symlink_file="$path_fixture/local-fuzz-runs/run.A/logs/link.log"
   stale_file="$path_fixture/repo/module/build/hardening/local-fuzz.tsv"
   trap '
-    rm -f "$fixture" "$aggregate" "$records" "$plan_probe" "$stdin_probe" \
-      "$symlink_file" "$artifact_file" \
-      "$target_receipt" "$pointer_file" "$stale_file"
-    rmdir "$path_fixture/repo/module/build/hardening" "$path_fixture/repo/module/build" \
-      "$path_fixture/repo/module" "$path_fixture/repo" \
-      "$path_fixture/local-fuzz-runs/run.A/logs" "$path_fixture/local-fuzz-runs/run.A" \
-      "$path_fixture/local-fuzz-runs" "$path_fixture" 2>/dev/null || true
+    case "$(basename "$path_fixture")" in
+      local-fuzz-self-test.*) rm -rf -- "$path_fixture" ;;
+      *) echo "local-fuzz self-test: refusing unsafe cleanup path $path_fixture" >&2 ;;
+    esac
   ' RETURN
   printf '%s\n' \
     "fuzzAll - Runs every registered fuzz target locally; -PmaxFuzzTime=<seconds> applies to each target." \
@@ -807,11 +840,12 @@ self_test() {
     echo "local-fuzz self-test: cross-repository log alias was accepted" >&2
     return 1
   fi
-  printf 'one\037/repo-one\037\037origin-one\n' > "$plan_probe"
-  printf 'two\037/repo-two\037sha-two\037origin-two\n' >> "$plan_probe"
+  : > "$plan_probe"
+  append_execution_plan_row "$plan_probe" one /repo-one "" origin-one
+  append_execution_plan_row "$plan_probe" two /repo-two sha-two origin-two
   printf 'stdin may be consumed by a child\n' > "$stdin_probe"
   plan_rows=0
-  while IFS=$'\037' read -r -u 3 probe_slug probe_repo probe_sha probe_origin; do
+  while read_execution_plan_row probe_slug probe_repo probe_sha probe_origin; do
     if [ "$probe_slug" = one ] &&
         { [ "$probe_repo" != /repo-one ] || [ -n "$probe_sha" ] ||
           [ "$probe_origin" != origin-one ]; }; then
@@ -825,24 +859,74 @@ self_test() {
     echo "local-fuzz self-test: execution plan shared stdin and was truncated" >&2; return 1;
   }
 
-  mkdir -p "$(dirname "$artifact_file")" "$(dirname "$stale_file")"
+  plugin_checkout="$path_fixture/plugin-checkout"
+  consumer_checkout="$path_fixture/consumer-checkout"
+  unavailable_checkout="$path_fixture/consumer-checkout.unavailable"
+  manifest_fixture="$path_fixture/fuzz-manifest.txt"
+  bundle_fixture="$path_fixture/local-fuzz-runs/run.A"
+  mkdir -p "$plugin_checkout" "$consumer_checkout" "$bundle_fixture/logs" \
+    "$(dirname "$stale_file")"
   repo_key=$(artifact_key "sava-software/example")
-  jq -n --arg hash "$plugin_hash" --arg repo_key "$repo_key" \
+  mkdir -p "$bundle_fixture/aggregates/$repo_key"
+
+  printf 'plugin source\n' > "$plugin_checkout/source.txt"
+  git -C "$plugin_checkout" init -q
+  git -C "$plugin_checkout" add source.txt
+  git -C "$plugin_checkout" -c user.name='Runner Self Test' \
+    -c user.email='runner-self-test@example.invalid' -c commit.gpgSign=false \
+    commit -qm 'plugin fixture'
+  git -C "$plugin_checkout" remote add origin git@github.com:sava-software/sava-build.git
+  plugin_commit=$(git -C "$plugin_checkout" rev-parse HEAD)
+  plugin_tree=$(git -C "$plugin_checkout" rev-parse 'HEAD^{tree}')
+
+  printf 'consumer source\n' > "$consumer_checkout/source.txt"
+  git -C "$consumer_checkout" init -q
+  git -C "$consumer_checkout" add source.txt
+  git -C "$consumer_checkout" -c user.name='Runner Self Test' \
+    -c user.email='runner-self-test@example.invalid' -c commit.gpgSign=false \
+    commit -qm 'consumer fixture'
+  git -C "$consumer_checkout" remote add origin git@github.com:sava-software/example.git
+  consumer_commit=$(git -C "$consumer_checkout" rev-parse HEAD)
+
+  printf 'sava-software/example\n' > "$manifest_fixture"
+  preflight_file="$bundle_fixture/preflight.tsv"
+  publish_file="$bundle_fixture/plugin-publish.log"
+  jar_file="$bundle_fixture/plugin-0.0.0-test.jar"
+  log_file="$bundle_fixture/logs/$repo_key.log"
+  aggregate_file="$bundle_fixture/aggregates/$repo_key/root.tsv"
+  printf 'preflight\n' > "$preflight_file"
+  printf 'publish\n' > "$publish_file"
+  printf 'plugin jar\n' > "$jar_file"
+  printf 'consumer fuzz log\n' > "$log_file"
+  plugin_hash=$(sha256_file "$jar_file")
+  printf 'schema\t2\nproject\t:\nmaxFuzzTimeSeconds\t17\npluginSha256\t%s\ntarget\tfuzzCodec\n' \
+    "$plugin_hash" > "$aggregate_file"
+  preflight_hash=$(sha256_file "$preflight_file")
+  publish_hash=$(sha256_file "$publish_file")
+  log_hash=$(sha256_file "$log_file")
+  aggregate_hash=$(sha256_file "$aggregate_file")
+  manifest_hash=$(sha256_file "$manifest_fixture")
+
+  jq -n --arg plugin_commit "$plugin_commit" --arg plugin_tree "$plugin_tree" \
+    --arg plugin_hash "$plugin_hash" --arg manifest_hash "$manifest_hash" \
+    --arg preflight_hash "$preflight_hash" --arg publish_hash "$publish_hash" \
+    --arg repo_key "$repo_key" --arg consumer_path "$consumer_checkout" \
+    --arg consumer_commit "$consumer_commit" --arg log_hash "$log_hash" \
+    --arg aggregate_hash "$aggregate_hash" \
     '{schema:3,kind:"local-fuzz-receipt",mode:"release",result:"passed",run_id:"run.A",
       seconds_per_target:17,
-      plugin:{sha:"0000000000000000000000000000000000000000",
-        tree:"0000000000000000000000000000000000000000",
+      plugin:{sha:$plugin_commit,tree:$plugin_tree,
         origin:"git@github.com:sava-software/sava-build.git",dirty_before:false,dirty_after:false,
-        test_jar_file:"plugin-0.0.0-test.jar",test_jar_sha256:$hash},
-      manifest_sha256:$hash,preflight_file:"preflight.tsv",preflight_sha256:$hash,
-      publish_log_file:"plugin-publish.log",publish_output_sha256:$hash,
-      repositories:[{slug:"sava-software/example",path:"/tmp/example",
-        sha:"0000000000000000000000000000000000000000",origin:"git@github.com:sava-software/example.git",
+        test_jar_file:"plugin-0.0.0-test.jar",test_jar_sha256:$plugin_hash},
+      manifest_sha256:$manifest_hash,preflight_file:"preflight.tsv",preflight_sha256:$preflight_hash,
+      publish_log_file:"plugin-publish.log",publish_output_sha256:$publish_hash,
+      repositories:[{slug:"sava-software/example",path:$consumer_path,
+        sha:$consumer_commit,origin:"git@github.com:sava-software/example.git",
         dirty_before:false,dirty_after:false,result:"passed",task_mode:"aggregate",tasks:["fuzzAll"],
         registered_projects:[":"],registered_targets:[":fuzzCodec"],
-        log_file:("logs/"+$repo_key+".log"),output_sha256:$hash,
-        aggregates:[{project:":",path:("aggregates/"+$repo_key+"/root.tsv"),sha256:$hash,
-          target_count:1,plugin_sha256:$hash,targets:["fuzzCodec"]}]}]}' > "$target_receipt"
+        log_file:("logs/"+$repo_key+".log"),output_sha256:$log_hash,
+        aggregates:[{project:":",path:("aggregates/"+$repo_key+"/root.tsv"),sha256:$aggregate_hash,
+          target_count:1,plugin_sha256:$plugin_hash,targets:["fuzzCodec"]}]}]}' > "$target_receipt"
   release_receipt_schema_valid "$target_receipt" || {
     echo "local-fuzz self-test: realistic release receipt schema was rejected" >&2; return 1;
   }
@@ -857,50 +941,49 @@ self_test() {
     echo "local-fuzz self-test: structurally incomplete receipt was accepted" >&2
     return 1
   fi
-  printf 'artifact\n' > "$artifact_file"
   printf 'stale\n' > "$stale_file"
   target_hash=$(sha256_file "$target_receipt")
-  artifact_hash=$(sha256_file "$artifact_file")
-  jq -n --arg receipt_sha256 "$target_hash" \
+  jq -n --arg receipt_sha256 "$target_hash" --arg plugin_commit "$plugin_commit" \
     '{schema:2,kind:"local-fuzz-pointer",mode:"release",result:"passed",
-      run_id:"run.A",plugin_sha:"0000000000000000000000000000000000000000",
+      run_id:"run.A",plugin_sha:$plugin_commit,
       bundle:"local-fuzz-runs/run.A/receipt.json",receipt_sha256:$receipt_sha256}' \
     > "$pointer_file"
-  saved_pwd=$PWD
-  cd /
-  if ! resolve_receipt "$pointer_file"; then
-    cd "$saved_pwd"
+
+  verify_output=$(sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
+    plugin_expected_slug='sava-software/sava-build' verify_receipt "$pointer_file" 2>&1) || {
+      echo "local-fuzz self-test: production receipt verification failed:" >&2
+      printf '%s\n' "$verify_output" >&2
+      return 1
+    }
+  case "$verify_output" in
+    *"revalidated 1 consumer checkout(s), 0 unavailable"*) ;;
+    *) echo "local-fuzz self-test: verifier summary was incomplete: $verify_output" >&2; return 1 ;;
+  esac
+
+  printf 'tampered jar\n' > "$jar_file"
+  if verify_output=$(sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
+      plugin_expected_slug='sava-software/sava-build' verify_receipt "$pointer_file" 2>&1); then
+    echo "local-fuzz self-test: retained plugin jar corruption was accepted" >&2
     return 1
   fi
-  cd "$saved_pwd"
-  [ "$bundle_dir" = "$path_fixture/local-fuzz-runs/run.A" ] || {
-    echo "local-fuzz self-test: pointer resolved bundle base to $bundle_dir" >&2; return 1;
-  }
-  resolved_path=$(bundle_artifact_path "logs/ok.log" "self-test artifact")
-  [ "$resolved_path" = "$artifact_file" ] || {
-    echo "local-fuzz self-test: contained artifact resolved to $resolved_path" >&2; return 1;
-  }
-  verify_artifact "logs/ok.log" "$artifact_hash" "self-test artifact" || return 1
-  [ "$verified_artifact_path" = "$artifact_file" ] || return 1
-  ln -s "$fixture" "$symlink_file"
-  if bundle_artifact_path "logs/link.log" "self-test artifact" >/dev/null 2>&1; then
-    echo "local-fuzz self-test: symlinked artifact was accepted" >&2
+  case "$verify_output" in
+    *"published 0.0.0-test plugin jar hash mismatch"*) ;;
+    *) echo "local-fuzz self-test: jar failure was misreported: $verify_output" >&2; return 1 ;;
+  esac
+  printf 'plugin jar\n' > "$jar_file"
+
+  mv "$consumer_checkout" "$unavailable_checkout"
+  if verify_output=$(sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
+      plugin_expected_slug='sava-software/sava-build' verify_receipt "$pointer_file" 2>&1); then
+    mv "$unavailable_checkout" "$consumer_checkout"
+    echo "local-fuzz self-test: zero available consumer checkouts were accepted" >&2
     return 1
   fi
-  verification_inputs_unchanged || return 1
-  printf 'changed\n' > "$artifact_file"
-  if verification_inputs_unchanged >/dev/null 2>&1; then
-    echo "local-fuzz self-test: artifact mutation after verification was accepted" >&2
-    return 1
-  fi
-  printf 'artifact\n' > "$artifact_file"
-  verification_inputs_unchanged || return 1
-  jq -n '{schema:2,kind:"local-fuzz-pointer",mode:"release",result:"in_progress"}' \
-    > "$pointer_file"
-  if verification_inputs_unchanged >/dev/null 2>&1; then
-    echo "local-fuzz self-test: superseded canonical pointer remained valid" >&2
-    return 1
-  fi
+  mv "$unavailable_checkout" "$consumer_checkout"
+  case "$verify_output" in
+    *"zero consumer checkouts were available"*) ;;
+    *) echo "local-fuzz self-test: zero-checkout failure was misreported: $verify_output" >&2; return 1 ;;
+  esac
   invalidate_aggregate_receipts "$path_fixture/repo" || return 1
   if [ -e "$stale_file" ]; then
     echo "local-fuzz self-test: prior aggregate receipt survived invalidation" >&2
@@ -1091,8 +1174,7 @@ if $release_mode; then
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$repo" "$repo_sha" "$remote" "$dirty" "$result" \
       >> "$preflight_file"
     if [ "$result" = passed ]; then
-      printf '%s\037%s\037%s\037%s\n' \
-        "$slug" "$repo" "$repo_sha" "$remote" >> "$execution_plan"
+      append_execution_plan_row "$execution_plan" "$slug" "$repo" "$repo_sha" "$remote"
     else
       preflight_failed="$preflight_failed $slug($result)"
     fi
@@ -1105,7 +1187,7 @@ if $release_mode; then
   fi
 else
   while IFS=$'\t' read -r slug repo; do
-    printf '%s\037%s\n' "$slug" "$repo" >> "$execution_plan"
+    append_execution_plan_row "$execution_plan" "$slug" "$repo"
   done < "$plan_file"
 fi
 
@@ -1234,7 +1316,7 @@ consumer_cache_args=()
 if $release_mode; then consumer_cache_args+=(--configuration-cache); fi
 expected_execution_rows=$(wc -l < "$plan_file" | tr -d ' ')
 processed_execution_rows=0
-while IFS=$'\037' read -r -u 3 slug repo pre_sha pre_origin; do
+while read_execution_plan_row slug repo pre_sha pre_origin; do
   processed_execution_rows=$((processed_execution_rows + 1))
   safe_slug=$(artifact_key "$slug")
   log_file="logs/$safe_slug.log"

@@ -1374,10 +1374,18 @@ $fuzzBlock
       "pitestEncodingVerify", "pitestEncodingDebt", "pitestDeclinesDebt",
       "agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout"
     ).build().output
+
+    // Debt deliberately soft-fails an unusable current report so it remains a
+    // triage surface. The fleet canary must nevertheless reprint both the generic
+    // fallback warning and the parser's reason; otherwise an ordinary sweep turns
+    // a corrupt report into an invisible green observation.
+    writeReport(listOf("Codec.java,com.example.Codec,broken"), "")
+    val invalidDebtOutput = runner("pitestEncodingDebt").build().output
+    val allCanaryOutput = output + invalidDebtOutput
     pattern.split('|').forEach { fragment ->
       assertTrue(
-        output.contains(fragment),
-        "canary pattern fragment '$fragment' matches nothing — reworded warning?\n$output"
+        allCanaryOutput.contains(fragment),
+        "canary pattern fragment '$fragment' matches nothing — reworded warning?\n$allCanaryOutput"
       )
     }
 

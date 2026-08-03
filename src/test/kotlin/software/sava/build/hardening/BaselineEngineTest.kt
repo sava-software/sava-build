@@ -153,14 +153,25 @@ class BaselineEngineTest {
       BaselineNotes.Row("com.example.Codec,dead,MathMutator,SURVIVED", "# killed", listOf(70)),
     )
 
-    val rewrite = BaselineEngine.pruneRewrite(
+    val plan = BaselineEngine.keepPlan(
       accepted,
+      mapOf(key to listOf("20", "12")),
+      emptyMap(),
+      emptyMap(),
+    )
+    assertEquals(
       listOf(
         BaselineEngine.Disposition.MATCHED,
         BaselineEngine.Disposition.MATCHED,
         BaselineEngine.Disposition.INSURED,
         BaselineEngine.Disposition.DROP,
       ),
+      plan,
+    )
+
+    val rewrite = BaselineEngine.pruneRewrite(
+      accepted,
+      plan,
       mapOf(key to listOf("20", "12")),
     )
 
@@ -173,6 +184,68 @@ class BaselineEngineTest {
       rewrite.written,
     )
     assertEquals(1, rewrite.refreshedLineTags)
+  }
+
+  @Test
+  fun `duplicate line affinity drops the dead copy without laundering a live sibling`() {
+    val key = "systems.comodal.jsoniter.DoubleParser,computeFloat,ConditionalsBoundaryMutator,SURVIVED"
+    val accepted = listOf(273, 275, 283, 308, 319, 319, 320).mapIndexed { index, line ->
+      BaselineNotes.Row(key, "# sibling ${index + 1}", listOf(line))
+    }
+    val currentLines = mapOf(key to listOf("273", "275", "283", "308", "319", "320"))
+
+    val plan = BaselineEngine.keepPlan(accepted, currentLines, emptyMap(), emptyMap())
+
+    assertEquals(
+      listOf(
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.DROP,
+        BaselineEngine.Disposition.MATCHED,
+      ),
+      plan,
+      "the second # line 319 row, not the live # line 320 row, must consume the missing copy",
+    )
+
+    val rewrite = BaselineEngine.pruneRewrite(accepted, plan, currentLines)
+    assertEquals(
+      accepted.filterIndexed { index, _ -> index != 5 }.map(BaselineNotes::render),
+      rewrite.written,
+    )
+    assertEquals(0, rewrite.refreshedLineTags, "prune must not retag the surviving 319 row as 320")
+  }
+
+  @Test
+  fun `maximum affinity does not let a multi-line row steal a narrow sibling anchor`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# broad history", listOf(10, 20)),
+      BaselineNotes.Row(key, "# narrow history", listOf(10)),
+    )
+    val currentLines = mapOf(key to listOf("10", "20"))
+    val plan = BaselineEngine.keepPlan(accepted, currentLines, emptyMap(), emptyMap())
+
+    assertEquals(
+      listOf(BaselineEngine.Disposition.MATCHED, BaselineEngine.Disposition.MATCHED),
+      plan,
+    )
+    assertEquals(
+      listOf(
+        "$key # broad history # line 20",
+        "$key # narrow history # line 10",
+      ),
+      BaselineEngine.pruneRewrite(accepted, plan, currentLines).written,
+    )
+    assertEquals(
+      listOf(
+        "$key # narrow history # line 10",
+        "$key # broad history # line 20",
+      ),
+      BaselineEngine.updateRewrite(accepted, currentLines).written,
+    )
   }
 
   @Test
@@ -270,6 +343,29 @@ class BaselineEngineTest {
       val again = BaselineEngine.unionMerge(merge.merged.map { BaselineNotes.parse(it) }, current, p.currentLines)
       assertTrue(again.added.isEmpty(), "seed $seed: union not idempotent")
     }
+  }
+
+  @Test
+  fun `union leaves the genuinely new line after maximum affinity consumption`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# sibling A", listOf(20, 30)),
+      BaselineNotes.Row(key, "# sibling B", listOf(20, 40)),
+      BaselineNotes.Row(key, "# sibling C", listOf(20, 40)),
+    )
+
+    val merge = BaselineEngine.unionMerge(
+      accepted,
+      List(4) { key },
+      mapOf(key to listOf("10", "20", "30", "40")),
+    )
+
+    assertEquals(listOf(key), merge.added)
+    assertEquals(
+      accepted.map(BaselineNotes::render) + "$key # line 10",
+      merge.merged,
+      "20, 30, and 40 all have an exact existing sibling, so only 10 is new",
+    )
   }
 
   @Test
