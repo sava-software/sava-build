@@ -26,6 +26,60 @@ class BaselineEngineTest {
     val killedLines: Map<String, List<Int?>>,
   )
 
+  /** Exhaustive oracle for the small per-key graphs generated below. */
+  private fun maximumExactAffinity(
+    rows: List<BaselineNotes.Row>,
+    observedLines: List<String>,
+  ): Int {
+    val copies = observedLines.map { it.toIntOrNull() }
+    val memo = HashMap<Pair<Int, Int>, Int>()
+    fun search(copyIndex: Int, usedRows: Int): Int {
+      if (copyIndex == copies.size) return 0
+      val state = copyIndex to usedRows
+      memo[state]?.let { return it }
+      var best = search(copyIndex + 1, usedRows)
+      val line = copies[copyIndex]
+      if (line != null) {
+        for (rowIndex in rows.indices) {
+          val mask = 1 shl rowIndex
+          if (usedRows and mask == 0 && line in rows[rowIndex].recordedLines) {
+            best = maxOf(best, 1 + search(copyIndex + 1, usedRows or mask))
+          }
+        }
+      }
+      memo[state] = best
+      return best
+    }
+    return search(0, 0)
+  }
+
+  /** The file-order exact matcher that the augmenting-path allocator superseded. */
+  private fun greedyExactAffinity(
+    rows: List<BaselineNotes.Row>,
+    observedLines: List<String>,
+  ): Int {
+    val usedRows = HashSet<Int>()
+    return observedLines.map { it.toIntOrNull() }
+        .sortedWith(nullsLast(naturalOrder()))
+        .count { line ->
+          if (line == null) return@count false
+          val match = rows.indices.firstOrNull {
+            it !in usedRows && line in rows[it].recordedLines
+          }
+          match != null && usedRows.add(match)
+        }
+  }
+
+  private fun exactAffinityInWrittenRows(
+    written: List<String>,
+    sourceByNote: Map<String?, BaselineNotes.Row>,
+  ): Int = written.count { rendered ->
+    val output = BaselineNotes.parse(rendered)
+    val source = sourceByNote[output.note] ?: return@count false
+    val line = output.recordedLines.singleOrNull() ?: return@count false
+    line in source.recordedLines
+  }
+
   /** A random small population: sibling-heavy keys, partial tags, some insurance. */
   private fun population(rnd: Random): Population {
     fun key() = "${classes.random(rnd)},${methods.random(rnd)},${mutators.random(rnd)},${statuses.random(rnd)}"
@@ -35,7 +89,13 @@ class BaselineEngineTest {
         1 -> "# race guard"
         else -> null
       }
-      val lines = if (rnd.nextBoolean()) listOf(rnd.nextInt(1, 60)) else emptyList()
+      val lines = when (rnd.nextInt(3)) {
+        0 -> emptyList()
+        else -> buildSet {
+          val target = rnd.nextInt(1, 4)
+          while (size < target) add(rnd.nextInt(1, 60))
+        }.sorted()
+      }
       BaselineNotes.Row(key(), note, lines)
     }
     val currentLines = buildMap<String, MutableList<String>> {
@@ -44,8 +104,17 @@ class BaselineEngineTest {
         // an occasional unparsable line exercises the null-line branches
         // (nullsLast copy ordering, the pairing skip, the empty line tag)
         val k = if (acceptedRows.isNotEmpty() && rnd.nextBoolean()) acceptedRows.random(rnd).key else key()
-        getOrPut(k) { mutableListOf() }
-            .add(if (rnd.nextInt(6) == 0) "?" else rnd.nextInt(1, 60).toString())
+        val recordedAtKey = acceptedRows
+            .asSequence()
+            .filter { it.key == k }
+            .flatMap { it.recordedLines.asSequence() }
+            .toList()
+        val line = when {
+          rnd.nextInt(8) == 0 -> "?"
+          recordedAtKey.isNotEmpty() && rnd.nextBoolean() -> recordedAtKey.random(rnd).toString()
+          else -> rnd.nextInt(1, 60).toString()
+        }
+        getOrPut(k) { mutableListOf() }.add(line)
       }
     }
     fun coordLines() = buildMap<String, MutableList<Int?>> {
@@ -75,6 +144,25 @@ class BaselineEngineTest {
         assertEquals(
           minOf(indices.size, p.currentLines[key].orEmpty().size), matched,
           "seed $seed: matched budget at $key"
+        )
+
+        // Once maximum exact affinity is exhausted, the moved-anchor fallback
+        // must not retain a stale/bare row while dropping a sibling whose tag
+        // still names any live line. This is deliberately a row-selection law,
+        // not a tag-counter subtraction: multi-line rows and genuinely moved
+        // anchors make the latter ambiguous.
+        val liveLines = p.currentLines[key].orEmpty().mapNotNullTo(HashSet()) { it.toIntOrNull() }
+        val unmatchedLiveAnchor = indices.any { index ->
+          plan[index] != BaselineEngine.Disposition.MATCHED &&
+              p.acceptedRows[index].recordedLines.any { it in liveLines }
+        }
+        val matchedWithoutLiveAnchor = indices.any { index ->
+          plan[index] == BaselineEngine.Disposition.MATCHED &&
+              p.acceptedRows[index].recordedLines.none { it in liveLines }
+        }
+        assertTrue(
+          !unmatchedLiveAnchor || !matchedWithoutLiveAnchor,
+          "seed $seed: moved-anchor fallback kept a stale row ahead of a live anchor at $key",
         )
       }
 
@@ -137,6 +225,57 @@ class BaselineEngineTest {
         "seed $seed: prune of pruned output dropped again — refresh ping-pong"
       )
     }
+  }
+
+  @Test
+  fun `assignment reaches maximum exact affinity over wider random graphs`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    var displacementCases = 0
+    repeat(1000) { seed ->
+      val rnd = Random(seed)
+      val rows = List(rnd.nextInt(0, 7)) { rowIndex ->
+        val tags = buildSet {
+          val target = rnd.nextInt(0, 4)
+          while (size < target) add(rnd.nextInt(1, 8))
+        }.sorted()
+        BaselineNotes.Row(key, "# oracle row $rowIndex", tags)
+      }
+      val observed = List(rnd.nextInt(0, 8)) {
+        if (rnd.nextInt(9) == 0) "?" else rnd.nextInt(1, 8).toString()
+      }
+      val expected = maximumExactAffinity(rows, observed)
+      if (expected > greedyExactAffinity(rows, observed)) displacementCases++
+      val sourceByNote = rows.associateBy { it.note }
+
+      val update = BaselineEngine.updateRewrite(rows, mapOf(key to observed))
+      assertEquals(
+        expected,
+        exactAffinityInWrittenRows(update.written, sourceByNote),
+        "seed $seed: update did not reach the true maximum exact affinity",
+      )
+      val permuted = observed.shuffled(Random(seed + 10_000))
+      assertEquals(
+        update.written,
+        BaselineEngine.updateRewrite(rows, mapOf(key to permuted)).written,
+        "seed $seed: report order changed a deterministic assignment",
+      )
+
+      // A green prune has at most one accepted row per current copy; in that
+      // shape its note-to-line assignment must reach the same optimum as update.
+      if (observed.size <= rows.size) {
+        val plan = BaselineEngine.keepPlan(rows, mapOf(key to observed), emptyMap(), emptyMap())
+        val prune = BaselineEngine.pruneRewrite(rows, plan, mapOf(key to observed))
+        assertEquals(
+          expected,
+          exactAffinityInWrittenRows(prune.written, sourceByNote),
+          "seed $seed: prune and update disagreed on maximum exact affinity",
+        )
+      }
+    }
+    assertTrue(
+      displacementCases > 0,
+      "seeded population never exercised a graph where augmenting displacement beats greedy matching",
+    )
   }
 
   @Test
@@ -216,6 +355,46 @@ class BaselineEngineTest {
       rewrite.written,
     )
     assertEquals(0, rewrite.refreshedLineTags, "prune must not retag the surviving 319 row as 320")
+  }
+
+  @Test
+  fun `moved anchor fallback drops a stale tag before a duplicate live anchor`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# stale anchor", listOf(99)),
+      BaselineNotes.Row(key, "# first live sibling", listOf(10)),
+      BaselineNotes.Row(key, "# duplicate live sibling", listOf(10)),
+    )
+    val currentLines = mapOf(key to listOf("10", "20"))
+
+    val plan = BaselineEngine.keepPlan(accepted, currentLines, emptyMap(), emptyMap())
+
+    assertEquals(
+      listOf(
+        BaselineEngine.Disposition.DROP,
+        BaselineEngine.Disposition.MATCHED,
+        BaselineEngine.Disposition.MATCHED,
+      ),
+      plan,
+      "the # line 99 row, not a still-live # line 10 sibling, is the killed mutant's row",
+    )
+    assertEquals(
+      listOf(
+        "$key # first live sibling # line 10",
+        "$key # duplicate live sibling # line 20",
+      ),
+      BaselineEngine.pruneRewrite(accepted, plan, currentLines).written,
+    )
+    val update = BaselineEngine.updateRewrite(accepted, currentLines)
+    assertEquals(listOf(0), update.droppedIdx)
+    assertEquals(
+      listOf(
+        "$key # first live sibling # line 10",
+        "$key # duplicate live sibling # line 20",
+      ),
+      update.written,
+      "update must make the same note-to-line choice as keep/prune",
+    )
   }
 
   @Test

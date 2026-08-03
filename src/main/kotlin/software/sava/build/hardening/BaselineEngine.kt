@@ -25,10 +25,13 @@ internal object BaselineEngine {
    * Assigns observed copies to accepted rows at one key. A deterministic maximum
    * bipartite match consumes every exact line affinity that can coexist — a row
    * carrying several historical anchors cannot steal the sole anchor of a narrower
-   * sibling. Copies still unpaired then consume rows in file order; that second
-   * phase is the intentional moved-anchor fallback. Keeping this allocator shared
-   * by planning and rewriting prevents either surface from selecting a different
-   * same-key sibling when recorded line tags repeat.
+   * sibling. Copies still unpaired then consume rows in a stable partition: rows
+   * that name any currently observed line first, then bare or wholly stale rows,
+   * with file order preserved inside both groups. That second phase is the
+   * intentional moved-anchor fallback: a row whose tag names no live line is the
+   * killed sibling before a duplicate live anchor is. Keeping this allocator
+   * shared by planning and rewriting prevents either surface from selecting a
+   * different same-key sibling when recorded line tags repeat.
    */
   private fun assignObservedCopies(
     acceptedRows: List<BaselineNotes.Row>,
@@ -69,7 +72,13 @@ internal object BaselineEngine {
     }
     copies.indices.forEach { augment(it, HashSet()) }
 
-    val unmatchedRows = rowIndices.filterTo(mutableListOf()) { it !in rowToCopy }
+    val liveLines = observedLines.mapNotNullTo(HashSet()) { it.toIntOrNull() }
+    val unmatchedRows = rowIndices
+        .filter { it !in rowToCopy }
+        .sortedBy { rowIndex ->
+          if (acceptedRows[rowIndex].recordedLines.any { it in liveLines }) 0 else 1
+        }
+        .toMutableList()
     for (copy in copies) {
       if (copy.rowIndex != null || unmatchedRows.isEmpty()) continue
       copy.rowIndex = unmatchedRows.removeAt(0)
@@ -361,9 +370,9 @@ internal object BaselineEngine {
    * `-PunionMutationBaseline`: multiset union — per key, the larger of the two
    * occurrence counts. Existing rows keep their notes and tags verbatim and
    * consume observed copies through the same maximum exact-affinity assignment as
-   * prune and update; only rows with no possible exact match consume oldest-first
-   * through the moved-anchor fallback. Added copies land bare with the genuinely
-   * unclaimed observed lines.
+   * prune and update; only rows with no possible exact match use the moved-anchor
+   * fallback, where rows still naming a live line precede stale rows. Added copies
+   * land bare with the genuinely unclaimed observed lines.
    */
   fun unionMerge(
     acceptedRows: List<BaselineNotes.Row>,

@@ -2110,7 +2110,7 @@ $fuzzBlock
     // of a line its sibling tags exactly — the robbed sibling fell to blind
     // oldest-first consumption, ate the genuinely new smallest line, and the
     // appended row was tagged with an old mutant's line while the new line went
-    // recorded nowhere. Fewest-live-options-first assignment gives the exact tag
+    // recorded nowhere. Maximum exact-line assignment gives the narrow sibling
     // its line and leaves the insurance row its other anchor.
     writeFixture()
     baselineFile().parentFile.mkdirs()

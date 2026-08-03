@@ -2485,9 +2485,9 @@ hardening.mutation.all {
         // baseline rows that happened to be detected this run — a full
         // '-PupdateMutationBaseline' there would bake in this run's coin-flips and start
         // refresh ping-pong.
-        // the merge — per-key max counts, existing rows verbatim with their own
-        // tagged lines claimed fewest-live-options-first, added copies bare with
-        // the genuinely unclaimed observed lines — lives in BaselineEngine.unionMerge
+        // the merge — per-key max counts, existing rows verbatim after maximum
+        // exact-line affinity and the live-anchor/file-order fallback, added copies
+        // bare with the genuinely unclaimed lines — lives in BaselineEngine.unionMerge
         val merge = BaselineEngine.unionMerge(acceptedRows, current, currentLines)
         if (merge.added.isEmpty()) {
           logger.lifecycle("pitest baseline '$suiteName': union added nothing new")

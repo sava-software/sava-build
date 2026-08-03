@@ -689,28 +689,42 @@ reprint_findings() {
 
 self_test() {
   local fixture records output projects slugs basenames suites hash
-  local path_fixture pointer_file target_receipt plan_probe stdin_probe
-  local target_hash long_name key repo_key plan_rows _stolen
+  local path_fixture pointer_file target_receipt plan_probe stdin_probe symlink_file
+  local target_hash long_name key repo_key empty_path_key empty_path_sha plan_rows _stolen
   local probe_slug probe_repo probe_deep probe_sha probe_origin
   local plugin_checkout consumer_checkout unavailable_checkout manifest_fixture bundle_fixture
   local preflight_file publish_file jar_file log_file root_cert_file empty_cert_file
+  local empty_path_log_file empty_path_cert_file verify_output_file saved_pwd
   local plugin_commit plugin_tree consumer_commit plugin_hash preflight_hash publish_hash
-  local log_hash root_cert_hash empty_cert_hash manifest_hash verify_output
+  local log_hash root_cert_hash empty_cert_hash empty_path_log_hash empty_path_cert_hash
+  local manifest_hash verify_output
+  local GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+  export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
   require_jq
-  path_fixture=$(mktemp -d "${TMPDIR:-/tmp}/fleet-canary-self-test.XXXXXX")
+  # EXIT may run after self_test's locals unwind, so retain this path globally.
+  fleet_canary_self_test_cleanup_path=$(
+    mktemp -d "${TMPDIR:-/tmp}/fleet-canary-self-test.XXXXXX"
+  )
+  path_fixture=$fleet_canary_self_test_cleanup_path
+  trap '
+    trap - RETURN EXIT
+    case "$(basename "$fleet_canary_self_test_cleanup_path")" in
+      fleet-canary-self-test.*)
+        rm -rf -- "$fleet_canary_self_test_cleanup_path" || true
+        ;;
+      *)
+        echo "fleet-canary self-test: refusing unsafe cleanup path $fleet_canary_self_test_cleanup_path" >&2
+        ;;
+    esac
+  ' RETURN EXIT
   path_fixture=$(cd "$path_fixture" && pwd -P)
+  fleet_canary_self_test_cleanup_path=$path_fixture
   fixture="$path_fixture/fixture"
   records="$path_fixture/records"
   plan_probe="$path_fixture/execution-plan"
   stdin_probe="$path_fixture/stdin"
   pointer_file="$path_fixture/pointer.json"
   target_receipt="$path_fixture/fleet-canary-runs/run.A/receipt.json"
-  trap '
-    case "$(basename "$path_fixture")" in
-      fleet-canary-self-test.*) rm -rf -- "$path_fixture" ;;
-      *) echo "fleet-canary self-test: refusing unsafe cleanup path $path_fixture" >&2 ;;
-    esac
-  ' RETURN
   printf '%s\n' \
     "hardening: 1 advisory finding(s) across 1 suite(s)" \
     "pitest 'x': mutating 1 test-source class(es)" \
@@ -840,9 +854,13 @@ self_test() {
   unavailable_checkout="$path_fixture/consumer-checkout.unavailable"
   manifest_fixture="$path_fixture/fleet-manifest.txt"
   bundle_fixture="$path_fixture/fleet-canary-runs/run.A"
+  empty_path_sha=$(printf '%040d' 1)
+  empty_path_key=$(artifact_key "sava-software/unavailable")
   mkdir -p "$plugin_checkout" "$consumer_checkout" "$bundle_fixture/logs"
   repo_key=$(artifact_key "sava-software/example")
-  mkdir -p "$bundle_fixture/certifications/$repo_key"
+  mkdir -p "$bundle_fixture/certifications/$repo_key" \
+    "$bundle_fixture/certifications/$empty_path_key" \
+    "$path_fixture/$empty_path_sha"
 
   printf 'plugin source\n' > "$plugin_checkout/source.txt"
   git -C "$plugin_checkout" init -q
@@ -863,17 +881,20 @@ self_test() {
   git -C "$consumer_checkout" remote add origin git@github.com:sava-software/example.git
   consumer_commit=$(git -C "$consumer_checkout" rev-parse HEAD)
 
-  printf 'sava-software/example\n' > "$manifest_fixture"
+  printf '%s\n' sava-software/example sava-software/unavailable > "$manifest_fixture"
   preflight_file="$bundle_fixture/preflight.tsv"
   publish_file="$bundle_fixture/plugin-publish.log"
   jar_file="$bundle_fixture/plugin-0.0.0-test.jar"
   log_file="$bundle_fixture/logs/$repo_key.log"
+  empty_path_log_file="$bundle_fixture/logs/$empty_path_key.log"
   root_cert_file="$bundle_fixture/certifications/$repo_key/root.tsv"
   empty_cert_file="$bundle_fixture/certifications/$repo_key/empty.tsv"
+  empty_path_cert_file="$bundle_fixture/certifications/$empty_path_key/root.tsv"
   printf 'preflight\n' > "$preflight_file"
   printf 'publish\n' > "$publish_file"
   printf 'plugin jar\n' > "$jar_file"
   printf 'consumer log\n' > "$log_file"
+  printf 'unavailable consumer log\n' > "$empty_path_log_file"
   plugin_hash=$(sha256_file "$jar_file")
   printf 'schema\t4\nproject\t:\nsession\tsession-1\nmode\tfresh-full-strict\n' > "$root_cert_file"
   printf 'columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\tconfigurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\trecordInputsSha256\trecordPitestVersion\n' >> "$root_cert_file"
@@ -881,11 +902,14 @@ self_test() {
     "$hash" "$hash" "$hash" "$hash" "$plugin_hash" "$hash" "$hash" >> "$root_cert_file"
   printf 'schema\t4\nproject\t:empty\nsession\tsession-2\nmode\tfresh-full-strict\n' > "$empty_cert_file"
   printf 'columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\tconfigurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\trecordInputsSha256\trecordPitestVersion\n' >> "$empty_cert_file"
+  cp "$root_cert_file" "$empty_path_cert_file"
   preflight_hash=$(sha256_file "$preflight_file")
   publish_hash=$(sha256_file "$publish_file")
   log_hash=$(sha256_file "$log_file")
+  empty_path_log_hash=$(sha256_file "$empty_path_log_file")
   root_cert_hash=$(sha256_file "$root_cert_file")
   empty_cert_hash=$(sha256_file "$empty_cert_file")
+  empty_path_cert_hash=$(sha256_file "$empty_path_cert_file")
   manifest_hash=$(sha256_file "$manifest_fixture")
 
   jq -n --arg plugin_commit "$plugin_commit" --arg plugin_tree "$plugin_tree" \
@@ -894,6 +918,9 @@ self_test() {
     --arg repo_key "$repo_key" --arg consumer_path "$consumer_checkout" \
     --arg consumer_commit "$consumer_commit" --arg log_hash "$log_hash" \
     --arg root_cert_hash "$root_cert_hash" --arg empty_cert_hash "$empty_cert_hash" \
+    --arg empty_path_key "$empty_path_key" --arg empty_path_sha "$empty_path_sha" \
+    --arg empty_path_log_hash "$empty_path_log_hash" \
+    --arg empty_path_cert_hash "$empty_path_cert_hash" \
     '{schema:3,kind:"fleet-canary-receipt",mode:"release",result:"passed",run_id:"run.A",
       plugin:{sha:$plugin_commit,tree:$plugin_tree,
         origin:"git@github.com:sava-software/sava-build.git",dirty_before:false,dirty_after:false,
@@ -909,7 +936,15 @@ self_test() {
         certifications:[{project:":",path:("certifications/"+$repo_key+"/root.tsv"),
           sha256:$root_cert_hash,suite_count:1,plugin_sha256:$plugin_hash},
           {project:":empty",path:("certifications/"+$repo_key+"/empty.tsv"),
-            sha256:$empty_cert_hash,suite_count:0,plugin_sha256:""}]}]}' > "$target_receipt"
+            sha256:$empty_cert_hash,suite_count:0,plugin_sha256:""}]},
+        {slug:"sava-software/unavailable",path:"",sha:$empty_path_sha,
+          origin:"git@github.com:sava-software/unavailable.git",
+          dirty_before:false,dirty_after:false,result:"passed",
+          tasks:["hardeningCertify","agentsTemplateInSync"],certification_projects:[":"],
+          log_file:("logs/"+$empty_path_key+".log"),output_sha256:$empty_path_log_hash,findings:"",
+          certifications:[{project:":",path:("certifications/"+$empty_path_key+"/root.tsv"),
+            sha256:$empty_path_cert_hash,suite_count:1,plugin_sha256:$plugin_hash}]}]}' \
+    > "$target_receipt"
   release_receipt_schema_valid "$target_receipt" || {
     echo "fleet-canary self-test: realistic release receipt schema was rejected" >&2; return 1;
   }
@@ -931,19 +966,31 @@ self_test() {
       bundle:"fleet-canary-runs/run.A/receipt.json",receipt_sha256:$receipt_sha256}' \
     > "$pointer_file"
 
-  verify_output=$(sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
-    plugin_expected_slug='sava-software/sava-build' verify_receipt "$pointer_file" 2>&1) || {
-      echo "fleet-canary self-test: production receipt verification failed:" >&2
-      printf '%s\n' "$verify_output" >&2
-      return 1
-    }
+  # The second receipt row deliberately has an empty, non-final checkout path.
+  # Running from this directory makes its SHA-named decoy visible if a future
+  # @tsv/IFS parser collapses that empty field and shifts the remaining values.
+  verify_output_file="$path_fixture/verify-output"
+  saved_pwd=$PWD
+  cd "$path_fixture"
+  if ! sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
+      plugin_expected_slug='sava-software/sava-build' \
+      verify_receipt "$pointer_file" > "$verify_output_file" 2>&1; then
+    cd "$saved_pwd"
+    verify_output=$(<"$verify_output_file")
+    echo "fleet-canary self-test: production receipt verification failed:" >&2
+    printf '%s\n' "$verify_output" >&2
+    return 1
+  fi
+  cd "$saved_pwd"
+  verify_output=$(<"$verify_output_file")
   case "$verify_output" in
-    *"revalidated 1 consumer checkout(s), 0 unavailable"*) ;;
+    *"revalidated 1 consumer checkout(s), 1 unavailable"*) ;;
     *) echo "fleet-canary self-test: verifier summary was incomplete: $verify_output" >&2; return 1 ;;
   esac
 
   printf 'tampered jar\n' > "$jar_file"
-  if verify_output=$(sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
+  if verify_output=$(cd "$path_fixture" && \
+      sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
       plugin_expected_slug='sava-software/sava-build' verify_receipt "$pointer_file" 2>&1); then
     echo "fleet-canary self-test: retained plugin jar corruption was accepted" >&2
     return 1
@@ -955,7 +1002,8 @@ self_test() {
   printf 'plugin jar\n' > "$jar_file"
 
   mv "$consumer_checkout" "$unavailable_checkout"
-  if verify_output=$(sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
+  if verify_output=$(cd "$path_fixture" && \
+      sava_build_dir="$plugin_checkout" manifest="$manifest_fixture" \
       plugin_expected_slug='sava-software/sava-build' verify_receipt "$pointer_file" 2>&1); then
     mv "$unavailable_checkout" "$consumer_checkout"
     echo "fleet-canary self-test: zero available consumer checkouts were accepted" >&2
@@ -966,6 +1014,27 @@ self_test() {
     *"zero consumer checkouts were available"*) ;;
     *) echo "fleet-canary self-test: zero-checkout failure was misreported: $verify_output" >&2; return 1 ;;
   esac
+
+  symlink_file="$bundle_fixture/logs/link.log"
+  ln -s "$fixture" "$symlink_file"
+  if bundle_artifact_path "logs/link.log" "self-test artifact" >/dev/null 2>&1; then
+    echo "fleet-canary self-test: symlinked artifact was accepted" >&2
+    return 1
+  fi
+  verification_inputs_unchanged || return 1
+  printf 'changed consumer log\n' > "$log_file"
+  if verification_inputs_unchanged >/dev/null 2>&1; then
+    echo "fleet-canary self-test: artifact mutation after verification was accepted" >&2
+    return 1
+  fi
+  printf 'consumer log\n' > "$log_file"
+  verification_inputs_unchanged || return 1
+  jq -n '{schema:2,kind:"fleet-canary-pointer",mode:"release",result:"in_progress"}' \
+    > "$pointer_file"
+  if verification_inputs_unchanged >/dev/null 2>&1; then
+    echo "fleet-canary self-test: superseded canonical pointer remained valid" >&2
+    return 1
+  fi
   [ "$(origin_slug git@github.com:sava-software/sava.git)" = "sava-software/sava" ] || return 1
   slugs=$(manifest_slugs)
   [ "$(printf '%s\n' "$slugs" | sort | uniq -d | wc -l | tr -d ' ')" = "0" ] || {
