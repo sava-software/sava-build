@@ -638,6 +638,39 @@ class BaselineEngineTest {
   }
 
   @Test
+  fun `update preserves every sibling at a flip-insured key`() {
+    // Insurance is key-level: on a duplicate-mutant family, the literal marker may
+    // live on one accepted row while a different sibling is the copy that reads
+    // detected in this run. Preserving only the marked row would pass the simple
+    // one-row insurance fixture while deleting real fleet evidence beside it.
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(
+        key,
+        "# handled flag (flip insurance: gate=KILLED, solo=SURVIVED)",
+        listOf(10),
+      ),
+      BaselineNotes.Row(key, "# sibling in the same measured family", listOf(20)),
+    )
+    val plan = BaselineEngine.keepPlan(
+      accepted,
+      emptyMap(),
+      emptyMap(),
+      mapOf(key.substringBeforeLast(',') to listOf<Int?>(10, 20)),
+    )
+
+    assertEquals(
+      listOf(BaselineEngine.Disposition.INSURED, BaselineEngine.Disposition.INSURED),
+      plan,
+    )
+    val rewrite = BaselineEngine.updateRewrite(accepted, emptyMap(), plan)
+
+    assertEquals(setOf(0, 1), rewrite.preservedInsuredIdx)
+    assertTrue(rewrite.droppedIdx.isEmpty())
+    assertEquals(accepted.map(BaselineNotes::render), rewrite.written)
+  }
+
+  @Test
   fun `update resolves a gated status flip instead of turning it into insurance`() {
     val oldKey = "com.example.Codec,encode,MathMutator,NO_COVERAGE"
     val currentKey = "com.example.Codec,encode,MathMutator,SURVIVED"

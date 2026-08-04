@@ -290,12 +290,18 @@ An ordinary check warns when the current identity differs. Certification and eve
 ordinary record writer refuse the mismatch; manually editing either stamp would
 claim provenance that no run earned. Rebase is the sole transition path:
 
-1. Run the ordinary `pitest<Suite>` and review the population difference while the
-   old provenance still identifies it as tool churn.
-2. Run `pitest<Suite>BaselineRebase`. It makes a fresh, full, history-free observation,
+1. When provenance is a valid pair or both sidecars are missing as a legacy record,
+   run the ordinary `pitest<Suite>` and review the population difference while the
+   old or explicitly unbound provenance remains visible. A torn pair, malformed
+   sidecar, or internally disagreeing pair instead fails closed before the hardening
+   baseline delta is available; do not soften that read gate or treat PIT's aggregate
+   console counts as the review.
+2. Run `pitest<Suite>BaselineRebase`. For a structurally invalid record this is the
+   first complete hardening review: it makes a fresh, full, history-free observation,
    makes the timeout audit strict, retains every old accepted row, and adds each missing
    current gated copy as `# untriaged`.
-3. Review and triage the additions. Rebase removes nothing; only later, repeated
+3. Review its retained/added counts and the complete diff, then triage the additions.
+   Rebase removes nothing; only later, repeated
    evidence plus `pitest<Suite>BaselinePrune` may retire old rows. The safe-superset
    baseline and both sidecars are one exception-transactional write plan. A first
    record writes sidecars before content, leaving only fail-closed orphans if
