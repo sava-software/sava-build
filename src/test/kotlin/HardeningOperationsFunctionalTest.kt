@@ -156,9 +156,12 @@ class HardeningOperationsFunctionalTest {
   fun `every removed writer property is refused before PIT or a record write`() {
     writeFixture()
     val (baseline, before) = acceptedBaseline()
-    runner("hardeningHelp").build()
-    val cached = runner("hardeningHelp").build().output
+    val runs = File(fixtureDir, "build/fake-pit/runs.txt")
+    runner("pitestEncoding").build()
+    runner("pitestEncoding").build()
+    val cached = runner("pitestEncoding").build().output
     assertTrue(cached.contains("Reusing configuration cache"), cached)
+    val runsBeforeRefusals = runs.readText()
 
     HardeningOptionNames.removedWriterTaskByProperty.forEach { (property, replacement) ->
       val spelling = if (property == HardeningOptionNames.UPDATE_MUTATION_BASELINE) {
@@ -171,7 +174,7 @@ class HardeningOperationsFunctionalTest {
       assertTrue(output.contains("writer properties were removed in sava-build 21.5.22"), output)
       assertTrue(output.contains("-P$property -> $replacement"), output)
       assertTrue(output.contains("only supported committed-file write interface"), output)
-      assertFalse(File(fixtureDir, "build/fake-pit/runs.txt").exists())
+      assertEquals(runsBeforeRefusals, runs.readText(), "a refused property reached PIT")
       assertEquals(before, baseline.readText())
     }
   }
@@ -247,6 +250,10 @@ class HardeningOperationsFunctionalTest {
     assertTrue(reused.contains("union added nothing new"), reused)
     assertEquals(before, baseline.readText())
     assertEquals(3, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
+    val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
+    assertFalse(args.contains("arcmutate_history"), args)
+    assertFalse(args.contains("--historyInputLocation"), args)
+    assertFalse(args.contains("--historyOutputLocation"), args)
   }
 
   @Test
@@ -276,6 +283,10 @@ class HardeningOperationsFunctionalTest {
     assertTrue(reused.contains("prune dropped nothing"), reused)
     assertEquals(before, baseline.readText())
     assertEquals(3, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
+    val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
+    assertFalse(args.contains("arcmutate_history"), args)
+    assertFalse(args.contains("--historyInputLocation"), args)
+    assertFalse(args.contains("--historyOutputLocation"), args)
   }
 
   @Test
