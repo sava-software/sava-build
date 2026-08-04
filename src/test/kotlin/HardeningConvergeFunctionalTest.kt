@@ -194,7 +194,7 @@ class HardeningConvergeFunctionalTest {
       boundary.output.contains("KILLED -> SURVIVED  ** crosses the unkilled boundary **"),
       "boundary marker missing:\n" + boundary.output
     )
-    assertTrue(boundary.output.contains("-PunionMutationBaseline"), boundary.output)
+    assertTrue(boundary.output.contains("pitest<Suite>BaselineUnion"), boundary.output)
   }
 
   @Test

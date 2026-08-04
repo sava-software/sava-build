@@ -161,7 +161,7 @@ class BaselineEngineTest {
 
       // an insured-key row never spends the timeout budget and is never dropped
       val insuredKeys = p.acceptedRows
-        .filter { it.note?.contains("flip insurance") == true }
+        .filter { BaselineNotes.hasFlipInsurance(it.note) }
         .mapTo(HashSet()) { it.key }
       for (index in p.acceptedRows.indices) {
         if (p.acceptedRows[index].key in insuredKeys) {
@@ -305,6 +305,47 @@ class BaselineEngineTest {
     assertTrue(
       fallbackSelectionCases > 0,
       "seeded population never distinguished live-priority fallback from raw file order",
+    )
+  }
+
+  @Test
+  fun `flip insurance is a literal persistent marker and annotation preserves row evidence`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val plain = BaselineNotes.Row(key, "# handled-flag family", listOf(12, 40))
+
+    assertEquals(false, BaselineNotes.hasFlipInsurance(plain.note))
+    assertEquals(false, BaselineNotes.hasFlipInsurance("# earlier insurance"))
+    assertEquals(
+      listOf(BaselineEngine.Disposition.DROP),
+      BaselineEngine.keepPlan(listOf(plain), emptyMap(), emptyMap(), emptyMap()),
+      "a family note or the word 'insurance' alone must not create persistent flip evidence",
+    )
+
+    val annotated = plain.copy(
+      note = BaselineNotes.withFlipInsurance(
+        plain.note,
+        "gate=SURVIVED, solo=KILLED",
+      ),
+    )
+    assertEquals(
+      "# handled-flag family (flip insurance: gate=SURVIVED, solo=KILLED)",
+      annotated.note,
+    )
+    assertTrue(BaselineNotes.hasFlipInsurance(annotated.note))
+    assertEquals(
+      "$key # handled-flag family (flip insurance: gate=SURVIVED, solo=KILLED) # lines 12, 40",
+      BaselineNotes.render(annotated),
+      "annotating insurance must preserve the family label and every recorded line",
+    )
+    assertEquals(
+      listOf(BaselineEngine.Disposition.INSURED),
+      BaselineEngine.keepPlan(listOf(annotated), emptyMap(), emptyMap(), emptyMap()),
+      "the same literal marker mode compare writes must be the one prune keeps",
+    )
+    assertEquals(
+      annotated.note,
+      BaselineNotes.withFlipInsurance(annotated.note, "later observation"),
+      "annotating an already-insured row must not stack or replace its evidence",
     )
   }
 

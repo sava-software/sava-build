@@ -2,8 +2,13 @@ package software.sava.build.hardening
 
 import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.BasicFileAttributes
 
 /**
  * Baseline rewrites are atomic: content lands in a sibling temp file that is
@@ -20,6 +25,31 @@ import java.nio.file.StandardCopyOption
  * threat model is interruption, not power loss, so that trade is deliberate.
  */
 internal object BaselineFiles {
+
+  /** Checked deletion for state files whose continued presence changes semantics. */
+  fun deleteIfExists(target: File): Boolean = Files.deleteIfExists(target.toPath())
+
+  /**
+   * Checked, non-symlink-following deletion for an explicitly scoped task directory.
+   * A symlink at any level is deleted as a link; its target is never traversed.
+   */
+  fun deleteRecursivelyIfExists(target: File): Boolean {
+    val root = target.toPath()
+    if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) return false
+    Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+      override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+        Files.delete(file)
+        return FileVisitResult.CONTINUE
+      }
+
+      override fun postVisitDirectory(dir: Path, exc: java.io.IOException?): FileVisitResult {
+        if (exc != null) throw exc
+        Files.delete(dir)
+        return FileVisitResult.CONTINUE
+      }
+    })
+    return true
+  }
 
   fun writeAtomically(target: File, content: String) {
     target.parentFile.mkdirs()

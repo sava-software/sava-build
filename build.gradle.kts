@@ -180,6 +180,9 @@ tasks.test {
       // Read by AgentsTemplateSyncFunctionalTest via the 'savaBuild.root' property below;
       // no fixture consumes the checkout as an included build anymore.
       hardeningDoc = layout.projectDirectory.file("HARDENING.md")
+      // HardeningDocumentationBoundaryTest reads the release/source-of-truth boundary
+      // from the root README through the same root path.
+      projectReadme = layout.projectDirectory.file("README.md")
       // Read via 'savaBuild.root' too, by the reprint-filter pin in
       // HardeningRatchetFunctionalTest — declared so editing the script re-runs it.
       canaryScript = layout.projectDirectory.file("tools/fleet-canary.sh")
@@ -241,6 +244,10 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)
   abstract val hardeningDoc: RegularFileProperty
+
+  @get:InputFile
+  @get:PathSensitive(PathSensitivity.NONE)
+  abstract val projectReadme: RegularFileProperty
 
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)

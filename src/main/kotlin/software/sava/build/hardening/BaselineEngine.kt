@@ -104,9 +104,9 @@ internal object BaselineEngine {
   enum class Disposition { MATCHED, INSURED, TIMEOUT, FLIP, DROP }
 
   /**
-   * The row-level keep plan read by BOTH prune and the check path's stale hint —
-   * one allocator, so the hint's "prune keeps them" and "refresh with prune" name
-   * exactly the rows prune keeps and drops. Per accepted row, in this order:
+   * The row-level keep plan read by BOTH prune and the check path's candidate preview —
+   * one allocator, so the preview names exactly the rows prune would keep and drop.
+   * Per accepted row, in this order:
    *
    *  - [Disposition.MATCHED] — holds part of its key's surviving budget: line
    *    affinity first (a row whose `# line` tag names an observed unkilled line is
@@ -121,7 +121,9 @@ internal object BaselineEngine {
    *    rows last (a tag naming a KILLED line is provably the killed mutant's row).
    *  - [Disposition.FLIP] — consumed an *unmatched* different-status counterpart
    *    at its coordinate (the pairing the verify classifies as "newly covered").
-   *  - [Disposition.DROP] — matches nothing: since killed.
+   *  - [Disposition.DROP] — unmatched by this run and therefore a prune candidate.
+   *    One observation alone cannot distinguish stable removal from an uninsured
+   *    load- or mode-dependent status flip; that judgment belongs to the caller.
    *
    * [currentLines] maps each unkilled key to its observed line strings (possibly
    * unparsable); [timedOutLinesByCoordinate] and [killedLinesByCoordinate] map the
@@ -142,7 +144,7 @@ internal object BaselineEngine {
           .forEach { dispositions[it] = Disposition.MATCHED }
     }
     val flipInsuredKeys = acceptedRows
-        .filter { it.note?.contains("flip insurance") == true }
+        .filter { BaselineNotes.hasFlipInsurance(it.note) }
         .mapTo(HashSet()) { it.key }
     for (index in acceptedRows.indices) {
       if (dispositions[index] == null && acceptedRows[index].key in flipInsuredKeys) {

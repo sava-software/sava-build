@@ -66,9 +66,24 @@ class GoldenFleetTest {
         .sortedBy { it.relativeTo(corpusRoot).path }
         .toList()
 
-    /** Row lines: non-blank lines that are not `#` comments — the parsers' input. */
+    /**
+     * Record lines presented by either supported baseline document schema. Parsing
+     * through [BaselineDocument] keeps this fleet corpus sensitive to schema headers
+     * while retaining malformed records for the dedicated assertion below.
+     */
     fun rowLines(file: File): List<String> =
-        file.readLines().filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+        if (file.name.endsWith("-accepted.csv")) {
+          BaselineDocument.parse(file.readText()).entries.mapNotNull {
+            when (it) {
+              is BaselineDocument.Entry.Row -> it.raw
+              is BaselineDocument.Entry.MalformedRow -> it.raw
+              is BaselineDocument.Entry.Blank,
+              is BaselineDocument.Entry.Comment -> null
+            }
+          }
+        } else {
+          file.readLines().filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+        }
 
     fun relative(file: File): String = file.relativeTo(corpusRoot).invariantSeparatorsPath
   }
@@ -193,8 +208,9 @@ class GoldenFleetTest {
     // This is deliberately exact. The manifest inventory catches a missing module,
     // while the row total catches partial resource loss within a still-present one.
     // A deliberate corpus refresh updates this number alongside its provenance.
-    val totalRows = (corpusFiles("-accepted.csv") + corpusFiles("-timeouts.csv"))
-        .sumOf { rowLines(it).size }
+    val totalRows = corpusFiles("-accepted.csv")
+        .sumOf { BaselineDocument.parse(it.readText()).rows.size } +
+        corpusFiles("-timeouts.csv").sumOf { rowLines(it).size }
     assertEquals(1564, totalRows,
         "golden-fleet baseline row count changed; restore lost resources or record the intentional refresh")
   }

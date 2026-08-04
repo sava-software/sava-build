@@ -204,7 +204,7 @@ project must request its plugin by an explicit version, as in the hardening-only
 | `software.sava.build.feature.publish` | Maven publishing with sources/javadoc jars, POM metadata from [sava.properties](#gradlesavaproperties), optional GPG signing, and the `savaGithubPackagesPublish` repository. Applied by `java-module`. |
 | `software.sava.build.feature.publish-maven-central` | Maven Central publishing for the `:aggregation` project: stages, bundles (`zipCentralPortalDeployment`), and uploads (`publishCentralPortalDeployment`) deployments straight to the [Central Portal API](https://central.sonatype.org/publish/publish-portal-api/). The `nmcpAggregation` configuration and `publishAggregationToCentralPortal` task from the retired [nmcp](https://github.com/GradleUp/nmcp) plugin remain as deprecated aliases. |
 | `software.sava.build.feature.jmh` | [JMH](https://github.com/melix/jmh-gradle-plugin) benchmarking conventions for standalone benchmark builds: quick-look run defaults (1 fork, 5×1s warmup, 8×1s measurement, fail-on-error), a `jmh` task that is never skipped as `UP-TO-DATE`, per-run results archived timestamped under `<project>/jmh-results/` — outside `build/`, so `clean` keeps measurement history — with `results.txt` re-rendered after each run as the newest-wins merge of all archived runs (subset runs converge on a full scoreboard; delete archive files to drop stale rows), and service-replicating JVM flags (compact object headers, generational ZGC, pinned pre-touched 2g heap, `-XX:+PerfDisableSharedMem`) — override wholesale with `jmh { jvmArgsAppend.set(...) }`. Every default is overridable per invocation: `-PjmhFork`, `-PjmhIncludes=<regex>[,...]`, `-PjmhWarmupIterations`, `-PjmhWarmup`, `-PjmhIterations`, `-PjmhTimeOnIteration`, `-PjmhFailOnError`, and `-PjmhJvmArgsAppend="<flag> <flag>..."` (replaces the service flag list wholesale). Decision-grade comparisons need 3+ forks and isolation from other load. Leaves the toolchain to the consuming build (benchmark harnesses often pin bespoke JDKs). |
-| `software.sava.build.feature.hardening` | [PIT](https://pitest.org) mutation testing and [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) coverage-guided fuzzing with explicit ownership of the production population, configured via `hardening {}`: each `mutation` suite (`targetClasses`, `targetTests`, optional `mutators`/`threads`) adds a `pitest<Name>` task reporting HTML/CSV under `build/reports/pitest/<name>`; each `fuzz` target (a class with `public static void fuzzerTestOneInput(byte[])`, no Jazzer imports needed) adds a `fuzz<Name>` task (`-PmaxFuzzTime=<seconds>`, default 60; optional `maxLen` caps libFuzzer input length for targets whose cost grows super-linearly with input size) whose corpus persists under `build/fuzz/<name>-corpus`, run with JVM args pre-authorizing Jazzer's dynamic agent, Unsafe usage, and native access. Each tool consumes the main and test sources recompiled into one plain, module-info-free classpath root: `compileForPitest` at `mutationBytecodeRelease` into `build/mutation-classes` and `compileForFuzz` at `bytecodeRelease` into `build/fuzz-classes` (both default to the consuming Java toolchain; lower one when a tool's bundled ASM lags its class-file version); the mutation directory name deliberately avoids the string "pitest", which PIT silently drops from classpath roots. Tool versions overridable via `pitestVersion`, `pitestJunit5PluginVersion`, and `jazzerVersion`. Workflow tooling around the mutation-baseline ratchet (policy: [HARDENING.md](HARDENING.md)): every `pitest<Name>` run is finalized by `pitest<Name>Verify` diffing unkilled mutants against `config/pitest/<name>-accepted.csv` (line-less `class,method,mutator,STATUS` keys with `# line` tags as metadata, `# untriaged` row notes counted, `-PlistUnkilled` annotates rows with PIT's XML mutation descriptions, `-PupdateMutationBaseline` names what it drops, `-PunionMutationBaseline` appends without dropping); `migrateMutationBaselines` respells committed legacy baselines into the current row format with no mutation run; `pitestConverge` runs every suite twice and diffs per-mutant statuses; `pitestModeSnapshot -PpitestMode=<label>` / `pitestModeCompare` diff solo-vs-`qualityGate` runs per mutant and write observed-flip insurance with `-PunionModeFlips`; `pitestMutatorTrial -PtrialMutators=...` tabulates which suites a candidate mutator fires in; `generateFuzzReplayTests` turns every committed seed corpus into a generated replay test inside `check`; `fuzzAll` runs every registered target locally; `hardeningCertify` performs fresh, full, provenance-bound mutation certification with strict timeout and ownership audits; `hardeningInit` scaffolds adoption; and `hardening.generateTestSupport = true` generates shared test helpers (`ConcurrencyHarness`, `Ports`, `LoopbackHttpServer`, `ManualScheduledExecutor`, `RecordingExecutor`, `JulRecorder`) into the test source set. |
+| `software.sava.build.feature.hardening` | Registers configured [PIT](https://pitest.org) mutation suites, [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) fuzz targets, baseline diagnostics and writers, release certification, and optional generated test support through `hardening {}`. It is package-agnostic and works with open-source PIT; an applicable ArcMutate licence is optional. See the [standalone example](#standalone-hardening-only-project), run `./gradlew hardeningHelp` for the installed version's tasks and options, and use [HARDENING.md](HARDENING.md) for policy. |
 | `software.sava.build.modules.postgresql` | Opt-in [extra-java-module-info](https://github.com/gradlex-org/extra-java-module-info) patch converting the PostgreSQL JDBC driver into an explicit module (required for jlink). |
 | `software.sava.build.modules.gcp-kms` | Opt-in module patches for the Google Cloud KMS client and its non-modular transitive dependencies. |
 | `software.sava.build.base.dependency-rules` | Consistent resolution against the solana version catalog BOM. |
@@ -217,17 +217,11 @@ project must request its plugin by an explicit version, as in the hardening-only
 
 The hardening plugin is not restricted to Sava package names. Any Java project can
 register its own production namespaces, mutation suites, exclusions, and fuzz targets.
-`fuzzAll` derives a local campaign from every registered target, while
-`hardeningCertify` performs fresh, full, provenance-bound mutation runs with strict
-timeout and production-ownership audits. The ArcMutate certificate committed at this
-repository's root enables an optional licensed PIT toolchain: it applies only to eligible public
-`software.sava.*` projects, not GLAM, private `idl-src-gen`, or unrelated adopters. In a licensed
-consumer, `com.arcmutate:base` remains on PIT's tool classpath for both assisted and fresh runs
-because it can affect the mutant population; `-PnoMutationHistory` and certification disable only
-history reuse. The certificate is not packaged into the published Gradle plugin and the plugin
-never copies it into a consumer. An eligible Sava repository activates it only after someone
-deliberately copies the certificate to that repository's root; ineligible projects use the same
-process with open-source PIT.
+The ArcMutate certificate committed at this repository's root is optional and applies
+only to eligible public `software.sava.*` projects—not GLAM, private `idl-src-gen`, or
+unrelated adopters. It is not packaged into the plugin or copied into consumers. An
+eligible repository activates it only by deliberately placing the certificate at that
+repository's root; every other adopter uses the same process with open-source PIT.
 
 ## Configuration
 
@@ -442,6 +436,9 @@ checkout. When changing dependencies, regenerate the
 ```
 
 ### Pre-release fleet certification
+
+This section is the detailed operational contract for releasing `sava-build` itself;
+[HARDENING.md](HARDENING.md) states the portable evidence policy used by consumers.
 
 The quick canary stays useful during development:
 

@@ -29,6 +29,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
   private val activeSessions = mutableMapOf<String, String>()
   private val attempts = mutableMapOf<SuiteKey, Attempt>()
   private val verified = mutableMapOf<SuiteKey, VerifiedEvidence>()
+  private val revalidated = mutableMapOf<SuiteKey, VerifiedEvidence>()
 
   @Synchronized
   fun activate(projectPath: String): String {
@@ -48,6 +49,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
     val key = SuiteKey(projectPath, suite)
     attempts[key] = Attempt(invocationId, null)
     verified.remove(key)
+    revalidated.remove(key)
   }
 
   @Synchronized
@@ -72,6 +74,49 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
   @Synchronized
   fun requireNoIncompleteAttempt(projectPath: String, suite: String, evidence: PitestEvidence?) {
     val attempt = attempts[SuiteKey(projectPath, suite)] ?: return
+    requireMatchingCompletedAttempt(projectPath, suite, attempt, evidence)
+  }
+
+  /**
+   * Stronger writer proof used by the discoverable baseline tasks. Unlike the N-1
+   * compatibility path above, a canonical task depends on PIT and promises a fresh
+   * observation, so an absent attempt is itself a refusal rather than permission to
+   * consume a matching report left by an earlier Gradle invocation.
+   */
+  @Synchronized
+  fun requireCompletedAttempt(projectPath: String, suite: String, evidence: PitestEvidence?) {
+    val attempt = attempts[SuiteKey(projectPath, suite)] ?: throw IllegalStateException(
+        "PIT suite '$projectPath:$suite' did not start in this Gradle invocation; " +
+            "a named baseline writer cannot reuse an older report")
+    requireMatchingCompletedAttempt(projectPath, suite, attempt, evidence)
+  }
+
+  @Synchronized
+  fun recordRevalidated(projectPath: String, suite: String, evidence: PitestEvidence) {
+    revalidated[SuiteKey(projectPath, suite)] = VerifiedEvidence(
+      "", evidence.invocationId, evidence.reportSha256, PitestEvidence.sha256(evidence.render())
+    )
+  }
+
+  /** Current evidence is sound when this invocation produced it or a typed validator re-read it. */
+  @Synchronized
+  fun requireCurrentEvidence(projectPath: String, suite: String, evidence: PitestEvidence) {
+    val expected = VerifiedEvidence(
+      "", evidence.invocationId, evidence.reportSha256, PitestEvidence.sha256(evidence.render())
+    )
+    val completed = attempts[SuiteKey(projectPath, suite)]?.completed
+    if (completed != null && completed.copy(sessionId = "") == expected) return
+    check(revalidated[SuiteKey(projectPath, suite)] == expected) {
+      "PIT suite '$projectPath:$suite' current evidence was not revalidated in this Gradle invocation"
+    }
+  }
+
+  private fun requireMatchingCompletedAttempt(
+    projectPath: String,
+    suite: String,
+    attempt: Attempt,
+    evidence: PitestEvidence?,
+  ) {
     val completed = attempt.completed ?: throw IllegalStateException(
         "PIT suite '$projectPath:$suite' started but did not complete in this Gradle invocation; " +
             "refusing to rewrite records from an older report")

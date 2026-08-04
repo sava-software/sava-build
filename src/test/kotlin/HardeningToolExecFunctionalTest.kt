@@ -105,10 +105,12 @@ class HardeningToolExecFunctionalTest {
             jvmArgs = listOf<String>()
           }
         }
-        tasks.named<JavaExec>("fuzzPlain") {
-          mainClass = "com.example.FakeFuzz"
-          classpath = files(layout.buildDirectory.dir("fuzz-classes"))
-          jvmArgs = listOf<String>()
+        listOf("fuzzCodec", "fuzzPlain", "fuzzHollow").forEach { name ->
+          tasks.named<JavaExec>(name) {
+            mainClass = "com.example.FakeFuzz"
+            classpath = files(layout.buildDirectory.dir("fuzz-classes"))
+            jvmArgs = listOf<String>()
+          }
         }
 
 $buildTail
@@ -234,6 +236,7 @@ $buildTail
                 }
               }
             }
+            if (mode.equals("fail")) System.exit(5);
           }
         }
       """.trimIndent() + "\n"
@@ -248,13 +251,22 @@ $buildTail
         public final class FakeFuzz {
           public static void main(String[] args) throws Exception {
             String corpus = null;
+            String target = null;
             for (String arg : args) {
               if (!arg.startsWith("-")) corpus = arg;
+              if (arg.startsWith("--target_class=")) {
+                target = arg.substring("--target_class=".length());
+              }
             }
             if (corpus == null || !Files.isDirectory(Path.of(corpus))) {
               throw new IllegalStateException("writable corpus was not prepared: " + corpus);
             }
             System.out.println("fixture fuzz executed");
+            Path modeFile = Path.of("fake-fuzz-mode.txt");
+            if (Files.exists(modeFile) && Files.readString(modeFile).trim().equals("fail") &&
+                target != null && target.endsWith("PlainFuzz")) {
+              System.exit(4);
+            }
           }
         }
       """.trimIndent() + "\n"
@@ -517,10 +529,102 @@ $buildTail
 
     val first = runner("fuzzPlain", "-PmaxFuzzTime=1").build()
     assertTrue(first.output.contains("fixture fuzz executed"), first.output)
+    assertFalse(
+      File(fixtureDir, "build/hardening/local-fuzz.tsv").exists(),
+      "a standalone fuzz target must not create an aggregate receipt",
+    )
+    assertFalse(
+      File(fixtureDir, "build/hardening/local-fuzz.running").exists(),
+      "a standalone fuzz target must not activate an aggregate campaign",
+    )
 
     val second = runner("fuzzPlain", "-PmaxFuzzTime=1").build()
     assertTrue(second.output.contains("Configuration cache entry reused."), second.output)
     assertTrue(second.output.contains("fixture fuzz executed"), second.output)
+  }
+
+  @Test
+  fun `fuzzAll attests every configured target completed in this invocation`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val result = runner("fuzzAll", "-PmaxFuzzTime=1").build()
+    val receipt = File(fixtureDir, "build/hardening/local-fuzz.tsv")
+
+    assertEquals(3, occurrences(result.output, "fixture fuzz executed"), result.output)
+    assertTrue(receipt.isFile, "fuzzAll did not write its receipt:\n${result.output}")
+    listOf("fuzzCodec", "fuzzHollow", "fuzzPlain").forEach { taskName ->
+      assertTrue(receipt.readText().contains("target\t$taskName\n"), receipt.readText())
+    }
+    assertFalse(
+      File(fixtureDir, "build/hardening/local-fuzz.running").exists(),
+      "successful campaign retained its running sentinel",
+    )
+  }
+
+  @Test
+  fun `fuzzAll cannot attest a failed target when JavaExec ignores its exit value`() {
+    writeFixture(buildTail = """
+      tasks.named<JavaExec>("fuzzPlain") {
+        isIgnoreExitValue = true
+      }
+    """.trimIndent())
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "fake-fuzz-mode.txt").writeText("fail\n")
+
+    val failed = runner("fuzzAll", "-PmaxFuzzTime=1").buildAndFail()
+
+    assertTrue(failed.output.contains("non-zero exit value 4"), failed.output)
+    assertFalse(
+      File(fixtureDir, "build/hardening/local-fuzz.tsv").exists(),
+      "a failed target earned a fuzzAll receipt",
+    )
+    assertTrue(
+      File(fixtureDir, "build/hardening/local-fuzz.running").isFile,
+      "a failed campaign did not retain its invalidation sentinel",
+    )
+  }
+
+  @Test
+  fun `fuzzAll refuses excluded targets and an excluded preflight despite stale evidence`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val receipt = File(fixtureDir, "build/hardening/local-fuzz.tsv")
+    val running = File(fixtureDir, "build/hardening/local-fuzz.running")
+
+    receipt.parentFile.mkdirs()
+    receipt.writeText("stale successful receipt\n")
+    running.writeText("stale running sentinel\n")
+    val excludedTarget = runner(
+      "fuzzAll", "-PmaxFuzzTime=1", "-x", "fuzzPlain",
+    ).buildAndFail()
+    assertTrue(
+      excludedTarget.output.contains("fuzzAll requires its complete task graph"),
+      excludedTarget.output,
+    )
+    assertTrue(excludedTarget.output.contains("-x fuzzPlain"), excludedTarget.output)
+    assertFalse(receipt.exists(), "excluded target retained a stale fuzzAll receipt")
+    assertTrue(running.isFile, "excluded target did not leave an incomplete-campaign sentinel")
+
+    receipt.writeText("another stale successful receipt\n")
+    running.writeText("another stale running sentinel\n")
+    val excludedPreflight = runner(
+      "fuzzAll", "-PmaxFuzzTime=1", "-x", "fuzzAllPreflight",
+    ).buildAndFail()
+    assertTrue(
+      excludedPreflight.output.contains("fuzzAll requires its complete task graph"),
+      excludedPreflight.output,
+    )
+    assertTrue(excludedPreflight.output.contains("-x fuzzAllPreflight"), excludedPreflight.output)
+    assertFalse(receipt.exists(), "excluded preflight retained a stale fuzzAll receipt")
+    assertTrue(running.isFile, "excluded preflight hid behind a stale running sentinel")
+    assertTrue(
+      running.readText().contains("refused task exclusion(s)"),
+      "excluded preflight did not replace the stale sentinel:\n${running.readText()}",
+    )
   }
 
   @Test
@@ -676,6 +780,11 @@ $buildTail
       "compiled classes were recorded as SHA-256(empty)",
     )
 
+    val transition = runner("clean", "hardeningCertify").build()
+    assertTrue(
+      transition.output.contains(".evidence.tsv' has been created"),
+      "the configuration cache did not track the N-1-to-current graph transition:\n${transition.output}",
+    )
     val reused = runner("clean", "hardeningCertify").build()
     assertTrue(reused.output.contains("Reusing configuration cache"), reused.output)
 
@@ -985,6 +1094,25 @@ $buildTail
   }
 
   @Test
+  fun `minimize cannot commit a failed merge when JavaExec ignores its exit value`() {
+    writeFixture(buildTail = """
+      tasks.named<JavaExec>("fuzzCodecMinimize") {
+        isIgnoreExitValue = true
+      }
+    """.trimIndent())
+    writeSeedCorpus()
+    File(fixtureDir, "fake-merge-mode.txt").writeText("fail\n")
+    val corpus = File(fixtureDir, "corpus/codec")
+
+    val failed = runner("fuzzCodecMinimize").buildAndFail()
+
+    assertTrue(failed.output.contains("non-zero exit value 5"), failed.output)
+    assertEquals("alpha", corpus.resolve("seedA").readText())
+    assertEquals("beta-longer", corpus.resolve("seedB").readText())
+    assertFalse(corpus.resolve("9f8e7d").exists(), "a failed merge committed its partial staging")
+  }
+
+  @Test
   fun `adoptLocalCorpus adds the local finds as a merge source only when requested`() {
     writeFixture()
     writeSeedCorpus()
@@ -1028,5 +1156,104 @@ $buildTail
       missing.output.contains("missing or empty — a merge cannot start from nothing"),
       missing.output
     )
+  }
+
+  @Test
+  fun `typed PIT tasks share the build-wide execution lock across parallel projects`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "parallel-pitest-lock-smoke-test"
+        include("a", "b")
+      """.trimIndent() + "\n"
+    )
+    listOf("a", "b").forEach { projectName ->
+      val projectDir = File(fixtureDir, projectName).apply { mkdirs() }
+      File(projectDir, "build.gradle.kts").writeText(
+        """
+          plugins {
+            java
+            id("software.sava.build.feature.hardening")
+          }
+
+          repositories { mavenCentral() }
+
+          hardening {
+            mutation.register("encoding") {
+              targetClasses = listOf("com.example.*")
+              targetTests = "com.example.*Test*"
+            }
+          }
+
+          tasks.named<JavaExec>("pitestEncoding") {
+            mainClass = "com.example.FakePit"
+            classpath = sourceSets["main"].output
+            jvmArgs(
+              "-DparallelPitLock=${fixtureDir.resolve("parallel-pit.lock").absolutePath}",
+              "-DparallelPitProject=$projectName",
+            )
+          }
+        """.trimIndent() + "\n"
+      )
+      val source = File(projectDir, "src/main/java/com/example/FakePit.java")
+      source.parentFile.mkdirs()
+      source.writeText(
+        """
+          package com.example;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.nio.file.StandardOpenOption;
+
+          public final class FakePit {
+            public static void main(String[] args) throws Exception {
+              Path lock = Path.of(System.getProperty("parallelPitLock"));
+              Path events = lock.resolveSibling("parallel-pit.events");
+              String project = System.getProperty("parallelPitProject");
+              try {
+                Files.writeString(lock, project, StandardOpenOption.CREATE_NEW);
+              } catch (java.nio.file.FileAlreadyExistsException overlap) {
+                throw new IllegalStateException("parallel PIT overlap in " + project, overlap);
+              }
+              Files.writeString(events, "start " + project + " " + System.nanoTime() + "\n",
+                  StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+              try {
+                Thread.sleep(600);
+                String reportDir = null;
+                for (String arg : args) {
+                  if (arg.startsWith("--reportDir=")) reportDir = arg.substring("--reportDir=".length());
+                }
+                Path report = Path.of(reportDir);
+                Files.createDirectories(report);
+                Files.writeString(report.resolve("mutations.csv"),
+                    "FakePit.java,com.example.FakePit," +
+                    "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+                    "main,12,KILLED,com.example.FakePitTest\n");
+              } finally {
+                Files.writeString(events, "end " + project + " " + System.nanoTime() + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                Files.deleteIfExists(lock);
+              }
+            }
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+
+    val result = runner(
+      ":a:pitestEncoding",
+      ":b:pitestEncoding",
+      "--parallel",
+      "--max-workers=4",
+    ).build()
+
+    assertFalse(result.output.contains("parallel PIT overlap"), result.output)
+    val events = File(fixtureDir, "parallel-pit.events").readLines()
+    assertEquals(4, events.size, "each typed task must record one non-overlapping interval: $events")
+    assertTrue(events[0].startsWith("start "), events.toString())
+    assertTrue(events[1].startsWith("end "), events.toString())
+    assertTrue(events[2].startsWith("start "), events.toString())
+    assertTrue(events[3].startsWith("end "), events.toString())
   }
 }

@@ -1,9 +1,16 @@
 # Hardening process
 
-The quality process for repos applying `software.sava.build.feature.hardening`:
-what the tooling enforces, what requires judgment, and the conventions that
-make both portable across codebases. The enforceable parts live in the plugin —
-this document covers only the decisions the tooling cannot make for you.
+The quality process for repos applying `software.sava.build.feature.hardening`.
+The installed plugin is the authority for exact task names, options, formats,
+and refusal behavior; run `./gradlew hardeningHelp` against the version in use.
+This document owns human policy, interpretation, and safety rules. The
+repository [README](README.md) owns setup and the `sava-build` release procedure,
+and [HARDENING_CASEBOOK.md](HARDENING_CASEBOOK.md) is historical evidence rather
+than current instructions. Consumer notes and `config/pitest/README.md` contain
+only repository-specific ownership, measurements, reasons, and provenance—not
+copied plugin mechanics. A consumer `AGENTS.md` carries the exact generated,
+digest-pinned agent template below plus repository-specific facts; it must not
+grow a second, independently maintained account of plugin behavior.
 
 Every rule here was earned from an observed incident; the incidents live in
 `HARDENING_CASEBOOK.md`, cited as *(casebook: entry)*. Read an entry before
@@ -44,37 +51,15 @@ affect — not by habit in either direction:
 | Before a release | `hardeningCertify` on every module; an explicit local `fuzzAll -PmaxFuzzTime=<seconds>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
 
 A release command without provenance is not durable evidence. Record the repository
-commit, whether the tree was clean before and after, the exact task selectors and
-properties (especially `-PnoMutationHistory` and `-PmaxFuzzTime`), the exit result,
-and a digest of the retained log. An explicit local run is valid; it does not need a
-scheduled workflow or an arbitrary soak window. For a `sava-build` plugin release,
-`tools/fleet-canary.sh --release` and `tools/local-fuzz.sh --release --seconds <N>`
-make those records across the complete consumer roster. Starting either command
-invalidates the canonical pass with an `in_progress` pointer; success points it at an
-immutable ignored run bundle containing the receipt, preflight, retained logs, and inner
-per-project evidence, plus the exact published `0.0.0-test` plugin JAR. The outer receipt
-hashes that JAR, and every inner certification or fuzz receipt must name the same plugin
-binary hash; consumers merely agreeing with one another is not enough. Both release runners
-enable Gradle's configuration cache for task
-discovery and the consumer graphs they actually execute (`hardeningCertify` and
-`fuzzAll`): storing those entries is part of the canary, so a script capture on a release
-path fails before release even when the consumer normally leaves the cache off. The
-plugin's TestKit fixtures also enable the cache in `gradle.properties`, which exercises
-diagnostic-only actions such as mode comparison, mutator trials, migration, initialization,
-Debt, and individual fuzz targets without pretending the release graphs select them.
-Each script's `--verify-receipt
-build/hardening/<name>-receipt.json` form rehashes that bundle and validates still-present
-plugin and consumer checkouts without rerunning Gradle. It reports the exact number of
-consumer checkouts revalidated and refuses a full-verification success when that number is
-zero; an unavailable individual checkout remains a named skip because its retained evidence
-can still be hashed. Keep the selected run directories
-with the release record, not in the Git tree they certify *(casebook: the canary that
-skipped two consumers)*.
-
-For `sava-build`, these receipts are the release owner's gate **before merging the Release
-Please PR**. The tag workflow has no access to machine-local bundles and does not enforce
-them; its release-tooling step checks only shell syntax and the runners' self-tests before
-the existing publication job. That limitation must stay explicit in the release record.
+commit and clean-tree state, exact selectors and options, exit result, retained-log
+digest, and the plugin binary actually loaded by every consumer. An explicit local run
+is valid; it needs neither a scheduled workflow nor an arbitrary soak window. A receipt
+must bind the complete expected roster, refuse a stale shared plugin binary, and say
+which recorded checkouts it revalidated. Keep evidence outside the tree it certifies
+*(casebook: the canary that skipped two consumers)*. The exact `sava-build` fleet/fuzz
+commands, bundle layout, verification behavior, and Release Please timing live only in
+the README's [Pre-release fleet certification](README.md#pre-release-fleet-certification)
+section.
 
 `qualityGate` = `test` + every registered `pitest<Suite>`, serialized, each
 finalized by its baseline verification. `hardeningCertify` is the release form:
@@ -139,8 +124,8 @@ run cheaper. The cost model is directly optimisable:
 - **Scope the iteration loop with `-PmutateOnly=<glob[,glob]>`** — mutate
   only the class under attack while writing its kills, then re-run unscoped
   once before refreshing. The scoped report is stamped `.scoped` and every
-  baseline-touching consumer (the ratchet, `-PupdateMutationBaseline`,
-  `-PunionMutationBaseline`, mode snapshots) refuses it, so the shortcut
+  baseline-touching consumer (the ratchet, named writer tasks, mode snapshots)
+  refuses it, so the shortcut
   cannot leak into the record. Coverage still runs the full test set.
   A `.running` sentinel guards the same consumers against a *crashed or
   interrupted* run: PIT writes its CSV incrementally, so a partial report
@@ -210,9 +195,7 @@ report on disk, not this invocation's settings — so a reused number is never
 mistaken for a re-earned one; with history active *fast is the expected
 state*, and suspicion transfers to the exit code and the marker. And
 **anything that writes or certifies the record runs without mutation history**
-— enforced, not just prescribed: the record-writing flags
-(`-PupdateMutationBaseline`, `-PunionMutationBaseline`,
-`-PpruneMutationBaseline`, `-PinitTimeoutAudit`) refuse a history-assisted
+— enforced, not just prescribed: the per-suite record-writing tasks refuse a history-assisted
 report outright, `hardeningCertify` disables history automatically and re-earns
 every status from scratch, and the convergence method's runs refuse history too
 (two assisted runs agree by construction). `-PnoMutationHistory` remains the
@@ -221,6 +204,13 @@ retaining `com.arcmutate:base`, so ordinary, mode-comparison, convergence, and
 certification populations share one licensed tool identity (bound in evidence as
 `toolClasspathSha256`). Delete `.pitest-history/` to reset a machine's history
 wholesale.
+
+The installed plugin exposes discoverable writer tasks. The former
+`-PupdateMutationBaseline`, `-PunionMutationBaseline`,
+`-PpruneMutationBaseline`, `-PinitTimeoutAudit`, and `-PunionModeFlips`
+properties remain compatibility aliases for this transition release, but must
+not be combined with their task equivalents. `hardeningHelp` prints the exact
+mapping and the remaining diagnostic properties.
 
 ## The mutation ratchet
 
@@ -234,10 +224,11 @@ mutant has exactly three legal outcomes:
    exact error text, allocation bounds — not "the code does what the code
    does".
 2. **Refactor** — restructure so the mutant cannot exist.
-3. **Accept it knowingly** — re-run with `-PupdateMutationBaseline` and record
-   the reason in the repo's `config/pitest/README.md`. Acceptance is only for
-   mutants *equivalent with respect to observable behavior* (e.g. a mutant
-   that only over-allocates a `StringBuilder`), never for "hard to test".
+3. **Accept it knowingly** — record the reason in the repo's
+   `config/pitest/README.md`, then run `pitest<Suite>BaselineUpdate`. Acceptance
+   may mean observable equivalence, a proved structural `NO_COVERAGE` trap, or
+   a specifically named deterministic-harness limit; it never means merely
+   "hard to test".
 
 **The tool version is part of the record.** The mutant population is a
 function of PIT itself (whose version rides plugin bumps), so a baseline is
@@ -251,7 +242,7 @@ that completes) — never ahead of the write, so a refresh that fails mid-path
 cannot leave a stamp vouching for a record it never rewrote. A version
 mismatch *warns* on a checking run and *refuses* every record-writing flag —
 reading a possibly divergent result is a judgment call, writing the record
-with one is not. `-PinitTimeoutAudit` is refused across a bump like the
+with one is not. `pitest<Suite>TimeoutAuditInit` is refused across a bump like the
 baseline flags, the timeout population being just as version-dependent, but
 it never stamps: it writes the timeout set, not the baseline, and its stamp
 would silently vouch for a baseline some older PIT wrote.
@@ -267,10 +258,12 @@ current PIT and successfully verifying the record; its receipt names
 record-writing run creates the version file. An existing stamp for a different PIT
 version still fails certification.
 
-The baseline is a ratchet: shrinking it is always an improvement, growing it
-requires a written reason. Repos may seed their first baseline with the full
-pre-existing survivor population — that is triage debt made explicit, not
-acceptance; label it as such in `config/pitest/README.md`.
+The baseline is a ratchet: removing debt that is *proved stably gone* is an
+improvement, while growing it requires a written reason. A single fresh run is
+not that proof — an unmarked load- or mode-dependent flip looks exactly like a
+removed mutant on the run where it reads killed. Repos may seed their first
+baseline with the full pre-existing survivor population — that is triage debt
+made explicit, not acceptance; label it as such in `config/pitest/README.md`.
 
 ### `SURVIVED` and `NO_COVERAGE` are different problems
 
@@ -388,13 +381,13 @@ line (`line 41: removed conditional…` — the key no longer carries the line,
 so the description does), and the ratchet-failure listing carries the same
 annotations.
 
-Refreshes are kept honest in both directions. `-PupdateMutationBaseline`
+Refreshes are kept honest in both directions. `pitest<Suite>BaselineUpdate`
 names every row it drops — a dropped flip-insurance union (below) must be
-re-added with `-PunionMutationBaseline` once observed to flip again; before
+re-added with `pitest<Suite>BaselineUnion` once observed to flip again; before
 this the drop was silent and the re-append relied on someone remembering the
 README warning. And a baseline row may carry a trailing `# note` —
 `# untriaged` is the conventional label for seeded debt, and
-`-PupdateMutationBaseline` seeds it on **every genuinely new row** it
+`pitest<Suite>BaselineUpdate` seeds it on **every genuinely new row** it
 writes — a new sibling at an accepted key included, since the twin's
 argument was written for the mutants it had, not for one more — so no new
 row enters the baseline bare: triage
@@ -438,21 +431,25 @@ dropped — the carry apparatus that entry describes is retired; affinity plus
 the fate listing is what replaced it)*. Without line evidence the assignment
 is arbitrary, which is the same-key blind spot below, not a bug to police.
 
-The third refresh is the only one that is always safe:
-`-PpruneMutationBaseline` drops baseline rows matching nothing this run and
-adds no rows — shrinking the baseline is always an improvement, and no
-coin-flip from the run can be baked in. It also refreshes the `# line` tag of
-each retained row matched at its own key, using line affinity before file
-order; unmatched rows kept for `TIMED_OUT`, a pending flip, or flip insurance
-retain their prior tags because that run did not observe them at their own
-key. A line-only rewrite is still atomic and occurs even when prune drops
-nothing, which makes prune the safe way to clear a reviewed line-drift
-advisory without widening the accepted population. "Matching" is the
+The third refresh is mechanically shrink-only, not self-authorizing:
+`pitest<Suite>BaselinePrune` drops baseline rows matching nothing this run and
+adds no rows. One run cannot distinguish a stable removal from an uninsured
+load- or mode-dependent flip, so the ordinary verify prints a **preview of the
+exact candidate rows** without recommending the flag. Re-measure those rows
+under the relevant solo/gate load and prune only when the same candidates stay
+absent; a row proved to flip belongs in persistent `# flip insurance` instead.
+Prune also refreshes the `# line` tag of each retained row matched at its own
+key, using line affinity before file order; unmatched rows kept for
+`TIMED_OUT`, a pending flip, or flip insurance retain their prior tags because
+that run did not observe them at their own key. A line-only rewrite is still
+atomic and occurs even when prune drops nothing, which makes prune safe for
+clearing a reviewed line-drift advisory **when its candidate preview is
+empty**. "Matching" is the
 verify's own multiset comparison: a key holding more rows than the run's unkilled mutants
 has excess to drop, and which sibling goes is decided by line affinity first
 (the row whose `# line` tag names no live line is the killed mutant's row),
 file order after — so a noted row is not dropped for its bare sibling's kill,
-and the stale hint's "refresh with prune" is a promise prune keeps *(casebook:
+and the candidate preview names the same row prune would remove *(casebook:
 the stale hint that named the wrong flag)*. Two unmatched classes are kept
 anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
 (load-dependent detection, not a kill), and rows with an *unmatched*
@@ -464,12 +461,12 @@ timed out (or flipped) there, line affinity deciding which rows hold the
 timeout budget — one audited permanent timeout cannot vouch for an unbounded
 pile of genuinely killed siblings. Flip-insured rows are kept
 unconditionally and decided *before* the timeout budget, so an insured row
-never spends the budget its uninsured sibling needs. Prune and the stale
-hint read one row-level keep plan, so the hint's "prune keeps them" and
-"refresh with prune" name exactly the rows prune keeps and drops.
-Reach for prune after a pass that killed baseline rows —
-never for a hand-rolled cleanup script, which is how the status-blind prune
-happened. The three flags are mutually exclusive; the build refuses a
+never spends the budget its uninsured sibling needs. Prune and the candidate
+preview read one row-level keep plan, so the preview and the eventual action
+name exactly the same rows. Agreement prevents a tooling lie; repeated
+observation supplies the evidence the tool cannot infer from one report.
+Never substitute a hand-rolled cleanup script, which is how the status-blind
+prune happened. The three flags are mutually exclusive; the build refuses a
 combination.
 
 ### `TIMED_OUT` is detected, and detection is load-dependent
@@ -485,7 +482,7 @@ invoked it*, and the failure looks exactly like a real regression.
   baseline; stale rows only warn, so a superset is safe in this direction.
   The comparison is scripted: `pitestModeSnapshot`/`pitestModeCompare` (see
   the wandering-kill-count section) diff the two modes per mutant and write
-  the observed-flip unions with `-PunionModeFlips`.
+  the observed-flip unions with `pitestModeCompareUnion`.
 - **Run-to-run drift is announced automatically.** The verify stashes each
   run's per-status coordinates — every status, `KILLED` included
   (`.pitest-history/<suite>.statuses`, machine-local, a `# stash format`
@@ -510,17 +507,17 @@ invoked it*, and the failure looks exactly like a real regression.
   same time, and asking a set "is this key timed out now and was it survived
   before" answers yes on every run including the ones where nothing moved. A
   flip is a key whose timeout count rose *and* whose unkilled count fell
-  *(casebook: the flip that fired forever)*. The verify's stale-entry hint honours this: a
+  *(casebook: the flip that fired forever)*. The verify's candidate preview honours this: a
   baseline row whose coordinate read `TIMED_OUT` this run is reported as the
-  load flip it is ("no refresh needed; prune keeps them"), never counted
-  among the "since killed" rows the refresh hint points at. A stale-looking
+  load flip it is ("no refresh needed; prune keeps them"), never included
+  among rows prune would remove. A stale-looking
   row at a *flip-insured key* — any row of the key carrying a
-  `# flip insurance` note, machine-written by `-PunionModeFlips` or riding
+  `# flip insurance` note, machine-written by `pitestModeCompareUnion` or riding
   in a hand annotation's parenthetical — gets the same honour: it is
   reported as the flap its insurance records (or, when its coordinate is
   alive at another status, as the newly-covered move the failure detail
-  names), excluded from the refresh hint, and kept by prune, so following
-  the hint can never drop a row whose
+  names), excluded from the candidate preview, and kept by prune, so the
+  explicit action cannot drop a row whose
   absence would fail the next solo run with an unexplained survivor. Both
   the keep and the hint are key-level, because which member of a flappy
   family reads killed on a given run is itself load-dependent; the row
@@ -534,12 +531,12 @@ invoked it*, and the failure looks exactly like a real regression.
   comparison above, which is what separates it from `SURVIVED -> TIMED_OUT`,
   where the race is between detection and *no detection*.
 - **Union only rows you have observed to flip** — and prefer the
-  `pitestModeCompare -PunionModeFlips` path, which writes the observation
+  `pitestModeCompareUnion` path, which writes the observation
   *into* the row as a `# flip insurance (<per-mode statuses>)` note a later
-  reader can re-measure. The verify-side `-PunionMutationBaseline` remains
+  reader can re-measure. The verify-side `pitest<Suite>BaselineUnion` remains
   as the escape hatch for a directly witnessed flip: it adds the run's
   unkilled rows in canonical form without dropping baseline rows that
-  happened to be detected this run (a full `-PupdateMutationBaseline` there
+  happened to be detected this run (a full `pitest<Suite>BaselineUpdate` there
   bakes in the run's coin-flips and starts refresh ping-pong) — but it lands
   bare rows, so a hand union owes the evidence note by hand or the insurance
   is an unargued acceptance. Bulk-adding every `TIMED_OUT` row "to be safe"
@@ -571,7 +568,7 @@ invoked it*, and the failure looks exactly like a real regression.
   (the removed loop exit, the reversed increment, the leaked unlock)
   written per member in `config/pitest/README.md`. Adoption is seeded, not
   transcribed: a suite whose summary reports timeouts with no set on disk is
-  pointed at `-PinitTimeoutAudit`, which writes the membership rows from the
+  pointed at `pitest<Suite>TimeoutAuditInit`, which writes the membership rows from the
   run's report (observed lines riding in `#` comments) and leaves only the
   causes to a person. The nudge also prints the would-be member rows
   paste-ready alongside the flag: timeouts are load-dependent, so the run
@@ -665,7 +662,7 @@ invoked it*, and the failure looks exactly like a real regression.
   coin-flips and starts ping-pong *(casebook: the handled-flag family that
   never settles)*. But the steady state is a holding pattern, not a
   destination, and the trade is asymmetric: a wrongly-removed union costs
-  one red build and one `-PunionModeFlips` to restore, evidence note
+  one red build and one `pitestModeCompareUnion` to restore, evidence note
   included, while a wrongly-kept union **blinds the ratchet at that key** —
   a row accepted in both statuses can never fail again, so a later edit that
   makes the mutant genuinely survive passes silently. Write each union's
@@ -679,7 +676,7 @@ invoked it*, and the failure looks exactly like a real regression.
 
 - **Status is part of the row.** A `NO_COVERAGE -> SURVIVED` flip is two
   different rows at one coordinate. A script that matches baseline rows by
-  `class,method,mutator` alone — say, to prune since-killed entries —
+  `class,method,mutator` alone — say, to remove entries absent from one run —
   lets the stale row sitting earlier in the file consume the surviving
   mutant's match and deletes the acceptance instead, leaving a baseline the
   verify rightly fails one command after it was correct. Match on the full
@@ -699,7 +696,7 @@ invoked it*, and the failure looks exactly like a real regression.
 - **Hand-edited rows can silently never match.** The canonical mutator name
   strips the `org.pitest.…gregor.mutators.` package *and* the `returns.`
   sub-package; a row spelled `returns.NullReturnValsMutator` matches nothing
-  and reports new forever. Prefer `-PupdateMutationBaseline`, which writes
+  and reports new forever. Prefer `pitest<Suite>BaselineUpdate`, which writes
   the canonical form; hand-edit only to union a known flip.
 
 ### Line numbers are metadata, and the one hole that buys
@@ -711,34 +708,43 @@ pass, the pairing-outlier scan and `-PnoDriftTolerance` are all retired —
 there is no drift left to tolerate. What remains of lines is metadata and one
 advisory: a key unkilled *only* at lines its tags do not name draws a
 **line-drift advisory** — the code the acceptance argues about has moved, or
-a new mutant sits under an old acceptance. Re-read the README argument, then
-use a green `-PpruneMutationBaseline` to refresh matched tags without
-accepting anything; a full update also refreshes tags but carries its normal
+a new mutant sits under an old acceptance. Re-read the README argument. If
+the same run's prune-candidate preview is empty, a green
+`pitest<Suite>BaselinePrune` refreshes matched tags without accepting anything;
+otherwise re-measure the candidates before combining a metadata refresh with
+their deletion. A full update also refreshes tags but carries its normal
 baseline-widening risk. Unions preserve existing tags and attach observed
-tags only to rows they add; `migrateMutationBaselines` preserves recorded
+tags to rows they add; the mode-flip union also preserves an existing row's
+tag when it annotates that row. `migrateMutationBaselines` preserves recorded
 tags because it has no current mutation report. The check is row-level where
 the data supports it: when every row of a key carries a tag and the observed count
 matches the row count, *any* unrecorded line is reported — the baseline's
 multiset already fails a genuinely new sibling as a count change, so unlike
 the audited timeout sets there is no new-sibling quiet case to preserve.
-Partial tags or skewed counts fall back to the audit's key-level
-disjointness (the skew is already failing the build or printing the stale
-hint). Legacy five-field rows (`class,method,<line>,mutator,STATUS`) still
-parse — the line field demotes to recorded-line metadata — and any refresh
-that actually rewrites the file migrates it; `migrateMutationBaselines`
-respells every suite's file
-without a mutation run (parse/re-render, comments preserved, identity
-untouched by construction), which is the fleet migration path: the refresh
-flags need a green run, and update needs a *solo* one or it drops
-flip-insurance rows reading `TIMED_OUT` under load. Migration is one-way:
-a pre-line-less plugin reads a migrated file as every-row-stale plus
-every-mutant-new (and its debt listing silently drops every row), so bump
-**every** pin that resolves the plugin — root settings *and* any
-composite/jmh build-file pins — before committing migrated CSVs, and expect
-a wave of line-drift advisories on the first runs after migrating: legacy
-line fields commonly lag the code (pure drift used to pass with a notice),
-and promoting them to `# line` tags surfaces that lag as re-read prompts,
-not regressions.
+Partial tags or skewed counts fall back to the audit's key-level disjointness
+(the skew is already failing the build or printing the candidate preview).
+
+Accepted-baseline documents have an explicit schema. Schema 1 begins with
+`!sava-hardening-baseline-schema,1`; the non-comment marker makes a legacy
+reader at least diagnose the row as malformed instead of silently treating an
+unknown schema as a comment. From this schema-aware release onward, an unknown
+version is a hard refusal on every reading path. This release also reads the one N-1 form: an unversioned
+file containing current line-less rows or legacy five-field rows
+(`class,method,<line>,mutator,STATUS`). Legacy line fields demote to `# line`
+metadata. Unknown, malformed, duplicate, or misplaced schema markers fail
+loudly on every reading path.
+
+Normal writer tasks preserve an existing document's schema state, while a newly
+created baseline starts at schema 1; merely bumping the plugin therefore does
+not stamp every checkout. `migrateMutationBaselines`
+deliberately canonicalizes rows and adds the schema-1 marker without a
+mutation run; run it only after every root, composite, and benchmark-build pin
+that may read the committed files has moved to a schema-aware release.
+`downgradeMutationBaselines` removes only that marker, preserving row spelling,
+comments, blanks, order, and duplicates; run it and commit the result before
+rolling a consumer back to the N-1 plugin. Those two tasks are the fleet
+migration and rollback plan. A migration can surface old line drift as a
+review prompt, but it never changes baseline identity.
 
 The price, named because it is paid deliberately: **a same-key swap is
 invisible.** Kill one mutant and introduce a new one at the same
@@ -1343,19 +1349,12 @@ so adding a target cannot leave a hand-maintained task list stale. It writes
 independent targets finish after one finds a failure; Gradle still exits non-zero.
 Run one `fuzz<Target>` directly for focused iteration.
 
-For a `sava-build` release, `tools/local-fuzz.sh --release --seconds <N>` first preflights
-the complete fleet, publishes the candidate plugin into the local test repository, and
-requires every consumer to expose `fuzzAll` plus at least one registered target. It retains
-the publish log, per-repository logs, and every generated `local-fuzz.tsv` in an immutable,
-SHA-bound run bundle under `build/hardening/local-fuzz-runs/`, together with the exact
-published `0.0.0-test` plugin JAR; the canonical receipt is a pointer to that bundle. Each
-inner fuzz receipt records the loaded plugin binary, and the runner requires its hash to
-equal the retained JAR's hash, catching the case where every consumer reused the same stale
-resolution. The runner enables the configuration cache and removes prior inner
-aggregate receipts before invoking Gradle, so a stale deterministic TSV cannot impersonate
-the current campaign if plugin-side invalidation regresses. Ordinary mode accepts explicit repositories or available manifest
-siblings and alone may fall back to individual tasks or `help`. This is evidence from the
-candidate being released; no soak window or cron tick is required.
+Release certification must run every registered fleet target against the exact candidate
+plugin binary, invalidate stale aggregate receipts before execution, and retain immutable,
+commit-bound evidence. A local campaign is sufficient; no soak window or scheduled workflow
+is required. Release owners should follow the single operational contract in the
+[sava-build README](README.md#pre-release-fleet-certification), rather than copying runner
+mechanics into consumer or policy documentation.
 
 `fuzzWorkflowInSync` remains only as a compatibility no-op for older consumer scripts.
 It is not part of `check`, and the plugin neither requires nor validates a GitHub fuzz
@@ -1446,17 +1445,20 @@ strictly stronger than sub-totals, and it names which key moved:
 Benign flips (`KILLED` <-> `TIMED_OUT`) are counted and tolerated. A flip
 crossing the unkilled boundary is exactly the row the `TIMED_OUT` section
 says belongs in the baseline: the compare fails naming each one unless it is
-already insured there — counting siblings, since the verify's comparison is
-a multiset: per gated status a key needs as many rows as the widest mode
-observed, and one row cannot insure two flipped siblings — and
-`-PunionModeFlips` writes the union — append-only,
-each row annotated `# flip insurance (<per-mode statuses>)` so the note
-carries its own evidence and a later reader can re-measure it, and tagged
-with the `# line` observed in the snapshots so the verify's row-level drift
-advisory covers it (an untagged row would drop its whole key to the
-partial-tag fallback, weakening the check for its siblings too). Two runs can
-match in total while disagreeing about which mutants died; the headline
-number is not the check.
+already insured there with the literal `flip insurance` marker — baseline
+multiplicity alone is not persistent insurance, because an unmarked row can
+become tomorrow's prune candidate. Siblings still count: per gated status a
+key needs as many marked rows as the widest mode observed, and one row cannot
+insure two flipped siblings. `pitestModeCompareUnion` first annotates deterministic
+existing rows, preserving their family label, note, and `# line` tags, then
+adds only a true multiplicity shortfall. Every selected row gains
+`# flip insurance (<per-mode statuses>)` (or the same evidence appended to its
+existing note), so a later reader can re-measure it and prune recognizes the
+same literal marker. Newly added rows carry the lines observed in the
+snapshots so the verify's row-level drift advisory covers them (an untagged
+row would drop its whole key to the partial-tag fallback, weakening the check
+for its siblings too). Two runs can match in total while disagreeing about
+which mutants died; the headline number is not the check.
 
 **Sweep for accepted rows that match nothing in any mode** while you have the
 data: per-run stale warnings get dismissed as solo-vs-gate mode noise, so
@@ -1568,12 +1570,13 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    (wildcard targets + exclusions) and fuzz targets. `hardeningInit` scaffolds
    the transcription: the `config/pitest/README.md` skeleton, the
    `.pitest-history/` git-ignore, and the adoption checklist with the current
-   template digest.
+   template digest. Run `./gradlew hardeningHelp` for the installed version's
+   exact task and option surface.
 2. Pin any unseeded randomness in the test suite (see above).
-3. Seed the baselines: `./gradlew pitest<Suite> -PupdateMutationBaseline` per
-   suite, commit `config/pitest/`.
+3. Seed the baselines with `./gradlew pitest<Suite>BaselineUpdate` per suite,
+   review the written rows, and commit `config/pitest/`.
 4. Review the `config/pitest/README.md` written by `hardeningInit`, then record
-   triaged equivalents (initially empty) and any seeded untriaged debt there.
+   accepted-mutant evidence (initially empty) and any seeded untriaged debt there.
 5. Add the agent-instructions block below to the repo's `AGENTS.md` with the
    `hardening-template` marker. Run `./gradlew hardeningAgentTemplate` to print the
    exact block and digest carried by the installed plugin; `agentsTemplateInSync`
@@ -1641,20 +1644,20 @@ fails in that mode; it is unadopted, not merely waiting for a release.
 >   written reason in `config/pitest/README.md` **and a short family label on
 >   the row itself** — refreshes seed new rows `# untriaged`, and triage means
 >   replacing that label, so the baseline always says which rows are argued
->   and which are debt. Never run `-PupdateMutationBaseline` just to make the
->   build pass.
+>   and which are debt. Never run a baseline-update task just to make the build
+>   pass.
 > - Baseline keys are line-less (`class,method,mutator,STATUS`) — editing
->   above a mutated method churns nothing, and `# line` tags are metadata. A
->   full update refreshes every tag; a green prune safely refreshes matched
->   retained rows even when it drops nothing. Unions and format-only migration
->   preserve existing tags. The trade is one documented hole: a new mutant
->   replacing a killed one at the same key inherits its acceptance silently,
->   so when the line-drift advisory names a key whose argument no longer reads against the
->   code, treat it as that swap until shown otherwise. Legacy five-field files
->   migrate on any baseline-rewriting refresh, or all at once with
->   `migrateMutationBaselines` (no
->   mutation run needed) — but only after every pin resolving the plugin is
->   bumped, because pre-line-less plugin versions cannot read a migrated file.
+>   above a mutated method churns nothing, and `# line` tags are review
+>   metadata. A new mutant replacing a killed one at the same key can inherit
+>   its acceptance, so treat a line-drift advisory whose written argument no
+>   longer fits the code as that swap until shown otherwise. Use the installed
+>   plugin's named writer tasks and heed their candidate previews; never hand-edit
+>   record structure or perform a schema migration/rollback without a fleet pin plan.
+> - Consumer hardening notes contain only local ownership, measurements, acceptance
+>   reasons, and provenance. `AGENTS.md` may carry this exact generated,
+>   digest-pinned template plus those local facts, but no independently maintained
+>   copy of plugin task semantics; use `hardeningHelp` and
+>   `hardeningAgentTemplate` as the installed-version authorities.
 > - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
 >   seconds instead of the full suite — then re-run unscoped before any
 >   refresh; the tooling refuses to let a scoped report touch the baseline.
@@ -1704,11 +1707,10 @@ fails in that mode; it is unadopted, not merely waiting for a release.
 > - When a test you believe in will not go green, **suspect the code before you
 >   soften the assertion** — that is where this process finds real bugs.
 > - **A wandering unkilled count is a defect, not noise** — chase it before
->   refreshing any baseline. Known causes: real waits, `TIMED_OUT` load flips,
->   `@Execution`/`@TestInstance` not reaching concrete test classes from an
->   abstract base (version-dependent — JUnit 6 marks both `@Inherited`; check
->   the resolved jar), and coverage attributed to field initializers —
->   exercise factories from inside a `@Test`.
+>   changing any baseline. Reproduce it under the relevant solo/gate loads,
+>   inspect per-mutant coordinates, remove real waits, and move construction
+>   coverage into the test body before deciding whether it is a product defect,
+>   a load-dependent timeout, or a harness defect.
 > - **Build the subject under test inside the test body, not in a field.**
 >   Under `PER_CLASS` lifecycle a field-initialized client's construction
 >   coverage attaches to whichever test runs first, so wiring mutants can
@@ -1717,19 +1719,13 @@ fails in that mode; it is unadopted, not merely waiting for a release.
 >   client in the test method and drives each configured URL restores the
 >   pairing.
 > - **Kill rates are bounded by the mutator set.** `BigInteger`/`BigDecimal`
->   arithmetic is method calls, invisible to the default arithmetic mutators —
->   fixed-point and fee math needs `EXPERIMENTAL_BIG_INTEGER` (pitest ≥
->   1.25.8) — and fluent calls returning their receiver are expressions,
->   invisible to `VoidMethodCallMutator` — builder-style writes need
->   `EXPERIMENTAL_NAKED_RECEIVER`. Trial per suite, enable only what fires,
->   and record the numbers.
-> - **PIT minions run on the class path**, even in module-path repos:
->   `module-info` services are invisible to them, and a test-resources
->   `META-INF/services` is invisible to the module-path `test` task. Real
->   services are declared in both places; a harness whose *pass/fail* depends
->   on which task ran it is never committed — but assertions may branch on a
->   `ServiceLoader` probe, which is how test-only providers get covered under
->   PIT (see the probe-and-branch pattern).
+>   arithmetic and receiver-returning fluent calls can be invisible to the
+>   enabled defaults. Follow the plugin's trial advice per suite, enable only
+>   mutators proved to fire, and record the measured numbers and declines.
+> - Module-path and mutation-test service discovery can differ. Declare real
+>   services in every runtime representation the project supports, probe the
+>   active environment in test-only scaffolding, and never commit a harness
+>   whose pass/fail result depends on which task launched it.
 > - `SURVIVED` and `NO_COVERAGE` are different problems: the first is a
 >   judgment call about equivalence, the second is usually an untested line
 >   and is mechanical. Never accept a `NO_COVERAGE` mutant as "equivalent" —
@@ -1753,11 +1749,9 @@ fails in that mode; it is unadopted, not merely waiting for a release.
 >   when comparing runs.
 > - **A suite that got faster without getting narrower is a bug report.** Real
 >   speedups come from fewer mutants or faster covering tests; an unexplained
->   one usually means the run did less than you think. Exception: a summary
->   carrying the `[history]` marker is ArcMutate incremental reuse and fast is
->   expected — but `hardeningCertify` automatically disables history and re-earns
->   every status from scratch. The hardening process itself does not require an
->   ArcMutate licence and applies to any Java package namespace.
+>   one usually means the run did less than you think. Read the task's evidence
+>   markers and scope; only a fresh full certification may support a release.
+>   The process itself needs no ArcMutate licence and applies to any Java package.
 > - **Transient infra failures are not results.** PIT `MINION_DIED` fails
 >   before writing a report, so it cannot corrupt one — re-run the suite; a
 >   Gradle-worker `EOFException` death is the same shape, and a per-mutant

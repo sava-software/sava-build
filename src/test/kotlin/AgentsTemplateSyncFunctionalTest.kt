@@ -109,6 +109,13 @@ class AgentsTemplateSyncFunctionalTest {
     assertTrue(printed.contains(expectedTemplate), printed)
     assertTrue(printed.contains("<!-- hardening-template sha256:$expectedDigest -->"), printed)
     assertFalse(printed.contains("github.com/sava-software/sava-build/blob/main"), printed)
+    assertTrue(
+      printed.contains("Consumer hardening notes contain only local ownership") &&
+          printed.contains("AGENTS.md` may carry this exact generated"),
+      "the version-matched template must distinguish pinned AGENTS instructions from consumer notes:\n$printed",
+    )
+    assertFalse(printed.contains("Migration is one-way"), printed)
+    assertFalse(printed.contains("pitest ≥"), printed)
   }
 
   @Test

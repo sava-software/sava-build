@@ -6,6 +6,7 @@ import org.gradle.api.initialization.Settings
 import org.gradle.api.logging.Logging
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
+import software.sava.build.hardening.HardeningOptionNames
 import java.io.File
 import javax.inject.Inject
 
@@ -46,7 +47,7 @@ abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
 
   companion object {
 
-    const val LOCAL_REPO_PROPERTY: String = "savaBuildLocalRepo"
+    const val LOCAL_REPO_PROPERTY: String = HardeningOptionNames.SAVA_BUILD_LOCAL_REPO
 
     const val TEST_VERSION: String = "0.0.0-test"
 

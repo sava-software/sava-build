@@ -77,6 +77,16 @@ read_execution_plan_row() {
   IFS=$'\037' read -r -u 3 "$@"
 }
 
+run_consumer_gradle() {
+  local gradle_executable=$1
+  shift
+  if $release_mode; then
+    "$gradle_executable" --configuration-cache "$@"
+  else
+    "$gradle_executable" "$@"
+  fi
+}
+
 snapshot_published_plugin_jar() {
   local source_before source_after retained_hash destination
   reject_symlink_components "$published_plugin_jar" "published plugin jar" || return 1
@@ -690,6 +700,7 @@ reprint_findings() {
 self_test() {
   local fixture records output projects slugs basenames suites hash
   local path_fixture pointer_file target_receipt plan_probe stdin_probe symlink_file
+  local consumer_args_probe consumer_args_output
   local target_hash long_name key repo_key empty_path_key empty_path_sha plan_rows _stolen
   local probe_slug probe_repo probe_deep probe_sha probe_origin
   local plugin_checkout consumer_checkout unavailable_checkout manifest_fixture bundle_fixture
@@ -698,6 +709,7 @@ self_test() {
   local plugin_commit plugin_tree consumer_commit plugin_hash preflight_hash publish_hash
   local log_hash root_cert_hash empty_cert_hash empty_path_log_hash empty_path_cert_hash
   local manifest_hash verify_output
+  local release_mode=false
   local GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
   require_jq
@@ -719,6 +731,23 @@ self_test() {
   ' RETURN EXIT
   path_fixture=$(cd "$path_fixture" && pwd -P)
   fleet_canary_self_test_cleanup_path=$path_fixture
+  consumer_args_probe="$path_fixture/consumer-args-probe"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'for argument in "$@"; do printf "<%s>\n" "$argument"; done' > "$consumer_args_probe"
+  chmod +x "$consumer_args_probe"
+  consumer_args_output=$(run_consumer_gradle "$consumer_args_probe" --console=plain "space argument")
+  if [ "$consumer_args_output" != $'<--console=plain>\n<space argument>' ]; then
+    echo "fleet-canary self-test: ordinary consumer arguments were: $consumer_args_output" >&2
+    return 1
+  fi
+  release_mode=true
+  consumer_args_output=$(run_consumer_gradle "$consumer_args_probe" --console=plain "space argument")
+  if [ "$consumer_args_output" != $'<--configuration-cache>\n<--console=plain>\n<space argument>' ]; then
+    echo "fleet-canary self-test: release consumer arguments were: $consumer_args_output" >&2
+    return 1
+  fi
+  release_mode=false
   fixture="$path_fixture/fixture"
   records="$path_fixture/records"
   plan_probe="$path_fixture/execution-plan"
@@ -1365,8 +1394,6 @@ record_repo() {
 
 failed=""
 warned=""
-consumer_cache_args=()
-if $release_mode; then consumer_cache_args+=(--configuration-cache); fi
 expected_execution_rows=$(wc -l < "$plan_file" | tr -d ' ')
 processed_execution_rows=0
 while read_execution_plan_row slug repo deep_task pre_sha pre_origin; do
@@ -1402,7 +1429,7 @@ while read_execution_plan_row slug repo deep_task pre_sha pre_origin; do
 
   if [ "$repo_result" = passed ]; then
     if $release_mode; then
-      if ! (cd "$repo" && ./gradlew --console=plain "${consumer_cache_args[@]}" \
+      if ! (cd "$repo" && run_consumer_gradle ./gradlew --console=plain \
           -PsavaBuildLocalRepo="$local_repo" tasks --all) \
           3<&- > "$out_file" 2>&1; then
         repo_result=task_discovery_failed
@@ -1434,7 +1461,7 @@ while read_execution_plan_row slug repo deep_task pre_sha pre_origin; do
     echo "fleet-canary: $slug@$repo_sha — $(echo "$tasks" | tr '\n' ' ')"
     task_args=()
     while IFS= read -r task; do [ -n "$task" ] && task_args+=("$task"); done <<< "$tasks"
-    if ! (cd "$repo" && ./gradlew --console=plain "${consumer_cache_args[@]}" \
+    if ! (cd "$repo" && run_consumer_gradle ./gradlew --console=plain \
         -PsavaBuildLocalRepo="$local_repo" \
         "${task_args[@]}") 3<&- > "$out_file" 2>&1; then
       repo_result=checks_failed

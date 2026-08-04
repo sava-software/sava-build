@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.nio.file.Files
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import kotlin.concurrent.thread
@@ -100,5 +101,19 @@ class BaselineFilesTest {
     assertTrue(
         target.parentFile.listFiles().orEmpty().none { it.name.endsWith(".tmp") },
         "staging files leaked: ${target.parentFile.listFiles().orEmpty().map { it.name }}")
+  }
+
+  @Test
+  fun `checked recursive deletion removes links without traversing their targets`() {
+    val external = tempDir.resolve("external").apply { mkdirs() }
+    val evidence = external.resolve("keep.txt").apply { writeText("keep") }
+    val managed = tempDir.resolve("managed").apply { mkdirs() }
+    Files.createSymbolicLink(managed.resolve("outside").toPath(), external.toPath())
+    managed.resolve("local.txt").writeText("drop")
+
+    assertTrue(BaselineFiles.deleteRecursivelyIfExists(managed))
+
+    assertFalse(managed.exists())
+    assertEquals("keep", evidence.readText(), "recursive cleanup must not follow a symlink")
   }
 }

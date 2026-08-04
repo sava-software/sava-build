@@ -1,5 +1,6 @@
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -58,9 +59,36 @@ class HardeningInitFunctionalTest {
     assertTrue(first.output.contains("hardeningInit: wrote"), first.output)
     assertTrue(readme.isFile, "README not scaffolded")
     val readmeText = readme.readText()
-    assertTrue(readmeText.startsWith("# Mutation-testing baseline & triage policy"), readmeText)
+    assertTrue(readmeText.startsWith("# Mutation hardening evidence"), readmeText)
+    assertTrue(readmeText.contains("repository-specific evidence and decisions only"), readmeText)
+    assertTrue(readmeText.contains("./gradlew hardeningHelp"), readmeText)
     assertTrue(readmeText.contains("## Untriaged debt"), readmeText)
-    assertTrue(readmeText.contains("## Triaged equivalent mutants (accepted with reasons)"), readmeText)
+    assertTrue(readmeText.contains("## Accepted mutants"), readmeText)
+    assertTrue(readmeText.contains("exact `# <label>` text"), readmeText)
+    val normalizedReadme = readmeText.replace(Regex("\\s+"), " ")
+    assertTrue(
+      normalizedReadme.contains(
+        "adding those exact rows to `<suite>-timeouts.csv` is also an intentional manual edit"
+      ),
+      readmeText,
+    )
+    assertTrue(readmeText.contains("## Audited timeout causes"), readmeText)
+    assertTrue(
+      readmeText.contains("name its class and method together in the same Markdown heading-delimited section"),
+      readmeText,
+    )
+    listOf(
+      "-PupdateMutationBaseline",
+      "-PunionMutationBaseline",
+      "-PpruneMutationBaseline",
+      "full update",
+      "green prune",
+    ).forEach { copiedMechanic ->
+      assertFalse(
+        readmeText.contains(copiedMechanic),
+        "seeded consumer evidence copied plugin mechanics '$copiedMechanic':\n$readmeText",
+      )
+    }
     assertTrue(first.output.contains("appended .pitest-history/ to"), first.output)
     assertTrue(gitignore.readText().contains("\n.pitest-history/\n"), gitignore.readText())
     assertTrue(first.output.contains("remaining adoption steps"), first.output)

@@ -1059,9 +1059,23 @@ status-heterogeneous key (a `SURVIVED` row beside a `NO_COVERAGE` row —
 three such keys existed in the fleet when this was written), reopening
 "prune dropped nothing" against a hint that named it.
 
+A later review found the recommendation itself still claimed more than one
+report knew. Even when the hint and prune choose the same row, "since killed"
+is an inference: an uninsured mutant that survives solo and reads killed under
+gate load is indistinguishable from stable removal in that gate report. The
+verify now prints a preview of the exact rows prune would remove, calls them
+candidates, and says what evidence is missing: re-observation under the
+relevant modes. It does not prescribe the destructive flag. Mode comparison
+closes the other half of the loop: baseline multiplicity without a literal
+`flip insurance` marker is reported as covered-but-unmarked, and
+`-PunionModeFlips` annotates deterministic existing rows before adding only a
+true multiplicity shortfall. The evidence now survives the next killed read
+instead of depending on the operator remembering why a plain row existed.
+
 Rules: *two mechanisms that share a definition must share the code that
 computes it — the verify counted stale rows one way and prune matched them
 another, and the gap between them was a recommendation that could not work*;
+*a one-run preview can identify a proposed mutation but cannot authorize it*;
 *when a hint names a flag, a test should hold the hint to it end-to-end,
 through the flag's actual effect on the file*.
 

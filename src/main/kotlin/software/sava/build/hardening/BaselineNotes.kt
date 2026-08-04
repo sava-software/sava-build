@@ -24,6 +24,30 @@ internal object BaselineNotes {
   /** One parsed baseline row: its line-less key, its note, and its recorded lines. */
   data class Row(val key: String, val note: String?, val recordedLines: List<Int>)
 
+  /**
+   * The literal persistence marker written by `pitestModeCompare -PunionModeFlips`.
+   * Insurance is a recorded observation, not something inferred from a row merely
+   * existing at the right key: an unmarked acceptance can satisfy today's multiset
+   * gate and still be removed by a later prune. Keep recognition here so mode compare,
+   * prune, and the dead-row sweep cannot assign different meaning to the same note.
+   */
+  private const val FLIP_INSURANCE_MARKER = "flip insurance"
+
+  fun hasFlipInsurance(note: String?): Boolean =
+      note?.contains(FLIP_INSURANCE_MARKER) == true
+
+  /**
+   * Adds persistent flip evidence without replacing the row's existing family label or
+   * note. A bare row receives the canonical machine-written note; an already-triaged
+   * row keeps its note verbatim as the prefix and gains an additional parenthetical.
+   * Callers select rows deterministically and preserve their recorded-line metadata.
+   */
+  fun withFlipInsurance(note: String?, detail: String): String = when {
+    hasFlipInsurance(note) -> checkNotNull(note)
+    note == null -> "# flip insurance ($detail)"
+    else -> "$note (flip insurance: $detail)"
+  }
+
   // Trailing '# line 61' / '# lines 61, 93' / '# lines 61/93' comment. Anchored to the
   // end of the line so a label containing the word 'line' cannot be misread as a tag.
   private val LINE_TAG = Regex("""#\s*lines?\s+\d+(?:\s*[,/]\s*\d+)*\s*$""")
@@ -62,11 +86,11 @@ internal object BaselineNotes {
    * A line whose key part cannot be a baseline row: after stripping the trailing
    * `# line` tag and the note, the coordinate must be `class,method,mutator,STATUS`
    * or the legacy five-field form with a numeric line third, every field non-empty.
-   * A malformed row parses into a key that matches no mutant, reads as "since
-   * killed", and is then silently dropped by the next refresh — diagnosing the
-   * shape is the same job the timeout membership's malformed-row check does, so
-   * the two files cannot disagree on whether the tool argues with a row or
-   * quietly ignores it.
+   * A malformed row parses into a key that matches no mutant, reads as an unmatched
+   * removal candidate, and is then silently dropped by the next refresh — diagnosing
+   * the shape is the same job the timeout membership's malformed-row check does, so
+   * the two files cannot disagree on whether the tool argues with a row or quietly
+   * ignores it.
    */
   fun malformed(line: String): Boolean {
     val tagMatch = LINE_TAG.find(line)
@@ -105,7 +129,7 @@ internal object BaselineNotes {
    * under matched counts is exactly a moved anchor or a same-key swap. With
    * partial tags or skewed counts the check falls back to the audit's key-level
    * disjointness (the count skew is already failing the build or printing the
-   * stale hint; double-reporting it as drift would misname it).
+   * prune-candidate preview; double-reporting it as drift would misname it).
    *
    * Returns key -> (recorded lines, unmatched observed lines); keys with no
    * recorded lines never take part.
