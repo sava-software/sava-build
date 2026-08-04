@@ -12,19 +12,12 @@ import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.UntrackedTask
 
-/**
- * Names of the legacy Gradle properties accepted by the hardening feature.
- *
- * Keeping them here gives task aliases, certification preflight, help output, and
- * compatibility validation one inventory. The properties remain supported while
- * discoverable tasks replace the state-changing boolean surface.
- */
+/** Names of the Gradle properties understood or explicitly retired by hardening. */
 internal object HardeningOptionNames {
   data class Descriptor(
     val name: String,
     val value: String?,
     val purpose: String,
-    val discoverableTask: String? = null,
   )
 
   const val ADOPT_LOCAL_CORPUS = "adoptLocalCorpus"
@@ -42,22 +35,27 @@ internal object HardeningOptionNames {
   const val UNION_MUTATION_BASELINE = "unionMutationBaseline"
   const val UPDATE_MUTATION_BASELINE = "updateMutationBaseline"
 
-  val baselineWriterProperties = listOf(
-    UPDATE_MUTATION_BASELINE,
-    UNION_MUTATION_BASELINE,
-    PRUNE_MUTATION_BASELINE,
-    INIT_TIMEOUT_AUDIT,
+  val removedWriterTaskByProperty = linkedMapOf(
+    UPDATE_MUTATION_BASELINE to "pitest<Suite>BaselineUpdate",
+    UNION_MUTATION_BASELINE to "pitest<Suite>BaselineUnion",
+    PRUNE_MUTATION_BASELINE to "pitest<Suite>BaselinePrune",
+    INIT_TIMEOUT_AUDIT to "pitest<Suite>TimeoutAuditInit",
+    UNION_MODE_FLIPS to "pitestModeCompareUnion",
   )
 
-  val stateChangingProperties = baselineWriterProperties + UNION_MODE_FLIPS
+  val removedWriterProperties: Set<String> = removedWriterTaskByProperty.keys.toSet()
+
+  fun removedWriterMessage(present: Collection<String>): String {
+    val replacements = present.toSortedSet().joinToString { property ->
+      "-P$property -> ${checkNotNull(removedWriterTaskByProperty[property])}"
+    }
+    return "state-changing hardening writer properties were removed in sava-build 21.5.22 " +
+        "and are refused: $replacements. Use the named task; it is the only supported " +
+        "committed-file write interface."
+  }
 
   val certificationForbiddenProperties = listOf(
     MUTATE_ONLY,
-    UPDATE_MUTATION_BASELINE,
-    UNION_MUTATION_BASELINE,
-    PRUNE_MUTATION_BASELINE,
-    INIT_TIMEOUT_AUDIT,
-    UNION_MODE_FLIPS,
     TRIAL_MUTATORS,
     PITEST_MODE,
   )
@@ -66,8 +64,6 @@ internal object HardeningOptionNames {
   val descriptors = listOf(
     Descriptor(ADOPT_LOCAL_CORPUS, null,
         "include build/fuzz local findings when minimizing a committed corpus"),
-    Descriptor(INIT_TIMEOUT_AUDIT, null,
-        "legacy timeout-audit seeding switch", "pitest<Suite>TimeoutAuditInit"),
     Descriptor(LIST_UNKILLED, null,
         "print current unkilled mutants with PIT descriptions"),
     Descriptor(MAX_FUZZ_TIME, "seconds",
@@ -78,83 +74,34 @@ internal object HardeningOptionNames {
         "disable ArcMutate result reuse without changing the licensed PIT population"),
     Descriptor(PITEST_MODE, "label",
         "label a pitestModeSnapshot observation"),
-    Descriptor(PRUNE_MUTATION_BASELINE, null,
-        "legacy shrink-only baseline switch", "pitest<Suite>BaselinePrune"),
     Descriptor(SAVA_BUILD_LOCAL_REPO, "directory",
         "resolve an unpublished sava-build test publication (settings-level)"),
     Descriptor(STRICT_TIMEOUT_AUDIT, null,
         "escalate incomplete timeout-audit evidence"),
     Descriptor(TRIAL_MUTATORS, "mutator[,mutator]",
         "select candidates for pitestMutatorTrial"),
-    Descriptor(UNION_MODE_FLIPS, null,
-        "legacy mode-flip insurance switch", "pitestModeCompareUnion"),
-    Descriptor(UNION_MUTATION_BASELINE, null,
-        "legacy append-only baseline switch", "pitest<Suite>BaselineUnion"),
-    Descriptor(UPDATE_MUTATION_BASELINE, null,
-        "legacy full baseline rewrite switch", "pitest<Suite>BaselineUpdate"),
   )
 
   init {
     check(descriptors.map { it.name }.toSet().size == descriptors.size) {
       "hardening Gradle-property inventory contains duplicate names"
     }
+    check(descriptors.none { it.name in removedWriterProperties }) {
+      "removed hardening writer properties must not remain in the active option inventory"
+    }
+    check(removedWriterTaskByProperty.size == 5) {
+      "hardening writer tombstone inventory must name all five removed properties"
+    }
   }
 }
 
 /** The one record-writing interpretation applied by a suite verification. */
-internal enum class BaselineWriteOperation(val legacyProperty: String?) {
-  CHECK(null),
-  UPDATE(HardeningOptionNames.UPDATE_MUTATION_BASELINE),
-  UNION(HardeningOptionNames.UNION_MUTATION_BASELINE),
-  PRUNE(HardeningOptionNames.PRUNE_MUTATION_BASELINE),
-  INIT_TIMEOUT_AUDIT(HardeningOptionNames.INIT_TIMEOUT_AUDIT),
-  ;
-
-  companion object {
-    fun fromLegacyProperties(present: Set<String>): BaselineWriteOperation {
-      val selected = entries.filter { it.legacyProperty in present }
-      require(selected.size <= 1) {
-        "pass at most one of " + HardeningOptionNames.baselineWriterProperties
-          .joinToString { "-P$it" } + " — they answer different questions"
-      }
-      return selected.singleOrNull() ?: CHECK
-    }
-  }
-}
-
-/**
- * The complete state-changing interpretation of the compatibility `-P` surface.
- *
- * Suite record writers and mode-flip insurance used to be parsed independently by
- * their two consumers, which meant one invocation could select both families; for
- * accepted-baseline writers, whichever task ran last won. Keep that cross-family
- * exclusivity in one pure model so every writer and preflight answers the same
- * question before it can touch a record.
- */
-internal class LegacyWriteSelection private constructor(
-  val suiteOperation: BaselineWriteOperation,
-  val modeFlipInsurance: Boolean,
-) {
-  val hasStateChangingOperation: Boolean
-    get() = suiteOperation != BaselineWriteOperation.CHECK || modeFlipInsurance
-
-  companion object {
-    fun fromProperties(present: Set<String>): LegacyWriteSelection {
-      val unknown = present - HardeningOptionNames.stateChangingProperties.toSet()
-      require(unknown.isEmpty()) {
-        "unknown legacy hardening writer property/properties: " +
-            unknown.sorted().joinToString { "-P$it" }
-      }
-      val suiteOperation = BaselineWriteOperation.fromLegacyProperties(present)
-      val modeFlipInsurance = HardeningOptionNames.UNION_MODE_FLIPS in present
-      require(suiteOperation == BaselineWriteOperation.CHECK || !modeFlipInsurance) {
-        "legacy hardening writers are mutually exclusive: do not combine " +
-            "-P${suiteOperation.legacyProperty} with " +
-            "-P${HardeningOptionNames.UNION_MODE_FLIPS}; both are state-changing baseline workflows"
-      }
-      return LegacyWriteSelection(suiteOperation, modeFlipInsurance)
-    }
-  }
+internal enum class BaselineWriteOperation {
+  CHECK,
+  UPDATE,
+  UNION,
+  PRUNE,
+  INIT_TIMEOUT_AUDIT,
 }
 
 internal enum class ProjectWriteOperation(val description: String) {
@@ -184,7 +131,8 @@ internal enum class HardeningWriteRequest(
  * Mutable state shared only inside one Gradle invocation. Dedicated writer-task
  * preflights request an operation before PIT starts; the suite's verify finalizer
  * reads the same request after PIT completes. This is deliberately separate from
- * configuration-time task-name inspection, which cannot see aliases or aggregates.
+ * configuration-time task-name inspection, which cannot reliably model task
+ * abbreviations or aggregates.
  */
 internal class HardeningOperationRegistry {
   private data class SuiteKey(val projectPath: String, val suite: String)
@@ -237,24 +185,6 @@ internal class HardeningOperationRegistry {
     requireHealthy(projectPath).let {
       suiteOperations[SuiteKey(projectPath, suite)] ?: BaselineWriteOperation.CHECK
     }
-
-  @Synchronized
-  fun resolveSuiteOperation(
-    projectPath: String,
-    suite: String,
-    legacyProperties: Set<String>,
-  ): BaselineWriteOperation {
-    requireHealthy(projectPath)
-    val requested = suiteOperation(projectPath, suite)
-    val legacy = LegacyWriteSelection.fromProperties(legacyProperties)
-    if (requested != BaselineWriteOperation.CHECK && legacy.hasStateChangingOperation) {
-      poison(
-          projectPath,
-          "do not combine the discoverable $suite ${requested.name.lowercase()} task with " +
-              "legacy writer properties; choose one operation surface")
-    }
-    return if (requested == BaselineWriteOperation.CHECK) legacy.suiteOperation else requested
-  }
 
   @Synchronized
   fun requestModeFlipInsurance(projectPath: String) {
@@ -374,23 +304,6 @@ internal class HardeningOperationRegistry {
   }
 
   @Synchronized
-  fun resolveModeFlipInsurance(
-    projectPath: String,
-    legacyProperties: Set<String>,
-  ): Boolean {
-    requireHealthy(projectPath)
-    val legacy = LegacyWriteSelection.fromProperties(legacyProperties)
-    val taskRequested = modeFlipInsuranceRequested(projectPath)
-    if (taskRequested && legacy.hasStateChangingOperation) {
-      poison(
-          projectPath,
-          "do not combine pitestModeCompareUnion with " +
-              "legacy writer properties; choose one operation surface")
-    }
-    return taskRequested || legacy.modeFlipInsurance
-  }
-
-  @Synchronized
   fun hasStateChangingOperation(projectPath: String): Boolean =
     requireHealthy(projectPath).let {
       suiteOperations.keys.any { it.projectPath == projectPath } ||
@@ -420,12 +333,6 @@ abstract class HardeningOperationSession : BuildService<BuildServiceParameters.N
 
   internal fun suiteOperation(projectPath: String, suite: String): BaselineWriteOperation =
     registry.suiteOperation(projectPath, suite)
-
-  internal fun resolveSuiteOperation(
-    projectPath: String,
-    suite: String,
-    legacyProperties: Set<String>,
-  ): BaselineWriteOperation = registry.resolveSuiteOperation(projectPath, suite, legacyProperties)
 
   internal fun requestModeFlipInsurance(projectPath: String) =
     registry.requestModeFlipInsurance(projectPath)
@@ -469,11 +376,6 @@ abstract class HardeningOperationSession : BuildService<BuildServiceParameters.N
   internal fun modeFlipInsuranceRequested(projectPath: String): Boolean =
     registry.modeFlipInsuranceRequested(projectPath)
 
-  internal fun resolveModeFlipInsurance(
-    projectPath: String,
-    legacyProperties: Set<String>,
-  ): Boolean = registry.resolveModeFlipInsurance(projectPath, legacyProperties)
-
   internal fun hasStateChangingOperation(projectPath: String): Boolean =
     registry.hasStateChangingOperation(projectPath)
 
@@ -481,13 +383,13 @@ abstract class HardeningOperationSession : BuildService<BuildServiceParameters.N
 }
 
 /**
- * Execution-time preflight for the discoverable state-changing task aliases.
+ * Execution-time preflight for discoverable state-changing tasks.
  *
- * The public alias and the PIT/compare task both depend on this untracked task, and
+ * The public writer and the PIT/compare task both depend on this untracked task, and
  * the producer is ordered after it. The request therefore reaches the build service
  * before PIT decides whether history is allowed and before verification chooses a
  * write transition. Keeping this as a typed task avoids reintroducing a script-action
- * capture merely to replace the legacy properties.
+ * capture in the precompiled convention script.
  */
 @UntrackedTask(because = "Publishes an invocation-local operation to a build service")
 internal abstract class HardeningOperationRequestTask : DefaultTask() {
@@ -502,10 +404,6 @@ internal abstract class HardeningOperationRequestTask : DefaultTask() {
   @get:Input
   abstract val request: Property<HardeningWriteRequest>
 
-  /** Only names are recorded: Gradle-property values are irrelevant by design. */
-  @get:Input
-  abstract val presentLegacyWriteProperties: ListProperty<String>
-
   @get:Input
   abstract val presentIncompatibleProperties: ListProperty<String>
 
@@ -519,7 +417,6 @@ internal abstract class HardeningOperationRequestTask : DefaultTask() {
   abstract val certificationSession: Property<HardeningCertificationSession>
 
   init {
-    presentLegacyWriteProperties.convention(emptyList())
     presentIncompatibleProperties.convention(emptyList())
     excludedTaskNames.convention(emptyList())
   }
@@ -535,17 +432,6 @@ internal abstract class HardeningOperationRequestTask : DefaultTask() {
       }
     }
 
-    val legacy = presentLegacyWriteProperties.get()
-    try {
-      LegacyWriteSelection.fromProperties(legacy.toSet())
-    } catch (e: IllegalArgumentException) {
-      refuse(checkNotNull(e.message))
-    }
-    if (legacy.isNotEmpty()) {
-      refuse(
-          "do not combine a discoverable hardening writer task with legacy " +
-              legacy.sorted().joinToString { "-P$it" } + "; choose one operation surface")
-    }
     val incompatible = presentIncompatibleProperties.get()
     if (incompatible.isNotEmpty()) {
       refuse(
@@ -593,7 +479,7 @@ internal abstract class HardeningOperationRequestTask : DefaultTask() {
 
 /**
  * Postcondition on a public writer task. Dependency exclusions cannot turn a named
- * state-changing workflow into a misleading green no-op: the alias succeeds only
+ * state-changing workflow into a misleading green no-op: the writer succeeds only
  * when its exact request was selected, consumed by the implementation task, and
  * the invocation was never poisoned.
  */
@@ -645,9 +531,9 @@ internal object HardeningHelpText {
     appendLine("  pitestMutatorTrial                measure candidate mutators")
     appendLine("  hardeningInit / hardeningAgentTemplate  scaffold local evidence and operator rules")
     appendLine()
-    appendLine("Baseline document lifecycle:")
-    appendLine("  migrateMutationBaselines          stamp/canonicalize schema-aware baselines")
-    appendLine("  downgradeMutationBaselines        remove only the schema marker for N-1 rollback")
+    appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")
+    appendLine("  migrateMutationBaselines          stamp substantive accepted baselines; remove empty placeholders")
+    appendLine("  downgradeMutationBaselines        losslessly remove schema 1 for N-1 rollback")
     suiteNames.sorted().forEach { suite ->
       val prefix = "pitest" + suite.replaceFirstChar(Char::uppercase)
       appendLine("  ${prefix}BaselineUpdate".padEnd(40) + "full rewrite from a fresh run")
@@ -673,12 +559,14 @@ internal object HardeningHelpText {
       append("  ")
       append(spelling.padEnd(40))
       append(option.purpose)
-      option.discoverableTask?.let { append("; compatibility alias for $it") }
       appendLine()
     }
     appendLine()
-    append("State-changing properties use presence semantics for compatibility ")
-    appendLine("(`-Pflag=false` is still present); prefer the named tasks above.")
+    appendLine("Removed writer properties (refused since sava-build 21.5.22):")
+    HardeningOptionNames.removedWriterTaskByProperty.forEach { (property, task) ->
+      appendLine("  ${"-P$property".padEnd(40)}use $task")
+    }
+    appendLine("Named tasks are the only supported committed-file write interface.")
   }
 }
 

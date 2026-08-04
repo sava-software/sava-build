@@ -25,7 +25,7 @@ internal object BaselineNotes {
   data class Row(val key: String, val note: String?, val recordedLines: List<Int>)
 
   /**
-   * The literal persistence marker written by `pitestModeCompare -PunionModeFlips`.
+   * The literal persistence marker written by `pitestModeCompareUnion`.
    * Insurance is a recorded observation, not something inferred from a row merely
    * existing at the right key: an unmarked acceptance can satisfy today's multiset
    * gate and still be removed by a later prune. Keep recognition here so mode compare,

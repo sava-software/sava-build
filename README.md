@@ -525,7 +525,18 @@ git add "release-attestations/$version.json"
 Commit only that generated file alongside Release Please's `CHANGELOG.md` and manifest
 changes. It contains candidate identity and receipt hashes, not the receipt bundles,
 absolute paths, or credentials. The full immutable bundles still need to be retained with
-the release record. The Release Please workflow refuses to create a pending version's tag
+the release record. From that clean release commit, exercise the same production gate the
+tag workflow will call before allowing Release Please to proceed:
+
+```shell
+tools/release-attestation.sh verify "$version"
+tools/release-attestation.sh verify-pending-release
+```
+
+The script's hermetic self-test drives successful and failing `create`, `verify`,
+`verify-pending-release`, and `verify-tag` paths; this clean-checkout invocation is the
+real repository rehearsal and remains a release blocker until the fleet and fuzz receipts
+exist. The Release Please workflow refuses to create a pending version's tag
 without this committed attestation, and the tag-triggered publish workflow verifies it
 again against the exact tag checkout. Any source, fixture, workflow, policy, or fleet-roster
 change after certification invalidates the record and requires both strict runs again.

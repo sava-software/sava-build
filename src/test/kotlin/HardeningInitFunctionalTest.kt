@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.hardening.HardeningOptionNames
 import java.io.File
 
 /**
@@ -77,13 +78,8 @@ class HardeningInitFunctionalTest {
       readmeText.contains("name its class and method together in the same Markdown heading-delimited section"),
       readmeText,
     )
-    listOf(
-      "-PupdateMutationBaseline",
-      "-PunionMutationBaseline",
-      "-PpruneMutationBaseline",
-      "full update",
-      "green prune",
-    ).forEach { copiedMechanic ->
+    (HardeningOptionNames.removedWriterProperties.map { "-P$it" } +
+        listOf("full update", "green prune")).forEach { copiedMechanic ->
       assertFalse(
         readmeText.contains(copiedMechanic),
         "seeded consumer evidence copied plugin mechanics '$copiedMechanic':\n$readmeText",

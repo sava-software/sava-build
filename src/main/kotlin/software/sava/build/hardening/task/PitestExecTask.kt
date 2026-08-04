@@ -115,10 +115,6 @@ abstract class PitestExecTask : JavaExec() {
   @get:Input
   abstract val historyExplicitlyDisabled: Property<Boolean>
 
-  /** Compatibility bridge for legacy record-writing `-P` flags. */
-  @get:Input
-  abstract val legacyWriterRequested: Property<Boolean>
-
   @get:Input
   abstract val enforceExit: Property<Boolean>
 
@@ -194,7 +190,6 @@ abstract class PitestExecTask : JavaExec() {
     historyRequested.convention(true)
     historyLicensed.convention(false)
     historyExplicitlyDisabled.convention(false)
-    legacyWriterRequested.convention(false)
     enforceExit.convention(true)
     bindSuiteEvidence.convention(true)
     isIgnoreExitValue = true
@@ -266,10 +261,9 @@ abstract class PitestExecTask : JavaExec() {
   }
 
   private fun historyActiveNow(): Boolean =
-    historyRequested.get() &&
+      historyRequested.get() &&
       historyLicensed.get() &&
       !historyExplicitlyDisabled.get() &&
-      !legacyWriterRequested.get() &&
       operationSession.get().suiteOperation(
         certifyingProjectPath.get(), suiteName.get()
       ) == BaselineWriteOperation.CHECK &&

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.BaselineDocument
+import software.sava.build.hardening.HardeningOptionNames
 import java.io.File
 
 class HardeningOperationsFunctionalTest {
@@ -90,6 +91,10 @@ class HardeningOperationsFunctionalTest {
             Files.writeString(capture.resolve("runs.txt"), "run\n",
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             Files.writeString(capture.resolve("args.txt"), String.join("\n", args) + "\n");
+            Path statusFile = Path.of("fake-pit-status.txt");
+            String status = Files.isRegularFile(statusFile)
+                ? Files.readString(statusFile).trim()
+                : "SURVIVED";
             String reportDir = null;
             for (String arg : args) {
               if (arg.startsWith("--reportDir=")) reportDir = arg.substring("--reportDir=".length());
@@ -99,7 +104,8 @@ class HardeningOperationsFunctionalTest {
             Files.writeString(report.resolve("mutations.csv"),
                 "FakePit.java,com.example.FakePit," +
                 "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
-                "main,12,SURVIVED,none\n");
+                "main,12," + status + "," +
+                (status.equals("KILLED") ? "com.example.FakePitTest" : "none") + "\n");
           }
         }
       """.trimIndent() + "\n"
@@ -123,7 +129,7 @@ class HardeningOperationsFunctionalTest {
   }
 
   @Test
-  fun `installed help exposes canonical writers and legacy compatibility aliases`() {
+  fun `installed help exposes canonical writers and removed property mappings`() {
     writeFixture()
 
     val output = runner("hardeningHelp").build().output
@@ -137,25 +143,49 @@ class HardeningOperationsFunctionalTest {
       "migrateMutationBaselines",
       "downgradeMutationBaselines",
     ).forEach { task -> assertTrue(output.contains(task), "missing $task:\n$output") }
-    assertTrue(
-      output.contains("-PupdateMutationBaseline") &&
-          output.contains("compatibility alias for pitest<Suite>BaselineUpdate"),
-      output,
-    )
-    assertTrue(output.contains("-Pflag=false` is still present"), output)
+    assertTrue(output.contains("Removed writer properties (refused since sava-build 21.5.22)"), output)
+    assertTrue(output.contains("-PupdateMutationBaseline") &&
+        output.contains("use pitest<Suite>BaselineUpdate"), output)
+    assertTrue(output.contains("Named tasks are the only supported committed-file write interface"), output)
 
     val reused = runner("hardeningHelp").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
   }
 
   @Test
-  fun `canonical update runs fresh and creates a schema-marked baseline`() {
+  fun `every removed writer property is refused before PIT or a record write`() {
     writeFixture()
+    val (baseline, before) = acceptedBaseline()
+    runner("hardeningHelp").build()
+    val cached = runner("hardeningHelp").build().output
+    assertTrue(cached.contains("Reusing configuration cache"), cached)
 
-    val result = runner("pitestEncodingBaselineUpdate").build()
+    HardeningOptionNames.removedWriterTaskByProperty.forEach { (property, replacement) ->
+      val spelling = if (property == HardeningOptionNames.UPDATE_MUTATION_BASELINE) {
+        "-P$property=false"
+      } else {
+        "-P$property"
+      }
+      val output = runner("pitestEncoding", spelling).buildAndFail().output
+      assertFalse(output.contains("Reusing configuration cache"), output)
+      assertTrue(output.contains("writer properties were removed in sava-build 21.5.22"), output)
+      assertTrue(output.contains("-P$property -> $replacement"), output)
+      assertTrue(output.contains("only supported committed-file write interface"), output)
+      assertFalse(File(fixtureDir, "build/fake-pit/runs.txt").exists())
+      assertEquals(before, baseline.readText())
+    }
+  }
+
+  @Test
+  fun `canonical update runs fresh and creates a schema-marked baseline`() {
+    writeFixture(taskProducedToolClasspath = true)
+
+    val result = runner("clean", "pitestEncodingBaselineUpdate").build()
     val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv").readText()
     val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
 
+    assertFalse(result.output.contains("Reusing configuration cache"), result.output)
+    assertTrue(result.output.contains(":preparePitTool"), result.output)
     assertTrue(result.output.contains("selected baseline update"), result.output)
     assertTrue(baseline.startsWith(BaselineDocument.CURRENT_HEADER + "\n"), baseline)
     assertTrue(
@@ -166,10 +196,147 @@ class HardeningOperationsFunctionalTest {
     assertFalse(args.contains("--historyInputLocation"), args)
     assertFalse(args.contains("--historyOutputLocation"), args)
 
+    val generatedTool = File(fixtureDir, "build/fake-pit-tool")
+    val transition = runner("clean", "pitestEncodingBaselineUpdate").build().output
+    assertTrue(transition.contains(".evidence.tsv' has been created"), transition)
+    val reusedWriter = runner("clean", "pitestEncodingBaselineUpdate").build().output
+    assertTrue(reusedWriter.contains("Reusing configuration cache"), reusedWriter)
+    assertTrue(reusedWriter.contains(":preparePitTool"), reusedWriter)
+    assertFalse(reusedWriter.contains(":preparePitTool UP-TO-DATE"), reusedWriter)
+    assertTrue(
+      File(generatedTool, "com/example/FakePit.class").isFile,
+      "the reused named-writer graph did not restore its task-produced PIT classpath",
+    )
+
     runner("pitestEncoding").build()
     val assisted = File(fixtureDir, "build/fake-pit/args.txt").readText()
     assertTrue(assisted.contains("--features=+arcmutate_history"), assisted)
     assertTrue(assisted.contains("--historyOutputLocation"), assisted)
+  }
+
+  @Test
+  fun `canonical union runs cold and reused without dropping an absent row`() {
+    writeFixture()
+    val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv").apply {
+      parentFile.mkdirs()
+      writeText(
+        BaselineDocument.CURRENT_HEADER + "\n" +
+            "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained # line 99\n",
+      )
+    }
+
+    val cold = runner("pitestEncodingBaselineUnion").build()
+    assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
+    assertTrue(cold.output.contains("selected baseline union"), cold.output)
+    assertTrue(cold.output.contains("union added 1 entries"), cold.output)
+    assertEquals(
+      listOf(
+        BaselineDocument.CURRENT_HEADER,
+        "com.example.FakePit,main,MathMutator,SURVIVED # line 12",
+        "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained # line 99",
+      ),
+      baseline.readLines(),
+    )
+
+    val before = baseline.readText()
+    val transition = runner("pitestEncodingBaselineUnion").build().output
+    assertTrue(transition.contains(".evidence.tsv' has been created"), transition)
+    assertTrue(transition.contains("union added nothing new"), transition)
+    val reused = runner("pitestEncodingBaselineUnion").build().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+    assertTrue(reused.contains("union added nothing new"), reused)
+    assertEquals(before, baseline.readText())
+    assertEquals(3, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
+  }
+
+  @Test
+  fun `canonical prune runs cold and reused while applying only its reviewed shrink`() {
+    writeFixture()
+    val (baseline, _) = acceptedBaseline()
+    baseline.appendText(
+      "com.example.Removed,oldMethod,MathMutator,SURVIVED # stale row # line 99\n",
+    )
+
+    val cold = runner("pitestEncodingBaselinePrune").build()
+    assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
+    assertTrue(cold.output.contains("selected baseline prune"), cold.output)
+    assertTrue(cold.output.contains("prune dropped 1 row(s)"), cold.output)
+    assertEquals(
+      BaselineDocument.CURRENT_HEADER + "\n" +
+          "com.example.FakePit,main,MathMutator,SURVIVED # line 12\n",
+      baseline.readText(),
+    )
+
+    val before = baseline.readText()
+    val transition = runner("pitestEncodingBaselinePrune").build().output
+    assertTrue(transition.contains(".evidence.tsv' has been created"), transition)
+    assertTrue(transition.contains("prune dropped nothing"), transition)
+    val reused = runner("pitestEncodingBaselinePrune").build().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+    assertTrue(reused.contains("prune dropped nothing"), reused)
+    assertEquals(before, baseline.readText())
+    assertEquals(3, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
+  }
+
+  @Test
+  fun `canonical timeout audit init runs cold and reused from a task-produced PIT tool`() {
+    writeFixture(taskProducedToolClasspath = true)
+    File(fixtureDir, "fake-pit-status.txt").writeText("TIMED_OUT\n")
+    val timeouts = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+
+    val cold = runner("clean", "pitestEncodingTimeoutAuditInit").build()
+    assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
+    assertTrue(cold.output.contains(":preparePitTool"), cold.output)
+    assertTrue(cold.output.contains("selected timeout-audit initialization"), cold.output)
+    assertTrue(cold.output.contains("seeded 1 audited-timeout member(s)"), cold.output)
+    assertTrue(
+      timeouts.readText().contains("com.example.FakePit,main,MathMutator # line 12"),
+      timeouts.readText(),
+    )
+    val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
+    assertFalse(args.contains("arcmutate_history"), args)
+
+    assertTrue(timeouts.delete(), "fixture could not reset the seeded set for cache reuse")
+    val transition = runner("clean", "pitestEncodingTimeoutAuditInit").build().output
+    assertTrue(transition.contains(".evidence.tsv' has been created"), transition)
+    assertTrue(timeouts.delete(), "fixture could not reset the seeded set after graph transition")
+    val reused = runner("clean", "pitestEncodingTimeoutAuditInit").build().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+    assertTrue(reused.contains(":preparePitTool"), reused)
+    assertFalse(reused.contains(":preparePitTool UP-TO-DATE"), reused)
+    assertTrue(timeouts.isFile, "the reused writer graph did not seed the timeout audit")
+    assertEquals(1, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
+  }
+
+  @Test
+  fun `canonical mode compare union runs cold and reused against fresh snapshots`() {
+    writeFixture()
+    File(fixtureDir, "arcmutate-licence.txt").delete()
+    val (baseline, _) = acceptedBaseline()
+    val status = File(fixtureDir, "fake-pit-status.txt")
+
+    status.writeText("KILLED\n")
+    runner("pitestEncoding").build()
+    runner("pitestModeSnapshot", "-PpitestMode=solo").build()
+
+    status.writeText("SURVIVED\n")
+    runner("pitestEncoding").build()
+    runner("pitestModeSnapshot", "-PpitestMode=gate").build()
+
+    val cold = runner("pitestModeCompareUnion").build()
+    assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
+    assertTrue(cold.output.contains("selected mode-flip insurance union"), cold.output)
+    assertTrue(cold.output.contains("flip insurance written"), cold.output)
+    assertTrue(
+      baseline.readText().contains("# flip insurance (gate=SURVIVED, solo=KILLED) # line 12"),
+      baseline.readText(),
+    )
+
+    val before = baseline.readText()
+    val reused = runner("pitestModeCompareUnion").build().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+    assertTrue(reused.contains("already insured"), reused)
+    assertEquals(before, baseline.readText())
   }
 
   @Test
@@ -184,13 +351,6 @@ class HardeningOperationsFunctionalTest {
     ).buildAndFail().output
     assertTrue(twoTasks.contains("hardening writer conflict"), twoTasks)
     assertFalse(runs.exists(), "conflicting writer preflights must run before PIT")
-
-    val legacy = runner(
-      "pitestEncodingBaselineUpdate",
-      "-PupdateMutationBaseline",
-    ).buildAndFail().output
-    assertTrue(legacy.contains("do not combine a discoverable hardening writer task"), legacy)
-    assertFalse(runs.exists(), "legacy/task conflict must run before PIT")
 
     val scoped = runner(
       "pitestEncodingBaselineUpdate",
@@ -329,6 +489,68 @@ class HardeningOperationsFunctionalTest {
     ).buildAndFail().output
     assertTrue(downgrade.contains("expected ':' to select SCHEMA_DOWNGRADE"), downgrade)
     assertEquals(current, baseline.readText())
+  }
+
+  @Test
+  fun `migration removes empty accepted placeholders and preserves timeout provenance`() {
+    writeFixture()
+    val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv").apply {
+      parentFile.mkdirs()
+      writeText("  \n\t\n")
+    }
+    val stamp = File(fixtureDir, "config/pitest/encoding-pitest-version").apply {
+      writeText("fixture-pit\n")
+    }
+    val timeouts = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+
+    val orphaned = runner("migrateMutationBaselines").build().output
+
+    assertTrue(
+      orphaned.contains("removed empty accepted-baseline placeholder and its orphan PIT-version stamp"),
+      orphaned,
+    )
+    assertFalse(baseline.exists(), "migration retained a whitespace-only accepted baseline")
+    assertFalse(stamp.exists(), "migration retained a stamp with no accepted or timeout record")
+
+    baseline.writeText("\n \n")
+    stamp.writeText("fixture-pit\n")
+    val timeoutBefore =
+      "# audited set remains unversioned\n" +
+          "com.example.FakePit,main,MathMutator # line 12\n"
+    timeouts.writeText(timeoutBefore)
+
+    val audited = runner("migrateMutationBaselines").build().output
+
+    assertTrue(audited.contains("removed empty accepted-baseline placeholder"), audited)
+    assertFalse(
+      audited.contains("and its orphan PIT-version stamp"),
+      "a timeout-backed PIT stamp was described as orphaned:\n$audited",
+    )
+    assertFalse(baseline.exists(), "migration retained a whitespace-only accepted baseline")
+    assertEquals("fixture-pit\n", stamp.readText(), "timeout provenance stamp was removed")
+    assertEquals(timeoutBefore, timeouts.readText(), "migration rewrote the timeout audit set")
+  }
+
+  @Test
+  fun `downgrade refuses unsupported schema content without changing the file`() {
+    writeFixture()
+    val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv").apply {
+      parentFile.mkdirs()
+    }
+    val before =
+      BaselineDocument.CURRENT_HEADER + "\n" +
+          "com.example.FakePit,main,MathMutator,SURVIVED # line 12\n" +
+          "unsupported,row\n"
+    baseline.writeText(before)
+
+    val output = runner("downgradeMutationBaselines").buildAndFail().output
+
+    assertTrue(
+      output.contains("cannot downgrade accepted-baseline schema") &&
+          output.contains("malformed baseline row(s) at line 3"),
+      output,
+    )
+    assertEquals(before, baseline.readText(), "a refused downgrade changed the schema-1 document")
   }
 
   @Test

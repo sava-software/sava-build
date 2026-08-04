@@ -313,7 +313,7 @@ internal object BaselineEngine {
   )
 
   /**
-   * `-PupdateMutationBaseline`: rewrite from this run's report. Within a key,
+   * `pitest<Suite>BaselineUpdate`: rewrite from this run's report. Within a key,
    * accepted rows are assigned to this run's mutants by line affinity first, then
    * file order; a dropped row's note carries across a status flip at the same
    * coordinate (consumed once, marked for re-reading); every remaining new copy
@@ -369,7 +369,7 @@ internal object BaselineEngine {
   )
 
   /**
-   * `-PunionMutationBaseline`: multiset union — per key, the larger of the two
+   * `pitest<Suite>BaselineUnion`: multiset union — per key, the larger of the two
    * occurrence counts. Existing rows keep their notes and tags verbatim and
    * consume observed copies through the same maximum exact-affinity assignment as
    * prune and update; only rows with no possible exact match use the moved-anchor

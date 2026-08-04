@@ -2,6 +2,7 @@ package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -67,6 +68,52 @@ class BaselineFilesTest {
 
     assertTrue(target.isFile, "the target must still exist")
     assertEquals("", target.readText())
+  }
+
+  @Test
+  fun `empty accepted record deletion also retires only an orphan PIT stamp`() {
+    val baseline = File(tempDir, "config/pitest/encoding-accepted.csv").apply {
+      parentFile.mkdirs()
+      writeText("${BaselineDocument.CURRENT_HEADER}\n\n")
+    }
+    val timeouts = File(baseline.parentFile, "encoding-timeouts.csv")
+    val stamp = File(baseline.parentFile, "encoding-pitest-version").apply { writeText("1.20.3\n") }
+
+    val removed = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(baseline, timeouts, stamp)
+
+    assertTrue(removed.baselineRemoved)
+    assertTrue(removed.orphanVersionStampRemoved)
+    assertFalse(baseline.exists())
+    assertFalse(stamp.exists())
+
+    baseline.writeText("\n")
+    timeouts.writeText("com.example.Codec,encode,MathMutator\n")
+    stamp.writeText("1.20.3\n")
+    val audited = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(baseline, timeouts, stamp)
+
+    assertTrue(audited.baselineRemoved)
+    assertFalse(audited.orphanVersionStampRemoved)
+    assertTrue(stamp.isFile, "the timeout audit still needs PIT-version provenance")
+  }
+
+  @Test
+  fun `empty accepted record deletion refuses rows comments and malformed evidence`() {
+    val baseline = File(tempDir, "encoding-accepted.csv")
+    val timeouts = File(tempDir, "encoding-timeouts.csv")
+    val stamp = File(tempDir, "encoding-pitest-version")
+
+    listOf(
+      "com.example.Codec,encode,MathMutator,SURVIVED\n",
+      "# reviewed empty suite\n",
+      "not,a,baseline\n",
+    ).forEach { content ->
+      baseline.writeText(content)
+      val refusal = assertThrows(IllegalArgumentException::class.java) {
+        BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(baseline, timeouts, stamp)
+      }
+      assertTrue(refusal.message.orEmpty().contains("refusing to delete non-empty accepted baseline"))
+      assertEquals(content, baseline.readText())
+    }
   }
 
   @Test

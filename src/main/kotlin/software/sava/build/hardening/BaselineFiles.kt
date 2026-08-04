@@ -26,8 +26,35 @@ import java.nio.file.attribute.BasicFileAttributes
  */
 internal object BaselineFiles {
 
+  data class EmptyAcceptedRecordRemoval(
+    val baselineRemoved: Boolean,
+    val orphanVersionStampRemoved: Boolean,
+  )
+
   /** Checked deletion for state files whose continued presence changes semantics. */
   fun deleteIfExists(target: File): Boolean = Files.deleteIfExists(target.toPath())
+
+  /**
+   * Canonicalizes a whitespace-only accepted-baseline placeholder to absence and
+   * retires its PIT-version stamp unless a timeout audit still needs that provenance.
+   * The content check is repeated immediately before deletion so the task does not
+   * act only on its earlier project-wide preflight parse. Like the other baseline
+   * writers, this assumes one Gradle writer owns the checkout; the read/delete pair
+   * is not a cross-process compare-and-delete primitive.
+   */
+  fun deleteSemanticallyEmptyAcceptedRecord(
+    baseline: File,
+    timeouts: File,
+    pitestVersionStamp: File,
+  ): EmptyAcceptedRecordRemoval {
+    require(baseline.isFile) { "accepted baseline does not exist: $baseline" }
+    require(!BaselineDocument.parse(baseline.readText()).hasSubstantiveContent) {
+      "refusing to delete non-empty accepted baseline: $baseline"
+    }
+    val baselineRemoved = deleteIfExists(baseline)
+    val stampRemoved = !timeouts.isFile && deleteIfExists(pitestVersionStamp)
+    return EmptyAcceptedRecordRemoval(baselineRemoved, stampRemoved)
+  }
 
   /**
    * Checked, non-symlink-following deletion for an explicitly scoped task directory.

@@ -13,6 +13,26 @@ class BaselineDocumentTest {
   private val second = "com.example.Codec,decode,VoidMethodCallMutator,NO_COVERAGE"
 
   @Test
+  fun `only explicitly reviewed schemas may downgrade to N minus one`() {
+    assertTrue(BaselineDocument.hasLosslessNMinusOneDowngrade("1"))
+    assertFalse(BaselineDocument.hasLosslessNMinusOneDowngrade("2"))
+  }
+
+  @Test
+  fun `only rows comments and malformed evidence make an accepted record substantive`() {
+    listOf("", "\n", "  \n\t\n", BaselineDocument.CURRENT_HEADER + "\n\n")
+        .forEach { source ->
+          assertFalse(
+              BaselineDocument.parse(source).hasSubstantiveContent,
+              "whitespace and a marker alone must canonicalize to no accepted record: ${source.toByteArray().contentToString()}")
+        }
+
+    assertTrue(BaselineDocument.parse("$first\n").hasSubstantiveContent)
+    assertTrue(BaselineDocument.parse("# reviewed empty suite\n").hasSubstantiveContent)
+    assertTrue(BaselineDocument.parse("not,a,baseline\n").hasSubstantiveContent)
+  }
+
+  @Test
   fun `unversioned N minus one documents retain rows comments blanks and duplicates`() {
     val source = buildString {
       appendLine("# repository-specific evidence")
@@ -148,6 +168,14 @@ class BaselineDocumentTest {
       document.renderCurrent()
     }
     assertTrue(refusal.message.orEmpty().contains("malformed baseline row(s) at line 2"))
+
+    val markedRefusal = assertThrows(IllegalArgumentException::class.java) {
+      BaselineDocument.parse("${BaselineDocument.CURRENT_HEADER}\nnot,a,baseline\n")
+          .renderDowngraded()
+    }
+    assertTrue(
+        markedRefusal.message.orEmpty().contains("cannot downgrade accepted-baseline schema"),
+        markedRefusal.message)
 
     val replacement = BaselineNotes.Row(second, "# untriaged", listOf(73))
     assertEquals(

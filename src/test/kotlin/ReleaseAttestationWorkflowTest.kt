@@ -9,6 +9,9 @@ class ReleaseAttestationWorkflowTest {
   private fun workflow(name: String): String =
     projectRoot.resolve(".github/workflows/$name").readText()
 
+  private val readme: String
+    get() = projectRoot.resolve("README.md").readText()
+
   @Test
   fun `tag creation waits for the exact checked commit's release attestation`() {
     val release = workflow("release-gradle-plugin-please.yml")
@@ -44,5 +47,14 @@ class ReleaseAttestationWorkflowTest {
         "$name does not exercise the release attestation self-test:\n$contents",
       )
     }
+  }
+
+  @Test
+  fun `release owner rehearses the production pending-release gate before tagging`() {
+    val create = readme.indexOf("tools/release-attestation.sh create \"\$version\"")
+    val verify = readme.indexOf("tools/release-attestation.sh verify \"\$version\"")
+    val pending = readme.indexOf("tools/release-attestation.sh verify-pending-release")
+
+    assertTrue(create >= 0 && verify > create && pending > verify, readme)
   }
 }

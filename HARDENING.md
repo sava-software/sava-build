@@ -132,7 +132,7 @@ run cheaper. The cost model is directly optimisable:
   looks complete — the sentinel is written before PIT starts, cleared only
   on a clean exit, and any report still carrying it is refused as evidence
   (the verify runs as the failed task's finalizer, so without this a
-  same-invocation refresh flag would rewrite the baseline from whatever
+  same-invocation prune workflow would rewrite the baseline from whatever
   fraction of the population PIT reached before dying).
 - **Tune the per-test timeout to the suite's real runtimes** — PIT's default
   allowance is `recorded time × 1.25 + 4000ms`; every hanging-mutant
@@ -208,9 +208,10 @@ wholesale.
 The installed plugin exposes discoverable writer tasks. The former
 `-PupdateMutationBaseline`, `-PunionMutationBaseline`,
 `-PpruneMutationBaseline`, `-PinitTimeoutAudit`, and `-PunionModeFlips`
-properties remain compatibility aliases for this transition release, but must
-not be combined with their task equivalents. `hardeningHelp` prints the exact
-mapping and the remaining diagnostic properties.
+properties are removed in sava-build 21.5.22. Every spelling, including
+`-Pflag=false`, is refused during configuration before PIT or a task graph can
+touch a committed record. The named tasks are the only supported write interface;
+`hardeningHelp` prints their exact mapping and the remaining diagnostic properties.
 
 ## The mutation ratchet
 
@@ -240,10 +241,10 @@ version that never wrote them. A baseline-writing run stamps it at the
 *successful end* of its rewrite (absent file: adopted by the next refresh
 that completes) — never ahead of the write, so a refresh that fails mid-path
 cannot leave a stamp vouching for a record it never rewrote. A version
-mismatch *warns* on a checking run and *refuses* every record-writing flag —
+mismatch *warns* on a checking run and *refuses* every record-writing task —
 reading a possibly divergent result is a judgment call, writing the record
 with one is not. `pitest<Suite>TimeoutAuditInit` is refused across a bump like the
-baseline flags, the timeout population being just as version-dependent, but
+baseline writers, the timeout population being just as version-dependent, but
 it never stamps: it writes the timeout set, not the baseline, and its stamp
 would silently vouch for a baseline some older PIT wrote.
 Bumping deliberately means setting the suite's file to the new version and
@@ -396,7 +397,7 @@ family`, `# capacity-hint`) whose full argument lives in the README. An
 already-unlabeled row is a different thing — it predates seeding (added in
 21.5.12) and its argument lives in the README rather than on the row — and a
 refresh preserves that state rather than converting it to seeded debt. All
-baseline refresh flags preserve notes, and the verify summary counts them
+baseline writer tasks preserve notes, and the verify summary counts them
 **per label** (`38 rows — 13 '# untriaged', 20 '# race-guard family', 5
 unlabeled`; the debt task prints the same breakdown), so triage state is a
 number the build prints rather than prose that drifts from the CSV it
@@ -466,7 +467,7 @@ preview read one row-level keep plan, so the preview and the eventual action
 name exactly the same rows. Agreement prevents a tooling lie; repeated
 observation supplies the evidence the tool cannot infer from one report.
 Never substitute a hand-rolled cleanup script, which is how the status-blind
-prune happened. The three flags are mutually exclusive; the build refuses a
+prune happened. The three baseline writer tasks are mutually exclusive; the build refuses a
 combination.
 
 ### `TIMED_OUT` is detected, and detection is load-dependent
@@ -571,16 +572,16 @@ invoked it*, and the failure looks exactly like a real regression.
   pointed at `pitest<Suite>TimeoutAuditInit`, which writes the membership rows from the
   run's report (observed lines riding in `#` comments) and leaves only the
   causes to a person. The nudge also prints the would-be member rows
-  paste-ready alongside the flag: timeouts are load-dependent, so the run
+  paste-ready alongside the task hint: timeouts are load-dependent, so the run
   that prompted the nudge may be the only one holding them — a later
   seeding run against a clean report is rightly refused, and without the
   printed rows the coordinate that timed out is recoverable only from the
   daemon log. The seeder refuses to reseed an existing file, refuses a
-  `-PmutateOnly` report like every other baseline-touching flag, refuses a
+  `-PmutateOnly` report like every other baseline-touching writer, refuses a
   report with nothing timed out (an empty seed would activate the audit
   with zero members to write causes for; timeouts are load-dependent, so
   re-run under the conditions whose summary reported them), and, like
-  every other refresh flavour, combines with none of them. Seeding is not
+  every other writer workflow, combines with none of them. Seeding is not
   the only way in: a suite that has never produced a timeout can *arm* the
   audit by committing a comments-only membership file — zero members is a
   legitimate audited set, and the suite's first timeout then warns as the
@@ -640,7 +641,7 @@ invoked it*, and the failure looks exactly like a real regression.
   findings (stale members, quiet streaks, drifted lines) stay advisory
   even there. An escalated finding is the failure, not an advisory — it is
   left out of the end-of-build summary, whose "none failed the build"
-  framing must stay true. Both certifying flags refuse a `-PmutateOnly`
+  framing must stay true. Both certification paths refuse a `-PmutateOnly`
   report outright, as the refresh flavours do: their checks are skipped
   entirely on a scoped report, so a green run would certify nothing while
   reading as a certification of the suite. Because every audit finding is advisory in the default modes,
@@ -680,7 +681,7 @@ invoked it*, and the failure looks exactly like a real regression.
   lets the stale row sitting earlier in the file consume the surviving
   mutant's match and deletes the acceptance instead, leaving a baseline the
   verify rightly fails one command after it was correct. Match on the full
-  row, and prefer the refresh flags over hand-rolled scripts *(casebook: the
+  row, and prefer the named writer tasks over hand-rolled scripts *(casebook: the
   status-blind prune)*.
 - **Duplicate rows are sibling mutants, not noise.** A compound condition
   (`a == null || b == null`) yields several mutants with identical
@@ -734,17 +735,32 @@ file containing current line-less rows or legacy five-field rows
 metadata. Unknown, malformed, duplicate, or misplaced schema markers fail
 loudly on every reading path.
 
+That marker is deliberately scoped to `*-accepted.csv`. Audited timeout sets
+were introduced with their present line-less `class,method,mutator` identity;
+their `# line` tags have always been ignored metadata, so there is no older
+representation for this migration to guard against. They remain an unversioned,
+stable membership format. A future incompatible timeout-set change needs its own
+marker, N-1 reader, migration, and rollback rather than borrowing the accepted
+baseline's schema name.
+
 Normal writer tasks preserve an existing document's schema state, while a newly
 created baseline starts at schema 1; merely bumping the plugin therefore does
 not stamp every checkout. `migrateMutationBaselines`
 deliberately canonicalizes rows and adds the schema-1 marker without a
 mutation run; run it only after every root, composite, and benchmark-build pin
 that may read the committed files has moved to a schema-aware release.
-`downgradeMutationBaselines` removes only that marker, preserving row spelling,
-comments, blanks, order, and duplicates; run it and commit the result before
-rolling a consumer back to the N-1 plugin. Those two tasks are the fleet
-migration and rollback plan. A migration can surface old line drift as a
-review prompt, but it never changes baseline identity.
+Whitespace-only accepted-baseline placeholders canonicalize to absence during
+migration and ordinary writes: they accept no mutant and carry no review
+evidence, so a schema marker would protect nothing. A comment-only document is
+not empty; its local evidence, layout, and marker remain. Schema 1's
+`downgradeMutationBaselines` removes only the marker from substantive documents,
+preserving row spelling, comments, blanks, order, and duplicates; an empty
+placeholder likewise becomes absence. Downgrade is allowlisted per schema and
+refuses malformed or newly structured content, so a future schema cannot become
+silently lossy merely because its version becomes current. Run downgrade and
+commit the result before rolling a consumer back to the N-1 plugin. Those two
+tasks are the fleet migration and rollback plan. A migration can surface old
+line drift as a review prompt, but it never changes baseline identity.
 
 The price, named because it is paid deliberately: **a same-key swap is
 invisible.** Kill one mutant and introduce a new one at the same

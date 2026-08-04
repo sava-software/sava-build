@@ -12,7 +12,7 @@ import java.util.UUID
 
 /**
  * Functional test for the mutation ratchet and the generators: fabricates PIT
- * reports (CSV + XML) so 'pitest<Suite>Verify' and the baseline flags can be exercised
+ * reports (CSV + XML) so 'pitest<Suite>Verify' and the named baseline writers can be exercised
  * without resolving or running PIT itself.
  */
 class HardeningRatchetFunctionalTest {
@@ -50,6 +50,7 @@ class HardeningRatchetFunctionalTest {
     encodingExcludes: List<String> = emptyList(),
     extraSuites: String = "",
     beforeHardening: String = "",
+    fakePit: Boolean = true,
   ) {
     val releaseLine = if (bytecodeRelease != null) "bytecodeRelease = $bytecodeRelease" else ""
     val fuzzBlock = if (registerFuzz) {
@@ -109,17 +110,81 @@ $beforeHardening
 $extraSuites
 $fuzzBlock
         }
+
+        ${if (fakePit) {
+          """
+          tasks.named<JavaExec>("pitestEncoding") {
+            classpath = sourceSets.main.get().output
+            mainClass.set("com.example.FakePit")
+            systemProperty(
+              "fixture.pit.report",
+              layout.projectDirectory.dir("fixture-pit-report").asFile.absolutePath,
+            )
+          }
+          tasks.named<JavaCompile>("compileForPitest") {
+            setSource(sourceSets.main.get().java)
+            classpath = files()
+          }
+          tasks.register<Delete>("clearFakePitEvidence") {
+            delete(layout.buildDirectory.file("reports/pitest/encoding/.evidence.tsv"))
+            mustRunAfter(
+              "pitestEncodingBaselineUpdate",
+              "pitestEncodingBaselineUnion",
+              "pitestEncodingBaselinePrune",
+              "pitestEncodingTimeoutAuditInit",
+            )
+          }
+          """.trimIndent()
+        } else ""}
       """.trimIndent() + "\n"
     )
+    if (fakePit) {
+      File(fixtureDir, "src/main/java/com/example/FakePit.java").apply {
+        parentFile.mkdirs()
+        writeText(
+          """
+          package com.example;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.nio.file.StandardCopyOption;
+
+          public final class FakePit {
+            public static void main(String[] args) throws Exception {
+              Path reportDir = null;
+              for (String arg : args) {
+                if (arg.startsWith("--reportDir=")) {
+                  reportDir = Path.of(arg.substring("--reportDir=".length()));
+                }
+              }
+              if (reportDir == null) {
+                throw new IllegalArgumentException("missing --reportDir");
+              }
+              Files.createDirectories(reportDir);
+              Path staged = Path.of(System.getProperty("fixture.pit.report"));
+              for (String name : new String[] {"mutations.csv", "mutations.xml"}) {
+                Files.copy(staged.resolve(name), reportDir.resolve(name),
+                    StandardCopyOption.REPLACE_EXISTING);
+              }
+            }
+          }
+          """.trimIndent() + "\n"
+        )
+      }
+    }
   }
 
   private fun writeReport(csvRows: List<String>, xmlMutations: String) {
-    val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
-    reportDir.mkdirs()
-    reportDir.resolve("mutations.csv").writeText(csvRows.joinToString("\n", postfix = "\n"))
-    reportDir.resolve("mutations.xml").writeText(
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mutations>\n$xmlMutations\n</mutations>\n"
-    )
+    val csv = csvRows.joinToString("\n", postfix = "\n")
+    val xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mutations>\n$xmlMutations\n</mutations>\n"
+    listOf(
+      File(fixtureDir, "build/reports/pitest/encoding"),
+      File(fixtureDir, "fixture-pit-report"),
+    ).forEach { reportDir ->
+      reportDir.mkdirs()
+      reportDir.resolve("mutations.csv").writeText(csv)
+      reportDir.resolve("mutations.xml").writeText(xml)
+    }
   }
 
   private fun baselineFile() = File(fixtureDir, "config/pitest/encoding-accepted.csv")
@@ -127,6 +192,26 @@ $fuzzBlock
   private fun runner(vararg args: String): GradleRunner = GradleRunner.create()
       .withProjectDir(fixtureDir)
       .withArguments(*args, "--stacktrace")
+
+  /**
+   * The public named workflow runs the typed PIT task, but the fixture replaces
+   * PIT's main class with FakePit. It copies the staged synthetic report while the
+   * real task lifecycle creates current-invocation evidence for the writer.
+   */
+  private fun baselineUpdateRunner(vararg args: String) =
+    runner("pitestEncodingBaselineUpdate", "clearFakePitEvidence", *args)
+
+  private fun baselineUnionRunner(vararg args: String) =
+    runner("pitestEncodingBaselineUnion", "clearFakePitEvidence", *args)
+
+  private fun baselinePruneRunner(vararg args: String) =
+    runner("pitestEncodingBaselinePrune", "clearFakePitEvidence", *args)
+
+  private fun timeoutAuditInitRunner(vararg args: String) =
+    runner("pitestEncodingTimeoutAuditInit", "clearFakePitEvidence", *args)
+
+  private fun modeCompareUnionRunner(vararg args: String) =
+    runner("pitestModeCompareUnion", *args)
 
   /**
    * These ratchet tests fabricate CSVs rather than executing PIT. Snapshot first
@@ -200,7 +285,7 @@ $fuzzBlock
     // Prune remains shrink-only in identity, but refreshes metadata for rows it
     // matched to this run. That gives the advisory a safe clearing operation even
     // when its candidate preview is empty.
-    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val pruned = baselinePruneRunner().build().output
     assertEquals(
       "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 12\n",
       baselineFile().readText(),
@@ -350,13 +435,13 @@ $fuzzBlock
 
     runner("pitestEncodingVerify").build()
 
-    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    baselineUpdateRunner().build()
     val rows = baselineFile().readLines().filter { it.isNotBlank() }
     assertEquals(2, rows.size, "the refresh collapsed sibling rows:\n$rows")
   }
 
   @Test
-  fun `a scoped report cannot touch the baseline`() {
+  fun `a scoped report is read-only evidence`() {
     writeFixture()
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText("com.example.Codec,encode,12,MathMutator,SURVIVED\n")
@@ -370,17 +455,6 @@ $fuzzBlock
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(output.contains("SCOPED run"), "scoped notice missing:\n$output")
     assertTrue(output.contains("1 unkilled in scope"), "scoped listing missing:\n$output")
-
-    // and no refresh flavour may consume it — prune and the timeout-audit seed
-    // included, which the early return would otherwise silently no-op while the
-    // user believes they ran
-    for (flag in listOf("-PupdateMutationBaseline", "-PunionMutationBaseline", "-PpruneMutationBaseline", "-PinitTimeoutAudit")) {
-      val refused = runner("pitestEncodingVerify", flag).buildAndFail().output
-      assertTrue(
-        refused.contains("cannot refresh the baseline"),
-        "scoped refresh was not refused for $flag:\n$refused"
-      )
-    }
 
     // the certifying flag is refused too: its checks are skipped entirely on a
     // scoped report, so a green run would certify nothing while reading as a
@@ -475,7 +549,7 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
+    val output = baselinePruneRunner().buildAndFail().output
     assertTrue(output.contains("refusing pitestEncodingBaselinePrune"), output)
     assertTrue(output.contains("1 gated mutant(s)"), output)
     assertTrue(output.contains("com.example.Codec,decode,IncrementsMutator,SURVIVED"), output)
@@ -488,7 +562,7 @@ $fuzzBlock
     // killed, the row is not stale — pruning it would fail the next solo run with an
     // unexplained survivor, and the old stale hint used to recommend exactly that. The
     // marker rides in the note or its parenthetical ('flip insurance', the wording
-    // -PunionModeFlips writes), and the row leaves by its written removal criterion,
+    // pitestModeCompareUnion writes), and the row leaves by its written removal criterion,
     // never by refresh.
     writeFixture()
     baselineFile().parentFile.mkdirs()
@@ -512,7 +586,7 @@ $fuzzBlock
       "insured flap not reported as such:\n$output"
     )
 
-    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val pruned = baselinePruneRunner().build().output
     assertEquals(
       listOf("com.example.Codec,encode,MathMutator,SURVIVED # handled-flag family (flip insurance: gate=KILLED, solo=SURVIVED) # line 10"),
       baselineFile().readLines().filter { it.isNotBlank() }
@@ -545,7 +619,7 @@ $fuzzBlock
           (if (status == "KILLED") "com.example.CodecTest" else "none")
     writeReport(listOf(mutant(10, "KILLED"), mutant(20, "SURVIVED")), "")
 
-    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val pruned = baselinePruneRunner().build().output
     assertEquals(
       2,
       baselineFile().readLines().filter { it.isNotBlank() }.size,
@@ -577,7 +651,7 @@ $fuzzBlock
           (if (status == "KILLED") "com.example.CodecTest" else "none")
     writeReport(listOf(mutant(10, "SURVIVED"), mutant(20, "KILLED"), mutant(30, "SURVIVED")), "")
 
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val output = baselinePruneRunner().build().output
     assertEquals(
       listOf(
         "com.example.Codec,encode,MathMutator,SURVIVED # keep-first # line 10",
@@ -590,7 +664,7 @@ $fuzzBlock
     assertFalse(output.contains("flip pending triage"), "same-status siblings misread as a cross-status flip:\n$output")
 
     // rerunning against the same report is now a no-op — the counts agree
-    val settled = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val settled = baselinePruneRunner().build().output
     assertTrue(settled.contains("prune dropped nothing"), settled)
   }
 
@@ -617,7 +691,7 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val output = baselinePruneRunner().build().output
     assertEquals(
       listOf("com.example.Codec,encode,MathMutator,NO_COVERAGE # unreachable claim # line 20"),
       baselineFile().readLines().filter { it.isNotBlank() }
@@ -656,7 +730,7 @@ $fuzzBlock
     )
     assertTrue(hinted.contains("1 baseline row(s) read TIMED_OUT this run"), hinted)
 
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val output = baselinePruneRunner().build().output
     assertEquals(
       listOf("com.example.Codec,encode,MathMutator,SURVIVED # first # line 20"),
       baselineFile().readLines().filter { it.isNotBlank() },
@@ -684,7 +758,7 @@ $fuzzBlock
           (if (status == "KILLED") "com.example.CodecTest" else "none")
     writeReport(listOf(mutant(20, "KILLED"), mutant(24, "TIMED_OUT")), "")
 
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val output = baselinePruneRunner().build().output
     assertEquals(
       listOf("com.example.Codec,encode,MathMutator,SURVIVED # slow guard # line 24"),
       baselineFile().readLines().filter { it.isNotBlank() },
@@ -724,7 +798,7 @@ $fuzzBlock
       "the unmatched row must be named as the exact candidate:\n$hinted"
     )
 
-    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val pruned = baselinePruneRunner().build().output
     assertEquals(
       listOf("com.example.Codec,encode,MathMutator,NO_COVERAGE # b # line 24"),
       baselineFile().readLines().filter { it.isNotBlank() },
@@ -749,7 +823,7 @@ $fuzzBlock
           (if (status == "KILLED") "com.example.CodecTest" else "none")
     writeReport(listOf(mutant(20, "KILLED"), mutant(50, "TIMED_OUT")), "")
 
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val output = baselinePruneRunner().build().output
     assertEquals(
       listOf("com.example.Codec,encode,MathMutator,NO_COVERAGE # newly hung"),
       baselineFile().readLines().filter { it.isNotBlank() },
@@ -778,7 +852,7 @@ $fuzzBlock
           (if (status == "KILLED") "com.example.CodecTest" else "none")
     writeReport(listOf(mutant(20, "KILLED"), mutant(50, "TIMED_OUT")), "")
 
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val output = baselinePruneRunner().build().output
     assertEquals(
       listOf(
         "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=KILLED, solo=SURVIVED)",
@@ -793,43 +867,12 @@ $fuzzBlock
   }
 
   @Test
-  fun `the refresh flags are mutually exclusive`() {
-    writeFixture()
-    writeReport(
-      listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
-      ""
-    )
-    // a refused combination must consume nothing: the stash rewrite used to land
-    // before the refusal, so the refused run spent the drift comparison's
-    // previous state and the next legitimate run compared against the refusal
-    val stash = File(fixtureDir, ".pitest-history/encoding.statuses")
-    stash.parentFile.mkdirs()
-    val stashBefore = "# stash format 2\ncom.example.Codec,decode,IncrementsMutator,SURVIVED\n"
-    stash.writeText(stashBefore)
-    val output = runner("pitestEncodingVerify", "-PpruneMutationBaseline", "-PupdateMutationBaseline")
-      .buildAndFail().output
-    assertTrue(output.contains("pass at most one of"), output)
-    assertEquals(stashBefore, stash.readText(), "a refused combination consumed the drift stash:\n$output")
-
-    // the audit seed is a refresh flavour too — it writes a file the same way — and
-    // the refusal must land before either flag does any work
-    val seedCombo = runner("pitestEncodingVerify", "-PupdateMutationBaseline", "-PinitTimeoutAudit")
-      .buildAndFail().output
-    assertTrue(seedCombo.contains("pass at most one of"), seedCombo)
-    assertFalse(
-      File(fixtureDir, "config/pitest/encoding-timeouts.csv").exists(),
-      "refused combination still seeded the audit:\n$seedCombo"
-    )
-  }
-
-  @Test
   fun `an interrupted run's report is refused as evidence`() {
     // The '.running' sentinel is written before PIT starts and cleared only after
     // a clean exit. PIT writes the CSV incrementally, so a crashed or interrupted
     // run leaves a partial file that looks complete — and the verify runs as the
-    // failed task's finalizer, so without the sentinel a same-invocation
-    // '-PpruneMutationBaseline' rewrites the baseline from whatever fraction of
-    // the population PIT reached before dying.
+    // failed task's finalizer, so without the sentinel its writer implementation
+    // could consume whatever fraction of the population PIT reached before dying.
     writeFixture()
     baselineFile().parentFile.mkdirs()
     val baselineBefore =
@@ -846,8 +889,6 @@ $fuzzBlock
     val refused = runner("pitestEncodingVerify").buildAndFail().output
     assertTrue(refused.contains("interrupted or failed run"), refused)
 
-    val pruneRefused = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
-    assertTrue(pruneRefused.contains("interrupted or failed run"), pruneRefused)
     assertEquals(baselineBefore, baselineFile().readText(), "a partial report pruned the baseline")
   }
 
@@ -862,7 +903,7 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,RUN_ERROR,none"),
       ""
     )
-    val invalid = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
+    val invalid = baselinePruneRunner().buildAndFail().output
     assertTrue(invalid.contains("not valid completed evidence"), invalid)
     assertTrue(invalid.contains("RUN_ERROR x1"), invalid)
     assertTrue(
@@ -884,7 +925,7 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10"),
       ""
     )
-    val malformed = runner("pitestEncodingVerify", "-PupdateMutationBaseline").buildAndFail().output
+    val malformed = baselineUpdateRunner().buildAndFail().output
     assertTrue(malformed.contains("1 malformed CSV row(s)"), malformed)
     assertTrue(malformed.contains("incomplete population is not evidence"), malformed)
     assertEquals(baselineBefore, baselineFile().readText(), "a malformed report rewrote the baseline")
@@ -895,11 +936,11 @@ $fuzzBlock
   }
 
   @Test
-  fun `a history-assisted report cannot refresh, and the summary tag reads the marker`() {
+  fun `a history-assisted report is tagged and read-only`() {
     // Reused results are not observation: the checking path may read them (the
-    // '[history]' tag names the reuse, from the report's own marker rather than
-    // this invocation's configuration), but a baseline refresh or audit seed
-    // written from them certifies numbers the run never earned.
+    // '[history]' tag names the reuse from the report's own marker rather than
+    // this invocation's configuration. Named writers run PIT afresh and are
+    // covered separately.
     writeFixture()
     baselineFile().parentFile.mkdirs()
     val baselineBefore = "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n"
@@ -913,12 +954,9 @@ $fuzzBlock
     val checking = runner("pitestEncodingVerify").build().output
     assertTrue(checking.contains(" [history]"), "the summary tag must read the marker:\n$checking")
 
-    val refused = runner("pitestEncodingVerify", "-PupdateMutationBaseline").buildAndFail().output
-    assertTrue(refused.contains("history-assisted"), refused)
-    assertTrue(refused.contains("-PnoMutationHistory"), refused)
-    assertEquals(baselineBefore, baselineFile().readText(), "a reused report refreshed the baseline")
+    assertEquals(baselineBefore, baselineFile().readText(), "checking reused evidence changed the baseline")
 
-    // without the marker the same report is a full run: no tag, refresh allowed
+    // without the marker the same report is a full run: ordinary checking is allowed
     File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").delete()
     val full = runner("pitestEncodingVerify").build().output
     assertFalse(full.contains(" [history]"), "tag printed without the marker:\n$full")
@@ -960,7 +998,7 @@ $fuzzBlock
       "a malformed row still read as a prune candidate:\n$checking"
     )
 
-    val refused = runner("pitestEncodingVerify", "-PpruneMutationBaseline").buildAndFail().output
+    val refused = baselinePruneRunner().buildAndFail().output
     assertTrue(refused.contains("Fix the row shape first"), refused)
     assertEquals(baselineBefore, baselineFile().readText(), "a refresh dropped the malformed row")
   }
@@ -987,7 +1025,7 @@ $fuzzBlock
       "an indented comment read as a phantom row:\n$checking"
     )
 
-    val updated = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val updated = baselineUpdateRunner().build().output
     assertFalse(updated.contains("do not survive"), updated)
     assertEquals(
       listOf(
@@ -1029,7 +1067,7 @@ $fuzzBlock
 
   @Test
   fun `an update carries a note across a status flip, marked with the flip`() {
-    // Accepting a newly covered mutant goes through -PupdateMutationBaseline: the old
+    // Accepting a newly covered mutant goes through pitestEncodingBaselineUpdate: the old
     // NO_COVERAGE row is dropped and a SURVIVED row written at the same coordinate.
     // The dropped row's note must travel — marked with the flip it crossed, because an
     // acceptance written for an unreached mutant deserves a re-read once a test can
@@ -1048,7 +1086,7 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val output = baselineUpdateRunner().build().output
     // both report mutants share the SURVIVED key: line affinity hands the
     // '# untriaged' pair (recorded at 20) to the line-20 mutant, and the line-12
     // mutant inherits the dropped NO_COVERAGE row's note via the flip carry — the
@@ -1066,7 +1104,7 @@ $fuzzBlock
     assertFalse(output.contains("note dropped with the row"), output)
 
     // idempotent: a second update with no flips leaves both notes untouched
-    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    baselineUpdateRunner().build()
     assertEquals(
       listOf(
         "com.example.Codec,encode,MathMutator,SURVIVED # unreachable without a decoder fixture (carried across NO_COVERAGE -> SURVIVED) # line 12",
@@ -1099,7 +1137,7 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val output = baselineUpdateRunner().build().output
     assertEquals(
       listOf(
         "com.example.Codec,decode,MathMutator,SURVIVED # line 41",
@@ -1115,7 +1153,7 @@ $fuzzBlock
     assertFalse(output.contains("dropped"), output)
 
     // idempotent: a second update rewrites the identical file
-    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    baselineUpdateRunner().build()
     assertEquals(
       listOf(
         "com.example.Codec,decode,MathMutator,SURVIVED # line 41",
@@ -1154,7 +1192,7 @@ $fuzzBlock
       "the extra copy must fail the ratchet:\n$failed"
     )
 
-    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val output = baselineUpdateRunner().build().output
     assertEquals(
       listOf(
         "com.example.Codec,encode,MathMutator,SURVIVED # line 13",
@@ -1279,7 +1317,7 @@ $fuzzBlock
 
     // without the file the audit itself is off — but a suite carrying timeouts is
     // running with the exact blind spot the audit exists for, so the absence is
-    // nudged (advisory, naming the seed flag) rather than silent: the feature used
+    // nudged (advisory, naming the seed task) rather than silent: the feature used
     // to be discoverable only by reading HARDENING.md
     timeoutsFile.delete()
     val unadopted = runner("pitestEncodingVerify").build().output
@@ -1293,7 +1331,7 @@ $fuzzBlock
       "adoption hint missing:\n$unadopted"
     )
     // the nudge prints the member rows paste-ready: a load-dependent timeout may not
-    // reproduce for a later -PinitTimeoutAudit run, and without the rows here the
+    // reproduce for a later pitestEncodingTimeoutAuditInit run, and without the rows here the
     // coordinate that timed out is recoverable only from the daemon log
     assertTrue(
       unadopted.contains("  com.example.Codec,encode,MathMutator # line 12") &&
@@ -1550,7 +1588,7 @@ $fuzzBlock
     val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
 
     // no record yet: a refresh adopts by stamping the current version
-    val refreshed = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    val refreshed = baselineUpdateRunner().build()
     assertFalse(refreshed.output.contains("written by PIT"), refreshed.output)
     val stamped = toolVersionFile.readText().trim()
     assertTrue(stamped.isNotEmpty() && stamped.first().isDigit(), "stamped version looks wrong: '$stamped'")
@@ -1568,8 +1606,8 @@ $fuzzBlock
       "mismatch warning missing:\n" + checked.output
     )
 
-    // mismatch: a record-writing run refuses, naming the deliberate-bump path
-    val refused = runner("pitestEncodingVerify", "-PupdateMutationBaseline").buildAndFail()
+    // mismatch: a named record-writing workflow refuses, naming the deliberate-bump path
+    val refused = baselineUpdateRunner().buildAndFail()
     assertTrue(
       refused.output.contains("refusing to rewrite the record across a tool bump") &&
           refused.output.contains("set config/pitest/encoding-pitest-version to $stamped"),
@@ -1581,22 +1619,22 @@ $fuzzBlock
   @Test
   fun `the version stamp lands only with a successful baseline write`() {
     // The stamp asserts "this record is comparable to runs of PIT X", so it lands at
-    // the successful end of the write it describes: a record-writing run that fails
-    // mid-path must not stamp, and '-PinitTimeoutAudit' — which writes the timeout
+    // the successful end of the write it describes: a named writer that fails
+    // mid-path must not stamp, and pitestEncodingTimeoutAuditInit — which writes the timeout
     // set, not the baseline — must never stamp at all, else seeding the audit on a
     // suite whose baseline predates a PIT bump would silence the mismatch warning
     // for a record the current tool never wrote.
     writeFixture()
     val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
 
-    // a record-writing flag that fails mid-path (the empty-seed refusal) leaves no stamp
+    // a named writer that fails mid-path (the empty-seed refusal) leaves no stamp
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,50,KILLED,com.example.CodecTest",
       ),
       ""
     )
-    runner("pitestEncodingVerify", "-PinitTimeoutAudit").buildAndFail()
+    timeoutAuditInitRunner().buildAndFail()
     assertFalse(toolVersionFile.isFile, "failed record-writing run must not stamp the tool version")
 
     // a *successful* seed still leaves no stamp: init writes the timeout set, not the baseline
@@ -1606,15 +1644,15 @@ $fuzzBlock
       ),
       ""
     )
-    val seeded = runner("pitestEncodingVerify", "-PinitTimeoutAudit").build().output
+    val seeded = timeoutAuditInitRunner().build().output
     assertTrue(seeded.contains("seeded 1 audited-timeout member(s)"), "seed did not run:\n$seeded")
-    assertFalse(toolVersionFile.isFile, "-PinitTimeoutAudit must not vouch for a baseline it did not write")
+    assertFalse(toolVersionFile.isFile, "timeout-audit init must not vouch for a baseline it did not write")
 
-    // yet init is still refused across a bump, like every record-writing flag:
+    // yet init is still refused across a bump, like every named record writer:
     // the timeout population is just as version-dependent as the baseline's
     toolVersionFile.writeText("0.0.0-stale\n")
     File(fixtureDir, "config/pitest/encoding-timeouts.csv").delete()
-    val refused = runner("pitestEncodingVerify", "-PinitTimeoutAudit").buildAndFail().output
+    val refused = timeoutAuditInitRunner().buildAndFail().output
     assertTrue(
       refused.contains("refusing to rewrite the record across a tool bump"),
       "init not refused across a bump:\n$refused"
@@ -1809,10 +1847,10 @@ $fuzzBlock
   }
 
   @Test
-  fun `-PinitTimeoutAudit seeds the audited set from the report and refuses to reseed`() {
+  fun `timeout audit init seeds the audited set from the report and refuses to reseed`() {
     // Adoption's mechanical half is derivable from the report the tool already has;
     // hand-transcribing members from mutations.xml is exactly the kind of work
-    // '-PupdateMutationBaseline' exists to avoid for baselines. Seeding writes the
+    // pitestEncodingBaselineUpdate exists to avoid for baselines. Seeding writes the
     // rows; the cause warnings that follow drive the half that needs a person.
     writeFixture()
     writeReport(
@@ -1826,7 +1864,7 @@ $fuzzBlock
     )
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
 
-    val seeded = runner("pitestEncodingVerify", "-PinitTimeoutAudit").build().output
+    val seeded = timeoutAuditInitRunner().build().output
     assertTrue(
       seeded.contains("seeded 2 audited-timeout member(s) into encoding-timeouts.csv"),
       "seed summary missing:\n$seeded"
@@ -1848,7 +1886,7 @@ $fuzzBlock
     )
 
     // membership changes one reviewed row at a time after adoption: no reseeding
-    val refused = runner("pitestEncodingVerify", "-PinitTimeoutAudit").buildAndFail().output
+    val refused = timeoutAuditInitRunner().buildAndFail().output
     assertTrue(
       refused.contains("encoding-timeouts.csv already exists"),
       "reseed not refused:\n$refused"
@@ -1856,9 +1894,9 @@ $fuzzBlock
   }
 
   @Test
-  fun `-PinitTimeoutAudit refuses a report with nothing timed out`() {
+  fun `timeout audit init refuses a report with nothing timed out`() {
     // An empty seed would activate the audit while telling its adopter to write
-    // causes for zero members — the flag is pointed at by a summary that reported
+    // causes for zero members — the task is pointed at by a summary that reported
     // timeouts, and a run where they vanished is load noise, not a population.
     writeFixture()
     writeReport(
@@ -1868,7 +1906,7 @@ $fuzzBlock
       ""
     )
 
-    val refused = runner("pitestEncodingVerify", "-PinitTimeoutAudit").buildAndFail().output
+    val refused = timeoutAuditInitRunner().buildAndFail().output
     assertTrue(
       refused.contains("no timed-out mutants in this run's report — nothing to seed"),
       "empty seed not refused:\n$refused"
@@ -2091,7 +2129,7 @@ $fuzzBlock
       "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,SURVIVED,none"
     writeReport(listOf(mutant(10), mutant(40)), "")
 
-    val union = runner("pitestEncodingVerify", "-PunionMutationBaseline").build()
+    val union = baselineUnionRunner().build()
     assertTrue(union.output.contains("union added 1 entries"), union.output)
     assertEquals(
       listOf(
@@ -2129,7 +2167,7 @@ $fuzzBlock
       "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$line,SURVIVED,none"
     writeReport(listOf(mutant(10), mutant(20), mutant(40)), "")
 
-    val union = runner("pitestEncodingVerify", "-PunionMutationBaseline").build()
+    val union = baselineUnionRunner().build()
     assertTrue(union.output.contains("union added 1 entries"), union.output)
     assertEquals(
       listOf(
@@ -2453,7 +2491,7 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val output = baselineUpdateRunner().build().output
     assertEquals(
       listOf("com.example.Codec,encode,MathMutator,SURVIVED # line 20"),
       baselineFile().readLines().filter { it.isNotBlank() }
@@ -2499,7 +2537,7 @@ $fuzzBlock
       ""
     )
 
-    val union = runner("pitestEncodingVerify", "-PunionMutationBaseline").build()
+    val union = baselineUnionRunner().build()
     assertTrue(union.output.contains("union added 1 entries"), union.output)
     // the rewrite migrates the legacy row; the added row lands bare with its line tag
     assertEquals(
@@ -2511,10 +2549,10 @@ $fuzzBlock
       "union must keep the absent row, its note, and append the new row in sorted order"
     )
 
-    val idempotent = runner("pitestEncodingVerify", "-PunionMutationBaseline").build()
+    val idempotent = baselineUnionRunner().build()
     assertTrue(idempotent.output.contains("union added nothing new"), idempotent.output)
 
-    val update = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    val update = baselineUpdateRunner().build()
     assertTrue(update.output.contains("dropped 1 row(s) not unkilled this run"), update.output)
     assertTrue(update.output.contains("com.example.Codec,decode,MathMutator,SURVIVED # untriaged flip insurance # line 5"), update.output)
     assertTrue(update.output.contains("pitestEncodingBaselineUnion"), update.output)
@@ -2554,7 +2592,7 @@ $fuzzBlock
     assertTrue(compare.output.contains("gate=SURVIVED, solo=KILLED"), compare.output)
     assertTrue(compare.output.contains("pitestModeCompareUnion"), compare.output)
 
-    val union = runner("pitestModeCompare", "-PunionModeFlips").build()
+    val union = modeCompareUnionRunner().build()
     assertTrue(union.output.contains("flip insurance written"), union.output)
     assertEquals(
       listOf(
@@ -2571,48 +2609,6 @@ $fuzzBlock
     assertTrue(
       insured.output.contains("com.example.Codec,decode,MathMutator,SURVIVED # stale insurance"),
       "dead-row sweep missing:\n" + insured.output
-    )
-  }
-
-  @Test
-  fun `legacy suite refresh and mode insurance cannot write the same baseline`() {
-    writeFixture()
-    baselineFile().parentFile.mkdirs()
-    val before =
-      "com.example.Codec,decode,MathMutator,SURVIVED # reviewed fixture # line 50\n"
-    baselineFile().writeText(before)
-    fun mutant(status: String) =
-      "Codec.java,com.example.Codec," +
-          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
-          "encode,12,$status," +
-          (if (status == "KILLED") "com.example.CodecTest" else "none")
-
-    // Give mode insurance a real row to add if it were allowed to reach its writer.
-    writeReport(listOf(mutant("KILLED")), "")
-    modeSnapshot("solo")
-    writeReport(listOf(mutant("SURVIVED")), "")
-    modeSnapshot("gate")
-    // Give the suite update a different real rewrite to make either ordering
-    // observably destructive. Under --continue both consumers must independently
-    // reject the shared legacy selection before either commits a record.
-    writeReport(listOf(mutant("SURVIVED")), "")
-
-    val output = runner(
-      "pitestEncodingVerify",
-      "pitestModeCompare",
-      "-PupdateMutationBaseline",
-      "-PunionModeFlips",
-      "--continue",
-    ).buildAndFail().output
-
-    val refusal =
-      "legacy hardening writers are mutually exclusive: do not combine " +
-          "-PupdateMutationBaseline with -PunionModeFlips"
-    assertTrue(output.contains(refusal), output)
-    assertEquals(
-      before,
-      baselineFile().readText(),
-      "combined legacy writer families changed the baseline under --continue",
     )
   }
 
@@ -2645,7 +2641,7 @@ $fuzzBlock
     )
     assertFalse(compare.contains("already insured in the baseline"), compare)
 
-    val union = runner("pitestModeCompare", "-PunionModeFlips").build().output
+    val union = modeCompareUnionRunner().build().output
     assertTrue(
       union.contains("1 existing row(s) annotated, 0 row(s) added"),
       "the union did not annotate the covered row in place:\n$union",
@@ -2671,7 +2667,7 @@ $fuzzBlock
     )
 
     val beforePrune = baselineFile().readText()
-    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val pruned = baselinePruneRunner().build().output
     assertEquals(beforePrune, baselineFile().readText(), "prune removed or rewrote persistent insurance")
     assertTrue(pruned.contains("prune dropped nothing"), pruned)
     assertTrue(pruned.contains("flip insurance at this key"), pruned)
@@ -2736,8 +2732,8 @@ $fuzzBlock
 
   @Test
   fun `mode compare preserves comments and diagnoses malformed rows on verify's terms`() {
-    // modeCompare's -PunionModeFlips rewrite is a baseline writer like the
-    // verify's refresh flags: a malformed row would be silently dropped (refused
+    // pitestModeCompareUnion is a baseline writer like the suite writer tasks: a
+    // malformed row would be silently dropped (refused
     // instead), and comment lines survive the row-slot rewrite.
     writeFixture()
     baselineFile().parentFile.mkdirs()
@@ -2754,7 +2750,7 @@ $fuzzBlock
     writeReport(listOf(mutant("SURVIVED")), "")
     modeSnapshot("gate")
 
-    val refused = runner("pitestModeCompare", "-PunionModeFlips").buildAndFail().output
+    val refused = modeCompareUnionRunner().buildAndFail().output
     assertTrue(refused.contains("1 malformed row(s)"), refused)
     assertTrue(refused.contains("Fix the row shape first"), refused)
 
@@ -2763,7 +2759,7 @@ $fuzzBlock
       "  # context for the row below\n" +
           "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 50\n"
     )
-    val unioned = runner("pitestModeCompare", "-PunionModeFlips").build().output
+    val unioned = modeCompareUnionRunner().build().output
     assertTrue(unioned.contains("flip insurance written"), unioned)
     assertFalse(unioned.contains("do not survive"), unioned)
     assertTrue(
@@ -2808,7 +2804,7 @@ $fuzzBlock
 
     // the union first annotates the existing row, then writes exactly the true
     // multiplicity shortfall
-    val union = runner("pitestModeCompare", "-PunionModeFlips").build()
+    val union = modeCompareUnionRunner().build()
     assertTrue(
       union.output.contains("1 existing row(s) annotated, 1 row(s) added"),
       union.output,
@@ -2865,7 +2861,7 @@ $fuzzBlock
       "a gated count change must not read as benign:\n" + compare.output
     )
 
-    val union = runner("pitestModeCompare", "-PunionModeFlips").build()
+    val union = modeCompareUnionRunner().build()
     assertTrue(
       union.output.contains("1 existing row(s) annotated, 1 row(s) added"),
       union.output,
@@ -3358,7 +3354,12 @@ $fuzzBlock
     val recompiled = File(fixtureDir, "build/mutation-classes/com/example")
 
     // excluded: PIT's recompiled root carries Codec but not the scratch file...
-    writeFixture(recompileExcludes = listOf("Scratch.java"), registerFuzz = false, bytecodeRelease = 21)
+    writeFixture(
+      recompileExcludes = listOf("Scratch.java"),
+      registerFuzz = false,
+      bytecodeRelease = 21,
+      fakePit = false,
+    )
     val ok = runner("compileForPitest").build()
     assertFalse(ok.output.contains("FAILED"), ok.output)
     assertTrue(recompiled.resolve("Codec.class").isFile, "Codec.class not on PIT's recompiled root:\n${ok.output}")
@@ -3371,7 +3372,7 @@ $fuzzBlock
 
     // without the exclusion the recompile carries the scratch class too — proof it was
     // genuinely in the source set, dropped only by the name filter
-    writeFixture(registerFuzz = false, bytecodeRelease = 21)
+    writeFixture(registerFuzz = false, bytecodeRelease = 21, fakePit = false)
     runner("compileForPitest").build()
     assertTrue(recompiled.resolve("Scratch.class").isFile, "Scratch.class should return once un-excluded")
   }
@@ -3399,7 +3400,7 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val output = baselineUpdateRunner().build().output
     // line affinity keeps '# race guard family' on its recorded line-12 mutant; the
     // second line-12 mutant is a new sibling and seeds '# untriaged' (its twin's
     // argument was written for the mutants it had), as does the new decode key
@@ -3417,7 +3418,7 @@ $fuzzBlock
     assertFalse(File(baselineFile().parentFile, "${baselineFile().name}.tmp").exists())
 
     // idempotent: a second update seeds nothing and changes nothing
-    val second = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val second = baselineUpdateRunner().build().output
     assertFalse(second.contains("seeded '# untriaged'"), second)
   }
 
@@ -3558,7 +3559,7 @@ $fuzzBlock
           "encode,10,SURVIVED,none"
     writeReport(listOf(survivor), "")
 
-    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    baselineUpdateRunner().build()
     assertEquals(
       listOf(
         "!sava-hardening-baseline-schema,1",
@@ -3573,7 +3574,7 @@ $fuzzBlock
           "\n" +
           "com.example.Codec,encode,10,MathMutator,SURVIVED # accepted family\n"
     baselineFile().writeText(legacy)
-    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    baselineUpdateRunner().build()
     assertEquals(
       "# repository evidence\n" +
           "\n" +
@@ -3608,17 +3609,17 @@ $fuzzBlock
     }
 
     writeReport(listOf(survivor(10), survivor(20)), "")
-    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    baselineUpdateRunner().build()
     assertEvidenceSurvived("update")
     assertEquals(2, baselineFile().readLines().count { it.startsWith("com.example.Codec,") })
 
     writeReport(listOf(survivor(10), survivor(20), survivor(30)), "")
-    runner("pitestEncodingVerify", "-PunionMutationBaseline").build()
+    baselineUnionRunner().build()
     assertEvidenceSurvived("union")
     assertEquals(3, baselineFile().readLines().count { it.startsWith("com.example.Codec,") })
 
     writeReport(listOf(survivor(10), survivor(20)), "")
-    runner("pitestEncodingVerify", "-PpruneMutationBaseline").build()
+    baselinePruneRunner().build()
     assertEvidenceSurvived("prune")
     assertEquals(2, baselineFile().readLines().count { it.startsWith("com.example.Codec,") })
   }
@@ -3634,19 +3635,19 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val output = baselineUpdateRunner().build().output
     assertTrue(output.contains("nothing unkilled — no baseline to write"), output)
     assertFalse(baselineFile().exists(), "update created a baseline with nothing to record")
 
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText("com.example.Codec,encode,MathMutator,SURVIVED # since killed # line 10\n")
-    val removed = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val removed = baselineUpdateRunner().build().output
     assertTrue(removed.contains("nothing unkilled — baseline file removed"), removed)
     assertFalse(baselineFile().exists(), "an emptied baseline must be removed, not left as a husk")
 
     // prune behaves the same when it drops every row
     baselineFile().writeText("com.example.Codec,encode,MathMutator,SURVIVED # since killed # line 10\n")
-    val pruned = runner("pitestEncodingVerify", "-PpruneMutationBaseline").build().output
+    val pruned = baselinePruneRunner().build().output
     assertTrue(pruned.contains("prune dropped every row unmatched by this run — baseline file removed"), pruned)
     assertFalse(baselineFile().exists(), "prune must remove an emptied baseline")
 
@@ -3673,7 +3674,7 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
       ""
     )
-    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    baselineUpdateRunner().build()
     assertTrue(baselineFile().isFile && toolVersionFile.isFile, "stamp must land with the write")
 
     // the suite goes fully detected: the baseline is removed and the stamp with it
@@ -3681,7 +3682,7 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,KILLED,com.example.CodecTest"),
       ""
     )
-    val retired = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val retired = baselineUpdateRunner().build().output
     assertTrue(retired.contains("nothing unkilled — baseline file removed"), retired)
     assertTrue(retired.contains("encoding-pitest-version removed with the record it certified"), retired)
     assertFalse(toolVersionFile.isFile, "orphan stamp left behind an emptied record")
@@ -3693,13 +3694,13 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
       ""
     )
-    runner("pitestEncodingVerify", "-PupdateMutationBaseline").build()
+    baselineUpdateRunner().build()
     assertTrue(toolVersionFile.isFile, "stamp must land with the write")
     writeReport(
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,KILLED,com.example.CodecTest"),
       ""
     )
-    val kept = runner("pitestEncodingVerify", "-PupdateMutationBaseline").build().output
+    val kept = baselineUpdateRunner().build().output
     assertTrue(kept.contains("nothing unkilled — baseline file removed"), kept)
     assertTrue(toolVersionFile.isFile, "the audited timeout set is a record; its stamp must stay")
   }

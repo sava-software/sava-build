@@ -9,30 +9,31 @@ import org.junit.jupiter.api.Test
 class HardeningOperationsTest {
 
   @Test
-  fun `the central option inventory names all legacy properties once`() {
-    assertEquals(14, HardeningOptionNames.descriptors.size)
+  fun `the central option inventory separates active and removed properties`() {
+    assertEquals(9, HardeningOptionNames.descriptors.size)
     assertEquals(
       setOf(
         HardeningOptionNames.ADOPT_LOCAL_CORPUS,
-        HardeningOptionNames.INIT_TIMEOUT_AUDIT,
         HardeningOptionNames.LIST_UNKILLED,
         HardeningOptionNames.MAX_FUZZ_TIME,
         HardeningOptionNames.MUTATE_ONLY,
         HardeningOptionNames.NO_MUTATION_HISTORY,
         HardeningOptionNames.PITEST_MODE,
-        HardeningOptionNames.PRUNE_MUTATION_BASELINE,
         HardeningOptionNames.SAVA_BUILD_LOCAL_REPO,
         HardeningOptionNames.STRICT_TIMEOUT_AUDIT,
         HardeningOptionNames.TRIAL_MUTATORS,
-        HardeningOptionNames.UNION_MODE_FLIPS,
-        HardeningOptionNames.UNION_MUTATION_BASELINE,
-        HardeningOptionNames.UPDATE_MUTATION_BASELINE,
       ),
       HardeningOptionNames.descriptors.map { it.name }.toSet(),
     )
     assertEquals(
-      5,
-      HardeningOptionNames.descriptors.count { it.discoverableTask != null },
+      mapOf(
+        HardeningOptionNames.UPDATE_MUTATION_BASELINE to "pitest<Suite>BaselineUpdate",
+        HardeningOptionNames.UNION_MUTATION_BASELINE to "pitest<Suite>BaselineUnion",
+        HardeningOptionNames.PRUNE_MUTATION_BASELINE to "pitest<Suite>BaselinePrune",
+        HardeningOptionNames.INIT_TIMEOUT_AUDIT to "pitest<Suite>TimeoutAuditInit",
+        HardeningOptionNames.UNION_MODE_FLIPS to "pitestModeCompareUnion",
+      ),
+      HardeningOptionNames.removedWriterTaskByProperty,
     )
   }
 
@@ -50,60 +51,22 @@ class HardeningOperationsTest {
     assertTrue(help.contains("pitestModeCompareUnion"), help)
     assertTrue(help.contains("fuzzWireMinimize"), help)
     assertTrue(help.contains("-PupdateMutationBaseline"), help)
-    assertTrue(help.contains("compatibility alias for pitest<Suite>BaselineUpdate"), help)
-    assertTrue(help.contains("-Pflag=false` is still present"), help)
+    assertTrue(help.contains("use pitest<Suite>BaselineUpdate"), help)
+    assertTrue(help.contains("refused since sava-build 21.5.22"), help)
+    assertTrue(help.contains("only supported committed-file write interface"), help)
   }
 
   @Test
-  fun `legacy writer properties select exactly one operation`() {
-    assertEquals(
-      BaselineWriteOperation.CHECK,
-      BaselineWriteOperation.fromLegacyProperties(emptySet()),
+  fun `removed writer message maps every old property to its task`() {
+    val message = HardeningOptionNames.removedWriterMessage(
+      HardeningOptionNames.removedWriterProperties,
     )
-    BaselineWriteOperation.entries.filter { it.legacyProperty != null }.forEach { operation ->
-      assertEquals(
-        operation,
-        BaselineWriteOperation.fromLegacyProperties(setOf(operation.legacyProperty!!)),
-      )
-    }
 
-    val failure = assertThrows(IllegalArgumentException::class.java) {
-      BaselineWriteOperation.fromLegacyProperties(
-        setOf(
-          HardeningOptionNames.UPDATE_MUTATION_BASELINE,
-          HardeningOptionNames.PRUNE_MUTATION_BASELINE,
-        )
-      )
+    assertTrue(message.contains("removed in sava-build 21.5.22"), message)
+    HardeningOptionNames.removedWriterTaskByProperty.forEach { (property, task) ->
+      assertTrue(message.contains("-P$property -> $task"), message)
     }
-    assertTrue(failure.message!!.contains("pass at most one"), failure.message)
-  }
-
-  @Test
-  fun `legacy suite and mode writer families are centrally mutually exclusive`() {
-    val none = LegacyWriteSelection.fromProperties(emptySet())
-    assertEquals(BaselineWriteOperation.CHECK, none.suiteOperation)
-    assertFalse(none.modeFlipInsurance)
-    assertFalse(none.hasStateChangingOperation)
-    val modeOnly =
-        LegacyWriteSelection.fromProperties(setOf(HardeningOptionNames.UNION_MODE_FLIPS))
-    assertEquals(BaselineWriteOperation.CHECK, modeOnly.suiteOperation)
-    assertTrue(modeOnly.modeFlipInsurance)
-    assertTrue(modeOnly.hasStateChangingOperation)
-    BaselineWriteOperation.entries.filter { it.legacyProperty != null }.forEach { operation ->
-      val suiteOnly = LegacyWriteSelection.fromProperties(setOf(operation.legacyProperty!!))
-      assertEquals(operation, suiteOnly.suiteOperation)
-      assertFalse(suiteOnly.modeFlipInsurance)
-      assertTrue(suiteOnly.hasStateChangingOperation)
-      val failure = assertThrows(IllegalArgumentException::class.java) {
-        LegacyWriteSelection.fromProperties(
-          setOf(operation.legacyProperty!!, HardeningOptionNames.UNION_MODE_FLIPS)
-        )
-      }
-      assertTrue(
-        failure.message!!.contains("both are state-changing baseline workflows"),
-        failure.message,
-      )
-    }
+    assertTrue(message.contains("only supported committed-file write interface"), message)
   }
 
   @Test
@@ -117,25 +80,6 @@ class HardeningOperationsTest {
     assertEquals(BaselineWriteOperation.PRUNE, registry.suiteOperation(":a", "encoding"))
     assertEquals(BaselineWriteOperation.UPDATE, registry.suiteOperation(":b", "encoding"))
     assertEquals(BaselineWriteOperation.CHECK, registry.suiteOperation(":a", "parsing"))
-    assertEquals(
-      BaselineWriteOperation.UNION,
-      registry.resolveSuiteOperation(
-        ":a",
-        "parsing",
-        setOf(HardeningOptionNames.UNION_MUTATION_BASELINE),
-      ),
-    )
-    assertEquals(
-      BaselineWriteOperation.PRUNE,
-      registry.resolveSuiteOperation(":a", "encoding", emptySet()),
-    )
-    assertThrows(IllegalArgumentException::class.java) {
-      registry.resolveSuiteOperation(
-        ":a",
-        "encoding",
-        setOf(HardeningOptionNames.UPDATE_MUTATION_BASELINE),
-      )
-    }
     assertThrows(IllegalArgumentException::class.java) {
       registry.requestSuite(":a", "encoding", BaselineWriteOperation.UNION)
     }
@@ -153,18 +97,12 @@ class HardeningOperationsTest {
     registry.requestModeFlipInsurance(":")
 
     assertTrue(registry.modeFlipInsuranceRequested(":"))
-    assertTrue(
-      registry.resolveModeFlipInsurance(
-        ":other", setOf(HardeningOptionNames.UNION_MODE_FLIPS))
-    )
+    assertFalse(registry.modeFlipInsuranceRequested(":other"))
     assertTrue(registry.hasStateChangingOperation(":"))
     assertEquals(
       listOf("mode-compare:union-flips"),
       registry.descriptions(":"),
     )
-    assertThrows(IllegalArgumentException::class.java) {
-      registry.resolveModeFlipInsurance(":", setOf(HardeningOptionNames.UNION_MODE_FLIPS))
-    }
     assertThrows(IllegalArgumentException::class.java) {
       registry.requestSuite(":", "encoding", BaselineWriteOperation.INIT_TIMEOUT_AUDIT)
     }

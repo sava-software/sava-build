@@ -64,6 +64,16 @@ hardening.testSupportPackage.convention("software.sava.hardening.support")
 hardening.testSupportExcludes.convention(emptyList())
 hardening.recompileExcludes.convention(emptyList())
 
+// Writer properties were presence-based and therefore too easy to trigger
+// accidentally. Refuse every old spelling during configuration, before PIT or any
+// task graph can touch a committed record; named tasks are the sole write surface.
+val removedWriterProperties = HardeningOptionNames.removedWriterProperties.filter {
+  providers.gradleProperty(it).isPresent
+}
+if (removedWriterProperties.isNotEmpty()) {
+  throw GradleException(HardeningOptionNames.removedWriterMessage(removedWriterProperties))
+}
+
 // Arcmutate incremental analysis ("history"): reuses per-mutant results across runs
 // when neither the mutated class nor its covering tests changed. Open-source PIT
 // accepts the history flags but cannot honour them — its only registered history
@@ -152,7 +162,7 @@ val qualityGate = tasks.register("qualityGate") {
 
 // A release-grade gate is intentionally separate from the permissive developer gate.
 // Its preflight is a dependency of every PIT execution selected for certification, so
-// a record-writing/scoped flag is refused before it can run or change evidence.
+// a record-writing task or scoped property is refused before it can run or change evidence.
 val hardeningCertificationSession = gradle.sharedServices.registerIfAbsent(
     "hardeningCertificationSession", HardeningCertificationSession::class
 ) {}
@@ -760,10 +770,6 @@ private val pitestModeCompareUnionPreflight = tasks.register<HardeningOperationR
   description = "Internal to pitestModeCompareUnion: selects one fresh mode-insurance write."
   hardeningProjectPath.set(project.path)
   request.set(HardeningWriteRequest.MODE_FLIP_INSURANCE)
-  presentLegacyWriteProperties.set(
-      HardeningOptionNames.stateChangingProperties.filter {
-        providers.gradleProperty(it).isPresent
-      })
   excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
   operationSession.set(hardeningOperationSession)
   certificationSession.set(hardeningCertificationSession)
@@ -778,21 +784,13 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
   mustRunAfter(pitestModeCompareUnionPreflight)
   val snapshotRoot = pitestModesRoot
   val names = convergeSuiteNames
-  val legacyModeCompareWriteProperties = HardeningOptionNames.stateChangingProperties.filter {
-    providers.gradleProperty(it).isPresent
-  }.toSet()
   val operationSession = hardeningOperationSession
   val modeCompareProjectPath = project.path
   val modeCompareExcludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
   usesService(operationSession)
   val baselineDir = layout.projectDirectory.dir("config/pitest")
   doLast {
-    val unionFlips = try {
-      operationSession.get().resolveModeFlipInsurance(
-          modeCompareProjectPath, legacyModeCompareWriteProperties)
-    } catch (e: IllegalArgumentException) {
-      throw GradleException("pitestModeCompare: ${e.message}", e)
-    }
+    val unionFlips = operationSession.get().modeFlipInsuranceRequested(modeCompareProjectPath)
     if (unionFlips && modeCompareExcludedTaskNames.isNotEmpty()) {
       throw GradleException(
           "pitestModeCompare: a mode-insurance write cannot prove its complete task graph with " +
@@ -1155,7 +1153,7 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
   }
   // A separate final action is the commit acknowledgement: Gradle does not invoke it
   // when the comparison/commit action above fails or the task is skipped. The public
-  // alias therefore cannot confuse a selected request with a completed one.
+  // writer task therefore cannot confuse a selected request with a completed one.
   doLast {
     if (operationSession.get().projectOperation(modeCompareProjectPath) ==
         ProjectWriteOperation.MODE_FLIP_INSURANCE) {
@@ -1179,12 +1177,15 @@ tasks.register<HardeningOperationCompletionTask>("pitestModeCompareUnion") {
   dependsOn(pitestModeCompare)
 }
 
-// Format-only baseline migration: stamp the explicit current schema and render
-// legacy five-field rows as line-less keys with '# line' tags. No report, no PIT
-// run, no stamping of the PIT version: identity is preserved by construction and
-// comment/blank evidence passes through verbatim. Ordinary report-driven writers
-// deliberately preserve an existing document's schema state; fleet migration is
-// explicit, reversible, and independent of mutation-run load.
+// Identity-preserving accepted-baseline migration: stamp the explicit current
+// schema and render legacy five-field rows as line-less keys with '# line' tags.
+// Whitespace-only placeholders canonicalize to absence, matching the ordinary
+// writers; timeout audit sets keep their separate stable unversioned format. No
+// report, no PIT run, no stamping of the PIT version: row identity is preserved by
+// construction and substantive comment/blank evidence passes through verbatim.
+// Ordinary report-driven writers deliberately preserve an existing document's
+// schema state; fleet migration is explicit, reversible, and independent of
+// mutation-run load.
 private fun registerSchemaOperationPreflight(
     taskName: String,
     requestValue: HardeningWriteRequest,
@@ -1192,10 +1193,6 @@ private fun registerSchemaOperationPreflight(
   description = "Internal baseline-schema writer preflight."
   hardeningProjectPath.set(project.path)
   request.set(requestValue)
-  presentLegacyWriteProperties.set(
-      HardeningOptionNames.stateChangingProperties.filter {
-        providers.gradleProperty(it).isPresent
-      })
   excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
   operationSession.set(hardeningOperationSession)
   certificationSession.set(hardeningCertificationSession)
@@ -1212,7 +1209,7 @@ pitestModeCompare.configure {
 }
 val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
   group = "verification"
-  description = "Stamps accepted baselines as schema 1 and canonicalizes their rows; needs no mutation run."
+  description = "Stamps substantive accepted baselines as schema 1, canonicalizes rows, and removes empty placeholders."
   dependsOn(migrateMutationBaselinesPreflight)
   mustRunAfter(
       pitestModeCompareUnionPreflight,
@@ -1242,10 +1239,24 @@ val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
     val migrations = names.mapNotNull { suiteName ->
       val file = baselineDir.file("$suiteName-accepted.csv").asFile
       if (!file.isFile) null
-      else Triple(suiteName, file, BaselineDocument.parse(file.readText()).migrateToCurrent())
+      else {
+        val document = BaselineDocument.parse(file.readText())
+        Triple(
+            suiteName,
+            file,
+            if (document.hasSubstantiveContent) document.migrateToCurrent() else null)
+      }
     }
     migrations.forEach { (suiteName, file, migration) ->
-      if (!migration.changed) {
+      if (migration == null) {
+        val removed = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(
+            file,
+            baselineDir.file("$suiteName-timeouts.csv").asFile,
+            baselineDir.file("$suiteName-pitest-version").asFile)
+        logger.lifecycle(
+            "pitest baseline '$suiteName': removed empty accepted-baseline placeholder" +
+                (if (removed.orphanVersionStampRemoved) " and its orphan PIT-version stamp" else ""))
+      } else if (!migration.changed) {
         logger.lifecycle(
             "pitest baseline '$suiteName': already at accepted-baseline schema " +
                 BaselineDocument.CURRENT_SCHEMA)
@@ -1259,13 +1270,14 @@ val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
   }
 }
 
-// Rollback companion for a fleet migration: remove only the schema marker. Rows,
-// comments, blank lines, spelling, order, and duplicates remain byte-for-byte so
-// the result is readable by the N-1 plugin. A future schema migration therefore has
-// an explicit escape hatch rather than relying on hand-edited headers.
+// Rollback companion for a fleet migration: schema 1 removes only its marker. Rows,
+// comments, blank lines, spelling, order, and duplicates remain byte-for-byte so the
+// result is readable by the N-1 plugin. Whitespace-only placeholders canonicalize to
+// absence in both directions. Future schemas default to refusing downgrade unless
+// BaselineDocument explicitly declares their representation lossless for N-1.
 val downgradeMutationBaselines = tasks.register("downgradeMutationBaselines") {
   group = "verification"
-  description = "Removes only the accepted-baseline schema marker for N-1 rollback; needs no mutation run."
+  description = "Losslessly removes schema 1 for N-1 rollback and removes empty placeholders."
   dependsOn(downgradeMutationBaselinesPreflight)
   mustRunAfter(
       pitestModeCompareUnionPreflight,
@@ -1293,10 +1305,24 @@ val downgradeMutationBaselines = tasks.register("downgradeMutationBaselines") {
     val downgrades = names.mapNotNull { suiteName ->
       val file = baselineDir.file("$suiteName-accepted.csv").asFile
       if (!file.isFile) null
-      else Triple(suiteName, file, BaselineDocument.parse(file.readText()).downgradeToUnversioned())
+      else {
+        val document = BaselineDocument.parse(file.readText())
+        Triple(
+            suiteName,
+            file,
+            if (document.hasSubstantiveContent) document.downgradeToUnversioned() else null)
+      }
     }
     downgrades.forEach { (suiteName, file, downgrade) ->
-      if (!downgrade.changed) {
+      if (downgrade == null) {
+        val removed = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(
+            file,
+            baselineDir.file("$suiteName-timeouts.csv").asFile,
+            baselineDir.file("$suiteName-pitest-version").asFile)
+        logger.lifecycle(
+            "pitest baseline '$suiteName': removed empty accepted-baseline placeholder" +
+                (if (removed.orphanVersionStampRemoved) " and its orphan PIT-version stamp" else ""))
+      } else if (!downgrade.changed) {
         logger.lifecycle("pitest baseline '$suiteName': already unversioned (N-1-readable)")
       } else {
         BaselineFiles.writeAtomically(file, downgrade.content)
@@ -1637,9 +1663,6 @@ hardening.mutation.all {
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
     val timeoutsFile = layout.projectDirectory.file("config/pitest/$suiteName-timeouts.csv").asFile
-    val legacyWriteProperties = HardeningOptionNames.stateChangingProperties.filter {
-      providers.gradleProperty(it).isPresent
-    }.toSet()
     val listUnkilled = providers.gradleProperty(HardeningOptionNames.LIST_UNKILLED).isPresent
     val strictTimeoutAuditRequested =
         providers.gradleProperty(HardeningOptionNames.STRICT_TIMEOUT_AUDIT).isPresent
@@ -1660,12 +1683,7 @@ hardening.mutation.all {
     // mutated class is one of this project's own test sources.
     val testSourceDirs = sourceSets.test.get().java.srcDirs
     doLast {
-      val writeOperation = try {
-        operationSession.get().resolveSuiteOperation(
-            evidenceProjectPath, suiteName, legacyWriteProperties)
-      } catch (e: IllegalArgumentException) {
-        throw GradleException("pitest '$suiteName': ${e.message}", e)
-      }
+      val writeOperation = operationSession.get().suiteOperation(evidenceProjectPath, suiteName)
       val update = writeOperation == BaselineWriteOperation.UPDATE
       val union = writeOperation == BaselineWriteOperation.UNION
       val prune = writeOperation == BaselineWriteOperation.PRUNE
@@ -1693,7 +1711,7 @@ hardening.mutation.all {
         throw GradleException(
             "pitest '$suiteName': the report at ${csv.parentFile} was left by an interrupted or " +
                 "failed run — a partial population is not evidence, for the ratchet or for any " +
-                "refresh flag. Re-run $pitestTaskName."
+                "writer task. Re-run $pitestTaskName."
         )
       }
       if (!csv.exists()) {
@@ -1786,7 +1804,7 @@ hardening.mutation.all {
       // baseline write *succeeds*: the stamp lands with the write it describes, never
       // ahead of it, so a refresh that dies mid-path cannot leave a stamp vouching
       // for a record it never rewrote. TimeoutAuditInit is refused across a bump
-      // like the baseline flags — the timeout population is just as version-dependent
+      // like the baseline writers — the timeout population is just as version-dependent
       // — but never stamps: it writes the timeout set, not the baseline, and its
       // stamp would silently vouch for a baseline some older PIT wrote.
       val currentPit = pitToolVersion.get()
@@ -1803,7 +1821,7 @@ hardening.mutation.all {
         }
         val versionWarning = "pitest '$suiteName': baseline record written by PIT $recordedPit, this run " +
             "used PIT $currentPit — population differences may be the tool, not the code, and the " +
-            "record-writing flags refuse until config/pitest/$suiteName-pitest-version is updated deliberately"
+            "record-writing tasks refuse until config/pitest/$suiteName-pitest-version is updated deliberately"
         logger.warn(versionWarning)
         advisoryLog.get().record(advisoryScope, "baseline written by PIT $recordedPit, ran $currentPit")
       }
@@ -2008,7 +2026,7 @@ hardening.mutation.all {
                   "Re-run $pitestTaskName without -PmutateOnly first."
           )
         }
-        // Certifying flags are refused for the same reason in the other direction:
+        // Certification paths are refused for the same reason in the other direction:
         // the checks they strengthen are skipped entirely on a scoped report, so a
         // green run would read as a certification of the suite when nothing was
         // certified at all. (-PnoDriftTolerance used to sit beside this flag; the
@@ -2031,7 +2049,7 @@ hardening.mutation.all {
       // A history-assisted report is reuse, not observation — the same reason
       // pitestModeSnapshot refuses to stash one as a mode's evidence. The checking
       // path may read it (the summary's '[history]' tag names the reuse), but the
-      // record-writing flags may not: a baseline refresh or an audit seed written
+      // record-writing tasks may not: a baseline refresh or an audit seed written
       // from reused results certifies numbers this run never earned.
       if (historyAssistedReport && (update || union || prune || initTimeoutAudit)) {
         throw GradleException(
@@ -2043,7 +2061,7 @@ hardening.mutation.all {
       // A baseline row may carry a trailing '# note' ('# untriaged' is the conventional
       // label for seeded debt; refreshes seed it on every new row) and a trailing
       // '# line' tag (metadata for triage and the line-drift advisory, never identity).
-      // Notes are stripped for comparison, preserved across the refresh flags, and
+      // Notes are stripped for comparison, preserved across writer operations, and
       // counted per label — so triage state lives on the row it describes and stays a
       // number the build reports, not prose that drifts. Rows are parsed as an ordered
       // LIST of (key, note, lines): duplicate keys are sibling mutants and each keeps
@@ -2233,7 +2251,7 @@ hardening.mutation.all {
           )
         }
         // Also refused with nothing timed out: an empty file would activate the audit
-        // while telling its adopter to write causes for zero members, and the flag is
+        // while telling its adopter to write causes for zero members, and the task is
         // only ever pointed at by a summary that reported timeouts — a run where they
         // vanished is the load-dependence the line-less key exists to absorb, not a
         // population to certify. Arming a never-timed-out suite is a different intent
@@ -2440,7 +2458,7 @@ hardening.mutation.all {
         // it was discoverable only by reading HARDENING.md. Advisory nudge normally;
         // under the strict flag an unadopted timeout-carrying suite is an unaudited
         // newcomer by definition.
-        // The rows print paste-ready alongside the flag: a timeout is load-dependent, so
+        // The rows print paste-ready alongside the named task: a timeout is load-dependent, so
         // by the time anyone acts on this nudge the next run may hold a clean report —
         // TimeoutAuditInit then rightly refuses to seed from it, and without the rows
         // here the coordinate that timed out is recoverable only from the daemon log.
@@ -2490,7 +2508,7 @@ hardening.mutation.all {
 
       fun writeOrRemoveBaseline(replacementRows: List<BaselineNotes.Row>): Boolean {
         val hasNonRowEvidence = baselineDocument.comments.isNotEmpty() ||
-            baselineDocument.blankLines.isNotEmpty() || baselineDocument.malformedRows.isNotEmpty()
+            baselineDocument.malformedRows.isNotEmpty()
         if (replacementRows.isEmpty() && !hasNonRowEvidence) {
           BaselineFiles.deleteIfExists(baselineFile)
           return false
@@ -3083,8 +3101,6 @@ hardening.mutation.all {
   // lifecycle into typed classes. Configuration here is provider wiring only; task
   // execution no longer reaches through this precompiled script.
   val typedMutateOnly = providers.gradleProperty(HardeningOptionNames.MUTATE_ONLY)
-  val legacyWriterRequested = HardeningOptionNames.baselineWriterProperties
-      .any { providers.gradleProperty(it).isPresent }
   val typedPluginCode = evidencePluginCode
 
   fun configureTypedPitest(
@@ -3128,7 +3144,6 @@ hardening.mutation.all {
     task.historyRequested.set(withHistory)
     task.historyLicensed.set(arcMutateLicencePresent)
     task.historyExplicitlyDisabled.set(mutationHistoryExplicitlyDisabled)
-    task.legacyWriterRequested.set(legacyWriterRequested)
     task.enforceExit.set(enforceExit)
     task.bindSuiteEvidence.set(bindSuiteEvidence)
 
@@ -3235,10 +3250,6 @@ hardening.mutation.all {
   // poisons the project so `--continue` cannot consume the surviving request. The
   // public completion task and verify's own no-exclusions check additionally make an
   // explicitly excluded preflight a refusal rather than a green no-op or record write.
-  // Legacy `-P` switches remain a compatibility surface and are resolved by the same
-  // operation service in verify.
-  val presentStateChangingProperties = HardeningOptionNames.stateChangingProperties
-      .filter { providers.gradleProperty(it).isPresent }
   val presentWriterIncompatibleProperties = listOf(HardeningOptionNames.MUTATE_ONLY)
       .filter { providers.gradleProperty(it).isPresent }
   val requestedExcludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
@@ -3254,7 +3265,6 @@ hardening.mutation.all {
       hardeningProjectPath.set(evidenceProjectPath)
       this.suiteName.set(writerSuiteName)
       request.set(requestValue)
-      presentLegacyWriteProperties.set(presentStateChangingProperties)
       presentIncompatibleProperties.set(presentWriterIncompatibleProperties)
       excludedTaskNames.set(requestedExcludedTaskNames)
       operationSession.set(hardeningOperationSession)

@@ -6,6 +6,13 @@ package software.sava.build.hardening
  * comments allowed), so the verify and `pitest<Suite>Debt` can never drift on what
  * parses, what is malformed, or which causes resolve.
  *
+ * This is intentionally not an accepted-baseline [BaselineDocument]. Timeout audit
+ * sets were introduced with this stable line-less three-field identity; unlike the
+ * accepted baseline, they never had a five-field-to-line-less transition that an N-1
+ * reader could misinterpret. Reusing the accepted-baseline marker would therefore
+ * invent a format break rather than guard one. Any future incompatible timeout-set
+ * change needs its own marker, N-1 reader, migration, and rollback contract.
+ *
  * Only the audit's *static* half lives here — checks that read committed files and
  * nothing else — which is what lets `Debt` answer "does the tool agree with my pasted
  * row and my README cause?" in seconds instead of after the next mutation run. The

@@ -86,6 +86,17 @@ internal class BaselineDocument private constructor(
   val blankLines: List<Entry.Blank> = entries.filterIsInstance<Entry.Blank>()
   val malformedRows: List<Entry.MalformedRow> = entries.filterIsInstance<Entry.MalformedRow>()
 
+  /**
+   * Whether this file carries a record worth keeping. Whitespace alone is not
+   * evidence: an absent accepted baseline and a whitespace-only one both accept no
+   * mutants, and the ordinary report-driven writers already canonicalize that state
+   * to absence. Comments remain substantive because they may carry repository-local
+   * review context even when the last mutant row is removed. Malformed rows are also
+   * substantive so no cleanup path can erase evidence it failed to understand.
+   */
+  val hasSubstantiveContent: Boolean =
+      rowEntries.isNotEmpty() || comments.isNotEmpty() || malformedRows.isNotEmpty()
+
   /** The source text exactly as parsed, useful for no-op detection. */
   fun renderOriginal(): String = original
 
@@ -117,9 +128,25 @@ internal class BaselineDocument private constructor(
 
   /**
    * Removes only the schema marker. All other lines keep their source spelling and
-   * order, providing the rollback artifact readable by the N-1 plugin.
+   * order, providing the rollback artifact readable by the N-1 plugin. Downgrade is
+   * deliberately allowlisted by schema version rather than derived from
+   * [CURRENT_SCHEMA]: when a future schema adds structure, merely making it current
+   * must not silently claim that stripping its header is lossless. Content that the
+   * N-1 row reader cannot understand is refused for the same reason.
    */
   fun downgradeToUnversioned(): Transition {
+    if (schemaState == SchemaState.CURRENT) {
+      val version = checkNotNull(schemaMetadata).version
+      require(hasLosslessNMinusOneDowngrade(version)) {
+        "cannot downgrade accepted-baseline schema $version to the unversioned N-1 " +
+            "format: that schema has no declared lossless rollback"
+      }
+      requireNoMalformedRows("downgrade accepted-baseline schema to the unversioned N-1 format")
+      require(entries.all { it is Entry.Row || it is Entry.Comment || it is Entry.Blank }) {
+        "cannot downgrade accepted-baseline schema to the unversioned N-1 format: " +
+            "the document contains structure the N-1 reader does not support"
+      }
+    }
     val content = render(SchemaState.UNVERSIONED_N_MINUS_ONE, entries.map { it.raw })
     return Transition(
         content = content,
@@ -190,6 +217,15 @@ internal class BaselineDocument private constructor(
     const val CURRENT_SCHEMA = "1"
     const val HEADER_NAME = "!sava-hardening-baseline-schema"
     const val CURRENT_HEADER = "$HEADER_NAME,$CURRENT_SCHEMA"
+
+    // Intentionally literal, not `setOf(CURRENT_SCHEMA)`: a future schema bump must
+    // make a separate, reviewed assertion that its representation can be stripped to
+    // the unversioned N-1 form without losing meaning. Schema 1 is marker-only after
+    // its rows have been canonicalized, so it has that property.
+    private val LOSSLESS_N_MINUS_ONE_SCHEMA_VERSIONS = setOf("1")
+
+    internal fun hasLosslessNMinusOneDowngrade(version: String): Boolean =
+      version in LOSSLESS_N_MINUS_ONE_SCHEMA_VERSIONS
 
     private val HEADER = Regex("""^${Regex.escape(HEADER_NAME)},([^,\s]+)$""")
 
