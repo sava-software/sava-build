@@ -3,6 +3,7 @@ import software.sava.build.hardening.BaselineDocument
 import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.BaselineNotes
 import software.sava.build.hardening.BaselineWriteOperation
+import software.sava.build.hardening.CommittedMutationProvenance
 import software.sava.build.hardening.ExclusionAudit
 import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningCertificationSession
@@ -19,19 +20,24 @@ import software.sava.build.hardening.HardeningToolDefaults
 import software.sava.build.hardening.HardeningWriteRequest
 import software.sava.build.hardening.Mutant
 import software.sava.build.hardening.MutantStatus
+import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestExecutionLock
+import software.sava.build.hardening.PreparedMutationWrite
 import software.sava.build.hardening.ProjectWriteOperation
 import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
 import software.sava.build.hardening.task.HardeningCertificationTask
 import software.sava.build.hardening.task.PitestConvergeTask
+import software.sava.build.hardening.task.PitestDebtTask
 import software.sava.build.hardening.task.PitestEvidenceSpec
 import software.sava.build.hardening.task.PitestEvidenceValidationTask
+import software.sava.build.hardening.task.PitestModeCommitTask
 import software.sava.build.hardening.task.PitestExecTask
 import software.sava.build.hardening.task.PitestMutatorTrialTask
 import software.sava.build.hardening.task.PitestRunTask
+import software.sava.build.hardening.task.PitestVerifyTask
 
 plugins {
   id("java")
@@ -87,8 +93,10 @@ if (removedWriterProperties.isNotEmpty()) {
 // certification is decided at execution time by hardeningCertifyPreflight's build
 // service, so aliases, abbreviations and aggregate tasks cannot accidentally retain
 // history merely because their command-line spelling differs.
-val arcMutateLicencePresent = layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile ||
-    rootProject.layout.projectDirectory.file("arcmutate-licence.txt").asFile.isFile
+val arcMutateProjectLicence = layout.projectDirectory.file("arcmutate-licence.txt")
+val arcMutateRootLicence = rootProject.layout.projectDirectory.file("arcmutate-licence.txt")
+val arcMutateLicencePresent = arcMutateProjectLicence.asFile.isFile ||
+    arcMutateRootLicence.asFile.isFile
 val mutationHistoryExplicitlyDisabled =
     providers.gradleProperty(HardeningOptionNames.NO_MUTATION_HISTORY).isPresent
 
@@ -235,6 +243,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   val receiptFile = certificationReceiptFile
   val receiptRunning = certificationReceiptRunning
   val configDir = layout.projectDirectory.dir("config/pitest")
+  val certifiedProjectDirectory = layout.projectDirectory.asFile
   val certifiedProjectPath = project.path
   val pitVersion = hardening.pitestVersion
   val certifiedSuiteNames = certificationSuiteNames
@@ -253,6 +262,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
     val sessionId = certificationSession.get().sessionId(certifiedProjectPath)
         ?: throw GradleException("hardeningCertify: certification session is not active")
     val receiptRows = mutableListOf<String>()
+    BaselineFiles.requireDirectoryOrMissing(certifiedProjectDirectory, configDir.asFile)
     certifiedSuiteNames.sorted().forEach { suiteName ->
       val suiteDir = reportRoot.get().asFile.resolve(suiteName)
       val report = suiteDir.resolve("mutations.csv")
@@ -285,24 +295,79 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
         throw GradleException(
             "hardeningCertify: '$suiteName' report changed after its evidence manifest was written")
       }
-      try {
-        certificationSession.get().requireVerified(certifiedProjectPath, suiteName, evidence)
-      } catch (e: IllegalStateException) {
-        throw GradleException("hardeningCertify: ${e.message}", e)
+      val completedToolchainFile = suiteDir.resolve(".toolchain.tsv")
+      val completedToolchain = if (!completedToolchainFile.isFile) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' has no completed mutation-toolchain record")
+      } else try {
+        MutationToolchainRecord.parse(completedToolchainFile.readText())
+      } catch (e: IllegalArgumentException) {
+        throw GradleException(
+            "hardeningCertify: invalid completed mutation-toolchain record for '$suiteName': ${e.message}", e)
+      }
+      if (completedToolchain.identitySha256 != evidence.mutationToolchainSha256) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' mutation-toolchain record does not match completed evidence")
       }
       val baseline = configDir.file("$suiteName-accepted.csv").asFile
       val timeouts = configDir.file("$suiteName-timeouts.csv").asFile
       val stamp = configDir.file("$suiteName-pitest-version").asFile
-      val recordedPitVersion = stamp.takeIf { it.isFile }?.readText()?.trim()
-      if ((baseline.isFile || timeouts.isFile) &&
+      val toolchainStamp = configDir.file("$suiteName-pitest-toolchain.tsv").asFile
+      listOf(baseline, timeouts, stamp, toolchainStamp, configDir.file("README.md").asFile)
+          .forEach { BaselineFiles.requireRegularFileOrMissing(certifiedProjectDirectory, it) }
+      val hasCommittedRecord = baseline.isFile || timeouts.isFile
+      val committedProvenance = CommittedMutationProvenance.classify(
+          hasCommittedRecord,
+          stamp.takeIf { it.isFile }?.readText(),
+          toolchainStamp.takeIf { it.isFile }?.readText(),
+      )
+      committedProvenance.malformedPitVersion?.let { detail ->
+        throw GradleException(
+            "hardeningCertify: malformed committed PIT-version stamp for '$suiteName': $detail")
+      }
+      committedProvenance.malformedToolchain?.let { detail ->
+        throw GradleException(
+            "hardeningCertify: invalid committed mutation-toolchain record for '$suiteName': $detail")
+      }
+      val recordedPitVersion = committedProvenance.pitVersion
+      val recordedToolchain = committedProvenance.toolchain
+      if (hasCommittedRecord &&
           recordedPitVersion != null && recordedPitVersion != pitVersion.get()) {
         throw GradleException(
             "hardeningCertify: '$suiteName' committed records are not stamped for PIT ${pitVersion.get()}")
       }
-      val hasCommittedRecord = baseline.isFile || timeouts.isFile
+      if (committedProvenance.orphan) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' has mutation-provenance sidecar(s) but no accepted " +
+                "or timeout record; reconcile the orphan state with " +
+                "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase")
+      }
+      if (committedProvenance.torn) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' committed mutation provenance is torn — exactly one " +
+                "of ${stamp.name} and ${toolchainStamp.name} exists; repair it with " +
+                "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase")
+      }
+      if (committedProvenance.disagreement) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' committed mutation provenance disagrees between " +
+                "${stamp.name} and ${toolchainStamp.name}; repair it with " +
+                "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase")
+      }
+      if (recordedToolchain != null &&
+          recordedToolchain.identitySha256 != evidence.mutationToolchainSha256) {
+        throw GradleException(
+            "hardeningCertify: '$suiteName' committed mutation toolchain differs from the fresh run; " +
+                "review it with pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase")
+      }
       val recordProvenance = when {
         recordedPitVersion != null -> recordedPitVersion
         hasCommittedRecord -> "legacy-unversioned"
+        else -> "no-record"
+      }
+      val recordToolchainProvenance = when {
+        recordedToolchain != null -> recordedToolchain.identitySha256
+        hasCommittedRecord -> "legacy-toolchain-unbound"
         else -> "no-record"
       }
       // The report and compiled/configured inputs prove what PIT observed; these
@@ -310,38 +375,46 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
       // digest in the inner receipt too, rather than relying only on the fleet
       // wrapper's clean Git commit to bind the baseline, timeout membership, causes,
       // and PIT-version provenance.
-      val recordInputsSha256 = PitestEvidence.fingerprint(
-          configDir.asFile,
-          listOf(
-              baseline,
-              timeouts,
-              stamp,
-              configDir.file("README.md").asFile,
-          ).filter { it.isFile },
-      )
+      val recordInputsSha256 = PitestEvidence.mutationRecordFingerprint(
+          certifiedProjectDirectory, configDir.asFile, suiteName)
+      try {
+        certificationSession.get().requireVerified(
+            certifiedProjectPath, suiteName, evidence, recordInputsSha256)
+      } catch (e: IllegalStateException) {
+        throw GradleException("hardeningCertify: ${e.message}", e)
+      }
       if ((baseline.isFile || timeouts.isFile) && recordedPitVersion == null) {
-        logger.lifecycle(
+        logger.warn(
             "hardeningCertify: '$suiteName' committed record is legacy-unversioned; " +
-                "the fresh PIT ${pitVersion.get()} report verified its allowlist, and the next " +
-                "deliberate record write will adopt a version stamp")
+                "the fresh PIT ${pitVersion.get()} report verified its allowlist, but historical " +
+                "population changes cannot be attributed; run " +
+                "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase after review")
+      }
+      if (hasCommittedRecord && recordedToolchain == null) {
+        logger.warn(
+            "hardeningCertify: '$suiteName' committed record is legacy-toolchain-unbound; " +
+                "ArcMutate/PIT tool changes cannot be distinguished from code churn; run " +
+                "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase after review")
       }
       receiptRows.add(
           listOf(
               "suite", suiteName, evidence.invocationId, evidence.reportSha256,
               evidence.sourceSha256, evidence.classesSha256, evidence.configurationSha256,
               evidence.pitestVersion, evidence.pluginSha256, evidence.toolClasspathSha256,
-              recordInputsSha256, recordProvenance,
+              evidence.mutationToolchainSha256, recordInputsSha256, recordProvenance,
+              recordToolchainProvenance,
           ).joinToString("\t"))
     }
     val receipt = buildString {
-      appendLine("schema\t4")
+      appendLine("schema\t5")
       appendLine("project\t$certifiedProjectPath")
       appendLine("session\t$sessionId")
       appendLine("mode\tfresh-full-strict")
       appendLine(
           "columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\t" +
               "configurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\t" +
-              "recordInputsSha256\trecordPitestVersion")
+              "mutationToolchainSha256\trecordInputsSha256\trecordPitestVersion\t" +
+              "recordMutationToolchainSha256")
       receiptRows.forEach(::appendLine)
     }
     BaselineFiles.writeAtomically(receiptFile.get().asFile, receipt)
@@ -483,6 +556,8 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
       val suiteName: String,
       val reportDir: File,
       val csv: File,
+      val evidenceFile: File?,
+      val toolchainFile: File?,
     )
     // Validate every suite before replacing the prior snapshot, copying a partial
     // successor, or clearing any canonical report. A later failed/interrupted suite
@@ -495,6 +570,7 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
         throw GradleException("pitestConverge: no round-one report for '$suiteName' at $csv")
       }
       val evidenceFile = reportDir.resolve(".evidence.tsv")
+      val toolchainFile = reportDir.resolve(".toolchain.tsv")
       val evidence = if (evidenceFile.isFile) try {
         PitestEvidence.parse(evidenceFile.readText())
       } catch (e: IllegalArgumentException) {
@@ -524,13 +600,37 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
                 "cannot prove suite convergence. Re-run without -PmutateOnly."
         )
       }
-      ConvergeSnapshotInput(suiteName, reportDir, csv)
+      if (evidence != null &&
+          evidence.mutationToolchainSha256 != PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
+        val toolchain = if (!toolchainFile.isFile) {
+          throw GradleException(
+              "pitestConverge: '$suiteName' round-one evidence has no mutation-toolchain record")
+        } else try {
+          MutationToolchainRecord.parse(toolchainFile.readText())
+        } catch (e: IllegalArgumentException) {
+          throw GradleException(
+              "pitestConverge: invalid round-one mutation-toolchain record for '$suiteName': ${e.message}", e)
+        }
+        if (toolchain.identitySha256 != evidence.mutationToolchainSha256) {
+          throw GradleException(
+              "pitestConverge: '$suiteName' round-one mutation-toolchain record does not match evidence")
+        }
+      }
+      ConvergeSnapshotInput(
+          suiteName,
+          reportDir,
+          csv,
+          evidenceFile.takeIf(File::isFile),
+          toolchainFile.takeIf(File::isFile),
+      )
     }
     val snapshot = snapshotRoot.get().asFile
     BaselineFiles.deleteRecursivelyIfExists(snapshot)
     snapshot.mkdirs()
     inputs.forEach { input ->
       input.csv.copyTo(snapshot.resolve("${input.suiteName}.csv"))
+      input.evidenceFile?.copyTo(snapshot.resolve("${input.suiteName}.evidence.tsv"))
+      input.toolchainFile?.copyTo(snapshot.resolve("${input.suiteName}.toolchain.tsv"))
     }
     // Copy every suite successfully before clearing any canonical report.
     inputs.forEach { BaselineFiles.deleteRecursivelyIfExists(it.reportDir) }
@@ -557,7 +657,8 @@ val pitestConverge = tasks.register("pitestConverge") {
     var boundaryFlips = 0
     var benignFlips = 0
     names.forEach { suiteName ->
-      val round1 = statuses(snapshotRoot.get().asFile.resolve("$suiteName.csv"))
+      val round1Csv = snapshotRoot.get().asFile.resolve("$suiteName.csv")
+      val round1 = statuses(round1Csv)
       val round2Csv = reportsRoot.get().asFile.resolve("$suiteName/mutations.csv")
       if (round2Csv.parentFile.resolve(".running").isFile) {
         throw GradleException(
@@ -570,6 +671,76 @@ val pitestConverge = tasks.register("pitestConverge") {
             "pitestConverge: the '$suiteName' round-two report was produced with -PmutateOnly — " +
                 "a scoped population cannot prove suite convergence. Re-run without -PmutateOnly."
         )
+      }
+      val round1EvidenceFile = snapshotRoot.get().asFile.resolve("$suiteName.evidence.tsv")
+      val round2EvidenceFile = round2Csv.parentFile.resolve(".evidence.tsv")
+      val round1Evidence = round1EvidenceFile.takeIf(File::isFile)?.let { file ->
+        try {
+          PitestEvidence.parse(file.readText())
+        } catch (e: IllegalArgumentException) {
+          throw GradleException(
+              "pitestConverge: invalid round-one evidence for '$suiteName': ${e.message}", e)
+        }
+      }
+      val round2Evidence = round2EvidenceFile.takeIf(File::isFile)?.let { file ->
+        try {
+          PitestEvidence.parse(file.readText())
+        } catch (e: IllegalArgumentException) {
+          throw GradleException(
+              "pitestConverge: invalid round-two evidence for '$suiteName': ${e.message}", e)
+        }
+      }
+      if ((round1Evidence == null) != (round2Evidence == null)) {
+        throw GradleException(
+            "pitestConverge: '$suiteName' mixes a legacy round with a provenance-bound round; " +
+                "run both rounds again under this plugin")
+      }
+      if (round1Evidence != null && round2Evidence != null) {
+        fun stableEvidence(evidence: PitestEvidence) = listOf(
+            evidence.pitestVersion,
+            evidence.junitPluginVersion,
+            evidence.pluginSha256,
+            evidence.identitySchema,
+            evidence.javaVersion,
+            evidence.sourceSha256,
+            evidence.classesSha256,
+            evidence.classpathSha256,
+            evidence.toolClasspathSha256,
+            evidence.mutationToolchainSha256,
+            evidence.configurationSha256,
+            evidence.scope,
+            evidence.historyAssisted.toString(),
+        )
+        if (stableEvidence(round1Evidence) != stableEvidence(round2Evidence)) {
+          throw GradleException(
+              "pitestConverge: '$suiteName' rounds do not describe identical code, tools, " +
+                  "classpath, and suite configuration")
+        }
+        if (round1Evidence.reportSha256 != PitestEvidence.sha256(round1Csv) ||
+            round2Evidence.reportSha256 != PitestEvidence.sha256(round2Csv)) {
+          throw GradleException(
+              "pitestConverge: '$suiteName' report changed after its round evidence was recorded")
+        }
+        val round2ToolchainFile = round2Csv.parentFile.resolve(".toolchain.tsv")
+        if (round2Evidence.mutationToolchainSha256 != PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
+          val round2Toolchain = if (!round2ToolchainFile.isFile) {
+            throw GradleException(
+                "pitestConverge: '$suiteName' round-two evidence has no mutation-toolchain record")
+          } else try {
+            MutationToolchainRecord.parse(round2ToolchainFile.readText())
+          } catch (e: IllegalArgumentException) {
+            throw GradleException(
+                "pitestConverge: invalid round-two mutation-toolchain record for '$suiteName': ${e.message}", e)
+          }
+          if (round2Toolchain.identitySha256 != round2Evidence.mutationToolchainSha256) {
+            throw GradleException(
+                "pitestConverge: '$suiteName' round-two mutation-toolchain record does not match evidence")
+          }
+        }
+      } else {
+        logger.warn(
+            "pitestConverge: '$suiteName' rounds have no completed-run evidence — " +
+                "legacy diagnostic accepted, but it is not provenance-bound")
       }
       val round2 = statuses(round2Csv)
       (round1.keys + round2.keys).sorted().forEach { key ->
@@ -699,6 +870,7 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
       val reportDir: File,
       val csv: File,
       val evidenceFile: File?,
+      val toolchainFile: File?,
     )
     // Validate the whole fleet before mutating either the destination or any source
     // report. Otherwise a bad later suite leaves a partial snapshot and has already
@@ -731,6 +903,7 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
         )
       }
       val evidenceFile = reportDir.resolve(".evidence.tsv")
+      val toolchainFile = reportDir.resolve(".toolchain.tsv")
       if (evidenceFile.isFile) {
         val evidence = try {
           PitestEvidence.parse(evidenceFile.readText())
@@ -743,12 +916,34 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
                   (if (evidence.historyAssisted) "history-assisted" else "scoped (${evidence.scope})") +
                   " even though its marker is missing — it is not a fresh full observation")
         }
+        if (evidence.mutationToolchainSha256 != PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
+          val toolchain = if (!toolchainFile.isFile) {
+            throw GradleException(
+                "pitestModeSnapshot: '$suiteName' modern evidence has no completed " +
+                    "mutation-toolchain record at $toolchainFile")
+          } else try {
+            MutationToolchainRecord.parse(toolchainFile.readText())
+          } catch (e: IllegalArgumentException) {
+            throw GradleException(
+                "pitestModeSnapshot: invalid mutation-toolchain record for '$suiteName': ${e.message}", e)
+          }
+          if (toolchain.identitySha256 != evidence.mutationToolchainSha256) {
+            throw GradleException(
+                "pitestModeSnapshot: '$suiteName' mutation-toolchain record does not match its evidence")
+          }
+        }
       } else {
         logger.warn(
             "pitestModeSnapshot: '$suiteName' has no completed-run evidence manifest — " +
                 "legacy snapshot accepted for N-1 migration; re-run under this plugin before unioning flips")
       }
-      SnapshotInput(suiteName, reportDir, csv, evidenceFile.takeIf(File::isFile))
+      SnapshotInput(
+          suiteName,
+          reportDir,
+          csv,
+          evidenceFile.takeIf(File::isFile),
+          toolchainFile.takeIf(File::isFile),
+      )
     }
     val dest = destPath.toFile()
     BaselineFiles.deleteRecursivelyIfExists(dest)
@@ -756,6 +951,7 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
     inputs.forEach { input ->
       input.csv.copyTo(dest.resolve("${input.suiteName}.csv"))
       input.evidenceFile?.copyTo(dest.resolve("${input.suiteName}.evidence.tsv"))
+      input.toolchainFile?.copyTo(dest.resolve("${input.suiteName}.toolchain.tsv"))
     }
     // Copy every suite successfully before clearing any canonical report.
     inputs.forEach { BaselineFiles.deleteRecursivelyIfExists(it.reportDir) }
@@ -789,6 +985,7 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
   val modeCompareExcludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
   usesService(operationSession)
   val baselineDir = layout.projectDirectory.dir("config/pitest")
+  val modeCompareProjectDirectory = layout.projectDirectory.asFile
   doLast {
     val unionFlips = operationSession.get().modeFlipInsuranceRequested(modeCompareProjectPath)
     if (unionFlips && modeCompareExcludedTaskNames.isNotEmpty()) {
@@ -797,6 +994,25 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
               "task exclusion(s): " +
               modeCompareExcludedTaskNames.joinToString { "-x $it" })
     }
+    // A union is prepared here and committed by a later typed task. Bind both the
+    // exact snapshot inventory/bytes and every committed mutation-record input the
+    // decision can read; current-checkout evidence alone cannot detect a valid but
+    // different snapshot replacing the one that produced the prepared bytes.
+    BaselineFiles.requireDirectoryOrMissing(modeCompareProjectDirectory, baselineDir.asFile)
+    (names.flatMap { suiteName ->
+      listOf(
+          baselineDir.file("$suiteName-accepted.csv").asFile,
+          baselineDir.file("$suiteName-timeouts.csv").asFile,
+          baselineDir.file("$suiteName-pitest-version").asFile,
+          baselineDir.file("$suiteName-pitest-toolchain.tsv").asFile,
+      )
+    } + baselineDir.file("README.md").asFile).forEach {
+      BaselineFiles.requireRegularFileOrMissing(modeCompareProjectDirectory, it)
+    }
+    val preparedReadTrees = if (unionFlips) listOf(
+      BaselineFiles.snapshotTree(snapshotRoot.get().asFile),
+      BaselineFiles.snapshotTree(baselineDir.asFile),
+    ) else emptyList()
     val gated = MutantStatus.entries.filter { it.gated }.mapTo(HashSet()) { it.name }
     val modes = snapshotRoot.get().asFile.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sorted()
         ?: emptyList()
@@ -828,7 +1044,17 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
     names.forEach { suiteName ->
       val evidenceByMode = modes.mapNotNull { label ->
         val file = snapshotRoot.get().asFile.resolve("$label/$suiteName.evidence.tsv")
-        if (file.isFile) label to PitestEvidence.parse(file.readText()) else null
+        if (!file.isFile) null else {
+          val evidence = PitestEvidence.parse(file.readText())
+          if (evidence.suite != suiteName || evidence.scope != PitestEvidence.FULL_SCOPE ||
+              evidence.historyAssisted) {
+            throw GradleException(
+                "pitestModeCompare: '$suiteName' snapshot '$label' evidence is not a fresh full " +
+                    "observation of that suite (suite=${evidence.suite}, scope=${evidence.scope}, " +
+                    "historyAssisted=${evidence.historyAssisted})")
+          }
+          label to evidence
+        }
       }.toMap()
       if (evidenceByMode.isNotEmpty() && evidenceByMode.size != modes.size) {
         throw GradleException(
@@ -847,6 +1073,7 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
               evidence.classesSha256,
               evidence.classpathSha256,
               evidence.toolClasspathSha256,
+              evidence.mutationToolchainSha256,
               evidence.configurationSha256,
               evidence.scope,
               evidence.historyAssisted.toString(),
@@ -867,6 +1094,26 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
             throw GradleException(
                 "pitestModeCompare: '$suiteName' snapshot '$label' changed after its evidence was recorded")
           }
+          if (evidence.mutationToolchainSha256 != PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
+            val toolchainFile = snapshotRoot.get().asFile
+                .resolve("$label/$suiteName.toolchain.tsv")
+            val toolchain = if (!toolchainFile.isFile) {
+              throw GradleException(
+                  "pitestModeCompare: '$suiteName' snapshot '$label' has modern evidence but no " +
+                      "mutation-toolchain record")
+            } else try {
+              MutationToolchainRecord.parse(toolchainFile.readText())
+            } catch (e: IllegalArgumentException) {
+              throw GradleException(
+                  "pitestModeCompare: '$suiteName' snapshot '$label' has invalid mutation-toolchain " +
+                      "record: ${e.message}", e)
+            }
+            if (toolchain.identitySha256 != evidence.mutationToolchainSha256) {
+              throw GradleException(
+                  "pitestModeCompare: '$suiteName' snapshot '$label' mutation-toolchain record " +
+                      "does not match its evidence")
+            }
+          }
         }
       } else if (unionFlips) {
         throw GradleException(
@@ -874,13 +1121,76 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
                 "completed-run provenance; capture both modes again under this plugin")
       }
       val modePitVersion = evidenceByMode.values.firstOrNull()?.pitestVersion
+      val modeMutationToolchain = evidenceByMode.values.firstOrNull()?.mutationToolchainSha256
       val modeToolVersionFile = baselineDir.file("$suiteName-pitest-version").asFile
-      if (unionFlips && modePitVersion != null && modeToolVersionFile.isFile &&
-          modeToolVersionFile.readText().trim() != modePitVersion) {
+      val modeToolchainFile = baselineDir.file("$suiteName-pitest-toolchain.tsv").asFile
+      val mutationRecordExists = baselineDir.file("$suiteName-accepted.csv").asFile.isFile ||
+          baselineDir.file("$suiteName-timeouts.csv").asFile.isFile
+      val modeProvenance = CommittedMutationProvenance.classify(
+          mutationRecordExists,
+          modeToolVersionFile.takeIf { it.isFile }?.readText(),
+          modeToolchainFile.takeIf { it.isFile }?.readText(),
+      )
+      modeProvenance.malformedPitVersion?.let { detail ->
         throw GradleException(
-            "pitestModeCompare: '$suiteName' snapshots use PIT $modePitVersion but " +
-                "${modeToolVersionFile.name} records ${modeToolVersionFile.readText().trim()} — " +
-                "refusing to rewrite across the tool-version boundary")
+            "pitestModeCompare: '$suiteName' committed PIT-version stamp is invalid: $detail")
+      }
+      modeProvenance.malformedToolchain?.let { detail ->
+        throw GradleException(
+            "pitestModeCompare: '$suiteName' committed mutation-toolchain record is invalid: $detail")
+      }
+      val recordedModeToolchain = modeProvenance.toolchain
+      if (modeProvenance.orphan) {
+        throw GradleException(
+            "pitestModeCompare: '$suiteName' has orphan mutation-provenance sidecar(s) but no " +
+                "accepted or timeout record; run " +
+                "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase to reconcile " +
+                "the orphan state before interpreting mode results")
+      }
+      if (modeProvenance.torn) {
+        throw GradleException(
+            "pitestModeCompare: '$suiteName' committed mutation provenance is torn — exactly " +
+                "one of ${modeToolVersionFile.name} and ${modeToolchainFile.name} exists; run " +
+                "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase before " +
+                "interpreting mode results")
+      }
+      if (modeProvenance.disagreement) {
+        throw GradleException(
+            "pitestModeCompare: '$suiteName' committed provenance disagrees: " +
+                "${modeToolVersionFile.name} says PIT ${modeProvenance.pitVersion}, but " +
+                "${modeToolchainFile.name} says PIT " +
+                "${checkNotNull(recordedModeToolchain).pitestVersion}; run " +
+                "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase before " +
+                "interpreting mode results")
+      }
+      if (unionFlips) {
+        if (modeMutationToolchain == PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
+          throw GradleException(
+              "pitestModeCompare: refusing a mode-insurance write for '$suiteName' snapshots with " +
+              "legacy-unbound mutation-toolchain evidence; capture every mode again")
+        }
+        if (modeProvenance.legacyUnbound) {
+          throw GradleException(
+              "pitestModeCompare: '$suiteName' has a legacy-unbound committed mutation record; " +
+                  "run pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase against a " +
+                  "reviewed fresh observation before writing mode insurance")
+        }
+        if (modePitVersion != null && modeProvenance.pitVersion != null &&
+            modeProvenance.pitVersion != modePitVersion) {
+          throw GradleException(
+              "pitestModeCompare: '$suiteName' snapshots use PIT $modePitVersion but " +
+                  "${modeToolVersionFile.name} records ${modeProvenance.pitVersion} — " +
+                  "run pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase before " +
+                  "writing across the tool-version boundary")
+        }
+        if (modeMutationToolchain != null && recordedModeToolchain != null &&
+            recordedModeToolchain.identitySha256 != modeMutationToolchain) {
+          throw GradleException(
+              "pitestModeCompare: '$suiteName' snapshots use mutation toolchain " +
+                  "$modeMutationToolchain but ${modeToolchainFile.name} records " +
+                  "${recordedModeToolchain.identitySha256}; run " +
+                  "pitest${suiteName.replaceFirstChar(Char::uppercase)}BaselineRebase first")
+        }
       }
       val perMode = modes.associateWith { label ->
         val csv = snapshotRoot.get().asFile.resolve("$label/$suiteName.csv")
@@ -1044,15 +1354,32 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
         // replaces only row slots, so comments and blank evidence remain byte-for-byte.
         val targetSchema = if (baselineExisted) baselineDocument.schemaState
         else BaselineDocument.SchemaState.CURRENT
-        val rendered = baselineDocument.rewriteRowsPreservingNonRows(
-            acceptedRows.sortedBy { it.key }, targetSchema)
-        pendingModeWrites += PendingModeWrite(
+        val rendered = baselineDocument.rewriteRowsPreservingOrigins(
+            acceptedRows.mapIndexed { index, row ->
+              BaselineDocument.RowReplacement(
+                  row,
+                  index.takeIf { it < baselineDocument.rows.size },
+              )
+            },
+            targetSchema,
+        )
+        val baselineWrite = PendingModeWrite(
             baselineFile,
             if (!baselineExisted && rendered.isNotEmpty() && !rendered.endsWith("\n")) "$rendered\n"
             else rendered)
-        if (!modeToolVersionFile.isFile && modePitVersion != null) {
+        if (!mutationRecordExists && modePitVersion != null) {
           pendingModeWrites += PendingModeWrite(modeToolVersionFile, "$modePitVersion\n")
+          val snapshotToolchain = modes.asSequence()
+              .map { label -> snapshotRoot.get().asFile.resolve("$label/$suiteName.toolchain.tsv") }
+              .firstOrNull(File::isFile)
+              ?: throw GradleException(
+                  "pitestModeCompare: '$suiteName' cannot stamp a new record without snapshot " +
+                      "mutation-toolchain provenance")
+          pendingModeWrites += PendingModeWrite(modeToolchainFile, snapshotToolchain.readText())
         }
+        // The baseline is the logical commit marker for a new record. Sidecars go
+        // first so process death leaves an orphan state that every reader refuses.
+        pendingModeWrites += baselineWrite
       }
       // HARDENING.md's sweep: accepted rows unkilled in *no* snapshotted mode are
       // widening the gate for nothing. Report only — removal is a judgment call, and
@@ -1141,32 +1468,46 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
               "multiplicity shortfall, so the literal 'flip insurance' evidence survives prune."
       )
     }
-    pendingModeWrites.forEach { pending ->
-      BaselineFiles.writeAtomically(pending.file, pending.content)
-    }
-    if (pendingModeWrites.isNotEmpty()) {
-      logger.lifecycle(
-          "pitestModeCompare: flip insurance written to ${pendingModeWrites.size} " +
-              "baseline/version file(s) after validating every suite")
-    }
-    logger.lifecycle(summary)
-  }
-  // A separate final action is the commit acknowledgement: Gradle does not invoke it
-  // when the comparison/commit action above fails or the task is skipped. The public
-  // writer task therefore cannot confuse a selected request with a completed one.
-  doLast {
-    if (operationSession.get().projectOperation(modeCompareProjectPath) ==
-        ProjectWriteOperation.MODE_FLIP_INSURANCE) {
+    if (unionFlips) {
+      preparedReadTrees.forEach { snapshot ->
+        val differences = BaselineFiles.treeDifferences(snapshot)
+        if (differences.isNotEmpty()) {
+          throw GradleException(
+              "pitestModeCompare: inputs changed while comparison was running — refusing to " +
+                  "prepare mode insurance from ${snapshot.rootPath}:\n" +
+                  differences.joinToString("\n") { "  $it" })
+        }
+      }
       try {
-        operationSession.get().recordProjectConsumed(
-            modeCompareProjectPath, ProjectWriteOperation.MODE_FLIP_INSURANCE)
+        operationSession.get().prepareProjectWrites(
+            modeCompareProjectPath,
+            ProjectWriteOperation.MODE_FLIP_INSURANCE,
+            pendingModeWrites.map {
+              PreparedMutationWrite(it.file.absolutePath, it.content)
+            },
+            preparedReadTrees,
+        )
       } catch (e: IllegalArgumentException) {
         throw GradleException("pitestModeCompare: ${e.message}", e)
       }
+      logger.lifecycle(
+          "pitestModeCompare: prepared ${pendingModeWrites.size} baseline/provenance " +
+              "file(s) for final current-checkout validation")
     }
+    logger.lifecycle(summary)
   }
 }
-tasks.register<HardeningOperationCompletionTask>("pitestModeCompareUnion") {
+private val pitestModeCompareCommit = tasks.register<PitestModeCommitTask>(
+    "pitestModeCompareCommit") {
+  description = "Internal: finally revalidates and commits prepared mode-flip insurance."
+  hardeningProjectPath.set(project.path)
+  projectDirectory.set(layout.projectDirectory)
+  snapshotRoot.set(pitestModesRoot)
+  operationSession.set(hardeningOperationSession)
+  usesService(hardeningOperationSession)
+  dependsOn(pitestModeCompareUnionPreflight, pitestModeCompare)
+}
+private val pitestModeCompareUnion = tasks.register<HardeningOperationCompletionTask>("pitestModeCompareUnion") {
   group = "verification"
   description = "Diffs labeled modes and writes reviewed flip-insurance annotations from fresh provenance."
   hardeningProjectPath.set(project.path)
@@ -1174,7 +1515,7 @@ tasks.register<HardeningOperationCompletionTask>("pitestModeCompareUnion") {
   operationSession.set(hardeningOperationSession)
   usesService(hardeningOperationSession)
   dependsOn(pitestModeCompareUnionPreflight)
-  dependsOn(pitestModeCompare)
+  dependsOn(pitestModeCompareCommit)
 }
 
 // Identity-preserving accepted-baseline migration: stamp the explicit current
@@ -1217,6 +1558,7 @@ val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
       downgradeMutationBaselinesPreflight)
   val names = convergeSuiteNames
   val baselineDir = layout.projectDirectory.dir("config/pitest")
+  val schemaProjectDirectory = layout.projectDirectory.asFile
   val operationSession = hardeningOperationSession
   val schemaProjectPath = project.path
   val excludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
@@ -1233,6 +1575,15 @@ val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
           "migrateMutationBaselines: refusing task exclusion(s): " +
               excludedTaskNames.joinToString { "-x $it" })
     }
+    BaselineFiles.requireDirectoryOrMissing(schemaProjectDirectory, baselineDir.asFile)
+    names.flatMap { suiteName ->
+      listOf(
+          baselineDir.file("$suiteName-accepted.csv").asFile,
+          baselineDir.file("$suiteName-timeouts.csv").asFile,
+          baselineDir.file("$suiteName-pitest-version").asFile,
+          baselineDir.file("$suiteName-pitest-toolchain.tsv").asFile,
+      )
+    }.forEach { BaselineFiles.requireRegularFileOrMissing(schemaProjectDirectory, it) }
     // Parse every suite before touching any file. One unknown schema or malformed
     // row therefore refuses the project migration as a unit instead of leaving the
     // alphabetically earlier suites stamped and the later ones unversioned.
@@ -1250,18 +1601,21 @@ val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
     migrations.forEach { (suiteName, file, migration) ->
       if (migration == null) {
         val removed = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(
+            schemaProjectDirectory,
             file,
             baselineDir.file("$suiteName-timeouts.csv").asFile,
-            baselineDir.file("$suiteName-pitest-version").asFile)
+            baselineDir.file("$suiteName-pitest-version").asFile,
+            baselineDir.file("$suiteName-pitest-toolchain.tsv").asFile)
         logger.lifecycle(
             "pitest baseline '$suiteName': removed empty accepted-baseline placeholder" +
-                (if (removed.orphanVersionStampRemoved) " and its orphan PIT-version stamp" else ""))
+                (if (removed.orphanVersionStampRemoved) " and its orphan PIT-version stamp" else "") +
+                (if (removed.orphanToolchainRecordRemoved) " and its orphan mutation-toolchain record" else ""))
       } else if (!migration.changed) {
         logger.lifecycle(
             "pitest baseline '$suiteName': already at accepted-baseline schema " +
                 BaselineDocument.CURRENT_SCHEMA)
       } else {
-        BaselineFiles.writeAtomically(file, migration.content)
+        BaselineFiles.writeAtomically(schemaProjectDirectory, file, migration.content)
         logger.lifecycle(
             "pitest baseline '$suiteName': migrated to accepted-baseline schema " +
                 "${BaselineDocument.CURRENT_SCHEMA}; canonicalized ${migration.canonicalizedRows} row(s)")
@@ -1277,7 +1631,7 @@ val migrateMutationBaselines = tasks.register("migrateMutationBaselines") {
 // BaselineDocument explicitly declares their representation lossless for N-1.
 val downgradeMutationBaselines = tasks.register("downgradeMutationBaselines") {
   group = "verification"
-  description = "Losslessly removes schema 1 for N-1 rollback and removes empty placeholders."
+  description = "Removes schema 1 from substantive baselines for N-1 rollback; empty placeholders remain absent."
   dependsOn(downgradeMutationBaselinesPreflight)
   mustRunAfter(
       pitestModeCompareUnionPreflight,
@@ -1286,6 +1640,7 @@ val downgradeMutationBaselines = tasks.register("downgradeMutationBaselines") {
   mustRunAfter(migrateMutationBaselines)
   val names = convergeSuiteNames
   val baselineDir = layout.projectDirectory.dir("config/pitest")
+  val schemaProjectDirectory = layout.projectDirectory.asFile
   val operationSession = hardeningOperationSession
   val schemaProjectPath = project.path
   val excludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
@@ -1302,6 +1657,15 @@ val downgradeMutationBaselines = tasks.register("downgradeMutationBaselines") {
           "downgradeMutationBaselines: refusing task exclusion(s): " +
               excludedTaskNames.joinToString { "-x $it" })
     }
+    BaselineFiles.requireDirectoryOrMissing(schemaProjectDirectory, baselineDir.asFile)
+    names.flatMap { suiteName ->
+      listOf(
+          baselineDir.file("$suiteName-accepted.csv").asFile,
+          baselineDir.file("$suiteName-timeouts.csv").asFile,
+          baselineDir.file("$suiteName-pitest-version").asFile,
+          baselineDir.file("$suiteName-pitest-toolchain.tsv").asFile,
+      )
+    }.forEach { BaselineFiles.requireRegularFileOrMissing(schemaProjectDirectory, it) }
     val downgrades = names.mapNotNull { suiteName ->
       val file = baselineDir.file("$suiteName-accepted.csv").asFile
       if (!file.isFile) null
@@ -1316,16 +1680,19 @@ val downgradeMutationBaselines = tasks.register("downgradeMutationBaselines") {
     downgrades.forEach { (suiteName, file, downgrade) ->
       if (downgrade == null) {
         val removed = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(
+            schemaProjectDirectory,
             file,
             baselineDir.file("$suiteName-timeouts.csv").asFile,
-            baselineDir.file("$suiteName-pitest-version").asFile)
+            baselineDir.file("$suiteName-pitest-version").asFile,
+            baselineDir.file("$suiteName-pitest-toolchain.tsv").asFile)
         logger.lifecycle(
             "pitest baseline '$suiteName': removed empty accepted-baseline placeholder" +
-                (if (removed.orphanVersionStampRemoved) " and its orphan PIT-version stamp" else ""))
+                (if (removed.orphanVersionStampRemoved) " and its orphan PIT-version stamp" else "") +
+                (if (removed.orphanToolchainRecordRemoved) " and its orphan mutation-toolchain record" else ""))
       } else if (!downgrade.changed) {
         logger.lifecycle("pitest baseline '$suiteName': already unversioned (N-1-readable)")
       } else {
-        BaselineFiles.writeAtomically(file, downgrade.content)
+        BaselineFiles.writeAtomically(schemaProjectDirectory, file, downgrade.content)
         logger.lifecycle(
             "pitest baseline '$suiteName': removed accepted-baseline schema marker for N-1 rollback")
       }
@@ -1611,6 +1978,7 @@ hardening.mutation.all {
   // every consumer whose 'check' stores an entry.
   val evidencePitestVersion = hardening.pitestVersion
   val evidenceJunitPluginVersion = hardening.pitestJunit5PluginVersion
+  val evidenceArcMutateBaseVersion = hardening.arcmutateBaseVersion
   val evidenceMutationRelease = hardening.mutationBytecodeRelease
   val evidenceRecompileExcludes = hardening.recompileExcludes
   val evidenceProjectPath = project.path
@@ -1654,7 +2022,7 @@ hardening.mutation.all {
   // end-of-build summary groups findings by this string, so two drifting copies
   // would split one suite's findings across two scope headings
   val suiteAdvisoryScope = (if (project.path == ":") "" else "${project.path} ") + "pitest '$suiteName'"
-  val verify = tasks.register("${pitestTaskName}Verify") {
+  val verify = tasks.register<PitestVerifyTask>("${pitestTaskName}Verify") {
     group = "verification"
     description = "Fails when the '$suiteName' PIT run left unkilled mutants missing from config/pitest/$suiteName-accepted.csv."
     dependsOn(evidenceClasspathFiles)
@@ -1669,6 +2037,8 @@ hardening.mutation.all {
     val statusStashFile = layout.projectDirectory.file(".pitest-history/$suiteName.statuses").asFile
     val timeoutQuietFile = layout.projectDirectory.file(".pitest-history/$suiteName.timeout-quiet").asFile
     val toolVersionFile = layout.projectDirectory.file("config/pitest/$suiteName-pitest-version").asFile
+    val toolchainRecordFile =
+        layout.projectDirectory.file("config/pitest/$suiteName-pitest-toolchain.tsv").asFile
     val pitToolVersion = hardening.pitestVersion
     // captured locally so the doLast lambda does not hold the script instance
     val advisoryLog = hardeningAdvisoryLog
@@ -1684,6 +2054,7 @@ hardening.mutation.all {
     val testSourceDirs = sourceSets.test.get().java.srcDirs
     doLast {
       val writeOperation = operationSession.get().suiteOperation(evidenceProjectPath, suiteName)
+      val rebase = writeOperation == BaselineWriteOperation.REBASE
       val update = writeOperation == BaselineWriteOperation.UPDATE
       val union = writeOperation == BaselineWriteOperation.UNION
       val prune = writeOperation == BaselineWriteOperation.PRUNE
@@ -1698,8 +2069,22 @@ hardening.mutation.all {
                 verifyExcludedTaskNames.joinToString { "-x $it" })
       }
       val certificationActive = certificationSession.get().isActive(evidenceProjectPath)
-      val strictTimeoutAudit = strictTimeoutAuditRequested || certificationActive
+      val strictTimeoutAudit = strictTimeoutAuditRequested || certificationActive || rebase
       val csv = csvProvider.get().asFile
+      listOf(
+          baselineFile,
+          readmeFile,
+          timeoutsFile,
+          toolVersionFile,
+          toolchainRecordFile,
+          statusStashFile,
+          timeoutQuietFile,
+      ).forEach { BaselineFiles.requireRegularFileOrMissing(evidenceProjectDir, it) }
+      // A consumer may intentionally relocate buildDir outside the checkout. Refuse
+      // a linked/non-regular report leaf without applying the committed-record root
+      // boundary to generated output.
+      BaselineFiles.requireRegularFileOrMissing(csv)
+      val committedRecordExisted = baselineFile.isFile || timeoutsFile.isFile
       // The '.running' sentinel is written before PIT starts and cleared only
       // after a clean exit, so a report left by a crashed or interrupted run —
       // PIT writes the CSV incrementally, so a partial file looks complete —
@@ -1728,6 +2113,7 @@ hardening.mutation.all {
         )
       }
       val completedEvidenceFile = csv.parentFile.resolve(".evidence.tsv")
+      BaselineFiles.requireRegularFileOrMissing(completedEvidenceFile)
       var verifiedEvidence: PitestEvidence? = null
       if (!completedEvidenceFile.isFile) {
         val message = "pitest '$suiteName': report has no completed-run evidence manifest at " +
@@ -1789,70 +2175,243 @@ hardening.mutation.all {
         } catch (e: IllegalStateException) {
           throw GradleException(
               "pitest '$suiteName': ${canonicalWriteOperation.name.lowercase()} requires a fresh PIT " +
-                  "observation completed in this Gradle invocation — ${e.message}", e)
+              "observation completed in this Gradle invocation — ${e.message}", e)
         }
       }
-      // The mutant population is a function of PIT itself (whose default version rides
-      // plugin bumps via Dependabot), so the baseline record is only comparable to runs
-      // from the version that wrote it. The recorded version lives in
-      // config/pitest/<suite>-pitest-version — per suite, because the record it certifies
-      // is per-suite: one shared file would lift every suite's refusal at the first
-      // refresh, silently certifying the rest against a version that never wrote them.
-      // A mismatch warns on a checking run and refuses a writing one — reading a
-      // possibly-divergent result is a judgment call, writing the record with one is
-      // not. No file means a record predating this check, adopted when the next
-      // baseline write *succeeds*: the stamp lands with the write it describes, never
-      // ahead of it, so a refresh that dies mid-path cannot leave a stamp vouching
-      // for a record it never rewrote. TimeoutAuditInit is refused across a bump
-      // like the baseline writers — the timeout population is just as version-dependent
-      // — but never stamps: it writes the timeout set, not the baseline, and its
-      // stamp would silently vouch for a baseline some older PIT wrote.
+      // The dependency validator closes the normal stale-report path, but Gradle
+      // does not promise that a dependency is the action immediately preceding this
+      // one. Re-read the complete snapshot at the write boundary: another task can
+      // legitimately be ordered after EvidenceValidate and before Verify, and a
+      // record writer must not bless its changed report/source/classes/toolchain.
+      // The report is read once; the exact bytes hashed here are the bytes parsed
+      // below, so even a concurrent replacement cannot split the two observations.
+      val finalReportLines = if (canonicalWriteOperation != BaselineWriteOperation.CHECK) {
+        val evidence = verifiedEvidence ?: throw GradleException(
+            "pitest '$suiteName': a named baseline writer has no completed evidence to recapture")
+        val reportBytes = csv.readBytes()
+        val reportDir = csv.parentFile
+        val finalScope = reportDir.resolve(".scoped").takeIf { it.isFile }
+            ?.readText()?.trim().orEmpty().ifEmpty { PitestEvidence.FULL_SCOPE }
+        val finalHistoryAssisted = reportDir.resolve(".history-assisted").isFile
+        val finalSnapshot = try {
+          (this as PitestVerifyTask).finalEvidence.captureFinal(
+              evidence,
+              PitestEvidence.sha256(reportBytes),
+              finalScope,
+              finalHistoryAssisted,
+          )
+        } catch (e: Exception) {
+          throw GradleException(
+              "pitest '$suiteName': could not recapture final writer evidence — ${e.message}", e)
+        }
+        val differences = evidence.differences(finalSnapshot)
+        if (differences.isNotEmpty()) {
+          throw GradleException(
+              "pitest '$suiteName': inputs changed after evidence validation — refusing to " +
+                  "rewrite mutation records from a stale observation:\n" +
+                  differences.joinToString("\n") { "  $it" })
+        }
+        reportBytes.inputStream().bufferedReader(Charsets.UTF_8).use { it.readLines() }
+      } else {
+        csv.readLines()
+      }
+      val completedToolchainFile = csv.parentFile.resolve(".toolchain.tsv")
+      BaselineFiles.requireRegularFileOrMissing(completedToolchainFile)
+      val currentToolchain = when {
+        verifiedEvidence == null -> null
+        verifiedEvidence.mutationToolchainSha256 == PitestEvidence.LEGACY_MUTATION_TOOLCHAIN -> {
+          logger.warn(
+              "pitest '$suiteName': completed evidence predates portable mutation-toolchain identity; " +
+                  "run $pitestTaskName before relying on this report")
+          advisoryLog.get().record(advisoryScope, "completed evidence has legacy-unbound toolchain identity")
+          null
+        }
+        !completedToolchainFile.isFile -> throw GradleException(
+            "pitest '$suiteName': completed evidence names mutation toolchain " +
+                "${verifiedEvidence.mutationToolchainSha256} but $completedToolchainFile is missing; " +
+                "re-run $pitestTaskName")
+        else -> {
+          val parsed = try {
+            MutationToolchainRecord.parse(completedToolchainFile.readText())
+          } catch (e: IllegalArgumentException) {
+            throw GradleException(
+                "pitest '$suiteName': malformed completed mutation-toolchain record at " +
+                    "$completedToolchainFile — ${e.message}; re-run $pitestTaskName", e)
+          }
+          if (parsed.identitySha256 != verifiedEvidence.mutationToolchainSha256) {
+            throw GradleException(
+                "pitest '$suiteName': completed mutation-toolchain record does not match its evidence " +
+                    "manifest; re-run $pitestTaskName")
+          }
+          parsed
+        }
+      }
+
+      // The mutant population is a function of the complete engine, not PIT's
+      // version alone. Keep the N-1-readable version stamp, and bind the portable,
+      // ordered artifact identity plus ArcMutate certificate in a strict sidecar.
       val currentPit = pitToolVersion.get()
-      val recordedPit = toolVersionFile.takeIf { it.isFile }?.readText()?.trim()
+      val committedProvenance = CommittedMutationProvenance.classify(
+          committedRecordExisted,
+          toolVersionFile.takeIf { it.isFile }?.readText(),
+          toolchainRecordFile.takeIf { it.isFile }?.readText(),
+      )
+      val recordedPit = committedProvenance.pitVersion
+      val recordedToolchain = committedProvenance.toolchain
+      committedProvenance.malformedPitVersion?.let { detail ->
+        if (!rebase) {
+          throw GradleException(
+              "pitest '$suiteName': malformed committed PIT-version stamp at " +
+                  "$toolVersionFile — $detail; repair it with ${pitestTaskName}BaselineRebase")
+        }
+        logger.warn(
+            "pitest '$suiteName': BaselineRebase will replace malformed committed PIT-version " +
+                "provenance after its fresh safe-superset observation — $detail")
+      }
+      committedProvenance.malformedToolchain?.let { detail ->
+        if (!rebase) {
+          throw GradleException(
+              "pitest '$suiteName': malformed committed mutation-toolchain record at " +
+                  "$toolchainRecordFile — $detail; repair it with " +
+                  "${pitestTaskName}BaselineRebase")
+        }
+        logger.warn(
+            "pitest '$suiteName': BaselineRebase will replace malformed committed " +
+                "mutation-toolchain provenance after its fresh safe-superset observation — $detail")
+      }
+      if (committedProvenance.disagreement) {
+        val disagreement =
+            "pitest '$suiteName': committed provenance disagrees: ${toolVersionFile.name} says " +
+                "PIT $recordedPit but ${toolchainRecordFile.name} says PIT " +
+                "${checkNotNull(recordedToolchain).pitestVersion}"
+        if (!rebase) {
+          throw GradleException("$disagreement; run ${pitestTaskName}BaselineRebase after review")
+        }
+        logger.warn("$disagreement; BaselineRebase will replace both after its fresh safe-superset observation")
+      }
+      if (committedProvenance.torn) {
+        val torn =
+            "pitest '$suiteName': committed mutation provenance is torn — exactly one of " +
+                "${toolVersionFile.name} and ${toolchainRecordFile.name} exists. Only a both-missing " +
+                "record is legacy provenance"
+        if (!rebase) {
+          throw GradleException(
+              "$torn; run ${pitestTaskName}BaselineRebase to repair this failed/incomplete write.")
+        }
+        logger.warn("$torn; BaselineRebase will repair the pair after its fresh safe-superset observation")
+      }
+
+      fun legacyProvenanceFinding(message: String, summary: String) {
+        logger.warn(message)
+        advisoryLog.get().record(advisoryScope, summary)
+      }
+      if (committedProvenance.orphan) {
+        val orphanMessage =
+            "pitest '$suiteName': mutation-provenance sidecar(s) exist without an accepted or " +
+                "timeout record; run ${pitestTaskName}BaselineRebase to create a safely widened " +
+                "record or retire the orphan provenance"
+        if ((writingRecord || certificationActive) && !rebase) {
+          throw GradleException(orphanMessage)
+        }
+        if (!rebase) {
+          legacyProvenanceFinding(orphanMessage, "orphan mutation-provenance sidecar(s)")
+        }
+      }
+      if (committedProvenance.legacyUnbound) {
+        legacyProvenanceFinding(
+            "pitest '$suiteName': committed mutation record is legacy-unversioned; its PIT version is " +
+                "unknown, so a population change cannot be attributed automatically. Review this fresh " +
+                "observation and run ${pitestTaskName}BaselineRebase to bind it.",
+            "committed record is legacy-unversioned")
+        if (writingRecord && !rebase) {
+          throw GradleException(
+              "pitest '$suiteName': existing committed record has no PIT provenance; only " +
+                  "${pitestTaskName}BaselineRebase may adopt it")
+        }
+      }
+      if (committedProvenance.legacyUnbound) {
+        legacyProvenanceFinding(
+            "pitest '$suiteName': committed mutation record is legacy-toolchain-unbound; ArcMutate " +
+                "licence/base or PIT plugin changes cannot be distinguished from code churn. Review this " +
+                "fresh observation and run ${pitestTaskName}BaselineRebase to bind it.",
+            "committed record is legacy-toolchain-unbound")
+        if (writingRecord && !rebase) {
+          throw GradleException(
+              "pitest '$suiteName': existing committed record has no mutation-toolchain provenance; only " +
+                  "${pitestTaskName}BaselineRebase may adopt it")
+        }
+      }
       if (recordedPit != null && recordedPit != currentPit) {
-        if (writingRecord || certificationActive) {
+        if ((writingRecord || certificationActive) && !rebase) {
           throw GradleException(
               "pitest '$suiteName': the baseline record was written by PIT $recordedPit but this run used " +
                   "PIT $currentPit — refusing to rewrite the record across a tool bump, whose population " +
-                  "churn would be indistinguishable from code churn. To bump deliberately: set " +
-                  "config/pitest/$suiteName-pitest-version to $currentPit, then refresh the suite and read the " +
-                  "resulting churn as a real population diff, not noise."
+                  "churn would be indistinguishable from code churn. Run " +
+                  "${pitestTaskName}BaselineRebase after reviewing an ordinary $pitestTaskName observation; " +
+                  "it preserves old evidence and adopts the new provenance only after a successful fresh run."
           )
         }
-        val versionWarning = "pitest '$suiteName': baseline record written by PIT $recordedPit, this run " +
-            "used PIT $currentPit — population differences may be the tool, not the code, and the " +
-            "record-writing tasks refuse until config/pitest/$suiteName-pitest-version is updated deliberately"
-        logger.warn(versionWarning)
-        advisoryLog.get().record(advisoryScope, "baseline written by PIT $recordedPit, ran $currentPit")
-      }
-      // Called by each baseline-writing path at its successful end. A no-op rewrite
-      // (prune dropped nothing, union added nothing) stamps too: the path just
-      // verified the committed record against a report this PIT produced, which is
-      // the comparability the stamp asserts.
-      fun stampToolVersion() {
-        if (recordedPit == null) {
-          BaselineFiles.writeAtomically(toolVersionFile, currentPit + "\n")
+        if (!rebase) {
+          val versionWarning = "pitest '$suiteName': baseline record written by PIT $recordedPit, this run " +
+              "used PIT $currentPit — population differences may be the tool, not the code. Review this " +
+              "observation, then run ${pitestTaskName}BaselineRebase; other record-writing tasks refuse " +
+              "the mismatch."
+          logger.warn(versionWarning)
+          advisoryLog.get().record(advisoryScope, "baseline written by PIT $recordedPit, ran $currentPit")
         }
       }
-      // The delete-side counterpart, for a refresh path that ends with no baseline
-      // file: unless an audited timeout set remains for the stamp to certify, it is
-      // retired with the record — "no record and an empty record must read the same
-      // way" extends to the stamp, and an orphan stamp would refuse a future first
-      // refresh across a PIT bump citing a baseline that no longer exists.
-      fun stampOrRetireToolVersion() {
+      if (recordedToolchain != null && currentToolchain != null &&
+          recordedToolchain.identitySha256 != currentToolchain.identitySha256) {
+        if ((writingRecord || certificationActive) && !rebase) {
+          throw GradleException(
+              "pitest '$suiteName': committed mutation toolchain " +
+                  "${recordedToolchain.identitySha256} differs from this run's " +
+                  "${currentToolchain.identitySha256}. Run ${pitestTaskName}BaselineRebase after reviewing " +
+                  "the population; it preserves old evidence and stamps only after a successful fresh run.")
+        }
+        if (!rebase) {
+          logger.warn(
+              "pitest '$suiteName': mutation toolchain changed since the committed record — population " +
+                  "differences may be ArcMutate/PIT tooling, not code. Review, then run " +
+                  "${pitestTaskName}BaselineRebase; other writers refuse.")
+          advisoryLog.get().record(advisoryScope, "committed mutation toolchain differs from this run")
+        }
+      }
+
+      // This helper is used only when no baseline bytes change. Transitions below
+      // commit sidecars and record content through one rollback-capable plan, ordered
+      // so process interruption can leave only a state readers refuse closed.
+      fun stampProvenance(force: Boolean = false) {
+        val toolchain = currentToolchain ?: throw GradleException(
+            "pitest '$suiteName': current completed mutation-toolchain evidence is required to stamp records")
+        if (force || !committedRecordExisted) {
+          BaselineFiles.writeAllAtomically(evidenceProjectDir, listOf(
+            BaselineFiles.Write(toolchainRecordFile, toolchain.render()),
+            BaselineFiles.Write(toolVersionFile, currentPit + "\n"),
+          ))
+        }
+      }
+      fun stampOrRetireProvenance() {
         if (timeoutsFile.isFile) {
-          stampToolVersion()
-        } else if (toolVersionFile.isFile) {
-          BaselineFiles.deleteIfExists(toolVersionFile)
+          stampProvenance(force = rebase)
+        } else {
+          val removedVersion = toolVersionFile.exists()
+          val removedToolchain = toolchainRecordFile.exists()
+          BaselineFiles.writeAllAtomically(evidenceProjectDir, listOf(
+            BaselineFiles.Write(toolVersionFile, null),
+            BaselineFiles.Write(toolchainRecordFile, null),
+          ))
+          if (removedVersion || removedToolchain) {
           logger.lifecycle(
-              "pitest baseline '$suiteName': ${toolVersionFile.name} removed with the record it certified")
+              "pitest baseline '$suiteName': orphan mutation provenance removed with the record it certified")
+          }
         }
       }
       // One interpretation of the report: every column split, key derivation, and
       // status semantic lives on Mutant/MutantStatus — the casebook's recurring
       // incident class is a mutant read differently at two sites, and a per-site
       // parts[] index is how that class reproduces.
-      val rows = Mutant.parseReport(csv.readLines())
+      val rows = Mutant.parseReport(finalReportLines)
 
       val byStatus = rows.groupingBy { it.rawStatus }.eachCount()
       val total = rows.size
@@ -2019,7 +2578,7 @@ hardening.mutation.all {
         // keeps them from touching anything, but silently no-opping a requested
         // refresh (or seeding an audited set from a hand-picked subset's timeouts)
         // reads as work that happened — refuse them the same way as update and union.
-        if (update || union || prune || initTimeoutAudit) {
+        if (rebase || update || union || prune || initTimeoutAudit) {
           throw GradleException(
               "pitest '$suiteName': the report was produced with -PmutateOnly=$scope — a partial " +
                   "population cannot refresh the baseline or seed the timeout audit. " +
@@ -2051,7 +2610,7 @@ hardening.mutation.all {
       // path may read it (the summary's '[history]' tag names the reuse), but the
       // record-writing tasks may not: a baseline refresh or an audit seed written
       // from reused results certifies numbers this run never earned.
-      if (historyAssistedReport && (update || union || prune || initTimeoutAudit)) {
+      if (historyAssistedReport && (rebase || update || union || prune || initTimeoutAudit)) {
         throw GradleException(
             "pitest '$suiteName': the report is arcmutate-history-assisted — reused results are " +
                 "not observation, and a baseline refresh or audit seed needs a full run. " +
@@ -2086,7 +2645,7 @@ hardening.mutation.all {
         // recorded only when it stays advisory: on a refresh run the same finding
         // becomes the failure below, and the end-of-build summary's "none failed
         // the build" must stay true (the strict-flag sites' own rule)
-        if (!(update || union || prune)) {
+        if (!(rebase || update || union || prune)) {
           advisoryLog.get().record(advisoryScope, "${malformedBaselineRows.size} malformed baseline row(s)")
         } else {
           throw GradleException(
@@ -2236,6 +2795,7 @@ hardening.mutation.all {
         val lines = timedOutByAuditKey.getValue(key).map { it.lineText }.distinct()
         "$indent$key # line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
       }
+      var pendingTimeoutAuditContent: String? = null
       if (initTimeoutAudit) {
         // Seeds the mechanical half of adoption — the membership rows — from this
         // run's report, mirroring pitest<Suite>BaselineUpdate seeding '# untriaged':
@@ -2268,20 +2828,14 @@ hardening.mutation.all {
           )
         }
         val seeded = pasteReadyMemberRows("")
-        BaselineFiles.writeAtomically(
-            timeoutsFile,
+        pendingTimeoutAuditContent =
             "# Audited TIMED_OUT set for the '$suiteName' suite (HARDENING.md, the audited-timeout\n" +
                 "# bullet): one line-less 'class,method,mutator' member per row. A timeout detects\n" +
                 "# slowness, not wrongness, so the ratchet cannot see a weakened covering assertion\n" +
                 "# behind one; each member's structural cause belongs in config/pitest/README.md.\n" +
                 seeded + "\n"
-        )
-        logger.lifecycle(
-            "pitest '$suiteName': seeded ${timedOutByAuditKey.size} audited-timeout member(s) into " +
-                "${timeoutsFile.name} — now write each member's structural cause in config/pitest/README.md"
-        )
       }
-      if (timeoutsFile.isFile) {
+      if (timeoutsFile.isFile || pendingTimeoutAuditContent != null) {
         // Normalize per field, not just per line: 'Codec, encode, MathMutator' is the
         // spacing a person writes for readability, and against a key built without
         // spaces it would match nothing — earning a permanent 'not in the audited set'
@@ -2293,7 +2847,8 @@ hardening.mutation.all {
         // sends the reader hunting for a moved mutant. Parsing and both static
         // warnings live in TimeoutAudit, shared with 'Debt', so the two tasks can
         // never disagree about what a membership file says.
-        val membership = TimeoutAudit.parse(timeoutsFile.readLines())
+        val membership = TimeoutAudit.parse(
+            pendingTimeoutAuditContent?.lineSequence()?.toList() ?: timeoutsFile.readLines())
         val malformed = membership.malformed
         // Recorded as an advisory only when it stays one: under -PstrictTimeoutAudit
         // this finding (and the unaudited newcomer below) becomes the failure itself,
@@ -2494,11 +3049,26 @@ hardening.mutation.all {
       // writer that creates a baseline starts at the explicit current schema, making
       // new adoption unambiguous without forcing an in-place fleet migration. Row
       // slots are the only material replaced; comments and blanks remain verbatim.
-      fun renderBaseline(replacementRows: List<BaselineNotes.Row>): String {
+      fun renderBaseline(
+        replacementRows: List<BaselineNotes.Row>,
+        sourceRowIndices: List<Int?>? = null,
+      ): String {
         val targetSchema = if (baselineExisted) baselineDocument.schemaState
         else BaselineDocument.SchemaState.CURRENT
-        val rendered = baselineDocument.rewriteRowsPreservingNonRows(
-            replacementRows, targetSchema)
+        val rendered = if (sourceRowIndices == null) {
+          baselineDocument.rewriteRowsPreservingNonRows(replacementRows, targetSchema)
+        } else {
+          require(replacementRows.size == sourceRowIndices.size) {
+            "pitest baseline '$suiteName': ${replacementRows.size} replacements have " +
+                "${sourceRowIndices.size} source slots"
+          }
+          baselineDocument.rewriteRowsPreservingOrigins(
+              replacementRows.zip(sourceRowIndices) { row, source ->
+                BaselineDocument.RowReplacement(row, source)
+              },
+              targetSchema,
+          )
+        }
         return if (!baselineExisted && rendered.isNotEmpty() && !rendered.endsWith("\n")) {
           "$rendered\n"
         } else {
@@ -2506,20 +3076,60 @@ hardening.mutation.all {
         }
       }
 
-      fun writeOrRemoveBaseline(replacementRows: List<BaselineNotes.Row>): Boolean {
+      data class BaselineWritePlan(
+        val content: String?,
+        val retainedNonRowEvidence: Boolean,
+      )
+
+      fun planBaseline(
+        replacementRows: List<BaselineNotes.Row>,
+        sourceRowIndices: List<Int?>? = null,
+      ): BaselineWritePlan {
         val hasNonRowEvidence = baselineDocument.comments.isNotEmpty() ||
             baselineDocument.malformedRows.isNotEmpty()
         if (replacementRows.isEmpty() && !hasNonRowEvidence) {
-          BaselineFiles.deleteIfExists(baselineFile)
-          return false
+          return BaselineWritePlan(null, false)
         }
-        val content = renderBaseline(replacementRows)
-        return if (content.isEmpty()) {
-          BaselineFiles.deleteIfExists(baselineFile)
-          false
-        } else {
-          BaselineFiles.writeAtomically(baselineFile, content)
-          true
+        val content = renderBaseline(replacementRows, sourceRowIndices)
+        return BaselineWritePlan(content.takeIf(String::isNotEmpty), content.isNotEmpty())
+      }
+
+      fun commitBaselinePlan(plan: BaselineWritePlan, forceProvenance: Boolean = false) {
+        val recordWillExist = plan.content != null || timeoutsFile.isFile
+        val baselineWrite = BaselineFiles.Write(baselineFile, plan.content)
+        val provenanceWrites = mutableListOf<BaselineFiles.Write>()
+        val writes = mutableListOf<BaselineFiles.Write>()
+        if (recordWillExist && (forceProvenance || !committedRecordExisted)) {
+          val toolchain = currentToolchain ?: throw GradleException(
+              "pitest '$suiteName': current completed mutation-toolchain evidence is required to stamp records")
+          provenanceWrites += BaselineFiles.Write(toolchainRecordFile, toolchain.render())
+          provenanceWrites += BaselineFiles.Write(toolVersionFile, currentPit + "\n")
+        }
+        // A first record puts provenance before content: interruption can leave only
+        // orphan sidecars, never a legacy-unbound baseline. An existing-record Rebase
+        // puts its safe-superset content first: N-1 sees conservative debt while this
+        // plugin refuses the still-old provenance. Deletion removes content first.
+        when {
+          !recordWillExist -> writes += baselineWrite
+          forceProvenance && committedRecordExisted -> {
+            writes += baselineWrite
+            writes += provenanceWrites
+          }
+          else -> {
+            writes += provenanceWrites
+            writes += baselineWrite
+          }
+        }
+        val removedProvenance = !recordWillExist &&
+            (toolchainRecordFile.exists() || toolVersionFile.exists())
+        if (!recordWillExist) {
+          writes += BaselineFiles.Write(toolchainRecordFile, null)
+          writes += BaselineFiles.Write(toolVersionFile, null)
+        }
+        BaselineFiles.writeAllAtomically(evidenceProjectDir, writes)
+        if (removedProvenance) {
+          logger.lifecycle(
+              "pitest baseline '$suiteName': orphan mutation provenance removed with the record it certified")
         }
       }
       if (prune) {
@@ -2572,6 +3182,7 @@ hardening.mutation.all {
               keptUnmatched.joinToString("\n") { (row, why) -> "  ${BaselineNotes.render(row)} — $why" }
         val refreshedDetail = if (pruneRewrite.refreshedLineTags == 0) "" else
           "; refreshed ${pruneRewrite.refreshedLineTags} kept row line tag(s) from this run"
+        var baselineTransitionCommitted = false
         if (droppedRows.isEmpty() && !rowSpellingsChanged) {
           logger.lifecycle(
               "pitest baseline '$suiteName': prune dropped nothing — every row matches this run$keptDetail")
@@ -2579,10 +3190,12 @@ hardening.mutation.all {
           // If no non-row evidence exists, an empty baseline and no baseline are the
           // same record and the file is removed. Otherwise retain the schema marker,
           // comments, and blanks while removing only the row slots.
-          val retainedDocument = writeOrRemoveBaseline(emptyList())
+          val plan = planBaseline(emptyList())
+          commitBaselinePlan(plan)
+          baselineTransitionCommitted = true
           logger.lifecycle(
               "pitest baseline '$suiteName': prune dropped every row unmatched by this run — " +
-                  (if (retainedDocument) "non-row baseline material preserved" else "baseline file removed") +
+                  (if (plan.retainedNonRowEvidence) "non-row baseline material preserved" else "baseline file removed") +
                   ":\n" + droppedRows.joinToString("\n") { row ->
                     "  ${BaselineNotes.render(row)}${describe(row.key)}"
                   })
@@ -2590,7 +3203,12 @@ hardening.mutation.all {
           // Kept rows are re-rendered even when only a matched row's line metadata
           // changed. This also migrates a legacy five-field file to the line-less
           // format (the legacy line field becomes a '# line' tag).
-          writeOrRemoveBaseline(pruneRewrite.written.map(BaselineNotes::parse))
+          val plan = planBaseline(
+              pruneRewrite.written.map(BaselineNotes::parse),
+              pruneRewrite.sourceRowIndices.map { it as Int? },
+          )
+          commitBaselinePlan(plan)
+          baselineTransitionCommitted = true
           if (droppedRows.isEmpty()) {
             val action = if (pruneRewrite.refreshedLineTags == 0) {
               "re-rendered ${kept.size} row(s) in the current format"
@@ -2608,11 +3226,41 @@ hardening.mutation.all {
             )
           }
         }
-        if (baselineFile.isFile) stampToolVersion() else stampOrRetireToolVersion()
+        if (!baselineTransitionCommitted) {
+          if (baselineFile.isFile) stampProvenance() else stampOrRetireProvenance()
+        }
+        return@doLast
+      }
+      if (rebase) {
+        // A PIT or mutation-toolchain transition is not evidence that any old
+        // acceptance disappeared. Preserve the complete existing record and add
+        // every missing current gated copy as explicit triage debt. Provenance and
+        // the safe-superset record are one exception-transactional commit plan.
+        val merge = BaselineEngine.rebaseMerge(acceptedRows, current, currentLines)
+        if (merge.added.isEmpty()) {
+          logger.lifecycle(
+              "pitest baseline '$suiteName': provenance rebase retained all ${acceptedRows.size} " +
+                  "accepted row(s); the current population added nothing")
+        } else {
+          val plan = planBaseline(
+              merge.merged.map(BaselineNotes::parse),
+              merge.sourceRowIndices,
+          )
+          commitBaselinePlan(plan, forceProvenance = true)
+          logger.lifecycle(
+              "pitest baseline '$suiteName': provenance rebase preserved ${acceptedRows.size} old row(s) " +
+                  "and added ${merge.added.size} current row(s) seeded '# untriaged' " +
+                  "(baseline now ${merge.total}):\n" +
+                  merge.added.joinToString("\n") { row -> "  $row${describe(row)}" })
+        }
+        if (merge.added.isEmpty()) {
+          if (baselineFile.isFile) stampProvenance(force = true) else stampOrRetireProvenance()
+        }
         return@doLast
       }
       if (update) {
-        // Full rewrite from this run's report. A dropped row's '# note' must not
+        // Report-driven rewrite plus this run's timeout/flip-insurance keeps. A
+        // dropped row's '# note' must not
         // vanish silently; with line-less keys only one relationship needs a carry:
         //
         //   status flip — same class,method,mutator, different status (NO_COVERAGE ->
@@ -2625,71 +3273,98 @@ hardening.mutation.all {
         // shift-pairing, bare-row-pairing and pairing-outlier machinery that used to
         // police that carry is gone with the churn it policed.
         //
-        // Within a key, accepted rows are assigned to this run's mutants by LINE
-        // AFFINITY first — a pair whose '# line' tag names the mutant's observed line
-        // is its row — then by file order. So when a noted sibling was killed, the
-        // note that drops is its own, not whichever row came first; without line
-        // evidence the assignment is arbitrary, which is the documented same-key
+        // Within a key, accepted rows are assigned to this run's mutants by maximum
+        // LINE AFFINITY first, then by file order. A unique anchor attributes a row;
+        // repeated/overlapping anchors are only a deterministic allocation. Without
+        // line evidence the assignment is arbitrary, which is the documented same-key
         // blind spot, not a bug to police.
         // pairing, note carry, and seeding live in BaselineEngine.updateRewrite;
         // this task renders its result and names each dropped row's fate below
-        val rewrite = BaselineEngine.updateRewrite(acceptedRows, currentLines)
+        val rewrite = BaselineEngine.updateRewrite(acceptedRows, currentLines, keepPlan)
         val droppedIdx = rewrite.droppedIdx
         val carriedIdx = rewrite.carriedIdx
         // A refresh with nothing unkilled writes no record: an empty (or newly
         // created, one-newline) baseline file reads as an armed-but-empty record
         // where there is no record at all, and clutters fully-detected suites.
-        if (rewrite.copies == 0) {
+        var baselineTransitionCommitted = false
+        if (rewrite.written.isEmpty()) {
           if (baselineFile.isFile) {
-            val retainedDocument = writeOrRemoveBaseline(emptyList())
+            val plan = planBaseline(emptyList())
+            commitBaselinePlan(plan)
+            baselineTransitionCommitted = true
             logger.lifecycle(
                 "pitest baseline '$suiteName': nothing unkilled — " +
-                    (if (retainedDocument) "non-row baseline material preserved"
+                    (if (plan.retainedNonRowEvidence) "non-row baseline material preserved"
                     else "baseline file removed"))
           } else {
             logger.lifecycle("pitest baseline '$suiteName': nothing unkilled — no baseline to write")
           }
         } else {
-          writeOrRemoveBaseline(rewrite.written.map(BaselineNotes::parse))
+          val plan = planBaseline(
+              rewrite.written.map(BaselineNotes::parse),
+              rewrite.sourceRowIndices,
+          )
+          commitBaselinePlan(plan)
+          baselineTransitionCommitted = true
           logger.lifecycle(
-              "pitest baseline '$suiteName': wrote ${rewrite.copies} accepted entries" +
+              "pitest baseline '$suiteName': wrote ${rewrite.written.size} accepted entries " +
+                  "from ${rewrite.copies} currently unkilled mutant(s)" +
+                  (if (rewrite.preservedTimeoutIdx.isEmpty()) "" else
+                    " (${rewrite.preservedTimeoutIdx.size} accepted timeout row(s) preserved)") +
+                  (if (rewrite.preservedInsuredIdx.isEmpty()) "" else
+                    " (${rewrite.preservedInsuredIdx.size} flip-insurance row(s) preserved)") +
                   (if (rewrite.seeded == 0) "" else " (${rewrite.seeded} new row(s) seeded '# untriaged')") +
                   (if (rewrite.flipped == 0) "" else " (${rewrite.flipped} note(s) carried across a status flip — re-check them)")
           )
         }
         if (droppedIdx.isNotEmpty()) {
-          // The silent half of the refresh footgun: a full update rewrites from this one
-          // run, so a flip-insurance union (detected today, survived under other load)
-          // vanishes without a trace unless it is named here. Notes get the same
-          // treatment: a note still in the carry pool after the rewrite is an
+          // Notes get the same treatment as every removed row: a note still in the
+          // carry pool after the rewrite is an
           // acceptance argument that just left the baseline — name its fate per row,
           // because a lost note that prints identically to a carried one is still
           // silent (casebook: the note the line shift dropped).
+          fun removalEvidence(idx: Int): String {
+            if (idx in carriedIdx) return "status changed; acceptance note carried to the current row"
+            val row = acceptedRows[idx]
+            val coordinate = row.key.substringBeforeLast(',')
+            val atCoordinate = rows.filter { it.coordinate == coordinate }
+            if (atCoordinate.isEmpty()) {
+              return "coordinate absent from this PIT report; tool/population change, not an observed kill"
+            }
+            val killedLines = atCoordinate.filter { it.status == MutantStatus.KILLED }
+                .mapNotNullTo(HashSet()) { it.line }
+            return if (row.recordedLines.isNotEmpty() && row.recordedLines.any { it in killedLines }) {
+              "a KILLED observation shares a recorded-line anchor; duplicate sibling identity may remain ambiguous"
+            } else {
+              "coordinate present but this row is not tied to a KILLED observation; sibling identity is ambiguous"
+            }
+          }
           fun rowFate(idx: Int): String = when {
-            acceptedRows[idx].note == null -> ""
-            idx in carriedIdx -> " — note carried"
-            else -> " — note dropped with the row"
+            idx in carriedIdx -> " — ${removalEvidence(idx)}"
+            acceptedRows[idx].note == null -> " — ${removalEvidence(idx)}"
+            else -> " — note dropped with the row; ${removalEvidence(idx)}"
           }
           val lostCount = droppedIdx.count { acceptedRows[it].note != null && it !in carriedIdx }
           logger.lifecycle(
-              "pitest baseline '$suiteName': dropped ${droppedIdx.size} row(s) not unkilled this run:\n" +
+              "pitest baseline '$suiteName': removed or transitioned ${droppedIdx.size} row(s); " +
+                  "each disposition below distinguishes observed kill evidence from missing or ambiguous population evidence:\n" +
                   droppedIdx.joinToString("\n") { idx ->
                     "  ${BaselineNotes.render(acceptedRows[idx])}${describe(acceptedRows[idx].key)}${rowFate(idx)}"
                   } +
                   (if (lostCount == 0) "" else
-                      "\n  $lostCount note(s) dropped with their rows — re-home the acceptance argument by hand if it still applies") +
-                  "\n  a dropped flip-insurance union (see config/pitest/README.md) must be " +
-                  "re-added with ${pitestTaskName}BaselineUnion once observed to flip again"
+                      "\n  $lostCount note(s) dropped with their rows — re-home the acceptance argument by hand if it still applies")
           )
         }
-        if (baselineFile.isFile) stampToolVersion() else stampOrRetireToolVersion()
+        if (!baselineTransitionCommitted) {
+          if (baselineFile.isFile) stampProvenance() else stampOrRetireProvenance()
+        }
         return@doLast
       }
       if (union) {
         // Append-only refresh for flip families (HARDENING.md: union only rows observed
         // to flip). Adds this run's unkilled rows in canonical form without dropping
-        // baseline rows that happened to be detected this run — a full
-        // BaselineUpdate there would bake in this run's coin-flips and start
+        // baseline rows that happened to be detected this run — the report-driven
+        // BaselineUpdate would bake in this run's uninsured coin-flips and start
         // refresh ping-pong.
         // the merge — per-key max counts, existing rows verbatim after maximum
         // exact-line affinity and the live-anchor/file-order fallback, added copies
@@ -2698,13 +3373,19 @@ hardening.mutation.all {
         if (merge.added.isEmpty()) {
           logger.lifecycle("pitest baseline '$suiteName': union added nothing new")
         } else {
-          writeOrRemoveBaseline(merge.merged.map(BaselineNotes::parse))
+          val plan = planBaseline(
+              merge.merged.map(BaselineNotes::parse),
+              merge.sourceRowIndices,
+          )
+          commitBaselinePlan(plan)
           logger.lifecycle(
               "pitest baseline '$suiteName': union added ${merge.added.size} entries (baseline now ${merge.total}):\n" +
                   merge.added.joinToString("\n") { row -> "  $row${describe(row)}" }
           )
         }
-        if (baselineFile.isFile) stampToolVersion() else stampOrRetireToolVersion()
+        if (merge.added.isEmpty()) {
+          if (baselineFile.isFile) stampProvenance() else stampOrRetireProvenance()
+        }
         return@doLast
       }
       val fresh = multisetDiff(current, accepted)
@@ -2822,7 +3503,7 @@ hardening.mutation.all {
               "pitest baseline '$suiteName': ${staleInsured.size} flip-insured row(s) unmatched at their " +
                   "own status this run — a killed read is the flap the insurance records, a " +
                   "different-status read is newly covered (named in the failure detail); either way no " +
-                  "refresh: prune keeps them, and the row leaves by its written removal criterion:\n" +
+                  "refresh: prune and update keep them, and the row leaves by its written removal criterion:\n" +
                   staleInsured.joinToString("\n") {
                     "  ${BaselineNotes.render(acceptedRows[it])}"
                   })
@@ -2830,7 +3511,8 @@ hardening.mutation.all {
         if (staleTimedOut.isNotEmpty()) {
           logger.lifecycle(
               "pitest baseline '$suiteName': ${staleTimedOut.size} baseline row(s) read TIMED_OUT this run — " +
-                  "load-dependent detection, not a kill; no refresh needed (prune keeps them):\n" +
+                  "load-dependent detection, not a kill; no refresh needed " +
+                  "(prune and update keep them):\n" +
                   staleTimedOut.joinToString("\n") {
                     "  ${BaselineNotes.render(acceptedRows[it])}"
                   })
@@ -2876,11 +3558,44 @@ hardening.mutation.all {
                 "${pitestTaskName}BaselineUpdate creates config/pitest/$suiteName-accepted.csv."
         )
       }
+      if (initTimeoutAudit) {
+        // A timeout set is a committed mutation record even when the suite has no
+        // accepted baseline. Bind the first successful seed to the same PIT and
+        // portable toolchain identity as every baseline writer; otherwise the task
+        // would create an immediately legacy-unbound record that only Rebase could
+        // repair on the next invocation.
+        val content = checkNotNull(pendingTimeoutAuditContent) {
+          "pitest '$suiteName': timeout-audit initialization reached commit without staged content"
+        }
+        if (!committedRecordExisted) {
+          val toolchain = currentToolchain ?: throw GradleException(
+              "pitest '$suiteName': current completed mutation-toolchain evidence is required to stamp records")
+          // All three files form one logical record. If any rename throws, restore
+          // every earlier target rather than leaving an orphan or unbound record.
+          BaselineFiles.writeAllAtomically(evidenceProjectDir, listOf(
+            BaselineFiles.Write(toolchainRecordFile, toolchain.render()),
+            BaselineFiles.Write(toolVersionFile, currentPit + "\n"),
+            BaselineFiles.Write(timeoutsFile, content),
+          ))
+        } else {
+          BaselineFiles.writeAtomically(evidenceProjectDir, timeoutsFile, content)
+        }
+        logger.lifecycle(
+            "pitest '$suiteName': seeded ${timedOutByAuditKey.size} audited-timeout member(s) into " +
+                "${timeoutsFile.name} and bound its mutation provenance — now write each member's " +
+                "structural cause in config/pitest/README.md")
+      }
       if (certificationActive) {
         val evidence = verifiedEvidence ?: throw GradleException(
             "pitest '$suiteName': certification requires completed evidence generated in this invocation")
         try {
-          certificationSession.get().recordVerified(evidenceProjectPath, suiteName, evidence)
+          certificationSession.get().recordVerified(
+              evidenceProjectPath,
+              suiteName,
+              evidence,
+              PitestEvidence.mutationRecordFingerprint(
+                  evidenceProjectDir, baselineFile.parentFile, suiteName),
+          )
         } catch (e: IllegalStateException) {
           throw GradleException("pitest '$suiteName': ${e.message}", e)
         }
@@ -2903,7 +3618,7 @@ hardening.mutation.all {
     }
   }
   hardeningCertify.configure { mustRunAfter(verify) }
-  tasks.register("${pitestTaskName}Debt") {
+  val debtTask = tasks.register<PitestDebtTask>("${pitestTaskName}Debt") {
     group = "verification"
     description = "Prints the '$suiteName' unkilled-mutant debt grouped by class, largest first, with the baseline delta."
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
@@ -2911,6 +3626,9 @@ hardening.mutation.all {
     val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
     val debtTimeoutsFile = layout.projectDirectory.file("config/pitest/$suiteName-timeouts.csv").asFile
     val debtToolVersionFile = layout.projectDirectory.file("config/pitest/$suiteName-pitest-version").asFile
+    val debtToolchainFile =
+        layout.projectDirectory.file("config/pitest/$suiteName-pitest-toolchain.tsv").asFile
+    val debtProjectDirectory = layout.projectDirectory.asFile
     val debtPitVersion = hardening.pitestVersion
     val debtClassesDir = mutationClassesDir
     val debtTargets = suite.targetClasses
@@ -2920,15 +3638,82 @@ hardening.mutation.all {
     val debtSiblingExcludes = suiteExcludedGlobs
     val debtDeclinedExclusions = suite.declinedExclusionAudits
     doLast {
+      listOf(
+          baselineFile,
+          readmeFile,
+          debtTimeoutsFile,
+          debtToolVersionFile,
+          debtToolchainFile,
+      ).forEach { BaselineFiles.requireRegularFileOrMissing(debtProjectDirectory, it) }
       // Committed-files-only, like the audit's static half below — which makes Debt
       // (and therefore the fleet canary) the place a plugin release that bumps PIT
       // surfaces per consumer repo, before anyone reads tool churn as code churn.
-      val recordedPit = debtToolVersionFile.takeIf { it.isFile }?.readText()?.trim()
+      val debtHasRecord = baselineFile.isFile || debtTimeoutsFile.isFile
+      val debtProvenance = CommittedMutationProvenance.classify(
+          debtHasRecord,
+          debtToolVersionFile.takeIf { it.isFile }?.readText(),
+          debtToolchainFile.takeIf { it.isFile }?.readText(),
+      )
+      debtProvenance.malformedPitVersion?.let { detail ->
+        throw GradleException(
+            "pitest '$suiteName' debt: malformed committed PIT-version stamp at " +
+                "$debtToolVersionFile — $detail; repair it with ${pitestTaskName}BaselineRebase")
+      }
+      debtProvenance.malformedToolchain?.let { detail ->
+        throw GradleException(
+            "pitest '$suiteName' debt: malformed committed mutation-toolchain record at " +
+                "$debtToolchainFile — $detail; repair it with ${pitestTaskName}BaselineRebase")
+      }
+      if (debtProvenance.orphan) {
+        throw GradleException(
+            "pitest '$suiteName' debt: mutation-provenance sidecar(s) exist without an accepted " +
+                "or timeout record; repair the orphan state with ${pitestTaskName}BaselineRebase")
+      }
+      if (debtProvenance.torn) {
+        throw GradleException(
+            "pitest '$suiteName' debt: committed mutation provenance is torn — exactly one of " +
+                "${debtToolVersionFile.name} and ${debtToolchainFile.name} exists; repair it with " +
+                "${pitestTaskName}BaselineRebase")
+      }
+      if (debtProvenance.disagreement) {
+        throw GradleException(
+            "pitest '$suiteName' debt: committed provenance disagrees — " +
+                "${debtToolVersionFile.name} says PIT ${debtProvenance.pitVersion}, but " +
+                "${debtToolchainFile.name} says PIT " +
+                "${checkNotNull(debtProvenance.toolchain).pitestVersion}; repair it with " +
+                "${pitestTaskName}BaselineRebase")
+      }
+      if (debtProvenance.legacyUnbound) {
+        logger.warn(
+            "pitest '$suiteName': committed mutation record is legacy-unversioned; its PIT " +
+                "version is unknown — review a fresh observation, then run " +
+                "${pitestTaskName}BaselineRebase")
+        logger.warn(
+            "pitest '$suiteName': committed mutation record is legacy-toolchain-unbound; " +
+                "ArcMutate/PIT tool changes cannot be distinguished from code churn — review a " +
+                "fresh observation, then run ${pitestTaskName}BaselineRebase")
+      }
+      debtProvenance.toolchain?.let { recordedToolchain ->
+        val effectiveToolchain = try {
+          (this as PitestDebtTask).currentEvidence.captureMutationToolchain()
+        } catch (e: Exception) {
+          throw GradleException(
+              "pitest '$suiteName' debt: could not identify the current mutation toolchain — " +
+                  "${e.message}", e)
+        }
+        if (recordedToolchain.identitySha256 != effectiveToolchain.identitySha256) {
+          logger.warn(
+              "pitest '$suiteName': committed mutation toolchain differs from the current " +
+                  "PIT/ArcMutate/licence identity — population differences may be tool churn; " +
+                  "review a fresh observation, then run ${pitestTaskName}BaselineRebase")
+        }
+      }
+      val recordedPit = debtProvenance.pitVersion
       if (recordedPit != null && recordedPit != debtPitVersion.get()) {
         logger.warn(
             "pitest '$suiteName': baseline record written by PIT $recordedPit, this plugin runs " +
                 "PIT ${debtPitVersion.get()} — population differences may be the tool, not the code; " +
-                "re-baseline deliberately (config/pitest/$suiteName-pitest-version, then refresh the suite)"
+                "review a fresh observation, then run ${pitestTaskName}BaselineRebase"
         )
       }
       // The audited-timeout set's static half, shared with the verify (TimeoutAudit):
@@ -3007,6 +3792,7 @@ hardening.mutation.all {
           .filter { it.size >= 4 }
           .map { it[0] to it.last() }
       val csv = csvProvider.get().asFile
+      BaselineFiles.requireRegularFileOrMissing(csv)
       var invalidReport = false
       // scoped and interrupted-run reports both fall back to the baseline: a
       // partial population under-counts debt exactly like a hand-picked one. An
@@ -3092,7 +3878,15 @@ hardening.mutation.all {
   qualityGate.configure { dependsOn(pitestTaskName) }
   convergeSuiteNames.add(suiteName)
   certificationSuiteNames.add(suiteName)
-  pitestConvergeSnapshot.configure { dependsOn(pitestTaskName) }
+  pitestConvergeSnapshot.configure {
+    dependsOn(pitestTaskName)
+    // The PIT task's verification finalizer reads the canonical report. A plain
+    // dependency does not order that finalizer before another dependent task, so a
+    // multi-suite converge graph could snapshot/clear the report first and make the
+    // finalizer fail with "no PIT report". The snapshot is the round boundary: it
+    // follows both the producer and its report consumer for every suite.
+    mustRunAfter("${pitestTaskName}Verify")
+  }
   // ordered, not depended on: a combined '<suites> pitestModeSnapshot' invocation must
   // not stash before the runs finish — or clear a report the verify finalizer still reads
   pitestModeSnapshot.configure { mustRunAfter(pitestTaskName, "${pitestTaskName}Verify") }
@@ -3140,6 +3934,10 @@ hardening.mutation.all {
     task.applicationClasspath.from(mutationClassesDir, evidenceClasspathFiles)
     task.sourceDirectories.from(layout.projectDirectory.dir("src/main/java"))
     task.reportDirectory.set(layout.buildDirectory.dir("reports/pitest/$reportSubdir"))
+    // ArcMutate's fallback certificate lookup begins at the child JVM's working
+    // directory. Pin it so the effective resolver and recorded identity cannot be
+    // redirected by an ambient/consumer JavaExec default.
+    task.workingDir(layout.projectDirectory.asFile)
     task.historyFile.set(layout.projectDirectory.file(".pitest-history/${suite.name}.hist"))
     task.historyRequested.set(withHistory)
     task.historyLicensed.set(arcMutateLicencePresent)
@@ -3155,6 +3953,7 @@ hardening.mutation.all {
     task.evidencePluginCode.from(typedPluginCode)
     task.pitestVersion.set(hardening.pitestVersion)
     task.junitPluginVersion.set(hardening.pitestJunit5PluginVersion)
+    task.arcMutateBaseVersion.set(hardening.arcmutateBaseVersion)
     task.mutationBytecodeRelease.set(hardening.mutationBytecodeRelease)
     task.recompileExcludes.set(hardening.recompileExcludes)
   }
@@ -3201,6 +4000,8 @@ hardening.mutation.all {
     spec.javaLauncher.set(evidencePitestTask.javaLauncher)
     spec.pitestVersion.set(evidencePitestVersion)
     spec.junitPluginVersion.set(evidenceJunitPluginVersion)
+    spec.arcMutateBaseVersion.set(evidenceArcMutateBaseVersion)
+    spec.arcMutateLicensed.set(arcMutateLicencePresent)
     spec.targetClasses.set(suite.targetClasses)
     spec.excludedClasses.set(allExcludedClasses)
     spec.targetTests.set(suite.targetTests)
@@ -3212,6 +4013,14 @@ hardening.mutation.all {
     spec.recompileExcludes.set(evidenceRecompileExcludes)
   }
 
+  verify.configure {
+    configureEvidenceSpec(finalEvidence)
+  }
+  debtTask.configure {
+    configureEvidenceSpec(currentEvidence)
+    dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
+  }
+
   fun registerEvidenceValidator(name: String, prefix: String) =
     tasks.register<PitestEvidenceValidationTask>(name) {
       description = "Internal: revalidates current completed evidence for PIT suite '$suiteName'."
@@ -3220,8 +4029,11 @@ hardening.mutation.all {
       certificationSession.set(hardeningCertificationSession)
       usesService(hardeningCertificationSession)
       mustRunAfter(pitestRun)
-      // Schedule task-produced classpath entries without enumerating external PIT
-      // artifacts. The task action itself opens the files only for current evidence.
+      // Every fingerprinted producer must exist before the execution-time read. The
+      // graph remains invariant when the report has no manifest; dependsOn a file
+      // collection follows its build dependencies without opening external PIT jars.
+      dependsOn(compileForPitest, evidenceClasspathFiles)
+      dependsOn(tasks.named("processResources"), tasks.named("processTestResources"))
       dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
     }
 
@@ -3229,18 +4041,25 @@ hardening.mutation.all {
       "${pitestTaskName}EvidenceValidate",
       "pitest '$suiteName': completed report evidence no longer matches the current build — " +
           "a stale report cannot verify or rewrite mutation state; re-run $pitestTaskName:\n")
-  val modeEvidenceValidation = registerEvidenceValidator(
+  val modeSnapshotEvidenceValidation = registerEvidenceValidator(
       "${pitestTaskName}ModeEvidenceValidate",
       "pitestModeSnapshot: '$suiteName' report/evidence pair no longer matches the current build:\n").also {
     it.configure { fullEvidenceOnly.set(true) }
   }
-  // Keep collection-bearing validators out of an N-1 graph entirely. Gradle tracks
-  // this filesystem query as a configuration-cache input, so the first transition to
-  // current evidence invalidates once and subsequent modern graphs reuse normally.
-  if (evidenceManifestFile.get().asFile.isFile) {
-    verify.configure { dependsOn(verifyEvidenceValidation) }
-    pitestModeSnapshot.configure { dependsOn(modeEvidenceValidation) }
+  pitestModeCompareCommit.configure {
+    configureEvidenceSpec(suiteEvidence.maybeCreate(suiteName))
+    dependsOn(compileForPitest, evidenceClasspathFiles)
+    dependsOn(tasks.named("processResources"), tasks.named("processTestResources"))
+    dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
+    mustRunAfter(pitestModeCompareUnionPreflight)
   }
+  // Keep the graph invariant whether completed evidence exists or not. The validators
+  // inspect the manifest at execution time and return before realizing their @Internal
+  // file collections on the N-1/no-manifest path. A configuration-time existence
+  // branch here made PIT's own creation (and clean's removal) of .evidence.tsv
+  // invalidate otherwise reusable configuration-cache entries.
+  verify.configure { dependsOn(verifyEvidenceValidation) }
+  pitestModeSnapshot.configure { dependsOn(modeSnapshotEvidenceValidation) }
   hardeningCertify.configure {
     configureEvidenceSpec(suiteEvidence.maybeCreate(suiteName))
   }
@@ -3291,9 +4110,13 @@ hardening.mutation.all {
     }
   }
   registerSuiteWriter(
+      "BaselineRebase",
+      HardeningWriteRequest.BASELINE_REBASE,
+      "Runs '$suiteName' fresh, preserves old evidence, and adopts reviewed PIT/toolchain provenance.")
+  registerSuiteWriter(
       "BaselineUpdate",
       HardeningWriteRequest.BASELINE_UPDATE,
-      "Runs '$suiteName' fresh and rewrites its accepted baseline after review.")
+      "Runs '$suiteName' fresh, rewrites from its report, and preserves current timeout/flip-insurance evidence.")
   registerSuiteWriter(
       "BaselineUnion",
       HardeningWriteRequest.BASELINE_UNION,
@@ -3654,14 +4477,18 @@ tasks.register("hardeningInit") {
   group = "verification"
   description = "Scaffolds config/pitest/README.md, git-ignores .pitest-history/, and prints the adoption checklist."
   val readme = layout.projectDirectory.file("config/pitest/README.md").asFile
+  val initProjectDirectory = layout.projectDirectory.asFile
   val gitignore = rootProject.layout.projectDirectory.file(".gitignore").asFile
+  val initRootProjectDirectory = rootProject.layout.projectDirectory.asFile
   val digest = HardeningTemplateDigest.SHA256_12
   doLast {
+    BaselineFiles.requireRegularFileOrMissing(initProjectDirectory, readme)
+    BaselineFiles.requireRegularFileOrMissing(initRootProjectDirectory, gitignore)
     if (readme.isFile) {
       logger.lifecycle("hardeningInit: $readme exists — left untouched")
     } else {
       readme.parentFile.mkdirs()
-      readme.writeText(
+      BaselineFiles.writeAtomically(initProjectDirectory, readme,
           """
           |# Mutation hardening evidence
           |
@@ -3697,11 +4524,15 @@ tasks.register("hardeningInit") {
       logger.lifecycle("hardeningInit: wrote $readme")
     }
     val ignoreLine = ".pitest-history/"
-    if (gitignore.isFile && gitignore.readText().contains(ignoreLine)) {
+    val existingGitignore = gitignore.takeIf(File::isFile)?.readText().orEmpty()
+    if (existingGitignore.contains(ignoreLine)) {
       logger.lifecycle("hardeningInit: .gitignore already covers $ignoreLine")
     } else {
-      gitignore.appendText((if (gitignore.isFile && !gitignore.readText().endsWith("\n")) "\n" else "") +
-          "\n# optional ArcMutate history (machine-local when an applicable licence is present)\n$ignoreLine\n")
+      BaselineFiles.writeAtomically(
+          initRootProjectDirectory,
+          gitignore,
+          existingGitignore + (if (existingGitignore.isNotEmpty() && !existingGitignore.endsWith("\n")) "\n" else "") +
+              "\n# optional ArcMutate history (machine-local when an applicable licence is present)\n$ignoreLine\n")
       logger.lifecycle("hardeningInit: appended $ignoreLine to $gitignore")
     }
     logger.lifecycle(

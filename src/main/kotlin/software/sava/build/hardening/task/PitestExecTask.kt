@@ -11,6 +11,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.services.ServiceReference
 import org.gradle.api.tasks.Classpath
 import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.LocalState
@@ -30,6 +31,7 @@ import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.MutatorAdvice
+import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
 import software.sava.build.hardening.PitestEvidenceSnapshotInput
@@ -37,6 +39,8 @@ import software.sava.build.hardening.PitestExecutionLock
 import java.io.File
 import java.io.OutputStream
 import java.nio.file.Files
+import java.time.Clock
+import java.time.LocalDate
 import java.util.UUID
 
 /**
@@ -151,6 +155,9 @@ abstract class PitestExecTask : JavaExec() {
   abstract val junitPluginVersion: Property<String>
 
   @get:Input
+  abstract val arcMutateBaseVersion: Property<String>
+
+  @get:Input
   abstract val mutationBytecodeRelease: Property<Int>
 
   @get:Input
@@ -174,6 +181,7 @@ abstract class PitestExecTask : JavaExec() {
     targetTests,
     sourceDirectories,
     reportDirectory,
+    evidenceProjectDirectory,
     mutators,
     outputFormats,
     timestampedReports,
@@ -220,6 +228,10 @@ abstract class PitestExecTask : JavaExec() {
 
   @TaskAction
   override fun exec() {
+    // Resolve and validate the effective engine before touching the attempt
+    // sentinel. An expired, malformed, or ambiguous certificate must not leave an
+    // older report looking like an interrupted current run.
+    val initialToolchain = mutationToolchainRecord()
     beforeAttempt()
 
     val historyActive = historyActiveNow()
@@ -240,7 +252,7 @@ abstract class PitestExecTask : JavaExec() {
 
     var attempt: PitestAttempt? = null
     try {
-      attempt = beginAttempt(historyActive)
+      attempt = beginAttempt(historyActive, initialToolchain)
       afterAttemptStarted()
       super.exec()
     } finally {
@@ -269,7 +281,10 @@ abstract class PitestExecTask : JavaExec() {
       ) == BaselineWriteOperation.CHECK &&
       !certificationSession.get().isActive(certifyingProjectPath.get())
 
-  private fun beginAttempt(historyActive: Boolean): PitestAttempt {
+  private fun beginAttempt(
+    historyActive: Boolean,
+    toolchain: MutationToolchainRecord,
+  ): PitestAttempt {
     val suite = suiteName.get()
     val reportDir = reportDirectory.get().asFile
     if (historyActive) {
@@ -286,9 +301,10 @@ abstract class PitestExecTask : JavaExec() {
 
     reportDir.mkdirs()
     reportDir.resolve(RUNNING_MARKER).writeText("")
-    if (!bindsEvidence) return PitestAttempt(invocationId, null)
+    if (!bindsEvidence) return PitestAttempt(invocationId, null, toolchain)
 
     Files.deleteIfExists(reportDir.resolve(EVIDENCE_FILE).toPath())
+    Files.deleteIfExists(reportDir.resolve(TOOLCHAIN_FILE).toPath())
     reportDir.resolve(EVIDENCE_INVOCATION_FILE).writeText("$invocationId\n")
     return PitestAttempt(
       invocationId,
@@ -297,7 +313,9 @@ abstract class PitestExecTask : JavaExec() {
         reportSha256 = "",
         scope = currentScope(),
         historyAssisted = historyActive,
-      )
+        mutationToolchainSha256 = toolchain.identitySha256,
+      ),
+      toolchain,
     )
   }
 
@@ -319,11 +337,13 @@ abstract class PitestExecTask : JavaExec() {
       val before = attempt.preRunEvidence ?: throw GradleException(
         "pitest '$suite' has no pre-run evidence fingerprint — refusing to certify its report"
       )
+      val completedToolchain = mutationToolchainRecord()
       val after = evidenceSnapshot(
         invocationId = before.invocationId,
         reportSha256 = "",
         scope = scope,
         historyAssisted = historyActive,
+        mutationToolchainSha256 = completedToolchain.identitySha256,
       )
       val changedInputs = before.differences(after)
       if (changedInputs.isNotEmpty()) {
@@ -332,6 +352,9 @@ abstract class PitestExecTask : JavaExec() {
             "completed evidence; re-run against a stable checkout:\n" +
             changedInputs.joinToString("\n") { "  $it" }
         )
+      }
+      check(attempt.preRunToolchain == completedToolchain) {
+        "pitest '$suite' mutation-toolchain record changed without changing its identity"
       }
       completedEvidence = before.copy(reportSha256 = PitestEvidence.sha256(report))
     }
@@ -349,6 +372,11 @@ abstract class PitestExecTask : JavaExec() {
       check(invocationFile.readText().trim() == evidence.invocationId) {
         "pitest '$suite' invocation marker changed while PIT was running"
       }
+      val completedToolchain = attempt.preRunToolchain
+      check(completedToolchain.identitySha256 == evidence.mutationToolchainSha256) {
+        "pitest '$suite' mutation-toolchain record disagrees with completed evidence"
+      }
+      BaselineFiles.writeAtomically(reportDir.resolve(TOOLCHAIN_FILE), completedToolchain.render())
       BaselineFiles.writeAtomically(reportDir.resolve(EVIDENCE_FILE), evidence.render())
       certificationSession.get().recordCompleted(certifyingProjectPath.get(), suite, evidence)
       Files.deleteIfExists(invocationFile.toPath())
@@ -367,6 +395,7 @@ abstract class PitestExecTask : JavaExec() {
     reportSha256: String,
     scope: String,
     historyAssisted: Boolean,
+    mutationToolchainSha256: String,
   ): PitestEvidence {
     return PitestEvidenceSnapshot.capture(PitestEvidenceSnapshotInput(
       suite = suiteName.get(),
@@ -380,6 +409,7 @@ abstract class PitestExecTask : JavaExec() {
       classFiles = evidenceClassFiles.files,
       runtimeClasspath = evidenceClasspath.files,
       toolClasspath = effectiveToolClasspath.files,
+      mutationToolchainSha256 = mutationToolchainSha256,
       targetClasses = targetClasses.get(),
       excludedClasses = excludedClasses.get(),
       targetTests = targetTests.get(),
@@ -398,7 +428,28 @@ abstract class PitestExecTask : JavaExec() {
   private data class PitestAttempt(
     val invocationId: String,
     val preRunEvidence: PitestEvidence?,
+    val preRunToolchain: MutationToolchainRecord,
   )
+
+  private fun mutationToolchainRecord(): MutationToolchainRecord {
+    val projectDirectory = evidenceProjectDirectory.get().asFile
+    val lookupStart = workingDir
+    require(lookupStart.canonicalFile == projectDirectory.canonicalFile) {
+      "pitest '${suiteName.get()}': hardening owns workingDir $projectDirectory so PIT project-base " +
+          "and any ArcMutate certificate lookup remain provenance-bound; was $lookupStart"
+    }
+    return MutationToolchainRecord.capture(
+      pitestVersion = pitestVersion.get(),
+      junitPluginVersion = junitPluginVersion.get(),
+      toolClasspath = effectiveToolClasspath.files,
+      arcMutateBaseVersion = arcMutateBaseVersion.get(),
+      arcMutateEnabled = historyLicensed.get(),
+      reportDirectory = reportDirectory.get().asFile,
+      projectBaseDirectory = projectDirectory,
+      lookupStartDirectory = lookupStart,
+      observationDate = LocalDate.now(Clock.systemUTC()),
+    )
+  }
 
   private companion object {
     const val REPORT_FILE = "mutations.csv"
@@ -406,6 +457,7 @@ abstract class PitestExecTask : JavaExec() {
     const val SCOPED_MARKER = ".scoped"
     const val HISTORY_MARKER = ".history-assisted"
     const val EVIDENCE_FILE = ".evidence.tsv"
+    const val TOOLCHAIN_FILE = ".toolchain.tsv"
     const val EVIDENCE_INVOCATION_FILE = ".evidence-invocation"
   }
 }
@@ -574,6 +626,7 @@ private class PitestCommandLineProvider(
   private val targetTests: Property<String>,
   private val sourceDirectories: ConfigurableFileCollection,
   private val reportDirectory: DirectoryProperty,
+  private val projectBaseDirectory: DirectoryProperty,
   private val mutators: Property<String>,
   private val outputFormats: ListProperty<String>,
   private val timestampedReports: Property<Boolean>,
@@ -599,6 +652,7 @@ private class PitestCommandLineProvider(
         targetTests = targetTests.get(),
         sourceDirectories = sourceDirectories.files.toList(),
         reportDirectory = reportDirectory.get().asFile,
+        projectBaseDirectory = projectBaseDirectory.get().asFile,
         mutators = mutators.get(),
         outputFormats = outputFormats.get(),
         timestampedReports = timestampedReports.get(),

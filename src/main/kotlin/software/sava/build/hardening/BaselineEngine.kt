@@ -29,7 +29,8 @@ internal object BaselineEngine {
    * that name any currently observed line first, then bare or wholly stale rows,
    * with file order preserved inside both groups. That second phase is the
    * intentional moved-anchor fallback: a row whose tag names no live line is the
-   * killed sibling before a duplicate live anchor is. Keeping this allocator
+   * deterministic absent-sibling preference before a duplicate live anchor. It is
+   * uniquely attributable only when the anchor itself is unique. Keeping this allocator
    * shared by planning and rewriting prevents either surface from selecting a
    * different same-key sibling when recorded line tags repeat.
    */
@@ -110,7 +111,8 @@ internal object BaselineEngine {
    *
    *  - [Disposition.MATCHED] — holds part of its key's surviving budget: line
    *    affinity first (a row whose `# line` tag names an observed unkilled line is
-   *    that mutant's row), then file order, the update refresh's own rule.
+   *    the preferred assignment, unique only when that anchor is unique), then file
+   *    order, the update refresh's own rule.
    *  - [Disposition.INSURED] — a row at a flip-insured key, kept unconditionally
    *    and decided BEFORE the timeout budget: an insured row spending that budget
    *    vouched for nobody and pushed the sibling the timeout could actually be
@@ -118,7 +120,8 @@ internal object BaselineEngine {
    *  - [Disposition.TIMEOUT] — holds part of its coordinate's timeout budget: at
    *    most as many rows as mutants actually timed out there. Affine rows first (a
    *    `# line` tag naming a timed-out line), bare rows in file order, anti-affine
-   *    rows last (a tag naming a KILLED line is provably the killed mutant's row).
+   *    rows last (a tag naming a KILLED line is the strongest deterministic drop
+   *    preference available, although duplicate same-line siblings remain ambiguous).
    *  - [Disposition.FLIP] — consumed an *unmatched* different-status counterpart
    *    at its coordinate (the pairing the verify classifies as "newly covered").
    *  - [Disposition.DROP] — unmatched by this run and therefore a prune candidate.
@@ -199,6 +202,7 @@ internal object BaselineEngine {
   data class PruneRewrite(
     val written: List<String>,
     val refreshedLineTags: Int,
+    val sourceRowIndices: List<Int>,
   )
 
   /**
@@ -236,8 +240,8 @@ internal object BaselineEngine {
       }
     }
     var refreshedLineTags = 0
-    val written = acceptedRows.indices.mapNotNull { index ->
-      if (keepPlan[index] == Disposition.DROP) return@mapNotNull null
+    val sourceRowIndices = acceptedRows.indices.filter { keepPlan[it] != Disposition.DROP }
+    val written = sourceRowIndices.map { index ->
       val row = acceptedRows[index]
       val lines = if (keepPlan[index] == Disposition.MATCHED) {
         refreshedLines.getValue(index)
@@ -247,7 +251,7 @@ internal object BaselineEngine {
       if (lines != row.recordedLines) refreshedLineTags++
       BaselineNotes.render(row.key, row.note, lines)
     }
-    return PruneRewrite(written, refreshedLineTags)
+    return PruneRewrite(written, refreshedLineTags, sourceRowIndices)
   }
 
   /** The drift comparison's outcome: dangerous flips by origin, and the benign tallies. */
@@ -302,7 +306,7 @@ internal object BaselineEngine {
     return Drift(fromSurvived, fromNoCoverage, newlyTimedOut, firstObserved, resolved)
   }
 
-  /** A full-rewrite refresh: the written lines plus everything the task must name. */
+  /** A report-driven rewrite plus protected rows: the lines and every named outcome. */
   data class UpdateRewrite(
     val written: List<String>,
     val copies: Int,
@@ -310,6 +314,9 @@ internal object BaselineEngine {
     val flipped: Int,
     val droppedIdx: List<Int>,
     val carriedIdx: Set<Int>,
+    val preservedTimeoutIdx: Set<Int>,
+    val preservedInsuredIdx: Set<Int>,
+    val sourceRowIndices: List<Int?>,
   )
 
   /**
@@ -317,12 +324,22 @@ internal object BaselineEngine {
    * accepted rows are assigned to this run's mutants by line affinity first, then
    * file order; a dropped row's note carries across a status flip at the same
    * coordinate (consumed once, marked for re-reading); every remaining new copy
-   * seeds `# untriaged`.
+   * seeds `# untriaged`. Rows protected by this run's timeout budget or persistent
+   * flip insurance remain verbatim: neither a load-dependent timeout nor the
+   * absent/other-status side of an observed mode flip proves that its accepted row
+   * has gone away.
+   * A pending different-status [Disposition.FLIP] is deliberately not persistent —
+   * update resolves that reviewed transition through the note-carry path, whereas a
+   * shrink-only prune cannot add the current status and therefore keeps it pending.
    */
   fun updateRewrite(
     acceptedRows: List<BaselineNotes.Row>,
     currentLines: Map<String, List<String>>,
+    keepPlan: List<Disposition>,
   ): UpdateRewrite {
+    require(acceptedRows.size == keepPlan.size) {
+      "update keep plan has ${keepPlan.size} dispositions for ${acceptedRows.size} rows"
+    }
     val rowIndicesByKey = acceptedRows.indices.groupBy { acceptedRows[it].key }
     data class Copy(val key: String, val line: Int?, val pair: Int?)
     val copies = currentLines.keys.sorted().flatMap { key ->
@@ -333,32 +350,102 @@ internal object BaselineEngine {
       ).map { Copy(key, it.line, it.rowIndex) }
     }
     val chosenIdx = copies.mapNotNullTo(mutableSetOf()) { it.pair }
-    val droppedIdx = acceptedRows.indices.filter { it !in chosenIdx }
-    val flipPool = droppedIdx.filter { acceptedRows[it].note != null }.toMutableList()
+    val plannedMatchedIdx = acceptedRows.indices.filterTo(HashSet()) {
+      keepPlan[it] == Disposition.MATCHED
+    }
+    require(chosenIdx == plannedMatchedIdx) {
+      "update assignment selected ${chosenIdx.sorted()} but its keep plan matched " +
+          "${plannedMatchedIdx.sorted()}"
+    }
+    val preservedTimeoutIdx = acceptedRows.indices.filterTo(linkedSetOf()) {
+      keepPlan[it] == Disposition.TIMEOUT
+    }
+    val preservedInsuredIdx = acceptedRows.indices.filterTo(linkedSetOf()) {
+      keepPlan[it] == Disposition.INSURED
+    }
+    val preservedIdx = preservedTimeoutIdx + preservedInsuredIdx
+    val droppedIdx = acceptedRows.indices.filter { it !in chosenIdx && it !in preservedIdx }
+    val flipPool = droppedIdx.filter {
+      keepPlan[it] == Disposition.FLIP && acceptedRows[it].note != null
+    }
+    // A status change still has line evidence. Allocate every unpaired current copy
+    // to old-status rows with the same maximum exact-affinity matcher used within a
+    // key, rather than carrying notes by file order across distinguishable siblings.
+    val flipByCopy = HashMap<Int, Int>()
+    copies.indices.filter { copies[it].pair == null }
+        .groupBy { copies[it].key.substringBeforeLast(',') }
+        .forEach { (coordinate, copyIndices) ->
+          val candidateRows = flipPool.filter {
+            acceptedRows[it].key.substringBeforeLast(',') == coordinate
+          }
+          if (candidateRows.isEmpty()) return@forEach
+          val copiesByLine = copyIndices.groupBy { copies[it].line }
+              .mapValues { (_, indices) -> ArrayDeque(indices) }
+          assignObservedCopies(
+              acceptedRows,
+              candidateRows,
+              copyIndices.map { copies[it].line?.toString().orEmpty() },
+          ).forEach { assignment ->
+            val copyIndex = copiesByLine.getValue(assignment.line).removeFirst()
+            assignment.rowIndex?.let { flipByCopy[copyIndex] = it }
+          }
+        }
     val carriedIdx = mutableSetOf<Int>()
     var flipped = 0
     var seeded = 0
-    val written = copies.map { copy ->
+    data class PlannedRow(val key: String, val rendered: String, val sourceRowIndex: Int?)
+    val observedRows = copies.mapIndexed { copyIndex, copy ->
       val lineTag = copy.line?.let { listOf(it) } ?: emptyList()
       val match = copy.pair
       if (match != null) {
-        return@map BaselineNotes.render(copy.key, acceptedRows[match].note, lineTag)
+        return@mapIndexed PlannedRow(
+            copy.key,
+            BaselineNotes.render(copy.key, acceptedRows[match].note, lineTag),
+            match,
+        )
       }
-      val coordinate = copy.key.substringBeforeLast(',')
-      val flip = flipPool.firstOrNull { acceptedRows[it].key.substringBeforeLast(',') == coordinate }
+      val flip = flipByCopy[copyIndex]
       if (flip != null) {
-        flipPool.remove(flip)
         carriedIdx.add(flip)
         flipped++
         val from = acceptedRows[flip].key.substringAfterLast(',')
         val to = copy.key.substringAfterLast(',')
-        return@map BaselineNotes.render(
-            copy.key, "${acceptedRows[flip].note} (carried across $from -> $to)", lineTag)
+        return@mapIndexed PlannedRow(
+            copy.key,
+            BaselineNotes.render(
+                copy.key, "${acceptedRows[flip].note} (carried across $from -> $to)", lineTag),
+            flip,
+        )
       }
       seeded++
-      BaselineNotes.render(copy.key, "# untriaged", lineTag)
+      PlannedRow(copy.key, BaselineNotes.render(copy.key, "# untriaged", lineTag), null)
     }
-    return UpdateRewrite(written, copies.size, seeded, flipped, droppedIdx, carriedIdx)
+    val protectedRows = preservedIdx.sorted().map { index ->
+      acceptedRows[index].let { PlannedRow(it.key, BaselineNotes.render(it), index) }
+    }
+    require(carriedIdx == flipPool.toSet()) {
+      "update status-flip assignment carried ${carriedIdx.sorted()} but its keep plan selected " +
+          "${flipPool.sorted()}"
+    }
+    // Existing evidence stays in original row order so its document slot and nearby
+    // prose remain stable. Genuinely new rows append deterministically. Repeating the
+    // update therefore remains a fixed point without globally sorting old rows.
+    val planned = (observedRows + protectedRows)
+    val ordered = planned.filter { it.sourceRowIndex != null }
+        .sortedBy { checkNotNull(it.sourceRowIndex) } +
+        planned.filter { it.sourceRowIndex == null }
+            .sortedWith(compareBy<PlannedRow>({ it.key }, { it.rendered }))
+    return UpdateRewrite(
+        ordered.map { it.rendered },
+        copies.size,
+        seeded,
+        flipped,
+        droppedIdx,
+        carriedIdx,
+        preservedTimeoutIdx,
+        preservedInsuredIdx,
+        ordered.map { it.sourceRowIndex },
+    )
   }
 
   /** An append-only union: the rows it adds and the merged file it writes. */
@@ -366,6 +453,7 @@ internal object BaselineEngine {
     val added: List<String>,
     val merged: List<String>,
     val total: Int,
+    val sourceRowIndices: List<Int?>,
   )
 
   /**
@@ -380,28 +468,54 @@ internal object BaselineEngine {
     acceptedRows: List<BaselineNotes.Row>,
     current: List<String>,
     currentLines: Map<String, List<String>>,
+  ): UnionMerge = unionMerge(acceptedRows, current, currentLines, null)
+
+  /**
+   * A provenance transition is deliberately non-destructive: retain every old
+   * accepted row and seed every missing current copy for review. Unlike the
+   * flip-only union escape hatch, new rows are visibly untriaged.
+   */
+  fun rebaseMerge(
+    acceptedRows: List<BaselineNotes.Row>,
+    current: List<String>,
+    currentLines: Map<String, List<String>>,
+  ): UnionMerge = unionMerge(acceptedRows, current, currentLines, "# untriaged")
+
+  private fun unionMerge(
+    acceptedRows: List<BaselineNotes.Row>,
+    current: List<String>,
+    currentLines: Map<String, List<String>>,
+    addedNote: String?,
   ): UnionMerge {
     val added = multisetDiff(current, acceptedRows.map { it.key })
-    if (added.isEmpty()) return UnionMerge(emptyList(), emptyList(), acceptedRows.size)
+    if (added.isEmpty()) {
+      return UnionMerge(emptyList(), emptyList(), acceptedRows.size, emptyList())
+    }
     val rowIndicesByKey = acceptedRows.indices.groupBy { acceptedRows[it].key }
     val currentCounts = current.groupingBy { it }.eachCount()
-    var total = 0
-    val merged = (rowIndicesByKey.keys + currentCounts.keys).sorted().flatMap { key ->
+    val additions = currentCounts.keys.sorted().flatMap { key ->
       val rowIndices = rowIndicesByKey[key].orEmpty()
-      val existing = rowIndices.map { acceptedRows[it] }
-      val extra = maxOf(0, (currentCounts[key] ?: 0) - existing.size)
+      val extra = maxOf(0, currentCounts.getValue(key) - rowIndices.size)
       val unclaimed = ArrayDeque(
           assignObservedCopies(acceptedRows, rowIndices, currentLines[key].orEmpty())
               .filter { it.rowIndex == null }
               .map { it.line })
-      total += existing.size + extra
-      existing.map { BaselineNotes.render(it) } +
-          List(extra) {
-            BaselineNotes.render(
-                key, null, unclaimed.removeFirstOrNull()?.let { listOf(it) } ?: emptyList())
-          }
+      List(extra) {
+        BaselineNotes.render(
+            key, addedNote, unclaimed.removeFirstOrNull()?.let { listOf(it) } ?: emptyList())
+      }
     }
-    return UnionMerge(added, merged, total)
+    // Union and provenance rebase are append-only document transitions. Keeping
+    // every existing row in its original slot is stronger than retaining its bytes:
+    // BaselineDocument leaves intervening comments fixed, so sorting old rows here
+    // would silently move those comments onto different mutants.
+    val merged = acceptedRows.map(BaselineNotes::render) + additions
+    return UnionMerge(
+        added,
+        merged,
+        merged.size,
+        acceptedRows.indices.map { it as Int? } + List(additions.size) { null },
+    )
   }
 
   /** The check path's account of fresh rows: what pairs, what surfaces, what is unexplained. */

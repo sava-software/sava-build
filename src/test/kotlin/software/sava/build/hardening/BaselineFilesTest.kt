@@ -59,8 +59,8 @@ class BaselineFilesTest {
 
   @Test
   fun `an empty write is honoured rather than skipped`() {
-    // a prune that drops every row writes an empty baseline; silently keeping the old
-    // file would leave the ratchet gated on rows the run proved gone
+    // The low-level single-file primitive must not silently skip empty content. Record
+    // writers that canonicalize an empty baseline to absence use a null multi-file write.
     val target = File(tempDir, "encoding-accepted.csv")
     BaselineFiles.writeAtomically(target, "stale\n")
 
@@ -71,29 +71,96 @@ class BaselineFilesTest {
   }
 
   @Test
-  fun `empty accepted record deletion also retires only an orphan PIT stamp`() {
+  fun `a multi-file write rolls every earlier target back when a later path fails`() {
+    val existing = File(tempDir, "record/version").apply {
+      parentFile.mkdirs()
+      writeText("old version\n")
+    }
+    val newlyCreated = File(tempDir, "record/toolchain")
+    val blockingParent = File(tempDir, "not-a-directory").apply { writeText("block") }
+    val impossible = File(blockingParent, "timeouts.csv")
+
+    assertThrows(Exception::class.java) {
+      BaselineFiles.writeAllAtomically(listOf(
+        BaselineFiles.Write(existing, "new version\n"),
+        BaselineFiles.Write(newlyCreated, "new toolchain\n"),
+        BaselineFiles.Write(impossible, "new timeout set\n"),
+      ))
+    }
+
+    assertEquals("old version\n", existing.readText(), "an overwritten target was not restored")
+    assertFalse(newlyCreated.exists(), "a newly-created earlier target survived rollback")
+    assertEquals("block", blockingParent.readText())
+    assertTrue(
+      tempDir.walkTopDown().none { it.name.endsWith(".tmp") },
+      "multi-file rollback leaked a staging file",
+    )
+  }
+
+  @Test
+  fun `empty accepted record deletion also retires only orphan mutation provenance`() {
     val baseline = File(tempDir, "config/pitest/encoding-accepted.csv").apply {
       parentFile.mkdirs()
       writeText("${BaselineDocument.CURRENT_HEADER}\n\n")
     }
     val timeouts = File(baseline.parentFile, "encoding-timeouts.csv")
     val stamp = File(baseline.parentFile, "encoding-pitest-version").apply { writeText("1.20.3\n") }
+    val toolchain = File(baseline.parentFile, "encoding-pitest-toolchain.tsv").apply {
+      writeText("fixture toolchain\n")
+    }
 
-    val removed = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(baseline, timeouts, stamp)
+    val removed = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(
+      baseline,
+      timeouts,
+      stamp,
+      toolchain,
+    )
 
     assertTrue(removed.baselineRemoved)
     assertTrue(removed.orphanVersionStampRemoved)
+    assertTrue(removed.orphanToolchainRecordRemoved)
     assertFalse(baseline.exists())
     assertFalse(stamp.exists())
+    assertFalse(toolchain.exists())
 
     baseline.writeText("\n")
     timeouts.writeText("com.example.Codec,encode,MathMutator\n")
     stamp.writeText("1.20.3\n")
-    val audited = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(baseline, timeouts, stamp)
+    toolchain.writeText("fixture toolchain\n")
+    val audited = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(
+      baseline,
+      timeouts,
+      stamp,
+      toolchain,
+    )
 
     assertTrue(audited.baselineRemoved)
     assertFalse(audited.orphanVersionStampRemoved)
+    assertFalse(audited.orphanToolchainRecordRemoved)
     assertTrue(stamp.isFile, "the timeout audit still needs PIT-version provenance")
+    assertTrue(toolchain.isFile, "the timeout audit still needs mutation-toolchain provenance")
+  }
+
+  @Test
+  fun `orphan mutation provenance sidecars are reported independently`() {
+    val baseline = File(tempDir, "encoding-accepted.csv").apply { writeText("\n") }
+    val timeouts = File(tempDir, "encoding-timeouts.csv")
+    val stamp = File(tempDir, "encoding-pitest-version")
+    val toolchain = File(tempDir, "encoding-pitest-toolchain.tsv").apply {
+      writeText("fixture toolchain\n")
+    }
+
+    val removed = BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(
+      baseline,
+      timeouts,
+      stamp,
+      toolchain,
+    )
+
+    assertTrue(removed.baselineRemoved)
+    assertFalse(removed.orphanVersionStampRemoved)
+    assertTrue(removed.orphanToolchainRecordRemoved)
+    assertFalse(toolchain.exists())
   }
 
   @Test
@@ -101,6 +168,7 @@ class BaselineFilesTest {
     val baseline = File(tempDir, "encoding-accepted.csv")
     val timeouts = File(tempDir, "encoding-timeouts.csv")
     val stamp = File(tempDir, "encoding-pitest-version")
+    val toolchain = File(tempDir, "encoding-pitest-toolchain.tsv")
 
     listOf(
       "com.example.Codec,encode,MathMutator,SURVIVED\n",
@@ -109,7 +177,7 @@ class BaselineFilesTest {
     ).forEach { content ->
       baseline.writeText(content)
       val refusal = assertThrows(IllegalArgumentException::class.java) {
-        BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(baseline, timeouts, stamp)
+        BaselineFiles.deleteSemanticallyEmptyAcceptedRecord(baseline, timeouts, stamp, toolchain)
       }
       assertTrue(refusal.message.orEmpty().contains("refusing to delete non-empty accepted baseline"))
       assertEquals(content, baseline.readText())
@@ -162,5 +230,32 @@ class BaselineFilesTest {
 
     assertFalse(managed.exists())
     assertEquals("keep", evidence.readText(), "recursive cleanup must not follow a symlink")
+  }
+
+  @Test
+  fun `record paths refuse a symbolic link below the trusted project boundary`() {
+    val project = tempDir.resolve("project").apply { mkdirs() }
+    val external = tempDir.resolve("external").apply { mkdirs() }
+    Files.createSymbolicLink(project.resolve("config").toPath(), external.toPath())
+    val target = project.resolve("config/pitest/encoding-accepted.csv")
+
+    val failure = assertThrows(IllegalArgumentException::class.java) {
+      BaselineFiles.requireRegularFileOrMissing(project, target)
+    }
+
+    assertTrue(failure.message.orEmpty().contains("symbolic-link component"), failure.message)
+    assertFalse(external.resolve("pitest/encoding-accepted.csv").exists())
+  }
+
+  @Test
+  fun `record paths cannot escape the trusted project boundary lexically`() {
+    val project = tempDir.resolve("project").apply { mkdirs() }
+    val target = project.resolve("../external/encoding-accepted.csv")
+
+    val failure = assertThrows(IllegalArgumentException::class.java) {
+      BaselineFiles.requireRegularFileOrMissing(project, target)
+    }
+
+    assertTrue(failure.message.orEmpty().contains("escapes trusted project directory"), failure.message)
   }
 }

@@ -220,8 +220,10 @@ register its own production namespaces, mutation suites, exclusions, and fuzz ta
 The ArcMutate certificate committed at this repository's root is optional and applies
 only to eligible public `software.sava.*` projects—not GLAM, private `idl-src-gen`, or
 unrelated adopters. It is not packaged into the plugin or copied into consumers. An
-eligible repository activates it only by deliberately placing the certificate at that
-repository's root; every other adopter uses the same process with open-source PIT.
+eligible repository normally activates it by deliberately placing the certificate at
+that repository's root; a project-directory certificate can instead activate one module,
+with the nearest ancestry certificate becoming effective. Every other adopter uses the
+same process with open-source PIT.
 
 ## Configuration
 

@@ -273,6 +273,18 @@ $buildTail
     )
   }
 
+  private fun enableFakeArcMutate() {
+    File(fixtureDir, "arcmutate-licence.txt")
+      .writeText("expires=31/12/2999\ntype=OSSS\nfixture=licence-marker\n")
+    File(
+      fixtureDir,
+      "src/main/resources/META-INF/maven/com.arcmutate/base/pom.properties",
+    ).apply {
+      parentFile.mkdirs()
+      writeText("groupId=com.arcmutate\nartifactId=base\nversion=1.7.1\n")
+    }
+  }
+
   private fun writeSeedCorpus() {
     val corpus = File(fixtureDir, "corpus/codec").apply { mkdirs() }
     corpus.resolve("seedA").writeText("alpha")
@@ -348,7 +360,8 @@ $buildTail
     )
     writeSeedCorpus()
     File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
-    File(fixtureDir, "arcmutate-licence.txt").writeText("fixture licence marker\n")
+    File(fixtureDir, "arcmutate-licence.txt")
+      .writeText("expires=31/12/2999\ntype=OSSS\nfixture=licence-marker\n")
   }
 
   /**
@@ -743,14 +756,19 @@ $buildTail
     assertTrue(evidence.isFile, "completed PIT evidence missing:\n${certified.output}")
     assertTrue(receipt.isFile, "certification receipt missing:\n${certified.output}")
     val receiptText = receipt.readText()
-    assertTrue(receiptText.contains("schema\t4"), receiptText)
+    assertTrue(receiptText.contains("schema\t5"), receiptText)
     assertTrue(receiptText.contains("session\t"), receiptText)
     assertTrue(receiptText.contains("toolClasspathSha256"), receiptText)
+    assertTrue(receiptText.contains("mutationToolchainSha256"), receiptText)
     assertTrue(receiptText.contains("recordInputsSha256"), receiptText)
     assertTrue(receiptText.contains("recordPitestVersion"), receiptText)
+    assertTrue(receiptText.contains("recordMutationToolchainSha256"), receiptText)
     assertTrue(receiptText.contains("mode\tfresh-full-strict"), receiptText)
     assertTrue(receiptText.contains("suite\tencoding"), receiptText)
-    assertTrue(receiptText.contains("\tlegacy-unversioned\n"), receiptText)
+    assertTrue(
+      receiptText.contains("\tlegacy-unversioned\tlegacy-toolchain-unbound\n"),
+      receiptText,
+    )
     val columns = receiptText.lineSequence().first { it.startsWith("columns\t") }.split('\t')
     val suiteRow = receiptText.lineSequence().first { it.startsWith("suite\tencoding\t") }.split('\t')
     val recordInputsIndex = columns.indexOf("recordInputsSha256") - 1
@@ -762,6 +780,7 @@ $buildTail
           File(configDir, "encoding-accepted.csv"),
           File(configDir, "encoding-timeouts.csv"),
           File(configDir, "encoding-pitest-version"),
+          File(configDir, "encoding-pitest-toolchain.tsv"),
           File(configDir, "README.md"),
         ).filter { it.isFile },
       ),
@@ -782,8 +801,8 @@ $buildTail
 
     val transition = runner("clean", "hardeningCertify").build()
     assertTrue(
-      transition.output.contains(".evidence.tsv' has been created"),
-      "the configuration cache did not track the N-1-to-current graph transition:\n${transition.output}",
+      transition.output.contains("Reusing configuration cache"),
+      "completed evidence creation invalidated the invariant configuration-cache graph:\n${transition.output}",
     )
     val reused = runner("clean", "hardeningCertify").build()
     assertTrue(reused.output.contains("Reusing configuration cache"), reused.output)
@@ -792,6 +811,41 @@ $buildTail
     val stale = runner("pitestEncodingVerify").buildAndFail().output
     assertTrue(stale.contains("completed report evidence no longer matches the current build"), stale)
     assertTrue(stale.contains("sourceSha256"), stale)
+  }
+
+  @Test
+  fun `PIT evidence creation and removal do not invalidate the configuration cache`() {
+    writeFixture()
+    // `check` replays every declared corpus. Seed both corpus-backed fixture targets
+    // so this test isolates configuration-graph stability instead of failing the
+    // deliberately strict generated replay contract.
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val cold = runner("check").build().output
+    assertFalse(cold.contains("Reusing configuration cache"), cold)
+
+    val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    val evidence = reportDir.resolve(".evidence.tsv").apply {
+      parentFile.mkdirs()
+      writeText("fixture evidence whose contents are irrelevant to the check graph\n")
+    }
+    val toolchain = reportDir.resolve(".toolchain.tsv").apply {
+      writeText("fixture toolchain whose contents are irrelevant to the check graph\n")
+    }
+    val afterCreation = runner("check").build().output
+    assertTrue(
+      afterCreation.contains("Reusing configuration cache"),
+      "creating PIT evidence selected a different configuration graph:\n$afterCreation",
+    )
+
+    assertTrue(evidence.delete(), "fixture could not remove its evidence manifest")
+    assertTrue(toolchain.delete(), "fixture could not remove its toolchain manifest")
+    val afterRemoval = runner("check").build().output
+    assertTrue(
+      afterRemoval.contains("Reusing configuration cache"),
+      "removing PIT evidence selected a different configuration graph:\n$afterRemoval",
+    )
   }
 
   @Test
@@ -837,6 +891,42 @@ $buildTail
   }
 
   @Test
+  fun `certification refuses committed records changed after suite verification`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        val acceptedRecordAfterVerify =
+          layout.projectDirectory.file("config/pitest/encoding-accepted.csv")
+        tasks.register("tamperRecordAfterVerify") {
+          mustRunAfter("pitestEncodingVerify")
+          doLast {
+            acceptedRecordAfterVerify.asFile.apply {
+              parentFile.mkdirs()
+              writeText("!sava-hardening-baseline-schema,1\n" +
+                "com.example.Concurrent,changed,MathMutator,SURVIVED # line 7\n")
+            }
+          }
+        }
+        tasks.named("hardeningCertify") {
+          dependsOn("tamperRecordAfterVerify")
+        }
+      """.trimIndent() + "\n",
+    )
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+
+    assertTrue(
+      failed.contains("committed mutation records changed after successful verification"),
+      failed,
+    )
+    assertFalse(receipt.exists(), "record-tampered certification left a passing receipt")
+  }
+
+  @Test
   fun `certification preflight rejects scoped flags before PIT executes`() {
     writeFixture()
 
@@ -857,7 +947,7 @@ $buildTail
     writeFixture(buildTail = alias)
     writeSeedCorpus()
     File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
-    File(fixtureDir, "arcmutate-licence.txt").writeText("fixture licence marker\n")
+    enableFakeArcMutate()
 
     runner("pitestEncoding").build()
     val evidence = File(fixtureDir, "build/reports/pitest/encoding/.evidence.tsv")
@@ -943,7 +1033,7 @@ $buildTail
     writeSeedCorpus()
     File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
     File(fixtureDir, "settings.gradle.kts").appendText("\ninclude(\"a\", \"b\")\n")
-    File(fixtureDir, "arcmutate-licence.txt").writeText("fixture licence marker\n")
+    enableFakeArcMutate()
 
     val sharedBuild = File(fixtureDir, "build.gradle.kts").readText()
     listOf("a", "b").forEach { name ->

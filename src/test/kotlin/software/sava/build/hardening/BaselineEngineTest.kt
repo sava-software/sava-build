@@ -80,6 +80,21 @@ class BaselineEngineTest {
     line in source.recordedLines
   }
 
+  private fun updateRewrite(
+    acceptedRows: List<BaselineNotes.Row>,
+    currentLines: Map<String, List<String>>,
+    timedOutLines: Map<String, List<Int?>> = emptyMap(),
+    killedLines: Map<String, List<Int?>> = emptyMap(),
+  ): BaselineEngine.UpdateRewrite {
+    val keepPlan = BaselineEngine.keepPlan(
+      acceptedRows,
+      currentLines,
+      timedOutLines,
+      killedLines,
+    )
+    return BaselineEngine.updateRewrite(acceptedRows, currentLines, keepPlan)
+  }
+
   /** A random small population: sibling-heavy keys, partial tags, some insurance. */
   private fun population(rnd: Random): Population {
     fun key() = "${classes.random(rnd)},${methods.random(rnd)},${mutators.random(rnd)},${statuses.random(rnd)}"
@@ -229,7 +244,7 @@ class BaselineEngineTest {
       if (expected > greedyExactAffinity(rows, observed)) displacementCases++
       val sourceByNote = rows.associateBy { it.note }
 
-      val update = BaselineEngine.updateRewrite(rows, mapOf(key to observed))
+      val update = updateRewrite(rows, mapOf(key to observed))
       assertEquals(
         expected,
         exactAffinityInWrittenRows(update.written, sourceByNote),
@@ -238,7 +253,7 @@ class BaselineEngineTest {
       val permuted = observed.shuffled(Random(seed + 10_000))
       assertEquals(
         update.written,
-        BaselineEngine.updateRewrite(rows, mapOf(key to permuted)).written,
+        updateRewrite(rows, mapOf(key to permuted)).written,
         "seed $seed: report order changed a deterministic assignment",
       )
 
@@ -447,7 +462,7 @@ class BaselineEngineTest {
         BaselineEngine.Disposition.MATCHED,
       ),
       plan,
-      "the # line 99 row, not a still-live # line 10 sibling, is the killed mutant's row",
+      "the # line 99 row, not a still-live # line 10 sibling, is the deterministic absent-sibling preference",
     )
     assertEquals(
       listOf(
@@ -456,7 +471,7 @@ class BaselineEngineTest {
       ),
       BaselineEngine.pruneRewrite(accepted, plan, currentLines).written,
     )
-    val update = BaselineEngine.updateRewrite(accepted, currentLines)
+    val update = updateRewrite(accepted, currentLines)
     assertEquals(listOf(0), update.droppedIdx)
     assertEquals(
       listOf(
@@ -497,7 +512,7 @@ class BaselineEngineTest {
     )
     assertEquals(expected, BaselineEngine.pruneRewrite(accepted, plan, currentLines).written)
 
-    val update = BaselineEngine.updateRewrite(accepted, currentLines)
+    val update = updateRewrite(accepted, currentLines)
     assertEquals(listOf(0), update.droppedIdx)
     assertEquals(expected, update.written)
   }
@@ -525,10 +540,10 @@ class BaselineEngineTest {
     )
     assertEquals(
       listOf(
-        "$key # narrow history # line 10",
         "$key # broad history # line 20",
+        "$key # narrow history # line 10",
       ),
-      BaselineEngine.updateRewrite(accepted, currentLines).written,
+      updateRewrite(accepted, currentLines).written,
     )
   }
 
@@ -573,24 +588,156 @@ class BaselineEngineTest {
   }
 
   @Test
+  fun `update preserves timeout budgets and literal insurance but drops unprotected rows`() {
+    val timeoutKey = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val timeoutCoord = timeoutKey.substringBeforeLast(',')
+    val insuredKey = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val deadKey = "com.example.Codec,gone,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(timeoutKey, "# timeout family", listOf(12)),
+      BaselineNotes.Row(timeoutKey, "# killed sibling", listOf(20)),
+      BaselineNotes.Row(
+        insuredKey,
+        "# handled flag (flip insurance: gate=KILLED, solo=SURVIVED)",
+        listOf(30),
+      ),
+      BaselineNotes.Row(deadKey, "# removed population", listOf(40)),
+    )
+    val timedOut = mapOf(timeoutCoord to listOf<Int?>(12))
+    val killed = mapOf(
+      timeoutCoord to listOf<Int?>(20),
+      insuredKey.substringBeforeLast(',') to listOf<Int?>(30),
+      deadKey.substringBeforeLast(',') to listOf<Int?>(40),
+    )
+    val plan = BaselineEngine.keepPlan(accepted, emptyMap(), timedOut, killed)
+
+    assertEquals(
+      listOf(
+        BaselineEngine.Disposition.TIMEOUT,
+        BaselineEngine.Disposition.DROP,
+        BaselineEngine.Disposition.INSURED,
+        BaselineEngine.Disposition.DROP,
+      ),
+      plan,
+    )
+
+    val rewrite = BaselineEngine.updateRewrite(accepted, emptyMap(), plan)
+    assertEquals(0, rewrite.copies)
+    assertEquals(setOf(0), rewrite.preservedTimeoutIdx)
+    assertEquals(setOf(2), rewrite.preservedInsuredIdx)
+    assertEquals(listOf(1, 3), rewrite.droppedIdx)
+    assertEquals(listOf(0, 2), rewrite.sourceRowIndices)
+    assertEquals(
+      listOf(
+        BaselineNotes.render(accepted[0]),
+        BaselineNotes.render(accepted[2]),
+      ),
+      rewrite.written,
+      "zero unkilled copies must not erase timeout or insurance evidence",
+    )
+  }
+
+  @Test
+  fun `update resolves a gated status flip instead of turning it into insurance`() {
+    val oldKey = "com.example.Codec,encode,MathMutator,NO_COVERAGE"
+    val currentKey = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(oldKey, "# structural absence", listOf(12)),
+    )
+    val currentLines = mapOf(currentKey to listOf("12"))
+    val plan = BaselineEngine.keepPlan(accepted, currentLines, emptyMap(), emptyMap())
+
+    assertEquals(listOf(BaselineEngine.Disposition.FLIP), plan)
+    val rewrite = BaselineEngine.updateRewrite(accepted, currentLines, plan)
+
+    assertEquals(
+      listOf("$currentKey # structural absence (carried across NO_COVERAGE -> SURVIVED) # line 12"),
+      rewrite.written,
+    )
+    assertEquals(listOf(0), rewrite.droppedIdx)
+    assertEquals(setOf(0), rewrite.carriedIdx)
+    assertTrue(rewrite.preservedTimeoutIdx.isEmpty())
+    assertTrue(rewrite.preservedInsuredIdx.isEmpty())
+  }
+
+  @Test
+  fun `status flip note carry uses maximum line affinity across siblings`() {
+    val oldKey = "com.example.Codec,encode,MathMutator,NO_COVERAGE"
+    val currentKey = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(oldKey, "# broad old sibling", listOf(10, 20)),
+      BaselineNotes.Row(oldKey, "# narrow old sibling", listOf(10)),
+    )
+    val currentLines = mapOf(currentKey to listOf("10", "20"))
+    val plan = BaselineEngine.keepPlan(accepted, currentLines, emptyMap(), emptyMap())
+
+    assertEquals(List(2) { BaselineEngine.Disposition.FLIP }, plan)
+    val rewrite = BaselineEngine.updateRewrite(accepted, currentLines, plan)
+
+    assertEquals(listOf(0, 1), rewrite.sourceRowIndices)
+    assertEquals(
+      listOf(
+        "$currentKey # broad old sibling (carried across NO_COVERAGE -> SURVIVED) # line 20",
+        "$currentKey # narrow old sibling (carried across NO_COVERAGE -> SURVIVED) # line 10",
+      ),
+      rewrite.written,
+      "the broad row must move to line 20 so the narrow row keeps its sole line-10 affinity",
+    )
+  }
+
+  @Test
   fun `update rewrites are exact and idempotent`() {
     repeat(1000) { seed ->
       val rnd = Random(seed)
       val p = population(rnd)
-      val rewrite = BaselineEngine.updateRewrite(p.acceptedRows, p.currentLines)
+      val plan = BaselineEngine.keepPlan(
+        p.acceptedRows,
+        p.currentLines,
+        p.timedOutLines,
+        p.killedLines,
+      )
+      val rewrite = BaselineEngine.updateRewrite(p.acceptedRows, p.currentLines, plan)
 
-      // every unkilled copy gets exactly one row
-      val expected = p.currentLines.entries.sumOf { it.value.size }
-      assertEquals(expected, rewrite.written.size, "seed $seed: one row per unkilled mutant")
+      // Every unkilled copy gets exactly one row, and every timeout/insurance keep
+      // gets one additional persistent row. No other accepted row survives.
+      val protectedIndices = p.acceptedRows.indices.filter {
+        plan[it] == BaselineEngine.Disposition.TIMEOUT ||
+            plan[it] == BaselineEngine.Disposition.INSURED
+      }
+      val expectedCopies = p.currentLines.entries.sumOf { it.value.size }
       assertEquals(
-        p.currentLines.entries.flatMap { (k, v) -> List(v.size) { k } }.sorted(),
+        expectedCopies + protectedIndices.size,
+        rewrite.written.size,
+        "seed $seed: current copies plus protected evidence",
+      )
+      assertEquals(
+        protectedIndices.filterTo(HashSet()) { plan[it] == BaselineEngine.Disposition.TIMEOUT },
+        rewrite.preservedTimeoutIdx,
+        "seed $seed: wrong timeout preservation set",
+      )
+      assertEquals(
+        protectedIndices.filterTo(HashSet()) { plan[it] == BaselineEngine.Disposition.INSURED },
+        rewrite.preservedInsuredIdx,
+        "seed $seed: wrong insurance preservation set",
+      )
+      val expectedKeys = p.currentLines.entries.flatMap { (k, v) -> List(v.size) { k } } +
+          protectedIndices.map { p.acceptedRows[it].key }
+      assertEquals(
+        expectedKeys.sorted(),
         rewrite.written.map { BaselineNotes.parse(it).key }.sorted(),
-        "seed $seed: written keys must be the report's unkilled multiset"
+        "seed $seed: written keys must be current copies plus protected evidence",
       )
 
       // a rewrite of the rewrite against the same run changes nothing: the exact
       // refresh ping-pong class (fix-needed-a-fix c8464b5) as a law, not a case
-      val again = BaselineEngine.updateRewrite(rewrite.written.map { BaselineNotes.parse(it) }, p.currentLines)
+      val rewrittenRows = rewrite.written.map { BaselineNotes.parse(it) }
+      val againPlan = BaselineEngine.keepPlan(
+        rewrittenRows,
+        p.currentLines,
+        p.timedOutLines,
+        p.killedLines,
+      )
+      val again = BaselineEngine.updateRewrite(rewrittenRows, p.currentLines, againPlan)
       assertEquals(rewrite.written, again.written, "seed $seed: update not a fixed point")
       assertTrue(again.droppedIdx.isEmpty(), "seed $seed: second update dropped rows")
     }
@@ -623,10 +770,47 @@ class BaselineEngineTest {
           "seed $seed: existing row lost by union — ${BaselineNotes.render(row)}"
         )
       }
+      assertEquals(
+        p.acceptedRows.map(BaselineNotes::render),
+        merge.merged.take(p.acceptedRows.size),
+        "seed $seed: union moved an existing row out of its document slot",
+      )
       // idempotence: union of the union adds nothing
       val again = BaselineEngine.unionMerge(merge.merged.map { BaselineNotes.parse(it) }, current, p.currentLines)
       assertTrue(again.added.isEmpty(), "seed $seed: union not idempotent")
     }
+  }
+
+  @Test
+  fun `rebase preserves old evidence and marks every new toolchain row untriaged`() {
+    val retained = "com.example.Codec,oldPath,MathMutator,SURVIVED"
+    val current = "com.example.Codec,newPath,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(retained, "# licensed-only family", listOf(10)),
+    )
+
+    val rebased = BaselineEngine.rebaseMerge(
+      accepted,
+      listOf(current, current),
+      mapOf(current to listOf("20", "30")),
+    )
+
+    assertEquals(listOf(current, current), rebased.added)
+    assertEquals(
+      listOf(
+        "$retained # licensed-only family # line 10",
+        "$current # untriaged # line 20",
+        "$current # untriaged # line 30",
+      ),
+      rebased.merged,
+    )
+    val again = BaselineEngine.rebaseMerge(
+      rebased.merged.map(BaselineNotes::parse),
+      listOf(current, current),
+      mapOf(current to listOf("20", "30")),
+    )
+    assertTrue(again.added.isEmpty())
+    assertTrue(again.merged.isEmpty(), "a no-op rebase should leave the caller's document byte-identical")
   }
 
   @Test

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.nio.file.Files
 
 class PitestEvidenceTest {
 
@@ -24,6 +25,7 @@ class PitestEvidenceTest {
       classesSha256 = "classes",
       classpathSha256 = "classpath",
       toolClasspathSha256 = "tool-classpath",
+      mutationToolchainSha256 = "mutation-toolchain",
       configurationSha256 = "config",
       reportSha256 = "report",
       scope = PitestEvidence.FULL_SCOPE,
@@ -52,8 +54,25 @@ class PitestEvidenceTest {
       PitestEvidence.parse(rendered + "surprise\tvalue\n")
     }
     assertThrows(IllegalArgumentException::class.java) {
-      PitestEvidence.parse(rendered.replace("schema\t2", "schema\t3"))
+      PitestEvidence.parse(rendered.replace("schema\t3", "schema\t4"))
     }
+  }
+
+  @Test
+  fun `N-1 evidence parses as legacy toolchain identity and must be refreshed`() {
+    val schema2 = evidence().render()
+      .replace("schema\t3", "schema\t2")
+      .lineSequence()
+      .filterNot { it.startsWith("mutationToolchainSha256\t") }
+      .joinToString("\n", postfix = "\n")
+
+    val parsed = PitestEvidence.parse(schema2)
+
+    assertEquals(PitestEvidence.LEGACY_MUTATION_TOOLCHAIN, parsed.mutationToolchainSha256)
+    assertTrue(
+      parsed.differences(evidence()).any { it.startsWith("mutationToolchainSha256:") },
+      parsed.differences(evidence()).toString(),
+    )
   }
 
   @Test
@@ -77,5 +96,20 @@ class PitestEvidenceTest {
 
     assertTrue(differences.any { it.startsWith("sourceSha256:") }, differences.toString())
     assertTrue(differences.any { it.startsWith("scope:") }, differences.toString())
+  }
+
+  @Test
+  fun `mutation record fingerprint refuses a linked config tree`() {
+    val project = tempDir.resolve("project").apply { mkdirs() }
+    val external = tempDir.resolve("external/pitest").apply { mkdirs() }
+    external.resolve("encoding-accepted.csv").writeText("accepted outside checkout\n")
+    Files.createSymbolicLink(project.resolve("config").toPath(), external.parentFile.toPath())
+
+    val failure = assertThrows(IllegalArgumentException::class.java) {
+      PitestEvidence.mutationRecordFingerprint(
+          project, project.resolve("config/pitest"), "encoding")
+    }
+
+    assertTrue(failure.message.orEmpty().contains("symbolic-link component"), failure.message)
   }
 }

@@ -80,6 +80,12 @@ internal class BaselineDocument private constructor(
     val canonicalizedRows: Int,
   )
 
+  /** One rendered row and the original row slot whose surrounding prose it retains. */
+  data class RowReplacement(
+    val value: BaselineNotes.Row,
+    val sourceRowIndex: Int?,
+  )
+
   val rowEntries: List<Entry.Row> = entries.filterIsInstance<Entry.Row>()
   val rows: List<BaselineNotes.Row> = rowEntries.map { it.value }
   val comments: List<Entry.Comment> = entries.filterIsInstance<Entry.Comment>()
@@ -192,6 +198,51 @@ internal class BaselineDocument private constructor(
         }
       }
       if (lastRow < 0) addAll(replacements)
+    }
+    return render(targetSchema, rewritten)
+  }
+
+  /**
+   * Rewrites rows while keeping every surviving original row in its own document
+   * slot. This is stronger than merely preserving non-row bytes: a comment between
+   * two rows must not move to the other side of a surviving row because a preceding
+   * sibling was removed or the replacement list was sorted. New rows have a null
+   * source and append after the final original row, before trailing document prose.
+   *
+   * Whole-line comments remain document prose rather than acceptance records; a
+   * row-specific argument belongs in that row's inline note. Source slots ensure
+   * such prose never crosses a surviving row during a machine rewrite.
+   */
+  fun rewriteRowsPreservingOrigins(
+    replacements: List<RowReplacement>,
+    targetSchema: SchemaState = schemaState,
+  ): String {
+    if (targetSchema == SchemaState.CURRENT) {
+      requireNoMalformedRows("write accepted-baseline schema $CURRENT_SCHEMA")
+    }
+    val bySource = replacements.filter { it.sourceRowIndex != null }
+        .groupBy { checkNotNull(it.sourceRowIndex) }
+    require(bySource.keys.all { it in rowEntries.indices }) {
+      "replacement row names a source slot outside 0..${rowEntries.lastIndex}"
+    }
+    require(bySource.values.all { it.size == 1 }) {
+      "more than one replacement row names the same source slot"
+    }
+    val additions = replacements.filter { it.sourceRowIndex == null }
+        .map { BaselineNotes.render(it.value) }
+    val lastRowEntry = entries.indexOfLast { it is Entry.Row }
+    var sourceRowIndex = 0
+    val rewritten = buildList {
+      entries.forEachIndexed { entryIndex, entry ->
+        if (entry is Entry.Row) {
+          bySource[sourceRowIndex]?.forEach { add(BaselineNotes.render(it.value)) }
+          sourceRowIndex++
+          if (entryIndex == lastRowEntry) addAll(additions)
+        } else {
+          add(entry.raw)
+        }
+      }
+      if (lastRowEntry < 0) addAll(additions)
     }
     return render(targetSchema, rewritten)
   }

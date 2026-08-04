@@ -111,8 +111,25 @@ class HardeningOperationsFunctionalTest {
       """.trimIndent() + "\n"
     )
     // Presence activates the licensed history policy; the fake task classpath is
-    // consumer-overridden, so the fixture need not execute ArcMutate itself.
-    File(fixtureDir, "arcmutate-licence.txt").writeText("fixture licence marker\n")
+    // consumer-overridden, so model the effective ArcMutate artifact with its Maven
+    // identity marker while FakePit remains the launched main class.
+    File(fixtureDir, "arcmutate-licence.txt")
+      .writeText("expires=31/12/2999\ntype=OSSS\nfixture=licence-marker\n")
+    File(
+      fixtureDir,
+      "src/main/resources/META-INF/maven/com.arcmutate/base/pom.properties",
+    ).apply {
+      parentFile.mkdirs()
+      writeText("groupId=com.arcmutate\nartifactId=base\nversion=1.7.1\n")
+    }
+  }
+
+  private fun disableArcMutate() {
+    File(fixtureDir, "arcmutate-licence.txt").delete()
+    File(
+      fixtureDir,
+      "src/main/resources/META-INF/maven/com.arcmutate/base/pom.properties",
+    ).delete()
   }
 
   private fun runner(vararg arguments: String) = GradleRunner.create()
@@ -128,6 +145,11 @@ class HardeningOperationsFunctionalTest {
     return file to content
   }
 
+  private fun adoptExistingRecordWithRebase() {
+    runner("pitestEncodingBaselineRebase").build()
+    File(fixtureDir, "build/fake-pit/runs.txt").delete()
+  }
+
   @Test
   fun `installed help exposes canonical writers and removed property mappings`() {
     writeFixture()
@@ -135,6 +157,7 @@ class HardeningOperationsFunctionalTest {
     val output = runner("hardeningHelp").build().output
 
     listOf(
+      "pitestEncodingBaselineRebase",
       "pitestEncodingBaselineUpdate",
       "pitestEncodingBaselineUnion",
       "pitestEncodingBaselinePrune",
@@ -143,6 +166,10 @@ class HardeningOperationsFunctionalTest {
       "migrateMutationBaselines",
       "downgradeMutationBaselines",
     ).forEach { task -> assertTrue(output.contains(task), "missing $task:\n$output") }
+    assertTrue(
+      output.contains("remove schema 1 from substantive baselines; empty placeholders stay absent"),
+      output,
+    )
     assertTrue(output.contains("Removed writer properties (refused since sava-build 21.5.22)"), output)
     assertTrue(output.contains("-PupdateMutationBaseline") &&
         output.contains("use pitest<Suite>BaselineUpdate"), output)
@@ -198,10 +225,11 @@ class HardeningOperationsFunctionalTest {
     assertFalse(args.contains("arcmutate_history"), args)
     assertFalse(args.contains("--historyInputLocation"), args)
     assertFalse(args.contains("--historyOutputLocation"), args)
+    assertTrue(args.contains("--projectBase=${fixtureDir.canonicalPath}"), args)
 
     val generatedTool = File(fixtureDir, "build/fake-pit-tool")
     val transition = runner("clean", "pitestEncodingBaselineUpdate").build().output
-    assertTrue(transition.contains(".evidence.tsv' has been created"), transition)
+    assertTrue(transition.contains("Reusing configuration cache"), transition)
     val reusedWriter = runner("clean", "pitestEncodingBaselineUpdate").build().output
     assertTrue(reusedWriter.contains("Reusing configuration cache"), reusedWriter)
     assertTrue(reusedWriter.contains(":preparePitTool"), reusedWriter)
@@ -218,6 +246,119 @@ class HardeningOperationsFunctionalTest {
   }
 
   @Test
+  fun `named writer recaptures report and source after the dependency validator`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        val tamperWriterEvidence = tasks.register("tamperWriterEvidence") {
+          dependsOn("pitestEncodingEvidenceValidate")
+          val report = layout.buildDirectory.file("reports/pitest/encoding/mutations.csv")
+          val source = layout.projectDirectory.file("src/main/java/com/example/FakePit.java")
+          doLast {
+            report.get().asFile.apply {
+              writeText(readText().replace(",SURVIVED,", ",KILLED,"))
+            }
+            source.asFile.appendText("\n// changed after evidence validation\n")
+          }
+        }
+        tasks.named("pitestEncodingVerify") {
+          dependsOn(tamperWriterEvidence)
+        }
+      """.trimIndent() + "\n",
+    )
+
+    val output = runner("pitestEncodingBaselineUpdate").buildAndFail().output
+    val config = File(fixtureDir, "config/pitest")
+
+    assertTrue(output.contains(":tamperWriterEvidence"), output)
+    assertTrue(output.contains("inputs changed after evidence validation"), output)
+    assertTrue(output.contains("reportSha256"), output)
+    assertTrue(output.contains("sourceSha256"), output)
+    assertFalse(
+      config.resolve("encoding-accepted.csv").exists(),
+      "stale final evidence wrote an accepted baseline",
+    )
+    assertFalse(
+      config.resolve("encoding-pitest-version").exists(),
+      "stale final evidence wrote PIT provenance",
+    )
+    assertFalse(
+      config.resolve("encoding-pitest-toolchain.tsv").exists(),
+      "stale final evidence wrote mutation-toolchain provenance",
+    )
+  }
+
+  @Test
+  fun `Debt refuses orphan provenance left without a committed record`() {
+    writeFixture()
+    runner("pitestEncodingBaselineUpdate").build()
+    val config = File(fixtureDir, "config/pitest")
+    assertTrue(config.resolve("encoding-accepted.csv").delete())
+    assertTrue(config.resolve("encoding-pitest-version").isFile)
+    assertTrue(config.resolve("encoding-pitest-toolchain.tsv").isFile)
+
+    val output = runner("pitestEncodingDebt").buildAndFail().output
+
+    assertTrue(output.contains("mutation-provenance sidecar(s) exist without"), output)
+    assertTrue(output.contains("pitestEncodingBaselineRebase"), output)
+  }
+
+  @Test
+  fun `first baseline write refuses before writing when a provenance target cannot commit`() {
+    writeFixture()
+    val config = File(fixtureDir, "config/pitest").apply { mkdirs() }
+    val blockedVersion = config.resolve("encoding-pitest-version").apply {
+      mkdirs()
+      resolve("keep").writeText("directory makes the version target unwritable\n")
+    }
+    val baseline = config.resolve("encoding-accepted.csv")
+    val toolchain = config.resolve("encoding-pitest-toolchain.tsv")
+
+    runner("pitestEncodingBaselineUpdate").buildAndFail()
+
+    assertFalse(baseline.exists(), "failed provenance write left a new accepted baseline")
+    assertFalse(toolchain.exists(), "failed provenance write left an orphan toolchain sidecar")
+    assertTrue(blockedVersion.resolve("keep").isFile, "prevalidation damaged the blocking fixture")
+  }
+
+  @Test
+  fun `canonical rebase preserves legacy evidence and adopts toolchain provenance`() {
+    writeFixture()
+    val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv").apply {
+      parentFile.mkdirs()
+      writeText(
+        BaselineDocument.CURRENT_HEADER + "\n" +
+            "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained argument # line 99\n",
+      )
+    }
+
+    val cold = runner("pitestEncodingBaselineRebase").build()
+    assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
+    assertTrue(cold.output.contains("selected baseline provenance rebase"), cold.output)
+    assertTrue(cold.output.contains("provenance rebase preserved 1 old row(s) and added 1"), cold.output)
+    val rebound = baseline.readText()
+    assertTrue(rebound.contains("# retained argument # line 99"), rebound)
+    assertTrue(
+      rebound.contains("com.example.FakePit,main,MathMutator,SURVIVED # untriaged # line 12"),
+      rebound,
+    )
+    val version = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    val toolchain = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
+    assertTrue(version.isFile, "rebase did not bind the N-1 PIT stamp")
+    assertTrue(toolchain.isFile, "rebase did not bind the portable mutation toolchain")
+    assertTrue(toolchain.readText().contains("arcMutateLicenceExpires\t2999-12-31"), toolchain.readText())
+    val before = baseline.readBytes()
+
+    val reused = runner("pitestEncodingBaselineRebase").build().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+    assertTrue(reused.contains("retained all 2 accepted row(s)"), reused)
+    assertTrue(before.contentEquals(baseline.readBytes()), "fixed-point rebase rewrote accepted evidence")
+    val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
+    assertFalse(args.contains("arcmutate_history"), args)
+  }
+
+  @Test
   fun `canonical union runs cold and reused without dropping an absent row`() {
     writeFixture()
     val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv").apply {
@@ -227,6 +368,11 @@ class HardeningOperationsFunctionalTest {
             "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained # line 99\n",
       )
     }
+    // Bind the legacy row without adding the current coordinate; the union below
+    // then exercises a distinct, already-adopted toolchain transition.
+    File(fixtureDir, "fake-pit-status.txt").writeText("KILLED\n")
+    adoptExistingRecordWithRebase()
+    File(fixtureDir, "fake-pit-status.txt").writeText("SURVIVED\n")
 
     val cold = runner("pitestEncodingBaselineUnion").build()
     assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
@@ -235,15 +381,15 @@ class HardeningOperationsFunctionalTest {
     assertEquals(
       listOf(
         BaselineDocument.CURRENT_HEADER,
-        "com.example.FakePit,main,MathMutator,SURVIVED # line 12",
         "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained # line 99",
+        "com.example.FakePit,main,MathMutator,SURVIVED # line 12",
       ),
       baseline.readLines(),
     )
 
     val before = baseline.readText()
     val transition = runner("pitestEncodingBaselineUnion").build().output
-    assertTrue(transition.contains(".evidence.tsv' has been created"), transition)
+    assertTrue(transition.contains("Reusing configuration cache"), transition)
     assertTrue(transition.contains("union added nothing new"), transition)
     val reused = runner("pitestEncodingBaselineUnion").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
@@ -263,6 +409,7 @@ class HardeningOperationsFunctionalTest {
     baseline.appendText(
       "com.example.Removed,oldMethod,MathMutator,SURVIVED # stale row # line 99\n",
     )
+    adoptExistingRecordWithRebase()
 
     val cold = runner("pitestEncodingBaselinePrune").build()
     assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
@@ -276,7 +423,7 @@ class HardeningOperationsFunctionalTest {
 
     val before = baseline.readText()
     val transition = runner("pitestEncodingBaselinePrune").build().output
-    assertTrue(transition.contains(".evidence.tsv' has been created"), transition)
+    assertTrue(transition.contains("Reusing configuration cache"), transition)
     assertTrue(transition.contains("prune dropped nothing"), transition)
     val reused = runner("pitestEncodingBaselinePrune").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
@@ -307,10 +454,17 @@ class HardeningOperationsFunctionalTest {
     val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
     assertFalse(args.contains("arcmutate_history"), args)
 
-    assertTrue(timeouts.delete(), "fixture could not reset the seeded set for cache reuse")
+    val version = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    val toolchain = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
+    fun resetCommittedRecord(message: String) {
+      assertTrue(timeouts.delete(), "fixture could not reset the seeded set $message")
+      assertTrue(version.delete(), "fixture could not reset the PIT stamp $message")
+      assertTrue(toolchain.delete(), "fixture could not reset the toolchain stamp $message")
+    }
+    resetCommittedRecord("for cache reuse")
     val transition = runner("clean", "pitestEncodingTimeoutAuditInit").build().output
-    assertTrue(transition.contains(".evidence.tsv' has been created"), transition)
-    assertTrue(timeouts.delete(), "fixture could not reset the seeded set after graph transition")
+    assertTrue(transition.contains("Reusing configuration cache"), transition)
+    resetCommittedRecord("after graph transition")
     val reused = runner("clean", "pitestEncodingTimeoutAuditInit").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
     assertTrue(reused.contains(":preparePitTool"), reused)
@@ -322,9 +476,10 @@ class HardeningOperationsFunctionalTest {
   @Test
   fun `canonical mode compare union runs cold and reused against fresh snapshots`() {
     writeFixture()
-    File(fixtureDir, "arcmutate-licence.txt").delete()
+    disableArcMutate()
     val (baseline, _) = acceptedBaseline()
     val status = File(fixtureDir, "fake-pit-status.txt")
+    adoptExistingRecordWithRebase()
 
     status.writeText("KILLED\n")
     runner("pitestEncoding").build()
@@ -383,7 +538,7 @@ class HardeningOperationsFunctionalTest {
   @Test
   fun `canonical writer refuses a skipped PIT instead of reusing an older report`() {
     writeFixture()
-    File(fixtureDir, "arcmutate-licence.txt").delete()
+    disableArcMutate()
     File(fixtureDir, "build.gradle.kts").appendText(
       """
 
@@ -634,8 +789,8 @@ class HardeningOperationsFunctionalTest {
 
     val transition = runner("pitestEncoding").build().output
     assertTrue(
-      transition.contains(".evidence.tsv' has been created"),
-      "configuration cache did not track the evidence-validation graph transition:\n$transition",
+      transition.contains("Reusing configuration cache"),
+      "PIT evidence creation invalidated the invariant configuration-cache graph:\n$transition",
     )
     assertEquals(1, transition.lineSequence().count { it.contains("duplicate-from-fake") }, transition)
     assertTrue(transition.contains("suppressed 2 repeated minion log line(s)"), transition)
@@ -647,9 +802,53 @@ class HardeningOperationsFunctionalTest {
   }
 
   @Test
+  fun `typed PIT refuses configured versus effective ArcMutate classpath drift`() {
+    writeFixture()
+    val marker = File(
+      fixtureDir,
+      "src/main/resources/META-INF/maven/com.arcmutate/base/pom.properties",
+    )
+    assertTrue(marker.delete())
+
+    val missingBase = runner("pitestEncoding").buildAndFail().output
+    assertTrue(
+      missingBase.contains("configured ArcMutate activation (true) disagrees") &&
+          missingBase.contains("no base artifact"),
+      missingBase,
+    )
+    assertFalse(File(fixtureDir, "build/reports/pitest/encoding/.running").exists())
+
+    marker.parentFile.mkdirs()
+    marker.writeText("groupId=com.arcmutate\nartifactId=base\nversion=1.7.1\n")
+    assertTrue(File(fixtureDir, "arcmutate-licence.txt").delete())
+    val hiddenBase = runner("pitestEncoding").buildAndFail().output
+    assertTrue(hiddenBase.contains("configured ArcMutate activation (false) disagrees"), hiddenBase)
+    assertFalse(File(fixtureDir, "build/reports/pitest/encoding/.running").exists())
+  }
+
+  @Test
+  fun `typed PIT refuses a consumer working directory override`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        tasks.named<JavaExec>("pitestEncoding") {
+          workingDir(layout.buildDirectory)
+        }
+      """.trimIndent() + "\n",
+    )
+
+    val failed = runner("pitestEncoding").buildAndFail().output
+
+    assertTrue(failed.contains("hardening owns workingDir"), failed)
+    assertTrue(failed.contains("certificate lookup remain provenance-bound"), failed)
+    assertFalse(File(fixtureDir, "build/reports/pitest/encoding/.running").exists())
+  }
+
+  @Test
   fun `standalone evidence consumers schedule a task-produced custom PIT classpath`() {
     writeFixture(taskProducedToolClasspath = true)
-    File(fixtureDir, "arcmutate-licence.txt").delete()
+    disableArcMutate()
     acceptedBaseline()
 
     runner("pitestEncoding").build()

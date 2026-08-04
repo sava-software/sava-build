@@ -352,12 +352,15 @@ row was detected during the seeding run and survived under the quality gate
 minutes later. Refreshing the baseline from any single run bakes in that
 run's coin-flips: rows detected in the refresh run drop out, then fail the
 next run they survive in — refresh ping-pong. The steady state is the
-baseline holding the **union of observed survivals**, hand-appending each
-newly observed flip in canonical form (the mutator name PIT's baseline
-writer uses, `returns.` prefix stripped), and quiet runs reporting recurring
-stale-entry warnings that are *expected and permanent*, not line-churn to
-clean up. Rule: *for a flip family, stale warnings are the steady state;
-union observed flips by hand and stop refreshing*.
+baseline holding the **union of observed survivals**; at the time, each newly
+observed flip was hand-appended in canonical form (the mutator name PIT's
+baseline writer uses, `returns.` prefix stripped), and quiet runs reported
+recurring stale-entry warnings that were expected while the cause remained,
+not line-churn to clean up. The named mode comparator now records both the
+observed union and its `# flip insurance` note. Rule: *for a live flip family,
+use `pitestModeCompareUnion` (or the witnessed-flip `BaselineUnion` escape
+hatch plus its evidence note), keep the insured union, and stop single-run
+refresh ping-pong*.
 
 ## The error funnel
 
@@ -786,12 +789,18 @@ up by rows that had been argued weeks earlier. The two prior fixes in this area
 both taught that the refresh must not lose what a row records; this was the
 same lesson at the state level rather than the note level.
 
-The fix pairs bare dropped rows against fresh rows on the same
+The original fix paired bare dropped rows against fresh rows on the same
 class/method/mutator/status key, in a second pool disjoint from the note pool,
 after the note lookup and under the same exclusions — fresh rows only, surfaced
 siblings classified out first. Only the shift is paired this way. A status flip
-is deliberately left to seed debt: it changes what the mutant proves, so an
-argument made before the flip has to be re-made.
+was deliberately left to seed debt: it changes what the mutant proves, so an
+argument made before the flip had to be re-made.
+
+Line-less keys later removed line shifts from baseline identity entirely. The
+current updater carries a written note across a `SURVIVED`/`NO_COVERAGE` status
+transition, marks that carry for re-reading, and uses maximum line affinity when
+several siblings flip together. The transition remains visible without silently
+discarding the only acceptance argument the row carried.
 
 The pairing carries the note carry's ambiguity and carries it worse. The key
 cannot distinguish a moved mutant from a killed unlabeled row plus genuinely
@@ -1049,10 +1058,10 @@ Two fixes travelled together: the cross-status keep now requires an
 different status no row of its own key accounts for, consumed one per kept
 row, which is the verify's newly-covered pairing rather than an
 approximation of it — and which sibling is dropped follows line affinity
-before file order — the row whose `# line` tag names no live line is the
-killed mutant's row — so a noted row is not dropped for its bare sibling's
-kill, and no kept tag is left pointing at the killed line for the drift
-advisory to flag. The unmatched requirement was the second dig at the same
+before file order — a row whose `# line` tag names no live line is preferred
+as the absent sibling — so a noted live-anchored row is not dropped for its
+bare sibling. Duplicate same-line siblings remain intrinsically ambiguous.
+The unmatched requirement was the second dig at the same
 spot: a coordinate-level *status* check fixed the same-status case but let a
 mutant already matched by its own row vouch for a killed sibling at a
 status-heterogeneous key (a `SURVIVED` row beside a `NO_COVERAGE` row —
@@ -1141,3 +1150,76 @@ to be retained. This is a forgetfulness and stale-candidate gate, not a new trus
 Rules: *expensive local evidence can have a cheap committed handoff*; *artifact
 provenance and process certification answer different questions*; *the operation that
 creates a release must observe the evidence required to authorize it*.
+
+## The migration refresh that deleted its evidence
+
+The first Sava consumer to take a candidate PIT bump followed the prescribed
+version-migration path: observe the new population, change the suite stamp, then run
+the full baseline update. The ordinary verify and the writer described the same row
+in opposite terms. Verify said an accepted `checkCycle` `unlock()` mutant had read
+`TIMED_OUT` under load — detection by the watchdog, not a kill — and that prune would
+keep it. Update then removed that exact row among ten entries “not unkilled this run.”
+Nine of the ten were absent from the new tool population; none was a demonstrated
+test kill. A second suite lost another load-dependent row the same way. Only a manual
+before/after snapshot exposed the distinction.
+
+The writer was internally consistent: its pure transition received only the current
+`SURVIVED`/`NO_COVERAGE` multiset, so every accepted row absent from that multiset was
+a drop. The timeout-budget and flip-insurance machinery had already computed which
+absences were protected, but Update never read that plan. A workflow once described
+as a deliberately destructive full rewrite had quietly become the standard tool-bump
+migration, putting the old footgun on the release path.
+
+The same review found the provenance boundary too narrow. Sava's `ws` suite measured
+605 mutants without ArcMutate and 573 with it on identical source, while the committed
+record named only the PIT version. Adding, renewing, or expiring the certificate could
+therefore look like code churn with no toolchain warning. The certification receipt
+bound the current classpath, but no portable committed identity existed to compare on
+the next run.
+
+The repair separated ordinary debt editing from provenance migration. Update now
+shares the row allocator: budgeted timeout rows and rows protected by a key's literal
+flip-insurance marker persist, while status transitions still carry their notes to
+the current status. Every other removal says whether PIT reported a kill at a recorded
+line, omitted the coordinate entirely, or left sibling identity ambiguous. A new
+`BaselineRebase` is the only task allowed to cross PIT or mutation-toolchain
+provenance: it runs fresh and strict,
+preserves every old row, adds new current rows as `# untriaged`, and commits the PIT
+and portable toolchain sidecars with the safe-superset record through one rollback-
+capable plan. A new record puts sidecars first and can leave only fail-closed orphans;
+an existing-record Rebase puts conservative safe-superset content first so an N-1
+reader never sees debt removed under stale provenance. Old population entries can be
+pruned later, after the evidence required by prune's own doctrine exists.
+
+Rules: *detected is not synonymous with killed*; *a tool migration starts with a
+safe superset, never a destructive rewrite*; *the committed provenance identity is a
+portable PIT-engine/tool-classpath identity, including licence bytes and expiry; the
+per-run evidence and certification receipt separately bind the JDK and sava-build
+plugin*; *a removal message must say what the report proves, not the cause an operator
+might infer*.
+
+## The output file that selected the configuration-cache graph
+
+A consumer's cold configuration-cache check stored successfully, and an immediate
+second check reused it. Running PIT then created
+`build/reports/pitest/<suite>/.evidence.tsv`; the next identical check missed the cache
+because that filesystem entry “has been created.” `clean` removed it, and the following
+check missed again because the same entry “has been removed.” The plugin's own output
+made a stable consumer graph alternate forever between two cache keys.
+
+The evidence validator was sound at execution time. The defect was the configuration
+branch that scheduled it only when `.evidence.tsv` already existed. Gradle correctly
+tracked that existence query as a configuration input, so a generated report sidecar
+became graph structure. Cold-store tests had proved that each individual shape could be
+serialized; none exercised the transition from absent to present and back.
+
+The fix made the graph invariant. Verification and mode snapshots always depend on the
+typed validator; its action checks for a completed manifest first and returns before
+realizing the expensive classpath/source collections on the legacy no-manifest path.
+The regression test now stores once, creates the evidence file, verifies reuse, removes
+it, and verifies reuse again.
+
+Rules: *build output is execution state, never a configuration-time graph selector*;
+*configuration-cache coverage includes state transitions, not only cold storage*;
+*when a validator is conditional, keep the task edge invariant and make the action
+cheap on the no-evidence path*.

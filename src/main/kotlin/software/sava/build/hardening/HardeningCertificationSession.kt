@@ -29,6 +29,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
   private val activeSessions = mutableMapOf<String, String>()
   private val attempts = mutableMapOf<SuiteKey, Attempt>()
   private val verified = mutableMapOf<SuiteKey, VerifiedEvidence>()
+  private val verifiedRecordInputs = mutableMapOf<SuiteKey, String>()
   private val revalidated = mutableMapOf<SuiteKey, VerifiedEvidence>()
 
   @Synchronized
@@ -49,6 +50,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
     val key = SuiteKey(projectPath, suite)
     attempts[key] = Attempt(invocationId, null)
     verified.remove(key)
+    verifiedRecordInputs.remove(key)
     revalidated.remove(key)
   }
 
@@ -129,7 +131,12 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
   }
 
   @Synchronized
-  fun recordVerified(projectPath: String, suite: String, evidence: PitestEvidence) {
+  fun recordVerified(
+    projectPath: String,
+    suite: String,
+    evidence: PitestEvidence,
+    recordInputsSha256: String,
+  ) {
     val session = activeSessions[projectPath] ?: return
     val key = SuiteKey(projectPath, suite)
     val expected = attempts[key]?.completed ?: throw IllegalStateException(
@@ -142,6 +149,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
           "completed in this invocation"
     }
     verified[key] = actual
+    verifiedRecordInputs[key] = recordInputsSha256
   }
 
   @Synchronized
@@ -149,6 +157,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
     projectPath: String,
     suite: String,
     evidence: PitestEvidence,
+    recordInputsSha256: String,
   ): VerifiedEvidence {
     val session = activeSessions[projectPath] ?: throw IllegalStateException(
         "certification preflight did not activate an execution session")
@@ -164,6 +173,10 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
         "'$suite' has no PIT execution plus successful verification recorded in this certification invocation")
     check(actual == expected) {
       "'$suite' evidence on disk does not match the PIT execution and verification recorded in this " +
+          "certification invocation"
+    }
+    check(verifiedRecordInputs[SuiteKey(projectPath, suite)] == recordInputsSha256) {
+      "'$suite' committed mutation records changed after successful verification in this " +
           "certification invocation"
     }
     return actual

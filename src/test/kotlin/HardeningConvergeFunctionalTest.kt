@@ -61,6 +61,72 @@ class HardeningConvergeFunctionalTest {
     )
   }
 
+  private fun enableFakePitExecutions() {
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        tasks.named<JavaCompile>("compileForPitest") {
+          setSource(sourceSets.main.get().java)
+          classpath = files()
+        }
+        mapOf(
+          "pitestEncoding" to "encoding-round1",
+          "pitestParsing" to "parsing-round1",
+          "pitestEncodingConvergeRound2" to "encoding-round2",
+          "pitestParsingConvergeRound2" to "parsing-round2",
+        ).forEach { (taskName, stagedReport) ->
+          tasks.named<JavaExec>(taskName) {
+            classpath = sourceSets.main.get().output
+            mainClass.set("com.example.FakePit")
+            systemProperty(
+              "fixture.pit.report",
+              layout.projectDirectory.dir("fixture-pit-report/" + stagedReport)
+                .asFile.absolutePath,
+            )
+          }
+        }
+      """.trimIndent() + "\n",
+    )
+    File(fixtureDir, "src/main/java/com/example/FakePit.java").apply {
+      parentFile.mkdirs()
+      writeText(
+        """
+          package com.example;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.nio.file.StandardCopyOption;
+
+          public final class FakePit {
+            public static void main(String[] args) throws Exception {
+              Path reportDir = null;
+              for (String arg : args) {
+                if (arg.startsWith("--reportDir=")) {
+                  reportDir = Path.of(arg.substring("--reportDir=".length()));
+                }
+              }
+              if (reportDir == null) throw new IllegalArgumentException("missing --reportDir");
+              Files.createDirectories(reportDir);
+              Path staged = Path.of(System.getProperty("fixture.pit.report"));
+              for (String name : new String[] {"mutations.csv", "mutations.xml"}) {
+                Files.copy(staged.resolve(name), reportDir.resolve(name),
+                    StandardCopyOption.REPLACE_EXISTING);
+              }
+            }
+          }
+        """.trimIndent() + "\n",
+      )
+    }
+  }
+
+  private fun stageFakeReport(reportDirName: String, vararg csvRows: String) {
+    val reportDir = File(fixtureDir, "fixture-pit-report/$reportDirName").apply { mkdirs() }
+    reportDir.resolve("mutations.csv").writeText(csvRows.joinToString("\n", postfix = "\n"))
+    reportDir.resolve("mutations.xml").writeText(
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mutations>\n</mutations>\n",
+    )
+  }
+
   private fun writeReport(reportDirName: String, vararg csvRows: String) {
     val reportDir = File(fixtureDir, "build/reports/pitest/$reportDirName")
     reportDir.mkdirs()
@@ -88,6 +154,7 @@ class HardeningConvergeFunctionalTest {
         classesSha256 = "fixture-classes",
         classpathSha256 = "fixture-classpath",
         toolClasspathSha256 = "fixture-tool-classpath",
+        mutationToolchainSha256 = "fixture-mutation-toolchain",
         configurationSha256 = "fixture-configuration",
         reportSha256 = PitestEvidence.sha256(report),
         scope = scope,
@@ -205,7 +272,9 @@ class HardeningConvergeFunctionalTest {
     val plan = runner("pitestConverge", "--dry-run").build().output
     val order = listOf(
       ":pitestEncoding SKIPPED",
+      ":pitestEncodingVerify SKIPPED",
       ":pitestParsing SKIPPED",
+      ":pitestParsingVerify SKIPPED",
       ":pitestConvergeSnapshot SKIPPED",
       ":pitestEncodingConvergeRound2 SKIPPED",
       ":pitestParsingConvergeRound2 SKIPPED",
@@ -224,9 +293,48 @@ class HardeningConvergeFunctionalTest {
   }
 
   @Test
+  fun `modern converge binds both rounds to identical toolchain evidence`() {
+    writeFixture()
+    enableFakePitExecutions()
+    val encoding =
+      "Codec.java,com.example.Codec,$mathMutator,encode,12,KILLED,com.example.CodecTest"
+    val parsing =
+      "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest"
+    stageFakeReport("encoding-round1", encoding)
+    stageFakeReport("parsing-round1", parsing)
+    stageFakeReport("encoding-round2", encoding)
+    stageFakeReport("parsing-round2", parsing)
+
+    val converged = runner("pitestConverge").build().output
+
+    assertTrue(converged.contains("2 suite(s) converged — zero per-mutant status flips"), converged)
+    listOf("encoding", "parsing").forEach { suite ->
+      val round1 = File(fixtureDir, "build/pitest-converge/round1")
+      assertTrue(round1.resolve("$suite.evidence.tsv").isFile, "$suite round one lost evidence")
+      assertTrue(round1.resolve("$suite.toolchain.tsv").isFile, "$suite round one lost toolchain")
+      val round2 = File(fixtureDir, "build/reports/pitest/$suite")
+      assertTrue(round2.resolve(".evidence.tsv").isFile, "$suite round two has no evidence")
+      assertTrue(round2.resolve(".toolchain.tsv").isFile, "$suite round two has no toolchain")
+    }
+
+    val round2Toolchain = File(
+      fixtureDir,
+      "build/reports/pitest/encoding/.toolchain.tsv",
+    )
+    val original = round2Toolchain.readText()
+    round2Toolchain.writeText(original.replaceFirst("pitest\t", "pitest\ttampered-"))
+    val refused = convergeRun().buildAndFail().output
+    assertTrue(
+      refused.contains("round-two mutation-toolchain record does not match evidence"),
+      refused,
+    )
+  }
+
+  @Test
   fun `converge snapshot refuses history-assisted invocations and missing reports`() {
     writeFixture()
-    File(fixtureDir, "arcmutate-licence.txt").writeText("licence\n")
+    File(fixtureDir, "arcmutate-licence.txt")
+      .writeText("expires=31/12/2999\ntype=OSSS\nfixture=licence-marker\n")
 
     // Two assisted runs agree by construction, so the snapshot refuses concrete
     // report evidence rather than inferring provenance from this checkout's current

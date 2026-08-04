@@ -68,8 +68,9 @@ flags before PIT starts, makes timeout drift and whole-production ownership stri
 requires a provenance-bound report for every suite, and writes
 `build/hardening/pitest-certification.tsv`. Each suite row binds not only the report,
 compiled code, source, configuration, PIT tool classpath, and loaded plugin binary, but
-also the accepted baseline, audited timeout membership, recorded PIT-version stamp, and
-the suite's triage README that decided whether the observation was acceptable. Its cost
+also the accepted baseline, audited timeout membership, recorded PIT-version and
+mutation-toolchain sidecars, and the suite's triage README that decided whether the
+observation was acceptable. Its cost
 scales with the repo's total
 mutant population, not with the size of the diff — so running it per change
 spends minutes re-learning results the change could not have moved. A suite
@@ -81,6 +82,13 @@ ordered after `clean`, then fingerprints the sources and classes produced by the
 task graph. It is useful when validating a new plugin's evidence plumbing, but it is not
 an extra release soak requirement; ordinary `hardeningCertify` is already a fresh PIT
 observation.
+
+Generated evidence must never select the configuration-cache task graph. The PIT
+validators are always present and decide at execution time whether `.evidence.tsv`
+exists; creating the manifest in a PIT run, or removing it with `clean`, therefore does
+not invalidate an otherwise reusable `check` graph. Any future output-existence branch
+during configuration reopens that bug class *(casebook: the output file that selected
+the configuration-cache graph)*.
 
 Choosing the owning suites is a **reachability** question, not a file-path
 one:
@@ -167,8 +175,9 @@ added and PIT runs fully from scratch using its open-source engine.
 
 **With an applicable licence, activation is dropping one file.** The plugin keys
 everything off `arcmutate-licence.txt` at the project or root-project directory:
-when present, `com.arcmutate:base` (version pinned in the plugin, overridable via
-`hardening.arcmutateBaseVersion`) always joins PIT's classpath. Ordinary suite runs
+when present, `com.arcmutate:base` joins PIT's classpath. Licensed provenance is
+currently audited for base `1.7.1`; overriding `hardening.arcmutateBaseVersion` to a
+different licensed engine is refused until its lookup contract is audited. Ordinary suite runs
 also enable `+arcmutate_history` against a rolling per-suite file at
 `<module>/.pitest-history/<suite>.hist` — outside `build/` so `clean` cannot erase
 it, git-ignored as machine-local state. A suite run with `-PnoMutationHistory` or
@@ -201,9 +210,15 @@ every status from scratch, and the convergence method's runs refuse history too
 (two assisted runs agree by construction). `-PnoMutationHistory` remains the
 explicit override for other fresh runs. Both mechanisms disable only reuse while
 retaining `com.arcmutate:base`, so ordinary, mode-comparison, convergence, and
-certification populations share one licensed tool identity (bound in evidence as
-`toolClasspathSha256`). Delete `.pitest-history/` to reset a machine's history
-wholesale.
+certification populations share one licensed tool identity. Completed evidence binds
+that identity, and each committed suite record binds its portable form as described
+below. The typed PIT process also pins both its working directory and `--projectBase`
+to the module. A late classpath override must retain recognizable PIT/JUnit Maven
+versions equal to the configured versions; markerless ArcMutate package or service
+sentinels are refused rather than mislabeled as open-source PIT. Its recorded identity
+therefore follows the same engine and certificate search as the child JVM. Intentional
+TestKit tools with neither real PIT/plugin sentinels remain supported.
+Delete `.pitest-history/` to reset a machine's history wholesale.
 
 The installed plugin exposes discoverable writer tasks. The former
 `-PupdateMutationBaseline`, `-PunionMutationBaseline`,
@@ -231,33 +246,73 @@ mutant has exactly three legal outcomes:
    a specifically named deterministic-harness limit; it never means merely
    "hard to test".
 
-**The tool version is part of the record.** The mutant population is a
-function of PIT itself (whose version rides plugin bumps), so a baseline is
-only comparable to runs from the version that wrote it. The record lives at
-`config/pitest/<suite>-pitest-version` — per suite, because what it certifies
-is the suite's baseline: one shared file would lift every suite's refusal at
-the first refresh after a bump, silently certifying the rest against a
-version that never wrote them. A baseline-writing run stamps it at the
-*successful end* of its rewrite (absent file: adopted by the next refresh
-that completes) — never ahead of the write, so a refresh that fails mid-path
-cannot leave a stamp vouching for a record it never rewrote. A version
-mismatch *warns* on a checking run and *refuses* every record-writing task —
-reading a possibly divergent result is a judgment call, writing the record
-with one is not. `pitest<Suite>TimeoutAuditInit` is refused across a bump like the
-baseline writers, the timeout population being just as version-dependent, but
-it never stamps: it writes the timeout set, not the baseline, and its stamp
-would silently vouch for a baseline some older PIT wrote.
-Bumping deliberately means setting the suite's file to the new version and
-refreshing that suite, reading the churn as a real population diff rather
-than noise.
+**The portable mutation-engine identity is part of the record.** PIT version alone is
+not enough: the JUnit plugin, ordered PIT tool artifacts, ArcMutate base, and the
+certificate that activates it can all move the population. Each suite therefore
+commits two sidecars beside its accepted and timeout records:
 
-One migration exception keeps an existing fleet adoptable: a committed baseline or
-timeout record with **no** version file is legacy-unversioned, not a claimed match to
-some other PIT version. `hardeningCertify` may accept it only after freshly running the
-current PIT and successfully verifying the record; its receipt names
-`legacy-unversioned` rather than pretending the stamp exists. The next deliberate
-record-writing run creates the version file. An existing stamp for a different PIT
-version still fails certification.
+- `<suite>-pitest-version` retains the plain PIT version for N-1 readers.
+- `<suite>-pitest-toolchain.tsv` records schema, PIT and JUnit-plugin versions, a
+  path-independent SHA-256 of the ordered artifact contents, and either `absent`
+  ArcMutate fields or the base version, certificate SHA-256, and normalized expiry
+  date. Absolute Gradle-cache paths are deliberately excluded, so two machines
+loading the same artifacts produce the same identity.
+
+That committed sidecar deliberately does not claim to identify every execution
+input. The JDK and the loaded sava-build plugin are machine/build inputs rather than
+portable PIT artifacts; each completed-run evidence manifest binds them separately as
+`javaVersion` and `pluginSha256`, and certification carries those richer per-run
+fingerprints into its receipt.
+
+The sidecar records the certificate's raw named expiry. ArcMutate 1.7.1 gives an OSSS
+or commercial certificate one calendar month of grace after that date (an evaluation
+certificate gets seven days): the vendor emits its renewal warning during grace but
+continues to supply the same licensed population. Hardening mirrors that effective
+boundary — the final grace day is accepted and the following day is refused before PIT
+can bless evidence. Malformed dates and certificates past grace are refusals.
+The PIT child process is pinned to the project directory, and provenance reproduces
+ArcMutate's ancestry lookup from there. Once activation has selected the base plugin,
+that lookup uses the nearest ancestor containing `arcmutate-licence.txt` or the legacy
+`cdg-pitest-licence.txt` name, preferring the current name when both occur in that
+directory; the sidecar binds the bytes and expiry it actually selected. A
+project-level certificate therefore intentionally wins over a root-project
+certificate. Higher-precedence certificates under the PIT report's
+`arcmutate-licences` directory or the project's `.pitest` tree are refused:
+their vendor-internal selection rules would make the committed identity
+ambiguous. Symlinked stores and multi-certificate files are refused for the
+same reason. Keep the intended applicable certificate at the project or
+root-project directory and remove unintended nearer legacy ancestry files.
+Renewal changes its hash and expiry and is therefore a real toolchain transition even
+when the base and PIT versions stay fixed. The private subscription download URL is
+never part of either record.
+
+An ordinary check warns when the current identity differs. Certification and every
+ordinary record writer refuse the mismatch; manually editing either stamp would
+claim provenance that no run earned. Rebase is the sole transition path:
+
+1. Run the ordinary `pitest<Suite>` and review the population difference while the
+   old provenance still identifies it as tool churn.
+2. Run `pitest<Suite>BaselineRebase`. It makes a fresh, full, history-free observation,
+   makes the timeout audit strict, retains every old accepted row, and adds each missing
+   current gated copy as `# untriaged`.
+3. Review and triage the additions. Rebase removes nothing; only later, repeated
+   evidence plus `pitest<Suite>BaselinePrune` may retire old rows. The safe-superset
+   baseline and both sidecars are one exception-transactional write plan. A first
+   record writes sidecars before content, leaving only fail-closed orphans if
+   interrupted. An existing-record Rebase writes its safe-superset content first,
+   so N-1 sees conservative debt while this plugin refuses the still-old provenance.
+
+This path also adopts old records. A committed baseline or timeout set missing both
+sidecars is reported as the paired `legacy-unversioned` / `legacy-toolchain-unbound`
+state. Ordinary checks and `hardeningCertify` announce both, the certification receipt
+records that paired state, and every writer except Rebase refuses to adopt it. Exactly
+one missing sidecar is a torn write, not a legacy state: read/certification paths
+refuse it, while fresh safe-superset BaselineRebase is the recovery path. Rebase also
+replaces malformed or internally disagreeing provenance; no stamp is hand-edited.
+Certification may verify a both-missing legacy record against a fresh current
+population, but it never pretends historical changes are attributable. Likewise, an
+old completed report whose evidence predates portable toolchain identity is announced
+as `legacy-unbound` and must be regenerated before it can support a transition.
 
 The baseline is a ratchet: removing debt that is *proved stably gone* is an
 improvement, while growing it requires a written reason. A single fresh run is
@@ -346,8 +401,9 @@ numbers churn whenever a mutated file is edited, and identity that churns
 makes the ratchet police text moves instead of behavior. Lines still appear
 on rows, demoted to metadata as trailing `# line N` tags (the audited-timeout
 convention), kept for triage pointers and the line-drift advisory below. A
-full update rewrites every tag from its report; a green prune rewrites the
-tags of retained rows it matched at their own key. Union operations preserve
+baseline update rewrites tags for rows matched to this report while protected
+timeout/insurance rows keep their last observed tags; a green prune likewise rewrites
+the tags of retained rows it matched at their own key. Union operations preserve
 existing tags and tag only rows they add, while format-only migration
 preserves the recorded tags. Editing above a mutated method therefore changes
 *nothing* the comparison sees. Two situations still produce paired stale +
@@ -382,11 +438,21 @@ line (`line 41: removed conditional…` — the key no longer carries the line,
 so the description does), and the ratchet-failure listing carries the same
 annotations.
 
-Refreshes are kept honest in both directions. `pitest<Suite>BaselineUpdate`
-names every row it drops — a dropped flip-insurance union (below) must be
-re-added with `pitest<Suite>BaselineUnion` once observed to flip again; before
-this the drop was silent and the re-append relied on someone remembering the
-README warning. And a baseline row may carry a trailing `# note` —
+Refreshes are kept honest in both directions. `pitest<Suite>BaselineUpdate` is
+a report-driven rewrite plus explicit timeout/insurance keeps; it is not allowed to erase
+evidence merely because this run detected a mutant through load. It reads the
+same row-level keep plan as prune: rows holding the run's `TIMED_OUT` budget and
+rows protected by their key's literal `# flip insurance` marker survive with their
+notes and old line tags intact. A reviewed `SURVIVED`/`NO_COVERAGE` status
+transition still resolves to the current row through the marked note-carry path;
+unlike prune, Update can write the new status. Every other removed row is printed
+with one of three honest dispositions: a `KILLED` observation sharing a recorded-line
+anchor (duplicate sibling identity may still be ambiguous), coordinate absent from this
+PIT report (possibly tool/population churn), or no tie between this row and a killed
+observation. None is overstated as proof of a particular sibling's death *(casebook: the
+migration refresh that deleted its evidence)*.
+
+A baseline row may carry a trailing `# note` —
 `# untriaged` is the conventional label for seeded debt, and
 `pitest<Suite>BaselineUpdate` seeds it on **every genuinely new row** it
 writes — a new sibling at an accepted key included, since the twin's
@@ -396,8 +462,11 @@ means replacing that label with a short family label (`# race-guard
 family`, `# capacity-hint`) whose full argument lives in the README. An
 already-unlabeled row is a different thing — it predates seeding (added in
 21.5.12) and its argument lives in the README rather than on the row — and a
-refresh preserves that state rather than converting it to seeded debt. All
-baseline writer tasks preserve notes, and the verify summary counts them
+refresh preserves that state rather than converting it to seeded debt. Rows retained
+by baseline writers preserve their notes and their original document slots; new rows
+append. Whole-line comments are document prose, while a row-specific acceptance
+argument belongs in that row's inline note. Update names every note that actually leaves
+with a row. The verify summary counts notes
 **per label** (`38 rows — 13 '# untriaged', 20 '# race-guard family', 5
 unlabeled`; the debt task prints the same breakdown), so triage state is a
 number the build prints rather than prose that drifts from the CSV it
@@ -422,15 +491,17 @@ carried onto the new row annotated `(carried across NO_COVERAGE ->
 SURVIVED)` and the summary counts the carries — the acceptance argument
 travels, but flagged for re-reading, because a reason written for an
 unreached mutant is not automatically a reason once its behaviour is
-observable *(casebook: the status-blind prune)*. Within one key, accepted
-rows are assigned to the run's mutants by **line affinity** first — a pair
-whose `# line` tag names a mutant's observed line is that mutant's row —
-then by file order. So when a noted sibling was killed, the note that drops
-is its own, named loudly in the dropped listing (`note carried` / `note
-dropped with the row`, losses counted) *(casebook: the note the line shift
-dropped — the carry apparatus that entry describes is retired; affinity plus
-the fate listing is what replaced it)*. Without line evidence the assignment
-is arbitrary, which is the same-key blind spot below, not a bug to police.
+observable *(casebook: the status-blind prune)*. Multiple flipped siblings use the
+same maximum line-affinity assignment as same-status siblings before falling back to
+file order, so uniquely anchored notes do not cross during the carry. Within one key,
+accepted rows are assigned to the run's mutants by **maximum line affinity** first,
+then by file order. A unique `# line` anchor attributes a row; repeated or overlapping
+anchors provide deterministic allocation, not proof of sibling identity. Every note
+that leaves a row is named loudly in the dropped listing (`note carried` / `note
+dropped with the row`, losses counted) *(casebook: the note the line shift dropped —
+the carry apparatus that entry describes is retired; affinity plus the fate listing
+is what replaced it)*. Without line evidence the assignment is arbitrary, which is
+the same-key blind spot below, not a bug to police.
 
 The third refresh is mechanically shrink-only, not self-authorizing:
 `pitest<Suite>BaselinePrune` drops baseline rows matching nothing this run and
@@ -448,8 +519,9 @@ clearing a reviewed line-drift advisory **when its candidate preview is
 empty**. "Matching" is the
 verify's own multiset comparison: a key holding more rows than the run's unkilled mutants
 has excess to drop, and which sibling goes is decided by line affinity first
-(the row whose `# line` tag names no live line is the killed mutant's row),
-file order after — so a noted row is not dropped for its bare sibling's kill,
+(a row whose `# line` tag names no live line is preferred as the absent sibling),
+file order after — so a noted live-anchored row is not dropped for its bare sibling,
+while duplicate same-line siblings remain inherently ambiguous,
 and the candidate preview names the same row prune would remove *(casebook:
 the stale hint that named the wrong flag)*. Two unmatched classes are kept
 anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
@@ -467,8 +539,8 @@ preview read one row-level keep plan, so the preview and the eventual action
 name exactly the same rows. Agreement prevents a tooling lie; repeated
 observation supplies the evidence the tool cannot infer from one report.
 Never substitute a hand-rolled cleanup script, which is how the status-blind
-prune happened. The three baseline writer tasks are mutually exclusive; the build refuses a
-combination.
+prune happened. The named record transitions are mutually exclusive; the build
+refuses a combination.
 
 ### `TIMED_OUT` is detected, and detection is load-dependent
 
@@ -510,14 +582,14 @@ invoked it*, and the failure looks exactly like a real regression.
   flip is a key whose timeout count rose *and* whose unkilled count fell
   *(casebook: the flip that fired forever)*. The verify's candidate preview honours this: a
   baseline row whose coordinate read `TIMED_OUT` this run is reported as the
-  load flip it is ("no refresh needed; prune keeps them"), never included
+  load flip it is ("no refresh needed"), never included
   among rows prune would remove. A stale-looking
   row at a *flip-insured key* — any row of the key carrying a
   `# flip insurance` note, machine-written by `pitestModeCompareUnion` or riding
   in a hand annotation's parenthetical — gets the same honour: it is
   reported as the flap its insurance records (or, when its coordinate is
   alive at another status, as the newly-covered move the failure detail
-  names), excluded from the candidate preview, and kept by prune, so the
+  names), excluded from the candidate preview, and kept by prune and Update, so the
   explicit action cannot drop a row whose
   absence would fail the next solo run with an unexplained survivor. Both
   the keep and the hint are key-level, because which member of a flappy
@@ -537,8 +609,9 @@ invoked it*, and the failure looks exactly like a real regression.
   reader can re-measure. The verify-side `pitest<Suite>BaselineUnion` remains
   as the escape hatch for a directly witnessed flip: it adds the run's
   unkilled rows in canonical form without dropping baseline rows that
-  happened to be detected this run (a full `pitest<Suite>BaselineUpdate` there
-  bakes in the run's coin-flips and starts refresh ping-pong) — but it lands
+  happened to be detected this run. Update now protects current timeout budgets
+  and literal insurance too, but an *uninsured* mode flip is still indistinguishable
+  from a stable removal in one report and can start refresh ping-pong. Union lands
   bare rows, so a hand union owes the evidence note by hand or the insurance
   is an unargued acceptance. Bulk-adding every `TIMED_OUT` row "to be safe"
   accepts mutants that are reliably detected today and silently stops the
@@ -659,10 +732,12 @@ invoked it*, and the failure looks exactly like a real regression.
   are the breeding ground) can hold a steady state where the baseline is
   deliberately the union of observed survivals and quiet runs emit
   *permanent* stale-entry warnings. While the cause is live that is correct,
-  not cleanup debt: refreshing from any single run bakes in that run's
-  coin-flips and starts ping-pong *(casebook: the handled-flag family that
-  never settles)*. But the steady state is a holding pattern, not a
-  destination, and the trade is asymmetric: a wrongly-removed union costs
+  not cleanup debt: refreshing an **uninsured** family from any single run
+  bakes in that run's coin-flips and starts ping-pong; once the literal
+  `# flip insurance` marker exists, Update preserves that key instead
+  *(casebook: the handled-flag family that never settles)*. But the steady
+  state is a holding pattern, not a destination, and the trade is asymmetric:
+  a wrongly-removed union costs
   one red build and one `pitestModeCompareUnion` to restore, evidence note
   included, while a wrongly-kept union **blinds the ratchet at that key** —
   a row accepted in both statuses can never fail again, so a later edit that
@@ -697,8 +772,9 @@ invoked it*, and the failure looks exactly like a real regression.
 - **Hand-edited rows can silently never match.** The canonical mutator name
   strips the `org.pitest.…gregor.mutators.` package *and* the `returns.`
   sub-package; a row spelled `returns.NullReturnValsMutator` matches nothing
-  and reports new forever. Prefer `pitest<Suite>BaselineUpdate`, which writes
-  the canonical form; hand-edit only to union a known flip.
+  and reports new forever. Prefer the named `pitest<Suite>BaselineUpdate` after
+  reviewing its complete report-driven rewrite. Use `pitest<Suite>BaselineUnion`
+  or `pitestModeCompareUnion` for measured flips; do not hand-roll a union.
 
 ### Line numbers are metadata, and the one hole that buys
 
@@ -713,7 +789,8 @@ a new mutant sits under an old acceptance. Re-read the README argument. If
 the same run's prune-candidate preview is empty, a green
 `pitest<Suite>BaselinePrune` refreshes matched tags without accepting anything;
 otherwise re-measure the candidates before combining a metadata refresh with
-their deletion. A full update also refreshes tags but carries its normal
+their deletion. The report-driven BaselineUpdate also refreshes tags, preserves
+this run's timeout and flip-insurance budgets, and carries its normal
 baseline-widening risk. Unions preserve existing tags and attach observed
 tags to rows they add; the mode-flip union also preserves an existing row's
 tag when it annotates that row. `migrateMutationBaselines` preserves recorded
@@ -761,6 +838,9 @@ silently lossy merely because its version becomes current. Run downgrade and
 commit the result before rolling a consumer back to the N-1 plugin. Those two
 tasks are the fleet migration and rollback plan. A migration can surface old
 line drift as a review prompt, but it never changes baseline identity.
+Rollback is representation-preserving for substantive documents, not a
+byte-for-byte inverse of migration: empty placeholders removed during migration
+remain absent, which N-1 reads identically to an empty baseline.
 
 The price, named because it is paid deliberately: **a same-key swap is
 invisible.** Kill one mutant and introduce a new one at the same
@@ -1590,7 +1670,8 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    exact task and option surface.
 2. Pin any unseeded randomness in the test suite (see above).
 3. Seed the baselines with `./gradlew pitest<Suite>BaselineUpdate` per suite,
-   review the written rows, and commit `config/pitest/`.
+   review the written rows, and commit `config/pitest/`, including each suite's
+   PIT-version and mutation-toolchain sidecars.
 4. Review the `config/pitest/README.md` written by `hardeningInit`, then record
    accepted-mutant evidence (initially empty) and any seeded untriaged debt there.
 5. Add the agent-instructions block below to the repo's `AGENTS.md` with the
@@ -1668,7 +1749,11 @@ fails in that mode; it is unadopted, not merely waiting for a release.
 >   its acceptance, so treat a line-drift advisory whose written argument no
 >   longer fits the code as that swap until shown otherwise. Use the installed
 >   plugin's named writer tasks and heed their candidate previews; never hand-edit
->   record structure or perform a schema migration/rollback without a fleet pin plan.
+>   record structure or provenance stamps. A PIT, PIT-plugin/tool-artifact,
+>   ArcMutate-base, or certificate change uses `pitest<Suite>BaselineRebase`: it
+>   preserves every old row, seeds new rows `# untriaged`, and stamps the reviewed
+>   toolchain only after a successful fresh observation. Perform a schema
+>   migration/rollback only with a fleet pin plan.
 > - Consumer hardening notes contain only local ownership, measurements, acceptance
 >   reasons, and provenance. `AGENTS.md` may carry this exact generated,
 >   digest-pinned template plus those local facts, but no independently maintained

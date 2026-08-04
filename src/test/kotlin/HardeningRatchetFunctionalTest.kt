@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.PitestEvidence
 import java.io.File
+import java.nio.file.Files
 import java.util.UUID
 
 /**
@@ -126,7 +127,11 @@ $fuzzBlock
             classpath = files()
           }
           tasks.register<Delete>("clearFakePitEvidence") {
-            delete(layout.buildDirectory.file("reports/pitest/encoding/.evidence.tsv"))
+            delete(
+              layout.buildDirectory.file("reports/pitest/encoding/.evidence.tsv"),
+              layout.buildDirectory.file("reports/pitest/encoding/.toolchain.tsv"),
+              layout.buildDirectory.file("reports/pitest/encoding/.evidence-invocation"),
+            )
             mustRunAfter(
               "pitestEncodingBaselineUpdate",
               "pitestEncodingBaselineUnion",
@@ -194,21 +199,71 @@ $fuzzBlock
       .withArguments(*args, "--stacktrace")
 
   /**
+   * Most transition tests exercise row allocation, not legacy adoption. Bind an
+   * existing fixture record through the public safe migration path first, using an
+   * empty observation so rebase cannot add or remove a row, then restore the report
+   * the actual writer is meant to consume.
+   */
+  private fun bindLegacyFixtureRecord() {
+    val config = File(fixtureDir, "config/pitest")
+    val recordExists = baselineFile().isFile || config.resolve("encoding-timeouts.csv").isFile
+    val version = config.resolve("encoding-pitest-version")
+    val toolchain = config.resolve("encoding-pitest-toolchain.tsv")
+    if (!recordExists || version.isFile || toolchain.isFile) return
+
+    val reportDirs = listOf(
+      File(fixtureDir, "build/reports/pitest/encoding"),
+      File(fixtureDir, "fixture-pit-report"),
+    )
+    val saved = reportDirs.flatMap { dir ->
+      listOf("mutations.csv", "mutations.xml").map { name ->
+        val file = dir.resolve(name)
+        file to file.takeIf(File::isFile)?.readBytes()
+      }
+    }
+    writeReport(
+      listOf(
+        "Bootstrap.java,com.example.ProvenanceBootstrap," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "bootstrap,1,KILLED,com.example.ProvenanceBootstrapTest",
+      ),
+      "",
+    )
+    runner("pitestEncodingBaselineRebase").build()
+    saved.forEach { (file, bytes) ->
+      if (bytes == null) file.delete() else file.writeBytes(bytes)
+    }
+    File(fixtureDir, "build/reports/pitest/encoding").let { reportDir ->
+      listOf(".evidence.tsv", ".toolchain.tsv", ".evidence-invocation").forEach {
+        reportDir.resolve(it).delete()
+      }
+    }
+  }
+
+  /**
    * The public named workflow runs the typed PIT task, but the fixture replaces
    * PIT's main class with FakePit. It copies the staged synthetic report while the
    * real task lifecycle creates current-invocation evidence for the writer.
    */
-  private fun baselineUpdateRunner(vararg args: String) =
-    runner("pitestEncodingBaselineUpdate", "clearFakePitEvidence", *args)
+  private fun baselineUpdateRunner(vararg args: String): GradleRunner {
+    bindLegacyFixtureRecord()
+    return runner("pitestEncodingBaselineUpdate", "clearFakePitEvidence", *args)
+  }
 
-  private fun baselineUnionRunner(vararg args: String) =
-    runner("pitestEncodingBaselineUnion", "clearFakePitEvidence", *args)
+  private fun baselineUnionRunner(vararg args: String): GradleRunner {
+    bindLegacyFixtureRecord()
+    return runner("pitestEncodingBaselineUnion", "clearFakePitEvidence", *args)
+  }
 
-  private fun baselinePruneRunner(vararg args: String) =
-    runner("pitestEncodingBaselinePrune", "clearFakePitEvidence", *args)
+  private fun baselinePruneRunner(vararg args: String): GradleRunner {
+    bindLegacyFixtureRecord()
+    return runner("pitestEncodingBaselinePrune", "clearFakePitEvidence", *args)
+  }
 
-  private fun timeoutAuditInitRunner(vararg args: String) =
-    runner("pitestEncodingTimeoutAuditInit", "clearFakePitEvidence", *args)
+  private fun timeoutAuditInitRunner(vararg args: String): GradleRunner {
+    bindLegacyFixtureRecord()
+    return runner("pitestEncodingTimeoutAuditInit", "clearFakePitEvidence", *args)
+  }
 
   private fun modeCompareUnionRunner(vararg args: String) =
     runner("pitestModeCompareUnion", *args)
@@ -220,30 +275,12 @@ $fuzzBlock
    * Real current-input validation is covered by HardeningToolExecFunctionalTest.
    */
   private fun modeSnapshot(label: String): BuildResult {
-    val result = runner("pitestModeSnapshot", "-PpitestMode=$label").build()
-    val snapshotDir = File(fixtureDir, "build/pitest-modes/$label")
-    snapshotDir.listFiles { file -> file.isFile && file.extension == "csv" }.orEmpty()
-        .forEach { report ->
-          report.parentFile.resolve("${report.nameWithoutExtension}.evidence.tsv").writeText(
-              PitestEvidence(
-                  suite = report.nameWithoutExtension,
-                  invocationId = UUID.randomUUID().toString(),
-                  pitestVersion = "fixture-pit",
-                  junitPluginVersion = "fixture-junit",
-                  pluginSha256 = "fixture-plugin",
-                  identitySchema = PitestEvidence.CURRENT_IDENTITY_SCHEMA,
-                  javaVersion = "fixture-java",
-                  sourceSha256 = "fixture-source",
-                  classesSha256 = "fixture-classes",
-                  classpathSha256 = "fixture-classpath",
-                  toolClasspathSha256 = "fixture-tool-classpath",
-                  configurationSha256 = "fixture-configuration",
-                  reportSha256 = PitestEvidence.sha256(report),
-                  scope = PitestEvidence.FULL_SCOPE,
-                  historyAssisted = false,
-              ).render())
-        }
-    return result
+    bindLegacyFixtureRecord()
+    // Produce the same modern evidence/toolchain pair as a real mode run. The
+    // ratchet finalizer is excluded because these fixtures deliberately stage
+    // opposite statuses that one baseline cannot accept simultaneously.
+    runner("pitestEncoding", "-x", "pitestEncodingVerify").build()
+    return runner("pitestModeSnapshot", "-PpitestMode=$label").build()
   }
 
   @Test
@@ -594,6 +631,14 @@ $fuzzBlock
     assertTrue(pruned.contains("flip insurance at this key"), pruned)
     assertTrue(pruned.contains("prune dropped 1 row(s)"), pruned)
 
+    val updated = baselineUpdateRunner().build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,SURVIVED # handled-flag family (flip insurance: gate=KILLED, solo=SURVIVED) # line 10"),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "a report-driven update deleted persistent flip insurance:\n$updated",
+    )
+    assertTrue(updated.contains("1 flip-insurance row(s) preserved"), updated)
+
     // with only the insured row left, the run reports the flap alone — no removal candidate
     val settled = runner("pitestEncodingVerify").build().output
     assertFalse(
@@ -739,6 +784,14 @@ $fuzzBlock
     assertTrue(output.contains("prune dropped 1 row(s)"), output)
     assertTrue(output.contains("kept 1 unmatched row(s)"), output)
     assertTrue(output.contains("TIMED_OUT this run (load-dependent)"), output)
+
+    val updated = baselineUpdateRunner().build().output
+    assertEquals(
+      listOf("com.example.Codec,encode,MathMutator,SURVIVED # first # line 20"),
+      baselineFile().readLines().filter { it.isNotBlank() },
+      "a report-driven update deleted the row budgeted to this run's timeout:\n$updated",
+    )
+    assertTrue(updated.contains("1 accepted timeout row(s) preserved"), updated)
   }
 
   @Test
@@ -898,6 +951,12 @@ $fuzzBlock
     baselineFile().parentFile.mkdirs()
     val baselineBefore = "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n"
     baselineFile().writeText(baselineBefore)
+    bindLegacyFixtureRecord()
+    val versionBefore = File(fixtureDir, "config/pitest/encoding-pitest-version").readText()
+    val toolchainBefore = File(
+      fixtureDir,
+      "config/pitest/encoding-pitest-toolchain.tsv",
+    ).readText()
 
     writeReport(
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,RUN_ERROR,none"),
@@ -929,9 +988,15 @@ $fuzzBlock
     assertTrue(malformed.contains("1 malformed CSV row(s)"), malformed)
     assertTrue(malformed.contains("incomplete population is not evidence"), malformed)
     assertEquals(baselineBefore, baselineFile().readText(), "a malformed report rewrote the baseline")
-    assertFalse(
-      File(fixtureDir, "config/pitest/encoding-pitest-version").exists(),
-      "a refused report stamped the baseline"
+    assertEquals(
+      versionBefore,
+      File(fixtureDir, "config/pitest/encoding-pitest-version").readText(),
+      "a refused report changed the PIT provenance",
+    )
+    assertEquals(
+      toolchainBefore,
+      File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv").readText(),
+      "a refused report changed the mutation-toolchain provenance",
     )
   }
 
@@ -970,14 +1035,14 @@ $fuzzBlock
     // should have covered too.
     writeFixture()
     baselineFile().parentFile.mkdirs()
-    val baselineBefore =
-      "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n" +
-          "com.example.Codec,encode\n"
-    baselineFile().writeText(baselineBefore)
+    baselineFile().writeText("com.example.Codec,encode,MathMutator,SURVIVED # line 10\n")
     writeReport(
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
       ""
     )
+    bindLegacyFixtureRecord()
+    val baselineBefore = baselineFile().readText() + "com.example.Codec,encode\n"
+    baselineFile().writeText(baselineBefore)
 
     val checking = runner("pitestEncodingVerify").build().output
     assertTrue(
@@ -1100,7 +1165,7 @@ $fuzzBlock
     )
     assertTrue(output.contains("1 note(s) carried across a status flip"), output)
     // the dropped listing names the note's fate, so a carried note reads as such
-    assertTrue(output.contains("— note carried"), output)
+    assertTrue(output.contains("status changed; acceptance note carried"), output)
     assertFalse(output.contains("note dropped with the row"), output)
 
     // idempotent: a second update with no flips leaves both notes untouched
@@ -1140,9 +1205,9 @@ $fuzzBlock
     val output = baselineUpdateRunner().build().output
     assertEquals(
       listOf(
-        "com.example.Codec,decode,MathMutator,SURVIVED # line 41",
         "com.example.Codec,encode,MathMutator,SURVIVED # sibling operand, same documented family # line 13",
         "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 21",
+        "com.example.Codec,decode,MathMutator,SURVIVED # line 41",
       ),
       baselineFile().readLines().filter { it.isNotBlank() }
     )
@@ -1156,9 +1221,9 @@ $fuzzBlock
     baselineUpdateRunner().build()
     assertEquals(
       listOf(
-        "com.example.Codec,decode,MathMutator,SURVIVED # line 41",
         "com.example.Codec,encode,MathMutator,SURVIVED # sibling operand, same documented family # line 13",
         "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 21",
+        "com.example.Codec,decode,MathMutator,SURVIVED # line 41",
       ),
       baselineFile().readLines().filter { it.isNotBlank() }
     )
@@ -1398,6 +1463,15 @@ $fuzzBlock
     File(fixtureDir, "config/pitest/README.md").writeText("# Baseline\n\nNo causes or labels yet.\n")
     // a stale tool-version record -> 'written by PIT'
     File(fixtureDir, "config/pitest/encoding-pitest-version").writeText("0.0.0-stale\n")
+    File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv").writeText(
+      "schema\t1\n" +
+          "pitest\t0.0.0-stale\n" +
+          "junitPlugin\t1.2.3\n" +
+          "toolClasspathSha256\t${"0".repeat(64)}\n" +
+          "arcMutateBase\tabsent\n" +
+          "arcMutateLicenceSha256\tabsent\n" +
+          "arcMutateLicenceExpires\tabsent\n"
+    )
     // a stale template marker under the canary's own local-repo flag -> 'marker dance'
     File(fixtureDir, "AGENTS.md").writeText("# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n")
     writeReport(
@@ -1570,12 +1644,11 @@ $fuzzBlock
   }
 
   @Test
-  fun `the tool version is part of the record`() {
-    // The mutant population is a function of PIT itself, and the default PIT version
-    // rides plugin bumps — so a baseline is only comparable to runs from the version
-    // that wrote it. A mismatch warns on a checking run (population churn may be the
-    // tool, not the code) and refuses a record-writing one: reading a possibly-
-    // divergent result is a judgment call, writing the record with one is not.
+  fun `the external mutation toolchain is part of the record`() {
+    // The population is a function of PIT, its plugins, and the ArcMutate licence.
+    // Checking may inspect a fresh observation across that boundary, but ordinary
+    // writers must refuse it; only the preservation-first Rebase transition may
+    // replace both provenance sidecars after review.
     writeFixture()
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText("com.example.Codec,encode,12,MathMutator,SURVIVED\n")
@@ -1586,58 +1659,158 @@ $fuzzBlock
       ""
     )
     val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    val toolchainFile = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
 
-    // no record yet: a refresh adopts by stamping the current version
+    // A legacy record cannot be adopted destructively. The fixture helper performs
+    // the same explicit Rebase an adopting consumer must run.
     val refreshed = baselineUpdateRunner().build()
     assertFalse(refreshed.output.contains("written by PIT"), refreshed.output)
     val stamped = toolVersionFile.readText().trim()
     assertTrue(stamped.isNotEmpty() && stamped.first().isDigit(), "stamped version looks wrong: '$stamped'")
+    val toolchainBefore = toolchainFile.readText()
 
-    // matching record: checking and writing runs both stay quiet
+    // Matching provenance: checking stays quiet even though this fixture removes
+    // report-local evidence after each synthetic writer.
     val clean = runner("pitestEncodingVerify").build()
     assertFalse(clean.output.contains("written by PIT"), clean.output)
 
-    toolVersionFile.writeText("0.0.0-stale\n")
+    File(fixtureDir, "build.gradle.kts").appendText(
+      "\nhardening.pitestVersion.set(\"0.0.0-new\")\n",
+    )
 
-    // mismatch: a checking run warns but passes
-    val checked = runner("pitestEncodingVerify").build()
+    // A fresh ordinary observation is permitted but names both boundaries.
+    val checked = runner("pitestEncoding").build()
     assertTrue(
-      checked.output.contains("baseline record written by PIT 0.0.0-stale, this run used PIT $stamped"),
+      checked.output.contains("baseline record written by PIT $stamped, this run used PIT 0.0.0-new") &&
+          checked.output.contains("mutation toolchain changed since the committed record"),
       "mismatch warning missing:\n" + checked.output
     )
 
-    // mismatch: a named record-writing workflow refuses, naming the deliberate-bump path
+    // An ordinary writer refuses without changing either sidecar.
     val refused = baselineUpdateRunner().buildAndFail()
     assertTrue(
       refused.output.contains("refusing to rewrite the record across a tool bump") &&
-          refused.output.contains("set config/pitest/encoding-pitest-version to $stamped"),
+          refused.output.contains("pitestEncodingBaselineRebase"),
       "refusal missing or unactionable:\n" + refused.output
     )
-    assertEquals("0.0.0-stale", toolVersionFile.readText().trim(), "refused run must not restamp")
+    assertEquals(stamped, toolVersionFile.readText().trim(), "refused run changed the PIT stamp")
+    assertEquals(toolchainBefore, toolchainFile.readText(), "refused run changed the toolchain stamp")
+
+    val rebased = runner("pitestEncodingBaselineRebase").build().output
+    assertTrue(rebased.contains("baseline provenance"), rebased)
+    assertEquals("0.0.0-new", toolVersionFile.readText().trim())
+    assertFalse(toolchainBefore == toolchainFile.readText(), "Rebase did not replace toolchain identity")
   }
 
   @Test
-  fun `the version stamp lands only with a successful baseline write`() {
-    // The stamp asserts "this record is comparable to runs of PIT X", so it lands at
-    // the successful end of the write it describes: a named writer that fails
-    // mid-path must not stamp, and pitestEncodingTimeoutAuditInit — which writes the timeout
-    // set, not the baseline — must never stamp at all, else seeding the audit on a
-    // suite whose baseline predates a PIT bump would silence the mismatch warning
-    // for a record the current tool never wrote.
+  fun `baseline rebase repairs torn and malformed provenance without dropping debt`() {
     writeFixture()
-    val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
-
-    // a named writer that fails mid-path (the empty-seed refusal) leaves no stamp
+    baselineFile().parentFile.mkdirs()
+    val original = "com.example.Codec,encode,MathMutator,SURVIVED # accepted # line 12\n"
+    baselineFile().writeText(original)
     writeReport(
       listOf(
-        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,50,KILLED,com.example.CodecTest",
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,12,SURVIVED,none",
+      ),
+      "",
+    )
+    baselineUpdateRunner().build()
+    val version = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    val toolchain = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
+    assertTrue(version.isFile && toolchain.isFile)
+
+    assertTrue(toolchain.delete())
+    val torn = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(torn.contains("committed mutation provenance is torn"), torn)
+    val tornDebt = runner("pitestEncodingDebt").buildAndFail().output
+    assertTrue(tornDebt.contains("committed mutation provenance is torn"), tornDebt)
+    val repairedTorn = runner("pitestEncodingBaselineRebase").build().output
+    assertTrue(repairedTorn.contains("will repair the pair"), repairedTorn)
+    assertTrue(version.isFile && toolchain.isFile)
+    assertEquals(original, baselineFile().readText(), "repair changed accepted debt")
+
+    toolchain.writeText("not a toolchain record\n")
+    val malformed = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(malformed.contains("malformed committed mutation-toolchain record"), malformed)
+    val malformedDebt = runner("pitestEncodingDebt").buildAndFail().output
+    assertTrue(malformedDebt.contains("malformed committed mutation-toolchain record"), malformedDebt)
+    val repairedMalformed = runner("pitestEncodingBaselineRebase").build().output
+    assertTrue(repairedMalformed.contains("will replace malformed"), repairedMalformed)
+    assertTrue(toolchain.readText().startsWith("schema\t1\n"))
+    assertEquals(original, baselineFile().readText(), "malformed-provenance repair changed accepted debt")
+  }
+
+  @Test
+  fun `debt surfaces a committed mutation toolchain that differs from the current one`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # accepted # line 12\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,12,SURVIVED,none",
+      ),
+      "",
+    )
+    baselineUpdateRunner().build()
+    val toolchain = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
+    toolchain.writeText(
+      toolchain.readText().replace(
+          Regex("(?m)^toolClasspathSha256\\t[0-9a-f]{64}$"),
+          "toolClasspathSha256\t" + "0".repeat(64),
+      ),
+    )
+
+    val debt = runner("pitestEncodingDebt").build().output
+
+    assertTrue(debt.contains("committed mutation toolchain differs from the current"), debt)
+  }
+
+  @Test
+  fun `committed record readers refuse a symlinked config tree`() {
+    writeFixture()
+    val external = fixtureDir.resolve("external-config/pitest").apply { mkdirs() }
+    val accepted = external.resolve("encoding-accepted.csv").apply {
+      writeText("com.example.Codec,encode,MathMutator,SURVIVED # accepted # line 12\n")
+    }
+    Files.createSymbolicLink(
+        fixtureDir.resolve("config").toPath(), external.parentFile.toPath())
+    val before = accepted.readText()
+
+    val debt = runner("pitestEncodingDebt").buildAndFail().output
+
+    assertTrue(debt.contains("symbolic-link component"), debt)
+    assertEquals(before, accepted.readText(), "a linked record outside the checkout was changed")
+  }
+
+  @Test
+  fun `mutation provenance lands only with a successful timeout record write`() {
+    // A timeout set is a population-dependent committed mutation record too. Its
+    // provenance must land atomically with a successful seed, never when a later
+    // ratchet check refuses the staged transition.
+    writeFixture()
+    val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    val toolchainFile = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+
+    // The task can stage a real timeout and still fail later on fresh accepted debt.
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,50,SURVIVED,none",
       ),
       ""
     )
     timeoutAuditInitRunner().buildAndFail()
-    assertFalse(toolVersionFile.isFile, "failed record-writing run must not stamp the tool version")
+    assertFalse(timeoutsFile.isFile, "failed initialization committed its staged timeout set")
+    assertFalse(toolVersionFile.isFile, "failed initialization stamped the PIT version")
+    assertFalse(toolchainFile.isFile, "failed initialization stamped the toolchain")
 
-    // a *successful* seed still leaves no stamp: init writes the timeout set, not the baseline
+    // A successful timeout-only record binds both provenance sidecars.
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
@@ -1646,23 +1819,16 @@ $fuzzBlock
     )
     val seeded = timeoutAuditInitRunner().build().output
     assertTrue(seeded.contains("seeded 1 audited-timeout member(s)"), "seed did not run:\n$seeded")
-    assertFalse(toolVersionFile.isFile, "timeout-audit init must not vouch for a baseline it did not write")
-
-    // yet init is still refused across a bump, like every named record writer:
-    // the timeout population is just as version-dependent as the baseline's
-    toolVersionFile.writeText("0.0.0-stale\n")
-    File(fixtureDir, "config/pitest/encoding-timeouts.csv").delete()
-    val refused = timeoutAuditInitRunner().buildAndFail().output
-    assertTrue(
-      refused.contains("refusing to rewrite the record across a tool bump"),
-      "init not refused across a bump:\n$refused"
-    )
+    assertTrue(timeoutsFile.isFile, "successful initialization wrote no timeout record")
+    assertTrue(toolVersionFile.isFile, "timeout-only record has no PIT provenance")
+    assertTrue(toolchainFile.isFile, "timeout-only record has no toolchain provenance")
   }
 
   @Test
   fun `a stale baseline row that timed out this run is not killed-or-moved`() {
     // A baseline SURVIVED row whose mutant reads TIMED_OUT this run is the
-    // load-dependent detection the TIMED_OUT doctrine warns about — prune keeps it,
+    // load-dependent detection the TIMED_OUT doctrine warns about — prune and
+    // update keep it,
     // so counting it in "stale entries (since killed or moved)" both contradicted
     // the drift warning and recommended a refresh that is a no-op for it. The
     // refresh hint must count only rows that are genuinely gone.
@@ -1688,7 +1854,7 @@ $fuzzBlock
     )
     assertTrue(
       output.contains("1 baseline row(s) read TIMED_OUT this run") &&
-          output.contains("no refresh needed (prune keeps them)") &&
+          output.contains("no refresh needed (prune and update keep them)") &&
           output.contains("com.example.Codec,encode,MathMutator,SURVIVED"),
       "timed-out flip not reported separately:\n$output"
     )
@@ -2448,10 +2614,11 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(
-      output.contains("hardening: 3 advisory finding(s) across 1 suite(s)") &&
+      output.contains("hardening: 5 advisory finding(s) across 1 suite(s)") &&
           output.contains(
             "pitest 'encoding': report has no completed-run evidence manifest, " +
-                "1 unaudited timeout(s), 1 stale audit row(s)"),
+                "committed record is legacy-unversioned, committed record is " +
+                "legacy-toolchain-unbound, 1 unaudited timeout(s), 1 stale audit row(s)"),
       "advisory summary missing:\n$output"
     )
 
@@ -2463,7 +2630,7 @@ $fuzzBlock
       .writeText("`Codec.encode` (MathMutator): the estimate crawls, never fails.\n")
     val clean = runner("pitestEncodingVerify").build().output
     assertTrue(
-      clean.contains("hardening: 1 advisory finding(s) across 1 suite(s)") &&
+      clean.contains("hardening: 3 advisory finding(s) across 1 suite(s)") &&
           clean.contains("pitest 'encoding': report has no completed-run evidence manifest") &&
           !clean.contains("unaudited timeout") && !clean.contains("stale audit row"),
       "timeout advisories survived a clean timeout audit:\n$clean"
@@ -2531,7 +2698,7 @@ $fuzzBlock
   fun `union appends without dropping, idempotently, and update names what it drops`() {
     writeFixture()
     baselineFile().parentFile.mkdirs()
-    baselineFile().writeText("com.example.Codec,decode,5,MathMutator,SURVIVED # untriaged flip insurance\n")
+    baselineFile().writeText("com.example.Codec,decode,5,MathMutator,SURVIVED # retired decoder family\n")
     writeReport(
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none"),
       ""
@@ -2542,7 +2709,7 @@ $fuzzBlock
     // the rewrite migrates the legacy row; the added row lands bare with its line tag
     assertEquals(
       listOf(
-        "com.example.Codec,decode,MathMutator,SURVIVED # untriaged flip insurance # line 5",
+        "com.example.Codec,decode,MathMutator,SURVIVED # retired decoder family # line 5",
         "com.example.Codec,encode,MathMutator,SURVIVED # line 12"
       ),
       baselineFile().readLines(),
@@ -2553,9 +2720,14 @@ $fuzzBlock
     assertTrue(idempotent.output.contains("union added nothing new"), idempotent.output)
 
     val update = baselineUpdateRunner().build()
-    assertTrue(update.output.contains("dropped 1 row(s) not unkilled this run"), update.output)
-    assertTrue(update.output.contains("com.example.Codec,decode,MathMutator,SURVIVED # untriaged flip insurance # line 5"), update.output)
-    assertTrue(update.output.contains("pitestEncodingBaselineUnion"), update.output)
+    assertTrue(update.output.contains("removed or transitioned 1 row(s)"), update.output)
+    assertTrue(update.output.contains("com.example.Codec,decode,MathMutator,SURVIVED # retired decoder family # line 5"), update.output)
+    assertTrue(update.output.contains("coordinate absent from this PIT report"), update.output)
+    assertTrue(update.output.contains("not an observed kill"), update.output)
+    assertFalse(
+      update.output.contains("pitestEncodingBaselineUnion"),
+      "an unrelated removal advertised flip-insurance union:\n${update.output}",
+    )
     assertEquals(
       listOf("com.example.Codec,encode,MathMutator,SURVIVED # line 12"),
       baselineFile().readLines(),
@@ -2674,6 +2846,42 @@ $fuzzBlock
   }
 
   @Test
+  fun `read-only mode comparison refuses torn and malformed committed provenance`() {
+    writeFixture(beforeHardening = "hardening.pitestVersion.set(\"fixture-pit\")")
+    baselineFile().apply {
+      parentFile.mkdirs()
+      writeText("com.example.Codec,encode,MathMutator,SURVIVED # line 12\n")
+    }
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant("KILLED")), "")
+    modeSnapshot("solo")
+    writeReport(listOf(mutant("SURVIVED")), "")
+    modeSnapshot("gate")
+    val before = baselineFile().readText()
+    val config = File(fixtureDir, "config/pitest")
+    val version = config.resolve("encoding-pitest-version")
+    val toolchain = config.resolve("encoding-pitest-toolchain.tsv")
+    val toolchainBytes = toolchain.readBytes()
+    assertTrue(toolchain.delete())
+
+    val torn = runner("pitestModeCompare").buildAndFail().output
+    assertTrue(torn.contains("committed mutation provenance is torn"), torn)
+    assertTrue(torn.contains("before interpreting mode results"), torn)
+    assertEquals(before, baselineFile().readText(), "torn provenance changed mode insurance")
+
+    toolchain.writeBytes(toolchainBytes)
+    version.writeText("fixture-pit\n\n")
+    val malformed = runner("pitestModeCompare").buildAndFail().output
+
+    assertTrue(malformed.contains("committed PIT-version stamp is invalid"), malformed)
+    assertTrue(malformed.contains("at most one trailing LF"), malformed)
+    assertEquals(before, baselineFile().readText(), "malformed provenance changed mode insurance")
+  }
+
+  @Test
   fun `one slow mutant vouches for one row in the sweep, and never for the insured one`() {
     // The dead-row sweep's timeout budget is the MIN across modes — a mutant that
     // timed out in every mode is one physical mutant, so it accounts for one row,
@@ -2737,15 +2945,18 @@ $fuzzBlock
     // instead), and comment lines survive the row-slot rewrite.
     writeFixture()
     baselineFile().parentFile.mkdirs()
-    baselineFile().writeText(
+    val validBaseline =
       "  # context for the row below\n" +
-          "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 50\n" +
-          "com.example.Codec,encode\n"
-    )
+          "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 50\n"
+    baselineFile().writeText(validBaseline)
     fun mutant(status: String) =
       "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,$status," +
           (if (status == "KILLED") "com.example.CodecTest" else "none")
     writeReport(listOf(mutant("KILLED")), "")
+    // Bind the valid legacy record before deliberately corrupting it. Rebase is
+    // required for provenance adoption and correctly refuses malformed input.
+    bindLegacyFixtureRecord()
+    baselineFile().writeText(validBaseline + "com.example.Codec,encode\n")
     modeSnapshot("solo")
     writeReport(listOf(mutant("SURVIVED")), "")
     modeSnapshot("gate")
@@ -2755,10 +2966,7 @@ $fuzzBlock
     assertTrue(refused.contains("Fix the row shape first"), refused)
 
     // with the malformed row fixed, the union writes without disturbing the comment
-    baselineFile().writeText(
-      "  # context for the row below\n" +
-          "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 50\n"
-    )
+    baselineFile().writeText(validBaseline)
     val unioned = modeCompareUnionRunner().build().output
     assertTrue(unioned.contains("flip insurance written"), unioned)
     assertFalse(unioned.contains("do not survive"), unioned)
@@ -2911,6 +3119,7 @@ $fuzzBlock
       classesSha256 = "fixture-classes",
       classpathSha256 = "fixture-classpath",
       toolClasspathSha256 = "fixture-tool-classpath",
+      mutationToolchainSha256 = "fixture-mutation-toolchain",
       configurationSha256 = "fixture-configuration",
       reportSha256 = PitestEvidence.sha256(report),
       scope = scope,
@@ -3025,7 +3234,11 @@ $fuzzBlock
 
     val failed = runner("pitestModeCompareUnion").buildAndFail().output
 
-    assertTrue(failed.contains("parsing-accepted.csv carries 1 malformed row(s)"), failed)
+    assertTrue(
+      failed.contains("legacy 'parsing' snapshot") &&
+          failed.contains("without completed-run provenance"),
+      failed,
+    )
     assertFalse(
       encodingBaseline.exists(),
       "a later suite failure committed the earlier suite's prepared baseline:\n$failed",
@@ -3040,15 +3253,6 @@ $fuzzBlock
   @Test
   fun `mode insurance completion refuses a skipped compare task`() {
     writeFixture()
-    fun mutant(status: String) =
-      "Codec.java,com.example.Codec," +
-          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
-          "encode,12,$status," +
-          (if (status == "KILLED") "com.example.CodecTest" else "none")
-    writeReport(listOf(mutant("KILLED")), "")
-    modeSnapshot("solo")
-    writeReport(listOf(mutant("SURVIVED")), "")
-    modeSnapshot("gate")
     File(fixtureDir, "build.gradle.kts").appendText(
       """
 
@@ -3058,6 +3262,15 @@ $fuzzBlock
         }
       """.trimIndent() + "\n",
     )
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,12,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant("KILLED")), "")
+    modeSnapshot("solo")
+    writeReport(listOf(mutant("SURVIVED")), "")
+    modeSnapshot("gate")
     val baseline = baselineFile()
     val stamp = File(fixtureDir, "config/pitest/encoding-pitest-version")
 
@@ -3066,9 +3279,204 @@ $fuzzBlock
       "-PskipModeCompare",
     ).buildAndFail().output
 
-    assertTrue(failed.contains("not consumed"), failed)
+    assertTrue(failed.contains("comparison task did not complete"), failed)
     assertFalse(baseline.exists(), "a skipped compare wrote its prepared baseline")
     assertFalse(stamp.exists(), "a skipped compare wrote its PIT-version stamp")
+  }
+
+  @Test
+  fun `mode insurance completion refuses a skipped final validator`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        tasks.named("pitestModeCompareCommit") {
+          val skipModeCommit = providers.gradleProperty("skipModeCommit").isPresent
+          onlyIf { !skipModeCommit }
+        }
+      """.trimIndent() + "\n",
+    )
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,12,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant("KILLED")), "")
+    modeSnapshot("solo")
+    writeReport(listOf(mutant("SURVIVED")), "")
+    modeSnapshot("gate")
+    val baseline = baselineFile()
+    val version = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    val toolchain = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
+
+    val failed = runner(
+      "pitestModeCompareUnion",
+      "-PskipModeCommit",
+    ).buildAndFail().output
+
+    assertTrue(failed.contains("not consumed"), failed)
+    assertFalse(baseline.exists(), "a skipped final validator wrote the baseline")
+    assertFalse(version.exists(), "a skipped final validator wrote the PIT stamp")
+    assertFalse(toolchain.exists(), "a skipped final validator wrote the toolchain stamp")
+  }
+
+  @Test
+  fun `mode insurance refuses snapshots from an older checkout before writing`() {
+    writeFixture()
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,12,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant("KILLED")), "")
+    modeSnapshot("solo")
+    writeReport(listOf(mutant("SURVIVED")), "")
+    modeSnapshot("gate")
+
+    File(fixtureDir, "src/main/java/com/example/Codec.java")
+      .appendText("\n// checkout moved after the observations\n")
+    val baseline = baselineFile()
+    val version = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    val toolchain = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
+
+    val failed = runner("pitestModeCompareUnion").buildAndFail().output
+
+    assertTrue(
+      failed.contains("no longer matches the current checkout") && failed.contains("sourceSha256"),
+      failed,
+    )
+    assertFalse(baseline.exists(), "stale snapshots wrote a baseline")
+    assertFalse(version.exists(), "stale snapshots wrote a PIT-version stamp")
+    assertFalse(toolchain.exists(), "stale snapshots wrote a toolchain stamp")
+  }
+
+  @Test
+  fun `mode insurance revalidates after comparison immediately before commit`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        val codecForModeTamper = layout.projectDirectory.file("src/main/java/com/example/Codec.java")
+        val tamperAfterModeCompare = tasks.register("tamperAfterModeCompare") {
+          dependsOn("pitestModeCompare")
+          doLast {
+            codecForModeTamper.asFile.appendText("\n// changed after comparison\n")
+          }
+        }
+        tasks.named("pitestModeCompareCommit") {
+          dependsOn(tamperAfterModeCompare)
+        }
+      """.trimIndent() + "\n",
+    )
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,12,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant("KILLED")), "")
+    modeSnapshot("solo")
+    writeReport(listOf(mutant("SURVIVED")), "")
+    modeSnapshot("gate")
+
+    val failed = runner("pitestModeCompareUnion").buildAndFail().output
+
+    assertTrue(failed.contains(":pitestModeCompare"), failed)
+    assertTrue(failed.contains(":tamperAfterModeCompare"), failed)
+    assertTrue(failed.contains(":pitestModeCompareCommit FAILED"), failed)
+    assertTrue(failed.contains("sourceSha256"), failed)
+    assertFalse(baselineFile().exists(), "final-input drift committed mode insurance")
+  }
+
+  @Test
+  fun `mode insurance binds the exact snapshot bytes that produced its prepared write`() {
+    writeFixture()
+    val buildFile = File(fixtureDir, "build.gradle.kts")
+    buildFile.writeText("import java.security.MessageDigest\n" + buildFile.readText())
+    buildFile.appendText(
+      """
+
+        val gateCsvForModeReplacement =
+          layout.buildDirectory.file("pitest-modes/gate/encoding.csv")
+        val gateEvidenceForModeReplacement =
+          layout.buildDirectory.file("pitest-modes/gate/encoding.evidence.tsv")
+        val replaceModeSnapshotAfterCompare = tasks.register("replaceModeSnapshotAfterCompare") {
+          dependsOn("pitestModeCompare")
+          doLast {
+            val csv = gateCsvForModeReplacement.get().asFile
+            csv.writeText(csv.readText().replace(",SURVIVED,", ",KILLED,"))
+            val sha = MessageDigest.getInstance("SHA-256").digest(csv.readBytes())
+              .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+            val evidence = gateEvidenceForModeReplacement.get().asFile
+            evidence.writeText(
+              evidence.readLines().joinToString("\n", postfix = "\n") { line ->
+                if (line.startsWith("reportSha256\t")) "reportSha256\t" + sha else line
+              }
+            )
+          }
+        }
+        tasks.named("pitestModeCompareCommit") {
+          dependsOn(replaceModeSnapshotAfterCompare)
+        }
+      """.trimIndent() + "\n",
+    )
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,12,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant("KILLED")), "")
+    modeSnapshot("solo")
+    writeReport(listOf(mutant("SURVIVED")), "")
+    modeSnapshot("gate")
+
+    val failed = runner("pitestModeCompareUnion").buildAndFail().output
+
+    assertTrue(failed.contains("inputs changed after comparison"), failed)
+    assertTrue(failed.contains("encoding.csv"), failed)
+    assertFalse(baselineFile().exists(), "replacement snapshot committed stale mode insurance")
+  }
+
+  @Test
+  fun `mode insurance refuses a committed-record preimage changed after comparison`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        val baselineForModeTamper =
+          layout.projectDirectory.file("config/pitest/encoding-accepted.csv")
+        val tamperModeRecordAfterCompare = tasks.register("tamperModeRecordAfterCompare") {
+          dependsOn("pitestModeCompare")
+          doLast {
+            baselineForModeTamper.asFile.apply {
+              parentFile.mkdirs()
+              writeText("!sava-hardening-baseline-schema,1\n" +
+                "com.example.Concurrent,changed,MathMutator,SURVIVED # line 7\n")
+            }
+          }
+        }
+        tasks.named("pitestModeCompareCommit") {
+          dependsOn(tamperModeRecordAfterCompare)
+        }
+      """.trimIndent() + "\n",
+    )
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,12,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+    writeReport(listOf(mutant("KILLED")), "")
+    modeSnapshot("solo")
+    writeReport(listOf(mutant("SURVIVED")), "")
+    modeSnapshot("gate")
+
+    val failed = runner("pitestModeCompareUnion").buildAndFail().output
+
+    assertTrue(failed.contains("inputs changed after comparison"), failed)
+    assertTrue(failed.contains("encoding-accepted.csv"), failed)
+    assertTrue(
+      baselineFile().readText().contains("com.example.Concurrent,changed"),
+      "final commit overwrote the concurrent baseline preimage",
+    )
   }
 
   @Test
@@ -3406,10 +3814,10 @@ $fuzzBlock
     // argument was written for the mutants it had), as does the new decode key
     assertEquals(
       listOf(
-        "com.example.Codec,decode,MathMutator,SURVIVED # untriaged # line 33",
         "com.example.Codec,encode,MathMutator,SURVIVED # race guard family # line 12",
-        "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 12",
         "com.example.Codec,encode,MathMutator,SURVIVED # line 20",
+        "com.example.Codec,decode,MathMutator,SURVIVED # untriaged # line 33",
+        "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 12",
       ),
       baselineFile().readLines().filter { it.isNotBlank() }
     )
@@ -3667,6 +4075,7 @@ $fuzzBlock
     // the stamp. An audited timeout set is still a record, so the stamp stays.
     writeFixture()
     val toolVersionFile = File(fixtureDir, "config/pitest/encoding-pitest-version")
+    val toolchainFile = File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv")
     baselineFile().parentFile.mkdirs()
 
     // a real write lands the stamp with the record
@@ -3684,8 +4093,9 @@ $fuzzBlock
     )
     val retired = baselineUpdateRunner().build().output
     assertTrue(retired.contains("nothing unkilled — baseline file removed"), retired)
-    assertTrue(retired.contains("encoding-pitest-version removed with the record it certified"), retired)
+    assertTrue(retired.contains("orphan mutation provenance removed with the record it certified"), retired)
     assertFalse(toolVersionFile.isFile, "orphan stamp left behind an emptied record")
+    assertFalse(toolchainFile.isFile, "orphan toolchain stamp left behind an emptied record")
 
     // with an audited timeout set present, the stamp still has a record to certify
     File(fixtureDir, "config/pitest/encoding-timeouts.csv")
@@ -3703,6 +4113,7 @@ $fuzzBlock
     val kept = baselineUpdateRunner().build().output
     assertTrue(kept.contains("nothing unkilled — baseline file removed"), kept)
     assertTrue(toolVersionFile.isFile, "the audited timeout set is a record; its stamp must stay")
+    assertTrue(toolchainFile.isFile, "the audited timeout set lost its toolchain stamp")
   }
 
   @Test

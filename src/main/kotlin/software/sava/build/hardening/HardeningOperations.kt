@@ -98,6 +98,7 @@ internal object HardeningOptionNames {
 /** The one record-writing interpretation applied by a suite verification. */
 internal enum class BaselineWriteOperation {
   CHECK,
+  REBASE,
   UPDATE,
   UNION,
   PRUNE,
@@ -110,12 +111,25 @@ internal enum class ProjectWriteOperation(val description: String) {
   SCHEMA_DOWNGRADE("schema:downgrade"),
 }
 
+/** One path/content pair prepared in memory for a final typed mutation-record commit. */
+internal data class PreparedMutationWrite(
+  val targetPath: String,
+  val content: String,
+)
+
+/** Bytes to write plus every filesystem tree the decision read. */
+internal data class PreparedMutationCommit(
+  val writes: List<PreparedMutationWrite>,
+  val readTrees: List<BaselineFiles.TreeSnapshot>,
+)
+
 /** A discoverable task's state-changing request. */
 internal enum class HardeningWriteRequest(
   val baselineOperation: BaselineWriteOperation?,
   val projectOperation: ProjectWriteOperation?,
   val displayName: String,
 ) {
+  BASELINE_REBASE(BaselineWriteOperation.REBASE, null, "baseline provenance rebase"),
   BASELINE_UPDATE(BaselineWriteOperation.UPDATE, null, "baseline update"),
   BASELINE_UNION(BaselineWriteOperation.UNION, null, "baseline union"),
   BASELINE_PRUNE(BaselineWriteOperation.PRUNE, null, "baseline prune"),
@@ -141,6 +155,7 @@ internal class HardeningOperationRegistry {
   private val consumedSuiteOperations = mutableMapOf<SuiteKey, BaselineWriteOperation>()
   private val projectOperations = mutableMapOf<String, ProjectWriteOperation>()
   private val consumedProjectOperations = mutableMapOf<String, ProjectWriteOperation>()
+  private val preparedProjectWrites = mutableMapOf<String, PreparedMutationCommit>()
   private val poisonedProjects = mutableMapOf<String, String>()
 
   private fun requireHealthy(projectPath: String) {
@@ -294,6 +309,46 @@ internal class HardeningOperationRegistry {
   }
 
   @Synchronized
+  fun prepareProjectWrites(
+    projectPath: String,
+    expected: ProjectWriteOperation,
+    writes: List<PreparedMutationWrite>,
+    readTrees: List<BaselineFiles.TreeSnapshot>,
+  ) {
+    requireHealthy(projectPath)
+    require(projectOperations[projectPath] == expected) {
+      "cannot prepare '$projectPath' writes for $expected: selected operation is " +
+          (projectOperations[projectPath]?.toString() ?: "read-only")
+    }
+    require(projectPath !in preparedProjectWrites) {
+      "'$projectPath' already prepared a mutation-record commit in this invocation"
+    }
+    require(readTrees.map { it.rootPath }.distinct().size == readTrees.size) {
+      "'$projectPath' prepared duplicate mutation-record read roots"
+    }
+    preparedProjectWrites[projectPath] = PreparedMutationCommit(
+        writes.toList(), readTrees.map { it.copy(entries = it.entries.toList()) })
+  }
+
+  @Synchronized
+  fun requirePreparedProjectWrites(
+    projectPath: String,
+    expected: ProjectWriteOperation,
+  ): PreparedMutationCommit {
+    requireHealthy(projectPath)
+    require(projectOperations[projectPath] == expected) {
+      "expected '$projectPath' to select $expected before committing prepared writes"
+    }
+    return preparedProjectWrites[projectPath]?.let { prepared ->
+      prepared.copy(
+          writes = prepared.writes.toList(),
+          readTrees = prepared.readTrees.map { it.copy(entries = it.entries.toList()) },
+      )
+    } ?: throw IllegalArgumentException(
+        "expected '$projectPath' to prepare $expected, but the comparison task did not complete")
+  }
+
+  @Synchronized
   fun requireProjectConsumed(projectPath: String, expected: ProjectWriteOperation) {
     requireHealthy(projectPath)
     val actual = consumedProjectOperations[projectPath]
@@ -369,6 +424,18 @@ abstract class HardeningOperationSession : BuildService<BuildServiceParameters.N
 
   internal fun recordProjectConsumed(projectPath: String, expected: ProjectWriteOperation) =
     registry.recordProjectConsumed(projectPath, expected)
+
+  internal fun prepareProjectWrites(
+    projectPath: String,
+    expected: ProjectWriteOperation,
+    writes: List<PreparedMutationWrite>,
+    readTrees: List<BaselineFiles.TreeSnapshot>,
+  ) = registry.prepareProjectWrites(projectPath, expected, writes, readTrees)
+
+  internal fun requirePreparedProjectWrites(
+    projectPath: String,
+    expected: ProjectWriteOperation,
+  ): PreparedMutationCommit = registry.requirePreparedProjectWrites(projectPath, expected)
 
   internal fun requireProjectConsumed(projectPath: String, expected: ProjectWriteOperation) =
     registry.requireProjectConsumed(projectPath, expected)
@@ -533,10 +600,13 @@ internal object HardeningHelpText {
     appendLine()
     appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")
     appendLine("  migrateMutationBaselines          stamp substantive accepted baselines; remove empty placeholders")
-    appendLine("  downgradeMutationBaselines        losslessly remove schema 1 for N-1 rollback")
+    appendLine("  downgradeMutationBaselines        remove schema 1 from substantive baselines; empty placeholders stay absent")
     suiteNames.sorted().forEach { suite ->
       val prefix = "pitest" + suite.replaceFirstChar(Char::uppercase)
-      appendLine("  ${prefix}BaselineUpdate".padEnd(40) + "full rewrite from a fresh run")
+      appendLine("  ${prefix}BaselineRebase".padEnd(40) + "safely adopt a reviewed PIT/toolchain transition")
+      appendLine(
+          "  ${prefix}BaselineUpdate".padEnd(40) +
+              "report rewrite; keep current timeout/flip-insurance evidence")
       appendLine("  ${prefix}BaselineUnion".padEnd(40) + "append only newly observed rows")
       appendLine("  ${prefix}BaselinePrune".padEnd(40) + "apply the reviewed shrink-only candidate set")
       appendLine("  ${prefix}TimeoutAuditInit".padEnd(40) + "seed the suite timeout audit")

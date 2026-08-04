@@ -16,10 +16,17 @@ import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.UntrackedTask
 import org.gradle.jvm.toolchain.JavaLauncher
 import software.sava.build.hardening.HardeningCertificationSession
+import software.sava.build.hardening.HardeningOperationSession
+import software.sava.build.hardening.BaselineFiles
+import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
 import software.sava.build.hardening.PitestEvidenceSnapshotInput
+import software.sava.build.hardening.ProjectWriteOperation
+import java.io.File
 import javax.inject.Inject
+import java.time.Clock
+import java.time.LocalDate
 
 /** Managed inputs for execution-time revalidation of one mutation suite. */
 abstract class PitestEvidenceSpec @Inject constructor(private val specName: String) : Named {
@@ -42,6 +49,8 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
 
   @get:Input abstract val pitestVersion: Property<String>
   @get:Input abstract val junitPluginVersion: Property<String>
+  @get:Input abstract val arcMutateBaseVersion: Property<String>
+  @get:Input abstract val arcMutateLicensed: Property<Boolean>
   @get:Input abstract val targetClasses: ListProperty<String>
   @get:Input abstract val excludedClasses: ListProperty<String>
   @get:Input abstract val targetTests: Property<String>
@@ -57,6 +66,59 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
     val report = reportDir.resolve("mutations.csv")
     val scope = reportDir.resolve(".scoped").takeIf { it.isFile }
       ?.readText()?.trim().orEmpty().ifEmpty { PitestEvidence.FULL_SCOPE }
+    return capture(recorded, report, useRecordedReportHash, scope,
+      reportDir.resolve(".history-assisted").isFile)
+  }
+
+  fun captureSnapshot(recorded: PitestEvidence, report: File): PitestEvidence =
+    capture(recorded, report, false, recorded.scope, recorded.historyAssisted)
+
+  /** Recaptures every input while binding the exact report bytes the caller parsed. */
+  fun captureFinal(
+    recorded: PitestEvidence,
+    reportSha256: String,
+    scope: String,
+    historyAssisted: Boolean,
+  ): PitestEvidence = capture(
+    recorded,
+    reportSha256,
+    scope,
+    historyAssisted,
+  )
+
+  /** Captures only the effective mutation engine/licence identity for read-only Debt. */
+  internal fun captureMutationToolchain(): MutationToolchainRecord = MutationToolchainRecord.capture(
+    pitestVersion = pitestVersion.get(),
+    junitPluginVersion = junitPluginVersion.get(),
+    toolClasspath = toolClasspath.files,
+    arcMutateBaseVersion = arcMutateBaseVersion.get(),
+    arcMutateEnabled = arcMutateLicensed.get(),
+    reportDirectory = reportDirectory.get().asFile,
+    projectBaseDirectory = projectDirectory.get().asFile,
+    lookupStartDirectory = projectDirectory.get().asFile,
+    observationDate = LocalDate.now(Clock.systemUTC()),
+  )
+
+  private fun capture(
+    recorded: PitestEvidence,
+    report: File,
+    useRecordedReportHash: Boolean,
+    scope: String,
+    historyAssisted: Boolean,
+  ): PitestEvidence = capture(
+    recorded,
+    if (useRecordedReportHash) recorded.reportSha256 else PitestEvidence.sha256(report),
+    scope,
+    historyAssisted,
+  )
+
+  private fun capture(
+    recorded: PitestEvidence,
+    reportSha256: String,
+    scope: String,
+    historyAssisted: Boolean,
+  ): PitestEvidence {
+    val toolchain = captureMutationToolchain()
     return PitestEvidenceSnapshot.capture(PitestEvidenceSnapshotInput(
       suite = suiteName.get(),
       invocationId = recorded.invocationId,
@@ -69,6 +131,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
       classFiles = classFiles.files,
       runtimeClasspath = runtimeClasspath.files,
       toolClasspath = toolClasspath.files,
+      mutationToolchainSha256 = toolchain.identitySha256,
       targetClasses = targetClasses.get(),
       excludedClasses = excludedClasses.get(),
       targetTests = targetTests.get(),
@@ -78,11 +141,34 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
       timeoutConst = timeoutConst.get(),
       mutationBytecodeRelease = mutationBytecodeRelease.get(),
       recompileExcludes = recompileExcludes.get(),
-      reportSha256 = if (useRecordedReportHash) recorded.reportSha256 else PitestEvidence.sha256(report),
+      reportSha256 = reportSha256,
       scope = scope,
-      historyAssisted = reportDir.resolve(".history-assisted").isFile,
+      historyAssisted = historyAssisted,
     ))
   }
+}
+
+/**
+ * Verify remains script-wired, but its final write boundary owns a managed evidence
+ * specification so it can recapture the same inputs as the standalone validator.
+ */
+@UntrackedTask(because = "Mutation verification and record writes must inspect current evidence on every run")
+abstract class PitestVerifyTask @Inject constructor(
+  objects: org.gradle.api.model.ObjectFactory,
+) : DefaultTask() {
+  @get:Nested
+  val finalEvidence: PitestEvidenceSpec =
+    objects.newInstance(PitestEvidenceSpec::class.java, "suite")
+}
+
+/** Read-only committed-debt surface with current mutation-toolchain comparison. */
+@UntrackedTask(because = "Debt must compare committed provenance with the current toolchain on every run")
+abstract class PitestDebtTask @Inject constructor(
+  objects: org.gradle.api.model.ObjectFactory,
+) : DefaultTask() {
+  @get:Nested
+  val currentEvidence: PitestEvidenceSpec =
+    objects.newInstance(PitestEvidenceSpec::class.java, "suite")
 }
 
 /**
@@ -119,6 +205,20 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
     }
     if (fullEvidenceOnly.get() &&
       (recorded.scope != PitestEvidence.FULL_SCOPE || recorded.historyAssisted)) return
+    val toolchainFile = reportDir.resolve(".toolchain.tsv")
+    if (recorded.mutationToolchainSha256 != PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
+      val toolchain = try {
+        MutationToolchainRecord.parse(toolchainFile.readText())
+      } catch (e: Exception) {
+        throw GradleException(
+          diagnosticPrefix.get() + "  completed mutation-toolchain record is missing or malformed: ${e.message}", e)
+      }
+      if (toolchain.identitySha256 != recorded.mutationToolchainSha256) {
+        throw GradleException(
+          diagnosticPrefix.get() + "  completed mutation-toolchain record differs from evidence"
+        )
+      }
+    }
     val expected = evidence.capture(recorded, useRecordedReportHash = false)
     val differences = recorded.differences(expected)
     if (differences.isNotEmpty()) {
@@ -129,6 +229,121 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
     certificationSession.get().recordRevalidated(
       evidence.projectPath.get(), evidence.suiteName.get(), recorded
     )
+  }
+}
+
+/** Final current-checkout validation and commit for a prepared mode-insurance write. */
+@UntrackedTask(because = "Mode insurance must revalidate stored observations at the final write boundary")
+abstract class PitestModeCommitTask @Inject constructor(
+  objects: org.gradle.api.model.ObjectFactory,
+) : DefaultTask() {
+  @get:Nested
+  val suiteEvidence: NamedDomainObjectContainer<PitestEvidenceSpec> =
+    objects.domainObjectContainer(PitestEvidenceSpec::class.java)
+  @get:Internal abstract val snapshotRoot: DirectoryProperty
+  @get:Internal abstract val projectDirectory: DirectoryProperty
+  @get:Input abstract val hardeningProjectPath: Property<String>
+
+  @get:ServiceReference("hardeningOperationSession")
+  abstract val operationSession: Property<HardeningOperationSession>
+
+  @TaskAction
+  fun validateAndCommit() {
+    val projectPath = hardeningProjectPath.get()
+    val prepared = try {
+      operationSession.get().requirePreparedProjectWrites(
+          projectPath, ProjectWriteOperation.MODE_FLIP_INSURANCE)
+    } catch (e: IllegalArgumentException) {
+      throw GradleException("pitestModeCompare: ${e.message}", e)
+    }
+    val trustedProject = projectDirectory.get().asFile
+    prepared.writes.forEach {
+      BaselineFiles.requireRegularFileOrMissing(trustedProject, File(it.targetPath))
+    }
+    prepared.readTrees.forEach { snapshot ->
+      val root = File(snapshot.rootPath).toPath().toAbsolutePath().normalize()
+      val trusted = trustedProject.toPath().toAbsolutePath().normalize()
+      if (root.startsWith(trusted)) {
+        BaselineFiles.requireNoSymbolicLinkComponents(trustedProject, File(snapshot.rootPath))
+      }
+      val differences = BaselineFiles.treeDifferences(snapshot)
+      if (differences.isNotEmpty()) {
+        throw GradleException(
+          "pitestModeCompare: inputs changed after comparison — refusing to commit stale " +
+            "mode insurance from ${snapshot.rootPath}:\n" +
+            differences.joinToString("\n") { "  $it" }
+        )
+      }
+    }
+    suiteEvidence.sortedBy { it.name }.forEach(::validateSuite)
+    BaselineFiles.writeAllAtomically(trustedProject, prepared.writes.map {
+      BaselineFiles.Write(File(it.targetPath), it.content)
+    })
+    operationSession.get().recordProjectConsumed(
+        projectPath, ProjectWriteOperation.MODE_FLIP_INSURANCE)
+    if (prepared.writes.isNotEmpty()) {
+      logger.lifecycle(
+          "pitestModeCompare: flip insurance written to ${prepared.writes.size} " +
+              "baseline/provenance file(s) after final current-checkout validation")
+    }
+  }
+
+  private fun validateSuite(evidence: PitestEvidenceSpec) {
+    val suite = evidence.suiteName.get()
+    val modes = snapshotRoot.get().asFile.listFiles()
+      ?.filter(File::isDirectory)?.sortedBy(File::getName).orEmpty()
+    modes.forEach { mode ->
+      val report = mode.resolve("$suite.csv")
+      if (!report.isFile) {
+        throw GradleException(
+          "pitestModeCompare: snapshot '${mode.name}' lost '$suite.csv' after comparison")
+      }
+      val manifest = mode.resolve("$suite.evidence.tsv")
+      if (!manifest.isFile) {
+        throw GradleException(
+          "pitestModeCompare: refusing a mode-insurance write for legacy '$suite' snapshot " +
+            "'${mode.name}' without completed-run provenance; capture every mode again"
+        )
+      }
+      val recorded = try {
+        PitestEvidence.parse(manifest.readText())
+      } catch (e: IllegalArgumentException) {
+        throw GradleException(
+          "pitestModeCompare: invalid '$suite' evidence in snapshot '${mode.name}': ${e.message}", e)
+      }
+      if (recorded.scope != PitestEvidence.FULL_SCOPE || recorded.historyAssisted) {
+        throw GradleException(
+          "pitestModeCompare: '$suite' snapshot '${mode.name}' is not fresh full evidence"
+        )
+      }
+      val toolchainFile = mode.resolve("$suite.toolchain.tsv")
+      val toolchain = if (!toolchainFile.isFile) {
+        throw GradleException(
+          "pitestModeCompare: '$suite' snapshot '${mode.name}' has no mutation-toolchain record"
+        )
+      } else try {
+        MutationToolchainRecord.parse(toolchainFile.readText())
+      } catch (e: IllegalArgumentException) {
+        throw GradleException(
+          "pitestModeCompare: invalid '$suite' mutation-toolchain record in snapshot " +
+            "'${mode.name}': ${e.message}", e)
+      }
+      if (toolchain.identitySha256 != recorded.mutationToolchainSha256) {
+        throw GradleException(
+          "pitestModeCompare: '$suite' snapshot '${mode.name}' mutation-toolchain record " +
+            "does not match its evidence"
+        )
+      }
+      val current = evidence.captureSnapshot(recorded, report)
+      val differences = recorded.differences(current)
+      if (differences.isNotEmpty()) {
+        throw GradleException(
+          "pitestModeCompare: refusing to write '$suite' mode insurance from snapshot " +
+            "'${mode.name}' because it no longer matches the current checkout:\n" +
+            differences.joinToString("\n") { "  $it" }
+        )
+      }
+    }
   }
 }
 
@@ -153,6 +368,22 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
         return@forEach // The receipt action owns the specific malformed-evidence error.
       }
       if (recorded.scope != PitestEvidence.FULL_SCOPE || recorded.historyAssisted) return@forEach
+      val toolchainFile = reportDir.resolve(".toolchain.tsv")
+      if (recorded.mutationToolchainSha256 != PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
+        val toolchain = try {
+          MutationToolchainRecord.parse(toolchainFile.readText())
+        } catch (e: Exception) {
+          throw GradleException(
+            "hardeningCertify: '${evidence.suiteName.get()}' completed mutation-toolchain " +
+              "record is missing or malformed: ${e.message}", e)
+        }
+        if (toolchain.identitySha256 != recorded.mutationToolchainSha256) {
+          throw GradleException(
+            "hardeningCertify: '${evidence.suiteName.get()}' completed mutation-toolchain " +
+              "record differs from evidence"
+          )
+        }
+      }
       val current = evidence.capture(recorded, useRecordedReportHash = true)
       val differences = recorded.differences(current)
       if (differences.isNotEmpty()) {

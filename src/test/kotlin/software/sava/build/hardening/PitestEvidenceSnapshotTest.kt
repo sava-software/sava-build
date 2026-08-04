@@ -113,6 +113,7 @@ class PitestEvidenceSnapshotTest {
     classFiles = classFiles,
     runtimeClasspath = runtimeClasspath,
     toolClasspath = toolClasspath,
+    mutationToolchainSha256 = "0".repeat(64),
     targetClasses = listOf("example.Parser", "example.Codec"),
     excludedClasses = listOf("example.Generated", "example.CodecFuzz"),
     targetTests = "example.*Test*",

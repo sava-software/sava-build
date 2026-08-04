@@ -44,6 +44,7 @@ class HardeningOperationsTest {
       fuzzTargetNames = listOf("wire"),
     )
 
+    assertTrue(help.contains("pitestEncodingBaselineRebase"), help)
     assertTrue(help.contains("pitestEncodingBaselineUpdate"), help)
     assertTrue(help.contains("pitestEncodingBaselineUnion"), help)
     assertTrue(help.contains("pitestEncodingBaselinePrune"), help)

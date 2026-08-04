@@ -221,6 +221,39 @@ class BaselineDocumentTest {
   }
 
   @Test
+  fun `origin-aware rewrites keep a surviving row in its own prose slot`() {
+    val source = buildString {
+      appendLine(BaselineDocument.CURRENT_HEADER)
+      appendLine("# context for first")
+      appendLine(first)
+      appendLine("# context for second")
+      appendLine(second)
+      appendLine("# trailing document evidence")
+    }
+    val changedSecond = BaselineNotes.Row(second, "# reviewed", listOf(44))
+    val added = BaselineNotes.Row(first, "# untriaged", listOf(55))
+
+    val rewritten = BaselineDocument.parse(source).rewriteRowsPreservingOrigins(listOf(
+      // Deliberately list the addition first: source slots, not replacement-list
+      // order, decide where surviving evidence remains.
+      BaselineDocument.RowReplacement(added, null),
+      BaselineDocument.RowReplacement(changedSecond, 1),
+    ))
+
+    assertEquals(
+      buildString {
+        appendLine(BaselineDocument.CURRENT_HEADER)
+        appendLine("# context for first")
+        appendLine("# context for second")
+        appendLine("$second # reviewed # line 44")
+        appendLine("$first # untriaged # line 55")
+        appendLine("# trailing document evidence")
+      },
+      rewritten,
+    )
+  }
+
+  @Test
   fun `line endings survive migration and rollback`() {
     val legacy = "# evidence\r\ncom.example.Codec,encode,41,MathMutator,SURVIVED\r\n"
     val current = BaselineDocument.parse(legacy).renderCurrent()

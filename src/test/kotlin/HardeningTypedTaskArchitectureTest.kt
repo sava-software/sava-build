@@ -30,9 +30,17 @@ class HardeningTypedTaskArchitectureTest {
       script.contains("providers.provider { pitestRun.get().effectiveToolClasspath }"),
       "a revalidation surface reintroduced the provider-backed classpath that resolves at cache store",
     )
-    assertTrue(
+    assertFalse(
       script.contains("if (evidenceManifestFile.get().asFile.isFile)"),
-      "N-1 report graphs no longer omit collection-bearing evidence validators",
+      "a generated evidence manifest must not select the configuration-cache task graph",
+    )
+    assertTrue(
+      script.contains("verify.configure { dependsOn(verifyEvidenceValidation) }"),
+      "ordinary verification no longer has invariant execution-time evidence validation",
+    )
+    assertTrue(
+      script.contains("pitestModeSnapshot.configure { dependsOn(modeSnapshotEvidenceValidation) }"),
+      "mode snapshots no longer have invariant execution-time evidence validation",
     )
     assertTrue(
       script.contains("tasks.register<HardeningCertificationTask>(\"hardeningCertify\")"),

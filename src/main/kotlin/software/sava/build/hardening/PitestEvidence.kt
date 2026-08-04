@@ -24,6 +24,7 @@ data class PitestEvidence(
   val classesSha256: String,
   val classpathSha256: String,
   val toolClasspathSha256: String,
+  val mutationToolchainSha256: String,
   val configurationSha256: String,
   val reportSha256: String,
   val scope: String,
@@ -54,6 +55,7 @@ data class PitestEvidence(
       "classesSha256" to classesSha256,
       "classpathSha256" to classpathSha256,
       "toolClasspathSha256" to toolClasspathSha256,
+      "mutationToolchainSha256" to mutationToolchainSha256,
       "configurationSha256" to configurationSha256,
       "reportSha256" to reportSha256,
       "scope" to scope,
@@ -69,16 +71,18 @@ data class PitestEvidence(
   }
 
   companion object {
-    const val SCHEMA = "2"
+    const val SCHEMA = "3"
+    const val LEGACY_MUTATION_TOOLCHAIN = "legacy-unbound"
     const val FULL_SCOPE = "full"
     const val CURRENT_IDENTITY_SCHEMA = "pit-csv-class-method-mutator-status-v2"
 
-    private val fields = setOf(
+    private val schema2Fields = setOf(
         "schema", "suite", "invocation", "pitest", "junitPlugin", "pluginSha256",
         "identitySchema", "java",
         "sourceSha256", "classesSha256", "classpathSha256", "toolClasspathSha256",
         "configurationSha256", "reportSha256",
         "scope", "historyAssisted")
+    private val fields = schema2Fields + "mutationToolchainSha256"
 
     fun parse(text: String): PitestEvidence {
       val values = linkedMapOf<String, String>()
@@ -87,14 +91,19 @@ data class PitestEvidence(
         require(split > 0) { "evidence line ${index + 1} is not key<TAB>value" }
         val key = line.substring(0, split)
         val value = line.substring(split + 1)
-        require(key in fields) { "unknown evidence field '$key'" }
         require(values.put(key, value) == null) { "duplicate evidence field '$key'" }
       }
-      val missing = fields - values.keys
-      require(missing.isEmpty()) { "missing evidence field(s): ${missing.sorted().joinToString(", ")}" }
-      require(values.getValue("schema") == SCHEMA) {
-        "unsupported evidence schema '${values.getValue("schema")}' (expected $SCHEMA)"
+      val schema = values["schema"] ?: throw IllegalArgumentException("missing evidence field(s): schema")
+      val expectedFields = when (schema) {
+        "2" -> schema2Fields
+        SCHEMA -> fields
+        else -> throw IllegalArgumentException(
+            "unsupported evidence schema '$schema' (expected $SCHEMA or N-1 schema 2)")
       }
+      val unknown = values.keys - expectedFields
+      require(unknown.isEmpty()) { "unknown evidence field(s): ${unknown.sorted().joinToString(", ")}" }
+      val missing = expectedFields - values.keys
+      require(missing.isEmpty()) { "missing evidence field(s): ${missing.sorted().joinToString(", ")}" }
       val history = values.getValue("historyAssisted")
       require(history == "true" || history == "false") {
         "historyAssisted must be true or false, was '$history'"
@@ -111,6 +120,7 @@ data class PitestEvidence(
           classesSha256 = values.getValue("classesSha256"),
           classpathSha256 = values.getValue("classpathSha256"),
           toolClasspathSha256 = values.getValue("toolClasspathSha256"),
+          mutationToolchainSha256 = values["mutationToolchainSha256"] ?: LEGACY_MUTATION_TOOLCHAIN,
           configurationSha256 = values.getValue("configurationSha256"),
           reportSha256 = values.getValue("reportSha256"),
           scope = values.getValue("scope"),
@@ -126,6 +136,20 @@ data class PitestEvidence(
       root.isFile -> sha256(root)
       root.isDirectory -> fingerprint(root, root.walkTopDown().filter(File::isFile).asIterable())
       else -> error("cannot fingerprint missing path $root")
+    }
+
+    /** Files whose exact bytes decide whether one suite's mutation gate passes. */
+    fun mutationRecordFingerprint(projectDir: File, configDir: File, suite: String): String {
+      BaselineFiles.requireDirectoryOrMissing(projectDir, configDir)
+      val recordFiles = listOf(
+        configDir.resolve("$suite-accepted.csv"),
+        configDir.resolve("$suite-timeouts.csv"),
+        configDir.resolve("$suite-pitest-version"),
+        configDir.resolve("$suite-pitest-toolchain.tsv"),
+        configDir.resolve("README.md"),
+      )
+      recordFiles.forEach { BaselineFiles.requireRegularFileOrMissing(projectDir, it) }
+      return fingerprint(configDir, recordFiles.filter(File::isFile))
     }
 
     fun fingerprint(root: File, files: Iterable<File>): String {
@@ -156,7 +180,7 @@ data class PitestEvidence(
       return digest.digest().toHex()
     }
 
-    private fun sha256(bytes: ByteArray): String =
+    fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

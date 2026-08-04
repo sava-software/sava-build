@@ -13,6 +13,7 @@ internal object HardeningCommandLines {
     val targetTests: String,
     val sourceDirectories: List<File>,
     val reportDirectory: File,
+    val projectBaseDirectory: File,
     val mutators: String,
     val outputFormats: List<String>,
     val timestampedReports: Boolean,
@@ -36,6 +37,7 @@ internal object HardeningCommandLines {
     add("--targetTests=${spec.targetTests}")
     add("--sourceDirs=" + spec.sourceDirectories.joinToString(",") { it.absolutePath })
     add("--reportDir=${spec.reportDirectory.absolutePath}")
+    add("--projectBase=${spec.projectBaseDirectory.absolutePath}")
     add("--mutators=${spec.mutators}")
     add("--outputFormats=${spec.outputFormats.joinToString(",")}")
     add("--timestampedReports=${spec.timestampedReports}")

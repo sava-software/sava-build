@@ -57,7 +57,7 @@ class GoldenReportTest {
     val currentLines: Map<String, List<String>> = report
       .filter { it.gated }
       .groupBy({ it.baselineKey }, { it.lineText })
-    val rewrite = BaselineEngine.updateRewrite(emptyList(), currentLines)
+    val rewrite = BaselineEngine.updateRewrite(emptyList(), currentLines, emptyList())
     assertEquals(43, rewrite.copies, "the real run's gated population")
     val written = rewrite.written.map { BaselineNotes.parse(it) }
 

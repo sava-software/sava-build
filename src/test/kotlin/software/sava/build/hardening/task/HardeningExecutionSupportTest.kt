@@ -31,6 +31,7 @@ class HardeningExecutionSupportTest {
       targetTests = "example.*Test*",
       sourceDirectories = listOf(tempDir.resolve("src/main/java")),
       reportDirectory = tempDir.resolve("reports/pitest/encoding"),
+      projectBaseDirectory = tempDir,
       mutators = "STRONGER",
       outputFormats = listOf("HTML", "XML", "CSV"),
       timestampedReports = false,
@@ -47,6 +48,7 @@ class HardeningExecutionSupportTest {
     assertTrue("--excludedClasses=example.Fuzz*" in arguments)
     assertTrue("--historyInputLocation=${history.absolutePath}" in arguments)
     assertTrue("--historyOutputLocation=${history.absolutePath}" in arguments)
+    assertTrue("--projectBase=${tempDir.absolutePath}" in arguments)
     assertTrue("--features=+arcmutate_history" in arguments)
     assertFalse(arguments.any { it == "--targetClasses=example.*" })
 
@@ -66,6 +68,7 @@ class HardeningExecutionSupportTest {
         targetTests = "example.CodecTest",
         sourceDirectories = emptyList(),
         reportDirectory = tempDir.resolve("report"),
+        projectBaseDirectory = tempDir,
         mutators = "DEFAULTS",
         outputFormats = listOf("CSV"),
         timestampedReports = false,
