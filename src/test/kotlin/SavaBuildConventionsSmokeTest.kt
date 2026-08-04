@@ -2,6 +2,7 @@ import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -17,6 +18,11 @@ class SavaBuildConventionsSmokeTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
 
   private fun writeFixture(
     savaProperties: String? = null,
@@ -57,22 +63,25 @@ class SavaBuildConventionsSmokeTest {
 
   private fun runBuild(vararg arguments: String): BuildResult = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments)
+    .withArguments(*arguments, "--stacktrace")
     .build()
 
   @Test
   fun `configures with defaults when sava properties file is absent`() {
     writeFixture()
-    val result = runBuild("projects")
+    val (result, reused) = assertConfigurationCacheRoundTrip { runBuild("projects") }
     assertTrue(result.output.contains("Project ':lib'"), result.output)
     assertFalse(result.output.contains(":aggregation"), result.output)
+    assertTrue(reused.output.contains("Project ':lib'"), reused.output)
+    assertFalse(reused.output.contains(":aggregation"), reused.output)
   }
 
   @Test
   fun `includes aggregation project when its build file exists`() {
     writeFixture(savaProperties = "solanaBOMVersion=25.24.3\n", aggregationStub = true)
-    val result = runBuild("projects")
+    val (result, reused) = assertConfigurationCacheRoundTrip { runBuild("projects") }
     assertTrue(result.output.contains("Project ':aggregation'"), result.output)
+    assertTrue(reused.output.contains("Project ':aggregation'"), reused.output)
   }
 
   @Test
@@ -80,7 +89,7 @@ class SavaBuildConventionsSmokeTest {
     writeFixture(
       settingsSuffix = "apply(plugin = \"software.sava.build.feature-jdk-provisioning\")\n"
     )
-    val result = runBuild("help")
+    val (result, _) = assertConfigurationCacheRoundTrip { runBuild("help") }
     assertTrue(
       result.output.contains("'software.sava.build.feature-jdk-provisioning' is deprecated"),
       result.output

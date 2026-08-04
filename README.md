@@ -511,8 +511,21 @@ The roster is [tools/fleet-manifest.txt](tools/fleet-manifest.txt). Scheduled Gi
 workflows are outside the plugin contract; release evidence comes from the explicit
 local fuzz command and receipt, not from waiting for a schedule or soak window.
 
-These machine-local receipts are the **release owner's gate before merging the Release
-Please PR**. They are not uploaded to GitHub today, and the tag-triggered publish workflow
-cannot consume or enforce them; that workflow only syntax-checks and self-tests the runner
-scripts before its existing build and publication steps. Do not describe a tagged release
-as fleet-certified unless the owner retained and verified both local run bundles first.
+The full receipts remain machine-local, but certification is now observable on the tag and
+publish paths. After Release Please has prepared the version metadata, check out that clean
+release branch and create the compact, versioned owner attestation from the two canonical
+pointers:
+
+```shell
+version=$(jq -r '.["."]' .release-please-manifest.json)
+tools/release-attestation.sh create "$version"
+git add "release-attestations/$version.json"
+```
+
+Commit only that generated file alongside Release Please's `CHANGELOG.md` and manifest
+changes. It contains candidate identity and receipt hashes, not the receipt bundles,
+absolute paths, or credentials. The full immutable bundles still need to be retained with
+the release record. The Release Please workflow refuses to create a pending version's tag
+without this committed attestation, and the tag-triggered publish workflow verifies it
+again against the exact tag checkout. Any source, fixture, workflow, policy, or fleet-roster
+change after certification invalidates the record and requires both strict runs again.

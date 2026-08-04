@@ -1,6 +1,7 @@
 import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -15,6 +16,11 @@ class JlinkFeatureFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
 
   private fun writeFixture() {
     File(fixtureDir, "settings.gradle.kts").writeText(
@@ -62,13 +68,15 @@ class JlinkFeatureFunctionalTest {
 
   private fun runBuild(vararg arguments: String): BuildResult = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments)
+    .withArguments(*arguments, "--stacktrace")
     .build()
 
   @Test
   fun `image task links a runnable image with the expected layout`() {
     writeFixture()
-    val result = runBuild("--configuration-cache", "imageRun", "imageModules")
+    val (result, reused) = assertConfigurationCacheRoundTrip {
+      runBuild("imageRun", "imageModules")
+    }
 
     val executableSuffix = if (System.getProperty("os.name").startsWith("Windows")) ".exe" else ""
     val imageDir = File(fixtureDir, "build/images/jlink-smoke")
@@ -77,5 +85,7 @@ class JlinkFeatureFunctionalTest {
     assertTrue(File(imageDir, "bin/jlink-smoke").isFile, "missing generated launcher in $imageDir")
     assertTrue(result.output.contains("jlink smoke ok"), result.output)
     assertTrue(result.output.contains("software.sava.test.jlink"), result.output)
+    assertTrue(reused.output.contains("jlink smoke ok"), reused.output)
+    assertTrue(reused.output.contains("software.sava.test.jlink"), reused.output)
   }
 }

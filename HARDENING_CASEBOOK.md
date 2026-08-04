@@ -1109,9 +1109,9 @@ rerun first changes the canonical pointer to `in_progress`, so interruption
 cannot leave yesterday's pass looking current. The build-free validator
 rehashes the bundle and checks still-present consumer revisions. The release
 owner retains and validates both bundles before merging the Release Please PR;
-the tag workflow cannot consume this machine-local evidence. Long fuzzing is
-invoked explicitly with a recorded budget; a cron schedule and arbitrary wait
-window remain optional.
+at that stage, the tag workflow could not consume this machine-local evidence.
+Long fuzzing is invoked explicitly with a recorded budget; a cron schedule and
+arbitrary wait window remain optional.
 
 Rules: *an inventory is part of the safety mechanism — audit it from the
 consumers, not only from itself*; *“skip” and “certify” are different commands,
@@ -1119,3 +1119,25 @@ even when they share an implementation*; *green without revisions, task names,
 and retained results is a recollection, not release evidence*; *when automation
 is too expensive, replace it with a strict local contract rather than a softer
 claim*.
+
+## The certification that the release path could not see
+
+The strict local fleet and fuzz runners fixed the cost and evidence problems, but
+their deliberately uncommitted bundles left one structural gap: neither the action
+that created the release tag nor the tag-triggered publisher could tell whether the
+owner had run them. GitHub's artifact attestation proved where the published JAR was
+built; it did not attest that the consumer fleet had certified that candidate. A
+perfect local run and a forgotten local run therefore looked identical to automation.
+
+The repair keeps the large bundles local and commits a small, versioned owner
+attestation. Its generator re-verifies both canonical pointers, requires the fleet and
+fuzz receipts to name the same plugin commit, tree, JAR, manifest, and consumer
+`{slug, commit, origin}` inventory, and permits only Release Please metadata after the
+certified candidate. Release Please refuses to create a pending tag without that file;
+the publisher verifies it again against the exact tag checkout. The record carries
+hashes, not machine paths or the evidence itself, so the immutable bundles still have
+to be retained. This is a forgetfulness and stale-candidate gate, not a new trust root.
+
+Rules: *expensive local evidence can have a cheap committed handoff*; *artifact
+provenance and process certification answer different questions*; *the operation that
+creates a release must observe the evidence required to authorize it*.

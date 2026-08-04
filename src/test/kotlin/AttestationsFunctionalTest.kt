@@ -2,6 +2,7 @@ import com.sun.net.httpserver.HttpServer
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -18,6 +19,15 @@ class AttestationsFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
+
+  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
+    .withProjectDir(fixtureDir)
+    .withArguments(*arguments, "--stacktrace")
 
   private fun writeFixture(apiPort: Int, extraConfig: String = "") {
     val repoDir = File(fixtureDir, "repo/software/sava/fake-lib/1.0.0")
@@ -92,10 +102,9 @@ class AttestationsFunctionalTest {
     server.start()
     try {
       writeFixture(server.address.port)
-      val result = GradleRunner.create()
-        .withProjectDir(fixtureDir)
-        .withArguments("--configuration-cache", "verifySavaAttestations")
-        .build()
+      val (result, _) = assertConfigurationCacheRoundTrip {
+        runner("verifySavaAttestations").build()
+      }
 
       assertTrue(result.output.contains("fake-lib-1.0.0.jar: VERIFIED"), result.output)
       assertTrue(result.output.contains("verified=1 missing=0 failed=0"), result.output)
@@ -118,10 +127,9 @@ class AttestationsFunctionalTest {
     server.start()
     try {
       writeFixture(server.address.port)
-      val result = GradleRunner.create()
-        .withProjectDir(fixtureDir)
-        .withArguments("--configuration-cache", "verifySavaAttestations")
-        .build()
+      val (result, _) = assertConfigurationCacheRoundTrip {
+        runner("verifySavaAttestations").build()
+      }
 
       assertTrue(result.output.contains("fake-lib-1.0.0.jar: NO ATTESTATION"), result.output)
       assertTrue(result.output.contains("Tolerated because"), result.output)
@@ -142,10 +150,9 @@ class AttestationsFunctionalTest {
     server.start()
     try {
       writeFixture(server.address.port, extraConfig = "verifyBuildPlugin = true")
-      val result = GradleRunner.create()
-        .withProjectDir(fixtureDir)
-        .withArguments("--configuration-cache", "verifySavaAttestations")
-        .build()
+      val (result, _) = assertConfigurationCacheRoundTrip {
+        runner("verifySavaAttestations").build()
+      }
 
       assertTrue(result.output.contains("sava-build-$savaBuildTestRepoVersion.jar: VERIFIED"), result.output)
       assertTrue(result.output.contains("fake-lib-1.0.0.jar: VERIFIED"), result.output)
@@ -177,13 +184,13 @@ class AttestationsFunctionalTest {
         File(fixtureDir, module).mkdirs()
         File(fixtureDir, "$module/build.gradle.kts").writeText(rootBuild)
       }
-      val result = GradleRunner.create()
-        .withProjectDir(fixtureDir)
-        .withArguments("--configuration-cache", "verifySavaAttestations")
-        .build()
+      val (result, reused) = assertConfigurationCacheRoundTrip {
+        runner("verifySavaAttestations").build()
+      }
 
-      assertEquals(1, apiCalls.get(), "expected one attestation lookup for the shared digest")
+      assertEquals(2, apiCalls.get(), "expected one shared-digest lookup in each build")
       assertTrue(result.output.contains("fake-lib-1.0.0.jar: VERIFIED (already verified in this build)"), result.output)
+      assertTrue(reused.output.contains("fake-lib-1.0.0.jar: VERIFIED (already verified in this build)"), reused.output)
     } finally {
       server.stop(0)
     }
@@ -201,13 +208,14 @@ class AttestationsFunctionalTest {
     server.start()
     try {
       writeFixture(server.address.port, extraConfig = "cosignExecutable = \"/no/such/cosign\"")
-      val result = GradleRunner.create()
-        .withProjectDir(fixtureDir)
-        .withArguments("--configuration-cache", "verifySavaAttestations")
-        .buildAndFail()
+      val (result, reused) = assertConfigurationCacheRoundTrip {
+        runner("verifySavaAttestations").buildAndFail()
+      }
 
       assertTrue(result.output.contains("Could not run '/no/such/cosign'"), result.output)
       assertTrue(result.output.contains("-PsavaCosignImage="), result.output)
+      assertTrue(reused.output.contains("Could not run '/no/such/cosign'"), reused.output)
+      assertTrue(reused.output.contains("-PsavaCosignImage="), reused.output)
     } finally {
       server.stop(0)
     }
@@ -224,12 +232,12 @@ class AttestationsFunctionalTest {
     server.start()
     try {
       writeFixture(server.address.port, extraConfig = "requireAttestations = true")
-      val result = GradleRunner.create()
-        .withProjectDir(fixtureDir)
-        .withArguments("--configuration-cache", "verifySavaAttestations")
-        .buildAndFail()
+      val (result, reused) = assertConfigurationCacheRoundTrip {
+        runner("verifySavaAttestations").buildAndFail()
+      }
 
       assertTrue(result.output.contains("No attestation found for: fake-lib-1.0.0.jar"), result.output)
+      assertTrue(reused.output.contains("No attestation found for: fake-lib-1.0.0.jar"), reused.output)
     } finally {
       server.stop(0)
     }

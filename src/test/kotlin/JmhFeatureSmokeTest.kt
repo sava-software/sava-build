@@ -1,20 +1,30 @@
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.util.jar.JarOutputStream
 
 /**
- * Configuration-phase smoke test for 'software.sava.build.feature.jmh': a plain
- * java consumer applies the plugin resolved from the local test repo
- * and lists tasks, catching plugin wiring or champeau-plugin API breakage
- * without resolving benchmark dependencies.
+ * Configuration and task-serialization smoke test for 'software.sava.build.feature.jmh':
+ * a plain java consumer applies the plugin resolved from the local test repo, checks its
+ * conventions, and selects the plugin-owned JMH task without resolving benchmark dependencies.
  */
 class JmhFeatureSmokeTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
+
+  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
+    .withProjectDir(fixtureDir)
+    .withArguments(*arguments, "--stacktrace")
 
   @Test
   fun `jmh feature configures benchmark task and service jvm args`() {
@@ -74,23 +84,34 @@ class JmhFeatureSmokeTest {
             }
           }
         }
+
+        // Select the plugin-owned task in a configuration-cache graph without
+        // resolving JMH dependencies or starting a benchmark process.
+        tasks.named<me.champeau.jmh.JMHTask>("jmh") {
+          jmhClasspath.setFrom(files())
+          testRuntimeClasspath.setFrom(files())
+          jarArchive.set(layout.projectDirectory.file("fixture-jmh.jar"))
+          doFirst {
+            throw GradleException("fixture stops before benchmark execution")
+          }
+        }
       """.trimIndent() + "\n"
     )
+    JarOutputStream(File(fixtureDir, "fixture-jmh.jar").outputStream()).use { }
 
-    val defaults = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("verifyJmhConventions", "tasks", "--group=jmh", "--stacktrace")
-      .build()
+    val (defaults, reusedDefaults) = assertConfigurationCacheRoundTrip {
+      runner("verifyJmhConventions", "tasks", "--group=jmh").build()
+    }
 
     assertTrue(defaults.output.contains("jmh"), "jmh task group missing:\n" + defaults.output)
     assertFalse(defaults.output.contains("FAILED"), defaults.output)
+    assertFalse(reusedDefaults.output.contains("FAILED"), reusedDefaults.output)
 
     // Command-line overrides flow through to the extension; jmhJvmArgsAppend
     // replaces the service flag list wholesale.
-    GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments(
-        "verifyJmhConventions", "--stacktrace",
+    assertConfigurationCacheRoundTrip {
+      runner(
+        "verifyJmhConventions",
         "-PjmhFork=3", "-PexpectedForks=3",
         "-PjmhIncludes=enumValues, kindDispatch", "-PexpectedIncludes=enumValues|kindDispatch",
         "-PjmhWarmupIterations=2", "-PexpectedWarmups=2",
@@ -98,8 +119,19 @@ class JmhFeatureSmokeTest {
         "-PjmhWarmup=500ms", "-PexpectedWarmupTime=500ms",
         "-PjmhTimeOnIteration=2s", "-PexpectedMeasureTime=2s",
         "-PjmhFailOnError=false", "-PexpectedFailOnError=false",
-        "-PjmhJvmArgsAppend=-XX:+UseG1GC -Xmx4g", "-PexpectedArgs=-XX:+UseG1GC -Xmx4g"
-      )
-      .build()
+        "-PjmhJvmArgsAppend=-XX:+UseG1GC -Xmx4g", "-PexpectedArgs=-XX:+UseG1GC -Xmx4g",
+      ).build()
+    }
+
+    val (jmhCold, jmhReused) = assertConfigurationCacheRoundTrip {
+      runner("jmh").buildAndFail()
+    }
+    listOf(jmhCold, jmhReused).forEach { result ->
+      assertTrue(result.output.contains(":jmh FAILED"), result.output)
+      assertTrue(result.output.contains("fixture stops before benchmark execution"), result.output)
+      assertFalse(result.output.contains(":jmhJar"), result.output)
+      assertFalse(result.output.contains(":jmhRunBytecodeGenerator"), result.output)
+    }
+    assertFalse(File(fixtureDir, "jmh-results").exists(), "sentinel must run before result archival")
   }
 }

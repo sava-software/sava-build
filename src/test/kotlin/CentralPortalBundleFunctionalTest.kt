@@ -3,6 +3,7 @@ import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -22,6 +23,15 @@ class CentralPortalBundleFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
+
+  @BeforeEach
+  fun enableConfigurationCacheForFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+  }
+
+  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
+    .withProjectDir(fixtureDir)
+    .withArguments(*arguments, "--stacktrace")
 
   private fun writeFixture() {
     File(fixtureDir, "settings.gradle.kts").writeText(
@@ -78,10 +88,9 @@ class CentralPortalBundleFunctionalTest {
   @Test
   fun `aggregation zips staged publications into a deployment bundle`() {
     writeFixture()
-    GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("--configuration-cache", ":agg:zipCentralPortalDeployment")
-      .build()
+    assertConfigurationCacheRoundTrip {
+      runner(":agg:zipCentralPortalDeployment").build()
+    }
 
     val bundle = File(fixtureDir, "agg/build/central-portal/deployment.zip")
     assertTrue(bundle.isFile, "missing deployment bundle at $bundle")
@@ -154,30 +163,29 @@ class CentralPortalBundleFunctionalTest {
         }
         """.trimIndent() + "\n"
       )
-      val result = GradleRunner.create()
-        .withProjectDir(fixtureDir)
-        .withArguments("--configuration-cache", ":agg:publishAggregationToCentralPortal")
-        .build()
+      val (result, reusedUpload) = assertConfigurationCacheRoundTrip {
+        runner(":agg:publishAggregationToCentralPortal").build()
+      }
 
       val (authorization, query) = uploadRequest.get()
       val expectedToken = Base64.getEncoder().encodeToString("portal-user:portal-pass".toByteArray())
       assertEquals("Bearer $expectedToken", authorization)
       assertEquals("publishingType=USER_MANAGED&name=central-smoke", query)
-      assertEquals(2, uploadCalls.get(), "expected the failed upload to be retried once")
-      assertTrue(statusCalls.get() >= 2, "expected at least two status polls, got ${statusCalls.get()}")
+      assertEquals(3, uploadCalls.get(), "expected one retry, then one upload after cache reuse")
+      assertTrue(statusCalls.get() >= 3, "expected validation polling in both builds, got ${statusCalls.get()}")
       assertTrue(result.output.contains("'VALIDATING'"), result.output)
       assertTrue(result.output.contains("passed validation"), result.output)
+      assertTrue(reusedUpload.output.contains("passed validation"), reusedUpload.output)
 
-      val releaseResult = GradleRunner.create()
-        .withProjectDir(fixtureDir)
-        .withArguments(
-          "--configuration-cache",
+      val (releaseResult, reusedRelease) = assertConfigurationCacheRoundTrip {
+        runner(
           ":agg:releaseCentralPortalDeployment",
           "-PcentralPortalDeploymentId=test-deployment-id"
-        )
-        .build()
+        ).build()
+      }
       assertEquals("/deployment/test-deployment-id", releasePath.get())
       assertTrue(releaseResult.output.contains("is publishing"), releaseResult.output)
+      assertTrue(reusedRelease.output.contains("is publishing"), reusedRelease.output)
     } finally {
       server.stop(0)
     }
@@ -191,12 +199,13 @@ class CentralPortalBundleFunctionalTest {
     // from the environment so the task can never attempt an actual upload.
     val environment = System.getenv()
       .filterKeys { it != "MAVEN_CENTRAL_TOKEN" && it != "MAVEN_CENTRAL_SECRET" }
-    val result = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withEnvironment(environment)
-      .withArguments("--configuration-cache", ":agg:publishAggregationToCentralPortal")
-      .buildAndFail()
+    val (result, reused) = assertConfigurationCacheRoundTrip {
+      runner(":agg:publishAggregationToCentralPortal")
+        .withEnvironment(environment)
+        .buildAndFail()
+    }
     assertTrue(result.output.contains(":agg:publishCentralPortalDeployment"), result.output)
     assertTrue(result.output.contains("MAVEN_CENTRAL_TOKEN"), result.output)
+    assertTrue(reused.output.contains("MAVEN_CENTRAL_TOKEN"), reused.output)
   }
 }

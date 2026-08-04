@@ -1,3 +1,6 @@
+import org.gradle.testkit.runner.BuildResult
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import java.io.File
 
 /**
@@ -40,4 +43,28 @@ fun enableTestKitConfigurationCache(fixtureDir: File) {
   File(fixtureDir, "gradle.properties").writeText(
     "org.gradle.configuration-cache=true\n"
   )
+}
+
+/**
+ * Runs the same TestKit graph once from a cold fixture and once from its stored
+ * configuration. The caller retains both results so existing functional assertions
+ * can keep inspecting the execution that matters to the feature under test.
+ */
+fun assertConfigurationCacheRoundTrip(build: () -> BuildResult): Pair<BuildResult, BuildResult> {
+  val cold = build()
+  assertFalse(
+    cold.output.contains("Reusing configuration cache"),
+    "expected a cold configuration-cache store, but an entry was reused:\n${cold.output}",
+  )
+  assertTrue(
+    cold.output.contains("Configuration cache entry stored"),
+    "cold invocation did not store a configuration-cache entry:\n${cold.output}",
+  )
+
+  val reused = build()
+  assertTrue(
+    reused.output.contains("Reusing configuration cache"),
+    "second invocation did not reuse the configuration cache:\n${reused.output}",
+  )
+  return cold to reused
 }

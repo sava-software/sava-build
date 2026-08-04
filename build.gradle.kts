@@ -183,6 +183,14 @@ tasks.test {
       // HardeningDocumentationBoundaryTest reads the release/source-of-truth boundary
       // from the root README through the same root path.
       projectReadme = layout.projectDirectory.file("README.md")
+      // ReleaseAttestationWorkflowTest pins the two workflow handoffs that make the
+      // machine-local certification observable before tagging and publishing.
+      releaseWorkflowFiles.from(
+        layout.projectDirectory.file(".github/workflows/gradle_plugin_build.yml"),
+        layout.projectDirectory.file(".github/workflows/gradle_plugin_check_pr.yml"),
+        layout.projectDirectory.file(".github/workflows/gradle_plugin_publish.yml"),
+        layout.projectDirectory.file(".github/workflows/release-gradle-plugin-please.yml"),
+      )
       // Read via 'savaBuild.root' too, by the reprint-filter pin in
       // HardeningRatchetFunctionalTest — declared so editing the script re-runs it.
       canaryScript = layout.projectDirectory.file("tools/fleet-canary.sh")
@@ -201,11 +209,11 @@ tasks.test {
   )
 }
 
-// The release runners replaced scheduled fuzz workflows, so their cheap parsers and
-// evidence-verifier fixtures belong on the ordinary plugin check rather than relying
-// on a maintainer remembering two manual commands before a release.
+// Local release evidence replaced scheduled fuzz workflows, so its cheap parsers,
+// verifiers, and handoff gate belong on the ordinary plugin check.
 val localFuzzScript = layout.projectDirectory.file("tools/local-fuzz.sh")
 val fleetCanaryScript = layout.projectDirectory.file("tools/fleet-canary.sh")
+val releaseAttestationScript = layout.projectDirectory.file("tools/release-attestation.sh")
 val localFuzzSyntax = tasks.register<Exec>("localFuzzSyntax") {
   group = "verification"
   description = "Checks tools/local-fuzz.sh syntax."
@@ -217,6 +225,12 @@ val fleetCanarySyntax = tasks.register<Exec>("fleetCanarySyntax") {
   description = "Checks tools/fleet-canary.sh syntax."
   inputs.file(fleetCanaryScript)
   commandLine("bash", "-n", fleetCanaryScript.asFile.absolutePath)
+}
+val releaseAttestationSyntax = tasks.register<Exec>("releaseAttestationSyntax") {
+  group = "verification"
+  description = "Checks tools/release-attestation.sh syntax."
+  inputs.file(releaseAttestationScript)
+  commandLine("bash", "-n", releaseAttestationScript.asFile.absolutePath)
 }
 val localFuzzSelfTest = tasks.register<Exec>("localFuzzSelfTest") {
   group = "verification"
@@ -232,8 +246,15 @@ val fleetCanarySelfTest = tasks.register<Exec>("fleetCanarySelfTest") {
   inputs.file(fleetCanaryScript)
   commandLine("bash", fleetCanaryScript.asFile.absolutePath, "--self-test")
 }
+val releaseAttestationSelfTest = tasks.register<Exec>("releaseAttestationSelfTest") {
+  group = "verification"
+  description = "Runs the release attestation gate's hermetic self-test."
+  dependsOn(releaseAttestationSyntax)
+  inputs.file(releaseAttestationScript)
+  commandLine("bash", releaseAttestationScript.asFile.absolutePath, "--self-test")
+}
 tasks.named("check") {
-  dependsOn(localFuzzSelfTest, fleetCanarySelfTest)
+  dependsOn(localFuzzSelfTest, fleetCanarySelfTest, releaseAttestationSelfTest)
 }
 
 // Passes the fixture paths to the test JVM as '-D' arguments while declaring them with
@@ -248,6 +269,10 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)
   abstract val projectReadme: RegularFileProperty
+
+  @get:InputFiles
+  @get:PathSensitive(PathSensitivity.RELATIVE)
+  abstract val releaseWorkflowFiles: ConfigurableFileCollection
 
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)
