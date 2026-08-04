@@ -114,6 +114,13 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("AGENTS.md` may carry this exact generated"),
       "the version-matched template must distinguish pinned AGENTS instructions from consumer notes:\n$printed",
     )
+    assertTrue(
+      printed.contains("A mutant is a question, not a specification") &&
+          printed.contains("Property: ... | Oracle: ... | Outcome:") &&
+          printed.contains("fails against") && printed.contains("the unmutated code") &&
+          printed.contains("never embed PIT coordinates or line numbers"),
+      "the version-matched template must require a contract-first mutation decision at handoff:\n$printed",
+    )
     assertFalse(printed.contains("Migration is one-way"), printed)
     assertFalse(printed.contains("pitest ≥"), printed)
   }
