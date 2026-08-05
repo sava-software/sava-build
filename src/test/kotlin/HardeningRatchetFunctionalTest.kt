@@ -194,6 +194,20 @@ $fuzzBlock
 
   private fun baselineFile() = File(fixtureDir, "config/pitest/encoding-accepted.csv")
 
+  private fun writeProductionClassSource(binaryName: String) {
+    require('$' !in binaryName) { "fixture helper supports top-level classes only: $binaryName" }
+    val packageName = binaryName.substringBeforeLast('.', "")
+    val simpleName = binaryName.substringAfterLast('.')
+    val relative = binaryName.replace('.', '/') + ".java"
+    File(fixtureDir, "src/main/java/$relative").apply {
+      parentFile.mkdirs()
+      writeText(buildString {
+        if (packageName.isNotEmpty()) appendLine("package $packageName;")
+        appendLine("public final class $simpleName {}")
+      })
+    }
+  }
+
   private fun runner(vararg args: String): GradleRunner = GradleRunner.create()
       .withProjectDir(fixtureDir)
       .withArguments(*args, "--stacktrace")
@@ -1448,10 +1462,15 @@ $fuzzBlock
           }
       """.trimIndent()
     )
-    File(fixtureDir, "build/mutation-classes/com/example/SwallowedHelper.class").also {
-      it.parentFile.mkdirs()
-      it.writeBytes(byteArrayOf(1))
-    }
+    // Compile a real production class. Writing a synthetic class directly into the
+    // JavaCompile destination is invalid fixture setup: on a genuinely clean build
+    // Gradle owns and rebuilds that directory before Debt scans it, deleting the
+    // synthetic entry and making this warning disappear only in CI.
+    writeProductionClassSource("com.example.SwallowedHelper")
+    // Debt deliberately scans a population left by a prior compile; sibling Debt
+    // tasks do not all depend on the shared producer, so stage that population in
+    // its own invocation instead of relying on incidental task order.
+    runner("compileForPitest").build()
     baselineFile().parentFile.mkdirs()
     // an accepted row whose family label has no README section -> 'no argument in config'
     baselineFile().writeText("com.example.Codec,decode,40,InvertNegsMutator,SURVIVED # mystery family\n")
@@ -1550,8 +1569,9 @@ $fuzzBlock
     // through the Debt task because that is the fleet canary's whole view of
     // consumer globs: the audit's in-run half only fires inside a real pitest
     // execution, which the canary never performs (casebook: the partition the
-    // audit called a hole). Fabricated empty class files are a scanned
-    // population — the audit reads names, never bytecode.
+    // audit called a hole). Compile real production sources because
+    // compileForPitest owns and may recreate build/mutation-classes before the
+    // static Debt audit reads it; the audit itself reads names, never bytecode.
     writeFixture(
       encodingTargets = listOf("com.example.*"),
       encodingExcludes = listOf("com.example.decoding.*", "com.example.Legacy*"),
@@ -1562,12 +1582,9 @@ $fuzzBlock
           }
       """.trimIndent()
     )
-    listOf("com/example/decoding/Decoder", "com/example/LegacyCodec").forEach { path ->
-      File(fixtureDir, "build/mutation-classes/$path.class").also {
-        it.parentFile.mkdirs()
-        it.writeBytes(byteArrayOf(1))
-      }
-    }
+    listOf("com.example.decoding.Decoder", "com.example.LegacyCodec")
+        .forEach(::writeProductionClassSource)
+    runner("compileForPitest").build()
 
     val output = runner("pitestEncodingDebt").build().output
     assertTrue(
@@ -1612,12 +1629,9 @@ $fuzzBlock
           }
       """.trimIndent()
     )
-    listOf("com/example/gen/Binding", "com/example/LegacyCodec").forEach { path ->
-      File(fixtureDir, "build/mutation-classes/$path.class").also {
-        it.parentFile.mkdirs()
-        it.writeBytes(byteArrayOf(1))
-      }
-    }
+    listOf("com.example.gen.Binding", "com.example.LegacyCodec")
+        .forEach(::writeProductionClassSource)
+    runner("compileForPitest").build()
 
     // the undeclining suite reports both; the declining one reports only the
     // orphan, and is told its unused record is deletable
@@ -3566,6 +3580,7 @@ $fuzzBlock
     // and the minimize merge re-hashes the clip — adopting it hash-named and deleting
     // the named original. Both tasks must refuse before Jazzer runs, naming only the
     // offending seed, and the committed corpus must be untouched.
+    val scenariosRoot = fixtureDir
     writeFixture(codecMaxLen = 16)
     val corpus = File(fixtureDir, "src/test/resources/fuzz/codec").apply { mkdirs() }
     corpus.resolve("named-probe").writeText("x".repeat(64))
@@ -3587,7 +3602,11 @@ $fuzzBlock
     val minimizePlan = runner("fuzzCodecMinimize", "--dry-run").build().output
     assertTrue(minimizePlan.contains(":fuzzCodecSeedLenCheck SKIPPED"), minimizePlan)
 
-    // an uncapped target has nothing to refuse — the check is inert, not a new demand
+    // An uncapped target has nothing to refuse — the check is inert, not a new
+    // demand. Use a distinct build so the assertion does not depend on Gradle noticing
+    // an in-place script rewrite before it looks up the prior configuration-cache entry.
+    fixtureDir = scenariosRoot.resolve("uncapped").apply { mkdirs() }
+    enableTestKitConfigurationCache(fixtureDir)
     writeFixture()
     val uncapped = runner("fuzzCodecSeedLenCheck").build()
     assertFalse(uncapped.output.contains("FAILED"), uncapped.output)
@@ -3655,7 +3674,7 @@ $fuzzBlock
       """.trimIndent() + "\n"
     )
 
-    val failed = runner("generateFuzzReplayTests").buildAndFail().output
+    val failed = runner("generateFuzzReplayTests", "--no-configuration-cache").buildAndFail().output
 
     assertTrue(failed.contains("corpus-backed targets share a targetClass"), failed)
     assertTrue(failed.contains("com.example.CodecFuzz (codec, codecCopy)"), failed)
@@ -3678,13 +3697,13 @@ $fuzzBlock
     // Recorded with an argument: silent. This is the whole point -- a decision that
     // has been made and written down stops being a question.
     writeFixture(corpusless = true, corpuslessDecline = "trialed 2026-07-25: every prefix is valid and no finding has ever landed")
-    val declined = runner("generateFuzzReplayTests").build().output
+    val declined = runner("generateFuzzReplayTests", "--no-configuration-cache").build().output
     assertFalse(declined.contains("fuzz target 'bare' declares no seedCorpus"), declined)
     assertFalse(declined.contains("is stale"), declined)
 
     // Recorded with nothing: an argument-free suppression is not one.
     writeFixture(corpusless = true, corpuslessDecline = "   ")
-    val blank = runner("generateFuzzReplayTests").build().output
+    val blank = runner("generateFuzzReplayTests", "--no-configuration-cache").build().output
     assertTrue(blank.contains("fuzz target 'bare' declares no seedCorpus"), blank)
     assertTrue(blank.contains("the recorded seedCorpus decline is stale"), blank)
     assertTrue(blank.contains("carries no reason"), blank)
@@ -3696,13 +3715,25 @@ $fuzzBlock
       corpuslessDecline = "trialed 2026-07-25: every prefix is valid",
       corpuslessAlsoDeclaresCorpus = true,
     )
-    val contradicted = runner("generateFuzzReplayTests").build().output
+    val contradicted = runner("generateFuzzReplayTests", "--no-configuration-cache").build().output
     assertTrue(contradicted.contains("the recorded seedCorpus decline is stale"), contradicted)
     assertTrue(contradicted.contains("contradicts"), contradicted)
   }
 
   @Test
   fun `test support generates all helpers only when enabled and honors its package`() {
+    // Each independent configuration gets its own checkout. Rewriting one build script
+    // through several same-task configuration-cache entries couples the final package
+    // assertion to configuration invalidation rather than generator behavior.
+    // Keep only the transitions whose behavior is under test in the same checkout:
+    // enabled -> disabled must clear, and valid -> invalid must preserve.
+    val fixtureRoot = fixtureDir
+    fun selectFixture(name: String) {
+      fixtureDir = fixtureRoot.resolve(name).apply { mkdirs() }
+      enableTestKitConfigurationCache(fixtureDir)
+    }
+
+    selectFixture("default-and-disabled")
     writeFixture(generateTestSupport = true)
     val result = runner("generateHardeningTestSupport", "tasks", "--group=verification").build()
     assertFalse(result.output.contains("FAILED"), result.output)
@@ -3717,14 +3748,6 @@ $fuzzBlock
       assertTrue(supportDir.resolve("$name.java").isFile, "$name.java not generated")
     }
 
-    writeFixture(generateTestSupport = true, testSupportExcludes = listOf("JulRecorder"))
-    val excluded = runner("generateHardeningTestSupport").build()
-    assertFalse(excluded.output.contains("FAILED"), excluded.output)
-    assertFalse(supportDir.resolve("JulRecorder.java").isFile, "JulRecorder.java should be excluded")
-    (expected - "JulRecorder").forEach { name ->
-      assertTrue(supportDir.resolve("$name.java").isFile, "$name.java should survive the exclusion")
-    }
-
     writeFixture(generateTestSupport = false)
     val disabled = runner("generateHardeningTestSupport").build()
     assertFalse(disabled.output.contains("FAILED"), disabled.output)
@@ -3732,12 +3755,33 @@ $fuzzBlock
       assertFalse(supportDir.resolve("$name.java").isFile, "$name.java should be cleared when disabled")
     }
 
+    selectFixture("excluded")
+    writeFixture(generateTestSupport = true, testSupportExcludes = listOf("JulRecorder"))
+    val excluded = runner("generateHardeningTestSupport").build()
+    assertFalse(excluded.output.contains("FAILED"), excluded.output)
+    val excludedSupportDir = File(
+      fixtureDir, "build/generated-sources/hardening-support/java/software/sava/hardening/support")
+    assertFalse(
+      excludedSupportDir.resolve("JulRecorder.java").isFile,
+      "JulRecorder.java should be excluded",
+    )
+    (expected - "JulRecorder").forEach { name ->
+      assertTrue(
+        excludedSupportDir.resolve("$name.java").isFile,
+        "$name.java should survive the exclusion",
+      )
+    }
+
+    selectFixture("custom-and-invalid")
     writeFixture(generateTestSupport = true, testSupportPackage = "com.example.hardening.support")
-    runner("generateHardeningTestSupport").build()
+    val custom = runner("generateHardeningTestSupport").build()
     val customDir = File(
       fixtureDir, "build/generated-sources/hardening-support/java/com/example/hardening/support")
     expected.forEach { name ->
-      assertTrue(customDir.resolve("$name.java").isFile, "$name.java not generated in custom package")
+      assertTrue(
+        customDir.resolve("$name.java").isFile,
+        "$name.java not generated in custom package:\n${custom.output}",
+      )
       assertTrue(
         customDir.resolve("$name.java").readText().contains("package com.example.hardening.support;"),
         "$name.java retained the foreign default package")
@@ -3745,7 +3789,8 @@ $fuzzBlock
     val preservedSupport = customDir.resolve("Ports.java").readText()
 
     writeFixture(generateTestSupport = true, testSupportPackage = "not-a-package")
-    val invalid = runner("generateHardeningTestSupport").buildAndFail().output
+    val invalid = runner("generateHardeningTestSupport", "--no-configuration-cache")
+        .buildAndFail().output
     assertTrue(
       invalid.contains(
         "hardening.testSupportPackage 'not-a-package' must be a dotted Java package name"),
@@ -3862,7 +3907,7 @@ $fuzzBlock
     // without the exclusion the recompile carries the scratch class too — proof it was
     // genuinely in the source set, dropped only by the name filter
     writeFixture(registerFuzz = false, bytecodeRelease = 21, fakePit = false)
-    runner("compileForPitest").build()
+    runner("compileForPitest", "--no-configuration-cache").build()
     assertTrue(recompiled.resolve("Scratch.class").isFile, "Scratch.class should return once un-excluded")
   }
 

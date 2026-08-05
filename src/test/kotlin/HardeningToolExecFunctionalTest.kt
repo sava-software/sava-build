@@ -1186,18 +1186,28 @@ $buildTail
     // declinedMutators actually reach the advice through task configuration and the
     // configuration cache. Without it, the feature's headline claim ("record the
     // decision and it goes quiet") is asserted nowhere against a running build.
-    writeFixture(moneyMath = true)
+    val scenariosRoot = fixtureDir
+    fun writeScenario(name: String, moneyMath: Boolean, declineLines: String = "") {
+      fixtureDir = scenariosRoot.resolve(name).apply { mkdirs() }
+      enableTestKitConfigurationCache(fixtureDir)
+      writeFixture(moneyMath = moneyMath, declineLines = declineLines)
+    }
+
+    writeScenario("advised", moneyMath = true)
     val advised = runner("pitestEncoding").build().output
     assertTrue(advised.contains("call BigDecimal arithmetic"), "advice did not fire:\n" + advised)
     assertTrue(advised.contains("call BigInteger arithmetic"), advised)
     assertTrue(advised.contains("declineMutator("), "the advice must name its own escape hatch:\n" + advised)
 
     // Recorded with its measurement: quiet, and only for the mutator it names.
-    writeFixture(
+    writeScenario(
+      "declined",
       moneyMath = true,
       declineLines = """declineMutator("EXPERIMENTAL_BIG_DECIMAL", "trialed 2026-07-25: generated 0")""",
     )
+    runner("pitestEncoding").build()
     val declined = runner("pitestEncoding").build().output
+    assertTrue(declined.contains("Configuration cache entry reused."), declined)
     assertFalse(declined.contains("call BigDecimal arithmetic"), "the decline did not reach the advice:\n" + declined)
     assertTrue(
       declined.contains("call BigInteger arithmetic"),
@@ -1207,7 +1217,8 @@ $buildTail
 
     // An argument-free decline suppresses nothing and reports itself, so it cannot be
     // used to quiet a warning nobody investigated.
-    writeFixture(
+    writeScenario(
+      "blank",
       moneyMath = true,
       declineLines = """declineMutator("EXPERIMENTAL_BIG_DECIMAL", "   ")""",
     )
@@ -1218,7 +1229,9 @@ $buildTail
 
     // The subject disappears (no money math left) and the decline says so rather than
     // sitting on as a settled decision about deleted code.
-    writeFixture(
+    writeScenario(
+      "subject-gone",
+      moneyMath = false,
       declineLines = """declineMutator("EXPERIMENTAL_BIG_DECIMAL", "trialed 2026-07-25: generated 0")""",
     )
     val subjectGone = runner("pitestEncoding").build().output
