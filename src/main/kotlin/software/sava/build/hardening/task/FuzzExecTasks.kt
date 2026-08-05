@@ -15,9 +15,13 @@ import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.UntrackedTask
 import org.gradle.api.tasks.JavaExec
 import org.gradle.process.CommandLineArgumentProvider
+import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.HardeningFuzzSession
+import software.sava.build.hardening.MAX_FUZZ_RECEIPT_EXECUTIONS
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.io.OutputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
@@ -59,6 +63,9 @@ abstract class FuzzRunTask : JavaExec() {
   @get:ServiceReference("hardeningFuzzSession")
   abstract val fuzzSession: Property<HardeningFuzzSession>
 
+  @get:ServiceReference("hardeningFuzzExecutionSlots")
+  abstract val executionSlots: Property<HardeningExecutionLock>
+
   private val commandLineProvider = FuzzRunCommandLineProvider(
     targetClass, maxFuzzTimeSeconds, maxLen, localCorpus, seedCorpus
   )
@@ -71,6 +78,13 @@ abstract class FuzzRunTask : JavaExec() {
 
   @TaskAction
   override fun exec() {
+    val session = fuzzSession.get()
+    val projectPath = campaignProjectPath.get()
+    val aggregateCampaign = try {
+      session.requireRunnable(projectPath)
+    } catch (failure: IllegalStateException) {
+      throw GradleException(failure.message.orEmpty(), failure)
+    }
     val budget = maxFuzzTimeSeconds.get()
     if (budget <= 0) {
       throw GradleException("fuzz '${targetName.get()}': maxFuzzTime must be positive, was $budget")
@@ -80,12 +94,29 @@ abstract class FuzzRunTask : JavaExec() {
       local = localCorpus.get().asFile,
       seed = seedCorpus.orNull?.asFile,
     )
-    super.exec()
+    // Capture the native driver's terminal count directly from the live child
+    // streams while forwarding every byte unchanged. A mutable Gradle log is not
+    // evidence: it can be truncated, replaced, or contain output from other tasks.
+    val originalStandardOutput: OutputStream = getStandardOutput() ?: System.out
+    val originalErrorOutput: OutputStream = getErrorOutput() ?: System.err
+    val executionCount = FuzzExecutionCountCapture(originalStandardOutput, originalErrorOutput)
+    standardOutput = executionCount.standardOutput
+    errorOutput = executionCount.errorOutput
+    try {
+      super.exec()
+    } finally {
+      standardOutput = originalStandardOutput
+      errorOutput = originalErrorOutput
+      executionCount.finish()
+    }
     // A consumer may configure this public JavaExec with ignoreExitValue=true.
     // Campaign completion is stricter than that compatibility knob: a non-zero
     // Jazzer exit is never a completed fuzz observation and must not earn a receipt.
     executionResult.get().assertNormalExitValue()
-    fuzzSession.get().recordCompleted(campaignProjectPath.get(), targetName.get())
+    val target = targetName.get()
+    if (aggregateCampaign) {
+      session.recordCompleted(projectPath, target, executionCount.requireUniquePositive(target))
+    }
   }
 }
 
@@ -118,6 +149,9 @@ abstract class FuzzMinimizeTask : JavaExec() {
 
   @get:Input
   abstract val adoptLocalCorpus: Property<Boolean>
+
+  @get:ServiceReference("hardeningExecutionLock")
+  abstract val executionLock: Property<HardeningExecutionLock>
 
   private val commandLineProvider = FuzzMinimizeCommandLineProvider(
     targetClass, maxLen, stagingCorpus, seedCorpus, localCorpus, adoptLocalCorpus
@@ -173,6 +207,122 @@ abstract class FuzzMinimizeTask : JavaExec() {
         "surviving seeds keep their names. Review the diff before committing; update the " +
         "provenance README next to the corpus."
     )
+  }
+}
+
+/**
+ * Live parser for libFuzzer's canonical successful terminal line:
+ * `Done N runs in S second(s)`. Each child stream is forwarded byte-for-byte and
+ * buffered only until its next newline; the retained evidence is the parsed count in
+ * the invocation-local build service, never a mutable output file.
+ */
+internal class FuzzExecutionCountCapture(
+  standardDelegate: OutputStream,
+  errorDelegate: OutputStream,
+) {
+  private val observations = FuzzExecutionCountObservations()
+  private val standardCapture = LineCaptureOutputStream(standardDelegate, observations::observe)
+  private val errorCapture = LineCaptureOutputStream(errorDelegate, observations::observe)
+
+  val standardOutput: OutputStream = standardCapture
+  val errorOutput: OutputStream = errorCapture
+
+  fun finish() {
+    standardCapture.finish()
+    errorCapture.finish()
+  }
+
+  fun requireUniquePositive(target: String): Long = observations.requireUniquePositive(target)
+}
+
+private class FuzzExecutionCountObservations {
+  private val terminalCounts = mutableListOf<Long?>()
+
+  @Synchronized
+  fun observe(line: String) {
+    val match = TERMINAL_COUNT.matchEntire(line.removeSuffix("\r")) ?: return
+    terminalCounts += match.groupValues[1].toLongOrNull()
+  }
+
+  @Synchronized
+  fun requireUniquePositive(target: String): Long {
+    if (terminalCounts.isEmpty()) {
+      throw GradleException(
+        "fuzz '$target': successful Jazzer execution emitted no terminal " +
+          "'Done N runs in S second(s)' count — refusing campaign receipt",
+      )
+    }
+    if (terminalCounts.size != 1) {
+      throw GradleException(
+        "fuzz '$target': successful Jazzer execution emitted ${terminalCounts.size} terminal " +
+          "run counts — refusing ambiguous campaign receipt",
+      )
+    }
+    val count = terminalCounts.single() ?: throw GradleException(
+      "fuzz '$target': terminal Jazzer execution count exceeds a signed 64-bit integer",
+    )
+    if (count <= 0) {
+      throw GradleException(
+        "fuzz '$target': terminal Jazzer execution count must be positive, was $count",
+      )
+    }
+    if (count > MAX_FUZZ_RECEIPT_EXECUTIONS) {
+      throw GradleException(
+        "fuzz '$target': terminal Jazzer execution count $count exceeds JSON's " +
+          "exact-integer boundary $MAX_FUZZ_RECEIPT_EXECUTIONS",
+      )
+    }
+    return count
+  }
+
+  private companion object {
+    val TERMINAL_COUNT = Regex("Done ([0-9]+) runs in [0-9]+ second\\(s\\)")
+  }
+}
+
+private class LineCaptureOutputStream(
+  private val delegate: OutputStream,
+  private val observe: (String) -> Unit,
+) : OutputStream() {
+  private val line = ByteArrayOutputStream()
+  private var overflow = false
+
+  @Synchronized
+  override fun write(value: Int) {
+    delegate.write(value)
+    accept(value)
+  }
+
+  @Synchronized
+  override fun write(bytes: ByteArray, offset: Int, length: Int) {
+    delegate.write(bytes, offset, length)
+    for (index in offset until offset + length) accept(bytes[index].toInt() and 0xff)
+  }
+
+  @Synchronized
+  override fun flush() {
+    delegate.flush()
+  }
+
+  @Synchronized
+  fun finish() {
+    if (line.size() > 0 && !overflow) observe(line.toString(Charsets.UTF_8))
+    line.reset()
+    overflow = false
+  }
+
+  private fun accept(value: Int) {
+    if (value == '\n'.code) {
+      if (!overflow) observe(line.toString(Charsets.UTF_8))
+      line.reset()
+      overflow = false
+    } else if (!overflow) {
+      if (line.size() < MAX_CAPTURED_LINE_BYTES) line.write(value) else overflow = true
+    }
+  }
+
+  private companion object {
+    const val MAX_CAPTURED_LINE_BYTES = 4096
   }
 }
 

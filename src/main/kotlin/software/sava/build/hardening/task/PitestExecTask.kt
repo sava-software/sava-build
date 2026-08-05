@@ -29,13 +29,13 @@ import software.sava.build.hardening.BaselineWriteOperation
 import software.sava.build.hardening.ExclusionAudit
 import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningCertificationSession
+import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.MutatorAdvice
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
 import software.sava.build.hardening.PitestEvidenceSnapshotInput
-import software.sava.build.hardening.PitestExecutionLock
 import java.io.File
 import java.io.OutputStream
 import java.nio.file.Files
@@ -170,8 +170,8 @@ abstract class PitestExecTask : JavaExec() {
   @get:ServiceReference("hardeningOperationSession")
   abstract val operationSession: Property<HardeningOperationSession>
 
-  @get:ServiceReference("hardeningPitestExecutionLock")
-  abstract val executionLock: Property<PitestExecutionLock>
+  @get:ServiceReference("hardeningExecutionLock")
+  abstract val executionLock: Property<HardeningExecutionLock>
 
   private val commandLineProvider = PitestCommandLineProvider(
     applicationClasspath,

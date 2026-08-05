@@ -24,6 +24,7 @@ internal object HardeningOptionNames {
   const val INIT_TIMEOUT_AUDIT = "initTimeoutAudit"
   const val LIST_UNKILLED = "listUnkilled"
   const val MAX_FUZZ_TIME = "maxFuzzTime"
+  const val MAX_PARALLEL_FUZZ_TARGETS = "maxParallelFuzzTargets"
   const val MUTATE_ONLY = "mutateOnly"
   const val NO_MUTATION_HISTORY = "noMutationHistory"
   const val PITEST_MODE = "pitestMode"
@@ -68,6 +69,8 @@ internal object HardeningOptionNames {
         "print current unkilled mutants with PIT descriptions"),
     Descriptor(MAX_FUZZ_TIME, "seconds",
         "set the local fuzz campaign budget (default 60)"),
+    Descriptor(MAX_PARALLEL_FUZZ_TARGETS, "count",
+        "bound concurrent fuzz targets (default 1; recorded in aggregate evidence)"),
     Descriptor(MUTATE_ONLY, "class-glob[,class-glob]",
         "run a deliberately scoped mutation-development iteration"),
     Descriptor(NO_MUTATION_HISTORY, null,
@@ -615,7 +618,7 @@ internal object HardeningHelpText {
     if (fuzzTargetNames.isNotEmpty()) {
       appendLine()
       appendLine("Fuzz workflows:")
-      appendLine("  fuzzAll                           run every registered local target")
+      appendLine("  fuzzAll                           run every registered local target with explicit budget/concurrency; durable receipt in .pitest-history/")
       fuzzTargetNames.sorted().forEach { target ->
         val prefix = "fuzz" + target.replaceFirstChar(Char::uppercase)
         appendLine("  $prefix".padEnd(40) + "run the target")

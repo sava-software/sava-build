@@ -22,7 +22,7 @@ import software.sava.build.hardening.Mutant
 import software.sava.build.hardening.MutantStatus
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
-import software.sava.build.hardening.PitestExecutionLock
+import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.PreparedMutationWrite
 import software.sava.build.hardening.ProjectWriteOperation
 import software.sava.build.hardening.TimeoutAudit
@@ -433,13 +433,27 @@ val hardeningAdvisoryLog = gradle.sharedServices.registerIfAbsent(
     "hardeningAdvisoryLog", HardeningAdvisoryLog::class
 ) {}
 
-// `mustRunAfter` only orders tasks within one project. This service is registered on
-// the shared Gradle instance, so PIT worker pools are serialized across every module
-// selected in the build as well.
-val pitestExecutionLock = gradle.sharedServices.registerIfAbsent(
-    "hardeningPitestExecutionLock", PitestExecutionLock::class
+// `mustRunAfter` only orders tasks within one project. PIT and corpus-rewrite tasks
+// retain an exclusive build-wide slot so mutation timeout evidence and source writes
+// are not load-dependent. Fuzz exploration has a separate, explicitly bounded pool:
+// release owners can trade wall time for throughput, while the configured width and
+// every achieved execution count are bound into the campaign receipt.
+val hardeningExecutionLock = gradle.sharedServices.registerIfAbsent(
+    "hardeningExecutionLock", HardeningExecutionLock::class
 ) {
   maxParallelUsages.set(1)
+}
+val maxParallelFuzzTargetsRaw =
+    providers.gradleProperty(HardeningOptionNames.MAX_PARALLEL_FUZZ_TARGETS).orElse("1")
+val maxParallelFuzzTargets = maxParallelFuzzTargetsRaw.map { raw ->
+  raw.toIntOrNull()?.takeIf { value ->
+    Regex("[1-9][0-9]*").matches(raw) && value > 0
+  } ?: 1
+}
+val hardeningFuzzExecutionSlots = gradle.sharedServices.registerIfAbsent(
+    "hardeningFuzzExecutionSlots", HardeningExecutionLock::class
+) {
+  maxParallelUsages.set(maxParallelFuzzTargets)
 }
 
 // The agent-instructions template in HARDENING.md is copied (adapted) into each
@@ -1726,17 +1740,30 @@ hardening.fuzz.all {
 // Local fuzzing is the canonical execution path. The aggregate is derived directly
 // from the registered targets, so it cannot drift the way a hand-written scheduled
 // workflow task list can. A successful local run writes a small receipt; the fleet
-// wrapper adds repository SHAs and collects those receipts for release review.
+// wrapper adds repository SHAs and collects those receipts for release review. The
+// receipt and its in-progress sentinel are machine-local campaign state, not build
+// outputs: keeping them in the already-ignored `.pitest-history/` directory lets a
+// later `clean hardeningCertify` preserve a completed fuzz campaign. Starting the next
+// campaign still deletes the completed receipt before any target can run and leaves the
+// sentinel behind on every incomplete path.
 val fuzzTargetNames = objects.setProperty<String>()
 val maxFuzzTime = providers.gradleProperty(HardeningOptionNames.MAX_FUZZ_TIME).orElse("60")
-val localFuzzReceiptFile = layout.buildDirectory.file("hardening/local-fuzz.tsv")
-val localFuzzReceiptRunning = layout.buildDirectory.file("hardening/local-fuzz.running")
+val localFuzzReceiptFile = layout.projectDirectory.file(".pitest-history/local-fuzz.tsv")
+val localFuzzReceiptRunning = layout.projectDirectory.file(".pitest-history/local-fuzz.running")
+val localFuzzReceiptLock = layout.projectDirectory.file(".pitest-history/local-fuzz.lock")
+// One-release transition cleanup. Old receipts must not remain plausible beside the
+// durable contract, and an interrupted old-version campaign must not poison a
+// successful new one after its sentinel has moved.
+val legacyLocalFuzzReceiptFile = layout.buildDirectory.file("hardening/local-fuzz.tsv")
+val legacyLocalFuzzReceiptRunning = layout.buildDirectory.file("hardening/local-fuzz.running")
 val localFuzzPluginCode = File(PitestEvidence::class.java.protectionDomain.codeSource.location.toURI())
 val localFuzzPluginSha256 = PitestEvidence.fingerprintTree(localFuzzPluginCode)
 val validateFuzzBudget = tasks.register("validateFuzzBudget") {
-  description = "Internal to local fuzz tasks: validates -PmaxFuzzTime as bounded positive seconds."
+  description = "Internal to local fuzz tasks: validates time and bounded-parallelism settings."
   val budget = maxFuzzTime
+  val parallelism = maxParallelFuzzTargetsRaw
   inputs.property("maxFuzzTime", budget)
+  inputs.property("maxParallelFuzzTargets", parallelism)
   doLast {
     val raw = budget.get()
     val seconds = raw.toLongOrNull()
@@ -1745,100 +1772,198 @@ val validateFuzzBudget = tasks.register("validateFuzzBudget") {
           "-PmaxFuzzTime must be positive whole seconds without leading zeros, up to " +
               "${Int.MAX_VALUE}; was '$raw' (0 is libFuzzer's run-forever sentinel)")
     }
+    val parallelRaw = parallelism.get()
+    val parallel = parallelRaw.toLongOrNull()
+    if (!Regex("[1-9][0-9]*").matches(parallelRaw) ||
+        parallel == null || parallel > Int.MAX_VALUE) {
+      throw GradleException(
+          "-PmaxParallelFuzzTargets must be positive whole targets without leading zeros, up to " +
+              "${Int.MAX_VALUE}; was '$parallelRaw'")
+    }
   }
 }
-val fuzzAllPreflight = tasks.register("fuzzAllPreflight") {
-  description = "Internal to fuzzAll: invalidates earlier aggregate evidence before targets run."
+// Retain the internal name for one candidate transition so `-x fuzzAllPreflight`
+// cannot become a task-selection error that bypasses fuzzAll's own fail-closed start
+// boundary. It is intentionally not part of the aggregate graph anymore.
+tasks.register("fuzzAllPreflight") {
+  description = "Internal compatibility marker; fuzzAll now owns receipt invalidation."
+}
+val fuzzAll = tasks.register("fuzzAll") {
+  group = "verification"
+  description = "Runs every registered fuzz target locally; -PmaxFuzzTime=<seconds> applies per target and -PmaxParallelFuzzTargets=<count> bounds concurrency."
   mustRunAfter("clean")
+  val names = fuzzTargetNames
+  val maxTime = maxFuzzTime
+  val parallelism = maxParallelFuzzTargetsRaw
   val receipt = localFuzzReceiptFile
   val running = localFuzzReceiptRunning
+  val ownershipLock = localFuzzReceiptLock
+  val legacyReceipt = legacyLocalFuzzReceiptFile
+  val legacyRunning = legacyLocalFuzzReceiptRunning
+  val legacyBuildDirectory = layout.buildDirectory
+  val trustedProjectDirectory = layout.projectDirectory.asFile
   val campaignTargets = fuzzTargetNames
   val campaignProjectPath = project.path
   val excludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
   val fuzzSession = hardeningFuzzSession
+  inputs.property("maxFuzzTime", maxTime)
+  inputs.property("maxParallelFuzzTargets", parallelism)
   usesService(fuzzSession)
   doLast {
-    BaselineFiles.deleteIfExists(receipt.get().asFile)
-    running.get().asFile.also {
-      it.parentFile.mkdirs()
-      it.writeText("starting\n")
+    val receiptFile = receipt.asFile
+    val runningFile = running.asFile
+    val lockFile = ownershipLock.asFile
+    val legacyReceiptFile = legacyReceipt.get().asFile
+    val legacyRunningFile = legacyRunning.get().asFile
+    val legacyBuildDirectoryFile = legacyBuildDirectory.get().asFile
+    val expectedTargets = campaignTargets.get()
+    val session = fuzzSession.get()
+    var ownsCampaign = false
+    try {
+      val historyDirectory = receiptFile.parentFile
+      BaselineFiles.requireDirectoryOrMissing(trustedProjectDirectory, historyDirectory)
+      historyDirectory.mkdirs()
+      BaselineFiles.requireDirectoryOrMissing(trustedProjectDirectory, historyDirectory)
+      BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, lockFile)
+      val sessionId = session.activate(campaignProjectPath, expectedTargets, lockFile)
+      ownsCampaign = true
+
+      // The ownership lock comes first: a rejected concurrent invocation must not
+      // invalidate evidence belonging to the campaign that actually owns this checkout.
+      // Once owned, invalidate durable success before touching optional transition state.
+      BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
+      BaselineFiles.deleteIfExists(receiptFile)
+      BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
+      BaselineFiles.writeAtomically(trustedProjectDirectory, runningFile, "starting\t$sessionId\n")
+
+      // buildDirectory is configurable and may intentionally live outside the checkout.
+      // Confine legacy cleanup to that exact configured root instead of projectDirectory.
+      BaselineFiles.requireDirectoryOrMissing(legacyBuildDirectoryFile)
+      listOf(legacyReceiptFile, legacyRunningFile).forEach { file ->
+        BaselineFiles.requireRegularFileOrMissing(legacyBuildDirectoryFile, file)
+      }
+      BaselineFiles.deleteIfExists(legacyReceiptFile)
+      BaselineFiles.deleteIfExists(legacyRunningFile)
+
+      if (excludedTaskNames.isNotEmpty()) {
+        throw IllegalStateException(
+            "fuzzAll requires its complete task graph; remove task exclusion(s): " +
+                excludedTaskNames.joinToString(", ") { excluded -> "-x $excluded" })
+      }
+      val rawTime = maxTime.get()
+      val seconds = rawTime.toLongOrNull()
+      if (!Regex("[1-9][0-9]*").matches(rawTime) ||
+          seconds == null || seconds > Int.MAX_VALUE) {
+        throw IllegalStateException(
+            "-PmaxFuzzTime must be positive whole seconds without leading zeros, up to " +
+                "${Int.MAX_VALUE}; was '$rawTime' (0 is libFuzzer's run-forever sentinel)")
+      }
+      val rawParallelism = parallelism.get()
+      val parallelTargets = rawParallelism.toLongOrNull()
+      if (!Regex("[1-9][0-9]*").matches(rawParallelism) ||
+          parallelTargets == null || parallelTargets > Int.MAX_VALUE) {
+        throw IllegalStateException(
+            "-PmaxParallelFuzzTargets must be positive whole targets without leading zeros, up to " +
+                "${Int.MAX_VALUE}; was '$rawParallelism'")
+      }
+      BaselineFiles.writeAtomically(
+          trustedProjectDirectory, runningFile, "session\t$sessionId\n")
+      logger.lifecycle(
+          "fuzzAll: started ${names.get().size} target(s), up to $parallelTargets concurrently")
+    } catch (failure: Exception) {
+      val reason = failure.message ?: failure::class.java.simpleName
+      session.refuse(campaignProjectPath, expectedTargets, reason)
+      if (ownsCampaign) {
+        try {
+          BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
+          BaselineFiles.deleteIfExists(receiptFile)
+          BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
+          BaselineFiles.writeAtomically(
+              trustedProjectDirectory, runningFile, "refused\t$reason\n")
+        } catch (stateFailure: Exception) {
+          failure.addSuppressed(stateFailure)
+        }
+      }
+      throw GradleException("fuzzAll: $reason", failure)
     }
-    if (excludedTaskNames.isNotEmpty()) {
-      running.get().asFile.writeText(
-          "refused task exclusion(s)\t" +
-              excludedTaskNames.joinToString(",") { excluded -> "-x $excluded" } + "\n")
-      throw GradleException(
-          "fuzzAll requires its complete task graph; remove task exclusion(s): " +
-              excludedTaskNames.joinToString(", ") { excluded -> "-x $excluded" })
-    }
-    val sessionId = fuzzSession.get().activate(campaignProjectPath, campaignTargets.get())
-    running.get().asFile.writeText("session\t$sessionId\n")
   }
 }
-validateFuzzBudget.configure { mustRunAfter(fuzzAllPreflight) }
-val fuzzAll = tasks.register("fuzzAll") {
-  group = "verification"
-  description = "Runs every registered fuzz target locally; -PmaxFuzzTime=<seconds> applies to each target."
-  dependsOn(validateFuzzBudget)
-  dependsOn(fuzzAllPreflight)
+val fuzzAllComplete = tasks.register("fuzzAllComplete") {
+  description = "Internal to fuzzAll: publishes evidence after every target completes."
   val names = fuzzTargetNames
   val maxTime = maxFuzzTime
+  val parallelism = maxParallelFuzzTargets
   val pluginSha256 = localFuzzPluginSha256
   val receiptProjectPath = project.path
   val receiptFileProvider = localFuzzReceiptFile
   val receiptRunning = localFuzzReceiptRunning
-  val excludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
+  val trustedProjectDirectory = layout.projectDirectory.asFile
   val fuzzSession = hardeningFuzzSession
   usesService(fuzzSession)
-  doFirst {
-    if (excludedTaskNames.isNotEmpty()) {
-      BaselineFiles.deleteIfExists(receiptFileProvider.get().asFile)
-      receiptRunning.get().asFile.also {
-        it.parentFile.mkdirs()
-        it.writeText(
-            "refused task exclusion(s)\t" +
-                excludedTaskNames.joinToString(",") { excluded -> "-x $excluded" } + "\n")
-      }
-      throw GradleException(
-          "fuzzAll requires its complete task graph; remove task exclusion(s): " +
-              excludedTaskNames.joinToString(", ") { excluded -> "-x $excluded" })
-    }
-    if (!receiptRunning.get().asFile.isFile) {
-      BaselineFiles.deleteIfExists(receiptFileProvider.get().asFile)
-      receiptRunning.get().asFile.also {
-        it.parentFile.mkdirs()
-        it.writeText("missing preflight\n")
-      }
-      throw GradleException("fuzzAll: preflight did not run; refusing to retain an earlier receipt")
-    }
-  }
   doLast {
-    try {
+    val completed = try {
       fuzzSession.get().requireCompleted(receiptProjectPath, names.get())
     } catch (failure: IllegalStateException) {
-      BaselineFiles.deleteIfExists(receiptFileProvider.get().asFile)
+      if (fuzzSession.get().ownsCampaign(receiptProjectPath)) {
+        val receiptFile = receiptFileProvider.asFile
+        BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
+        BaselineFiles.deleteIfExists(receiptFile)
+      }
+      throw GradleException("fuzzAll: ${failure.message}; refusing to write a receipt", failure)
+    }
+    val totalExecutions = try {
+      completed.totalExecutions
+    } catch (failure: IllegalStateException) {
+      if (fuzzSession.get().ownsCampaign(receiptProjectPath)) {
+        val receiptFile = receiptFileProvider.asFile
+        BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
+        BaselineFiles.deleteIfExists(receiptFile)
+      }
       throw GradleException("fuzzAll: ${failure.message}; refusing to write a receipt", failure)
     }
     val receipt = buildString {
-      appendLine("schema\t2")
+      appendLine("schema\t4")
       appendLine("project\t$receiptProjectPath")
       appendLine("pluginSha256\t$pluginSha256")
       appendLine("maxFuzzTimeSeconds\t${maxTime.get()}")
+      appendLine("maxParallelTargets\t${parallelism.get()}")
+      appendLine("totalExecutions\t$totalExecutions")
       names.get().sorted().forEach { target ->
-        appendLine("target\tfuzz${target.replaceFirstChar(Char::uppercase)}")
+        appendLine(
+            "target\tfuzz${target.replaceFirstChar(Char::uppercase)}\t" +
+                completed.executionsByTarget.getValue(target))
       }
     }
-    val receiptFile = receiptFileProvider.get().asFile
-    BaselineFiles.writeAtomically(receiptFile, receipt)
-    BaselineFiles.deleteIfExists(receiptRunning.get().asFile)
+    val receiptFile = receiptFileProvider.asFile
+    val runningFile = receiptRunning.asFile
+    BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
+    val expectedSentinel = "session\t${completed.sessionId}\n"
+    if (!runningFile.isFile || runningFile.readText() != expectedSentinel) {
+      BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
+      BaselineFiles.deleteIfExists(receiptFile)
+      throw GradleException(
+          "fuzzAll: campaign ownership sentinel changed before receipt publication")
+    }
+    BaselineFiles.writeAtomically(trustedProjectDirectory, receiptFile, receipt)
+    // Publish while the sentinel still exists, then clear it. Interruption can leave
+    // receipt+sentinel (invalid), never a prior valid receipt masquerading as this run.
+    BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
+    if (!runningFile.isFile || runningFile.readText() != expectedSentinel) {
+      BaselineFiles.deleteIfExists(receiptFile)
+      throw GradleException(
+          "fuzzAll: campaign ownership sentinel changed during receipt publication")
+    }
+    BaselineFiles.deleteIfExists(runningFile)
     logger.lifecycle("fuzzAll: ${names.get().size} local target(s) completed; receipt: $receiptFile")
   }
 }
+fuzzAll.configure { finalizedBy(fuzzAllComplete) }
+validateFuzzBudget.configure { mustRunAfter(fuzzAll) }
 hardening.fuzz.all {
   fuzzTargetNames.add(name)
   hardeningHelpFuzzTargetNames.add(name)
   val fuzzTaskName = "fuzz" + name.replaceFirstChar(Char::uppercase)
-  fuzzAll.configure { dependsOn(fuzzTaskName) }
+  fuzzAllComplete.configure { dependsOn(fuzzTaskName) }
 }
 
 // Compatibility task for consumers that still mention the old workflow check. It no
@@ -2296,11 +2421,12 @@ hardening.mutation.all {
       if (committedProvenance.torn) {
         val torn =
             "pitest '$suiteName': committed mutation provenance is torn — exactly one of " +
-                "${toolVersionFile.name} and ${toolchainRecordFile.name} exists. Only a both-missing " +
-                "record is legacy provenance"
+                "${toolVersionFile.name} and ${toolchainRecordFile.name} exists. A complete record " +
+                "written by a pre-sidecar release and an interrupted newer write are " +
+                "indistinguishable under the current schema"
         if (!rebase) {
           throw GradleException(
-              "$torn; run ${pitestTaskName}BaselineRebase to repair this failed/incomplete write.")
+              "$torn; run ${pitestTaskName}BaselineRebase to bind/repair this one-sided record.")
         }
         logger.warn("$torn; BaselineRebase will repair the pair after its fresh safe-superset observation")
       }
@@ -3978,10 +4104,10 @@ hardening.mutation.all {
     task.classpath = pitest
     task.mustRunAfter(hardeningCertifyPreflight)
 
-    task.usesService(pitestExecutionLock)
+    task.usesService(hardeningExecutionLock)
     task.usesService(hardeningCertificationSession)
     task.usesService(hardeningOperationSession)
-    task.executionLock.set(pitestExecutionLock)
+    task.executionLock.set(hardeningExecutionLock)
     task.certificationSession.set(hardeningCertificationSession)
     task.operationSession.set(hardeningOperationSession)
 
@@ -4270,7 +4396,7 @@ hardening.fuzz.all {
   tasks.register<FuzzRunTask>(fuzzTaskName) {
     group = "verification"
     description = "Coverage-guided fuzzing of the '${target.name}' target with Jazzer; -PmaxFuzzTime=<seconds> (default 60)."
-    mustRunAfter(fuzzAllPreflight)
+    mustRunAfter(fuzzAll)
     dependsOn(seedLenCheck)
     dependsOn(validateFuzzBudget)
     dependsOn(compileForFuzz)
@@ -4292,6 +4418,8 @@ hardening.fuzz.all {
     seedCorpus.set(target.seedCorpus)
     fuzzSession.set(hardeningFuzzSession)
     usesService(hardeningFuzzSession)
+    executionSlots.set(hardeningFuzzExecutionSlots)
+    usesService(hardeningFuzzExecutionSlots)
   }
 
   // libFuzzer's '-merge=1' copies into the first (output) directory only the inputs
@@ -4330,6 +4458,8 @@ hardening.fuzz.all {
     localCorpus.set(layout.buildDirectory.dir("fuzz/${target.name}-corpus"))
     adoptLocalCorpus.set(
         providers.gradleProperty(HardeningOptionNames.ADOPT_LOCAL_CORPUS).isPresent)
+    executionLock.set(hardeningExecutionLock)
+    usesService(hardeningExecutionLock)
   }
 }
 
@@ -4596,7 +4726,7 @@ tasks.register("hardeningInit") {
           initRootProjectDirectory,
           gitignore,
           existingGitignore + (if (existingGitignore.isNotEmpty() && !existingGitignore.endsWith("\n")) "\n" else "") +
-              "\n# optional ArcMutate history (machine-local when an applicable licence is present)\n$ignoreLine\n")
+              "\n# machine-local hardening state (PIT history and local fuzz campaign evidence)\n$ignoreLine\n")
       logger.lifecycle("hardeningInit: appended $ignoreLine to $gitignore")
     }
     logger.lifecycle(
@@ -4615,7 +4745,7 @@ tasks.register("hardeningInit") {
         |  6. decide who owns the pre-release hardeningCertify run, and record it in AGENTS.md
         |  7. fuzz targets with a seedCorpus get a generated replay test automatically;
         |       document seed provenance in a README next to (never inside) the corpus dir
-        |  8. own an explicit local fuzzAll -PmaxFuzzTime=<seconds> release budget;
+        |  8. own an explicit local fuzzAll -PmaxFuzzTime=<seconds> -PmaxParallelFuzzTargets=<count> release budget;
         |       scheduled GitHub fuzz workflows are optional and are not certification
         |  9. optional: hardening.generateTestSupport = true generates shared socket/
         |       scheduler/logging test helpers; unrelated adopters should also set

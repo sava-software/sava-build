@@ -215,7 +215,7 @@ class HardeningFeatureSmokeTest {
       assertTrue(plan.contains(task), "fuzzAll omitted $task:\n$plan")
     }
 
-    val oldReceipt = File(fixtureDir, "build/hardening/local-fuzz.tsv").apply {
+    val oldReceipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv").apply {
       parentFile.mkdirs()
       writeText("old success\n")
     }
@@ -223,7 +223,7 @@ class HardeningFeatureSmokeTest {
       .withArguments("fuzzAll", "-PmaxFuzzTime=0", "--stacktrace").buildAndFail()
     assertFalse(oldReceipt.exists(), "invalid fuzzAll budget retained an earlier success receipt")
     assertTrue(
-      File(fixtureDir, "build/hardening/local-fuzz.running").isFile,
+      File(fixtureDir, ".pitest-history/local-fuzz.running").isFile,
       "invalid fuzzAll budget did not leave its incomplete-campaign sentinel")
 
     // A later failed aggregate must invalidate an earlier success receipt before any
@@ -243,7 +243,7 @@ class HardeningFeatureSmokeTest {
       .withArguments("fuzzAll", "--stacktrace").buildAndFail()
     assertFalse(oldReceipt.exists(), "failed fuzzAll retained an earlier success receipt")
     assertTrue(
-      File(fixtureDir, "build/hardening/local-fuzz.running").isFile,
+      File(fixtureDir, ".pitest-history/local-fuzz.running").isFile,
       "failed fuzzAll did not leave its incomplete-campaign sentinel")
 
     listOf("0", "00", "abc", "2147483648").forEach { invalid ->
@@ -251,6 +251,15 @@ class HardeningFeatureSmokeTest {
         .withArguments("validateFuzzBudget", "-PmaxFuzzTime=$invalid", "--stacktrace")
         .buildAndFail().output
       assertTrue(refused.contains("0 is libFuzzer's run-forever sentinel"), refused)
+    }
+    listOf("0", "00", "abc", "2147483648").forEach { invalid ->
+      val refused = GradleRunner.create().withProjectDir(fixtureDir)
+        .withArguments(
+          "validateFuzzBudget", "-PmaxFuzzTime=1",
+          "-PmaxParallelFuzzTargets=$invalid", "--stacktrace",
+        )
+        .buildAndFail().output
+      assertTrue(refused.contains("-PmaxParallelFuzzTargets must be positive"), refused)
     }
   }
 
@@ -277,20 +286,22 @@ class HardeningFeatureSmokeTest {
         "clean", "fuzzAll", "generateFuzzReplayTests", "-PmaxFuzzTime=1",
         "--configuration-cache", "--stacktrace")
       .build()
-    val receipt = File(fixtureDir, "build/hardening/local-fuzz.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
 
     assertTrue(result.output.contains("fuzzAll: 0 local target(s) completed"), result.output)
     assertTrue(receipt.isFile, "zero-target campaign did not write a receipt")
     val receiptText = receipt.readText()
-    assertTrue(receiptText.contains("schema\t2"), receiptText)
+    assertTrue(receiptText.contains("schema\t4"), receiptText)
     assertTrue(
       Regex("(?m)^pluginSha256\\t[0-9a-f]{64}$").containsMatchIn(receiptText),
       "zero-target receipt did not bind the loaded plugin binary:\n$receiptText",
     )
     assertTrue(receiptText.contains("maxFuzzTimeSeconds\t1"), receiptText)
+    assertTrue(receiptText.contains("maxParallelTargets\t1"), receiptText)
+    assertTrue(receiptText.contains("totalExecutions\t0"), receiptText)
     assertFalse(receiptText.contains("target\t"), receiptText)
     assertFalse(
-      File(fixtureDir, "build/hardening/local-fuzz.running").exists(),
+      File(fixtureDir, ".pitest-history/local-fuzz.running").exists(),
       "successful zero-target campaign retained its running sentinel")
   }
 

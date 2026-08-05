@@ -263,10 +263,20 @@ $buildTail
             }
             System.out.println("fixture fuzz executed");
             Path modeFile = Path.of("fake-fuzz-mode.txt");
-            if (Files.exists(modeFile) && Files.readString(modeFile).trim().equals("fail") &&
-                target != null && target.endsWith("PlainFuzz")) {
+            String mode = Files.exists(modeFile) ? Files.readString(modeFile).trim() : "ok";
+            if (mode.equals("fail") && target != null && target.endsWith("PlainFuzz")) {
               System.exit(4);
             }
+            long executions = target != null && target.endsWith("CodecFuzz") ? 101L :
+                target != null && target.endsWith("HollowFuzz") ? 202L : 303L;
+            if (target != null && target.endsWith("PlainFuzz")) {
+              if (mode.equals("missing")) return;
+              if (mode.equals("zero")) executions = 0L;
+              if (mode.equals("ambiguous")) {
+                System.err.println("Done 1 runs in 1 second(s)");
+              }
+            }
+            System.err.println("Done " + executions + " runs in 1 second(s)");
           }
         }
       """.trimIndent() + "\n"
@@ -543,11 +553,11 @@ $buildTail
     val first = runner("fuzzPlain", "-PmaxFuzzTime=1").build()
     assertTrue(first.output.contains("fixture fuzz executed"), first.output)
     assertFalse(
-      File(fixtureDir, "build/hardening/local-fuzz.tsv").exists(),
+      File(fixtureDir, ".pitest-history/local-fuzz.tsv").exists(),
       "a standalone fuzz target must not create an aggregate receipt",
     )
     assertFalse(
-      File(fixtureDir, "build/hardening/local-fuzz.running").exists(),
+      File(fixtureDir, ".pitest-history/local-fuzz.running").exists(),
       "a standalone fuzz target must not activate an aggregate campaign",
     )
 
@@ -563,17 +573,55 @@ $buildTail
     File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
 
     val result = runner("fuzzAll", "-PmaxFuzzTime=1").build()
-    val receipt = File(fixtureDir, "build/hardening/local-fuzz.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
 
     assertEquals(3, occurrences(result.output, "fixture fuzz executed"), result.output)
     assertTrue(receipt.isFile, "fuzzAll did not write its receipt:\n${result.output}")
-    listOf("fuzzCodec", "fuzzHollow", "fuzzPlain").forEach { taskName ->
-      assertTrue(receipt.readText().contains("target\t$taskName\n"), receipt.readText())
-    }
+    assertEquals(
+      listOf(
+        "schema\t4",
+        "project\t:",
+        "pluginSha256\t" + receipt.readLines().single { it.startsWith("pluginSha256\t") }
+          .substringAfter('\t'),
+        "maxFuzzTimeSeconds\t1",
+        "maxParallelTargets\t1",
+        "totalExecutions\t606",
+        "target\tfuzzCodec\t101",
+        "target\tfuzzHollow\t202",
+        "target\tfuzzPlain\t303",
+      ),
+      receipt.readLines(),
+    )
     assertFalse(
-      File(fixtureDir, "build/hardening/local-fuzz.running").exists(),
+      File(fixtureDir, ".pitest-history/local-fuzz.running").exists(),
       "successful campaign retained its running sentinel",
     )
+  }
+
+  @Test
+  fun `fuzzAll refuses missing ambiguous and zero live execution counts`() {
+    listOf(
+      "missing" to "emitted no terminal",
+      "ambiguous" to "ambiguous campaign receipt",
+      "zero" to "must be positive",
+    ).forEach { (mode, message) ->
+      writeFixture()
+      writeSeedCorpus()
+      File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+      File(fixtureDir, "fake-fuzz-mode.txt").writeText("$mode\n")
+
+      val failed = runner("fuzzAll", "-PmaxFuzzTime=1").buildAndFail()
+
+      assertTrue(failed.output.contains(message), "$mode failure was misreported:\n${failed.output}")
+      assertFalse(
+        File(fixtureDir, ".pitest-history/local-fuzz.tsv").exists(),
+        "$mode execution evidence earned a fuzzAll receipt",
+      )
+      assertTrue(
+        File(fixtureDir, ".pitest-history/local-fuzz.running").isFile,
+        "$mode execution evidence did not retain the invalidation sentinel",
+      )
+    }
   }
 
   @Test
@@ -591,22 +639,22 @@ $buildTail
 
     assertTrue(failed.output.contains("non-zero exit value 4"), failed.output)
     assertFalse(
-      File(fixtureDir, "build/hardening/local-fuzz.tsv").exists(),
+      File(fixtureDir, ".pitest-history/local-fuzz.tsv").exists(),
       "a failed target earned a fuzzAll receipt",
     )
     assertTrue(
-      File(fixtureDir, "build/hardening/local-fuzz.running").isFile,
+      File(fixtureDir, ".pitest-history/local-fuzz.running").isFile,
       "a failed campaign did not retain its invalidation sentinel",
     )
   }
 
   @Test
-  fun `fuzzAll refuses excluded targets and an excluded preflight despite stale evidence`() {
+  fun `fuzzAll refuses every exclusion before children while standalone exclusions preserve evidence`() {
     writeFixture()
     writeSeedCorpus()
     File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
-    val receipt = File(fixtureDir, "build/hardening/local-fuzz.tsv")
-    val running = File(fixtureDir, "build/hardening/local-fuzz.running")
+    val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
+    val running = File(fixtureDir, ".pitest-history/local-fuzz.running")
 
     receipt.parentFile.mkdirs()
     receipt.writeText("stale successful receipt\n")
@@ -623,7 +671,8 @@ $buildTail
     assertTrue(running.isFile, "excluded target did not leave an incomplete-campaign sentinel")
 
     receipt.writeText("another stale successful receipt\n")
-    running.writeText("another stale running sentinel\n")
+    assertTrue(running.delete(), "could not model a prior completed campaign")
+    File(fixtureDir, "fake-fuzz-mode.txt").writeText("fail\n")
     val excludedPreflight = runner(
       "fuzzAll", "-PmaxFuzzTime=1", "-x", "fuzzAllPreflight",
     ).buildAndFail()
@@ -632,12 +681,46 @@ $buildTail
       excludedPreflight.output,
     )
     assertTrue(excludedPreflight.output.contains("-x fuzzAllPreflight"), excludedPreflight.output)
+    assertFalse(
+      excludedPreflight.output.contains("fixture fuzz executed"),
+      "excluded preflight allowed a target to run before invalidation:\n${excludedPreflight.output}",
+    )
     assertFalse(receipt.exists(), "excluded preflight retained a stale fuzzAll receipt")
-    assertTrue(running.isFile, "excluded preflight hid behind a stale running sentinel")
+    assertTrue(running.isFile, "excluded preflight did not publish a running sentinel")
     assertTrue(
-      running.readText().contains("refused task exclusion(s)"),
+      running.readText().startsWith("refused\t") &&
+          running.readText().contains("-x fuzzAllPreflight"),
       "excluded preflight did not replace the stale sentinel:\n${running.readText()}",
     )
+
+    receipt.writeText("valid aggregate evidence untouched by standalone work\n")
+    assertTrue(running.delete(), "could not model a completed aggregate before standalone work")
+    File(fixtureDir, "fake-fuzz-mode.txt").delete()
+    val standalone = runner(
+      "fuzzPlain", "-PmaxFuzzTime=1", "-x", "fuzzAllPreflight",
+    ).build()
+    assertTrue(standalone.output.contains("fixture fuzz executed"), standalone.output)
+    assertEquals(
+      "valid aggregate evidence untouched by standalone work\n",
+      receipt.readText(),
+      "a standalone target invalidated unrelated aggregate evidence",
+    )
+    assertFalse(running.exists(), "a standalone target activated an aggregate campaign")
+
+    val excludedInternals = runner(
+      "fuzzAll", "-PmaxFuzzTime=1",
+      "-x", "fuzzAllPreflight", "-x", "validateFuzzBudget",
+    ).buildAndFail()
+    assertTrue(
+      excludedInternals.output.contains("fuzzAll requires its complete task graph"),
+      excludedInternals.output,
+    )
+    assertFalse(
+      excludedInternals.output.contains("fixture fuzz executed"),
+      "excluding both old internal boundaries allowed a child to run:\n${excludedInternals.output}",
+    )
+    assertFalse(receipt.exists(), "excluded internal tasks retained stale aggregate evidence")
+    assertTrue(running.isFile, "excluded internal tasks did not leave a refusal sentinel")
   }
 
   @Test
@@ -1246,6 +1329,164 @@ $buildTail
       missing.output.contains("missing or empty — a merge cannot start from nothing"),
       missing.output
     )
+  }
+
+  @Test
+  fun `fuzz targets honor configurable build-wide slots across projects with cache reuse`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "parallel-fuzz-lock-smoke-test"
+        include("b")
+      """.trimIndent() + "\n"
+    )
+    fun writeProject(projectDir: File, targets: List<String>) {
+      projectDir.mkdirs()
+      val projectLabel = if (projectDir == fixtureDir) "root" else projectDir.name
+      val registrations = targets.joinToString("\n") { target ->
+        """
+          fuzz.register("$target") {
+            targetClass = "com.example.${target.replaceFirstChar(Char::uppercase)}Fuzz"
+          }
+        """.trimIndent()
+      }
+      val taskWiring = targets.joinToString("\n") { target ->
+        val taskName = "fuzz" + target.replaceFirstChar(Char::uppercase)
+        """
+          tasks.named<JavaExec>("$taskName") {
+            mainClass = "com.example.FakeParallelFuzz"
+            classpath = sourceSets["main"].output
+            jvmArgs = listOf(
+              "-DparallelFuzzSlotDir=${fixtureDir.resolve("parallel-fuzz-slots").absolutePath}",
+              "-DparallelFuzzName=$projectLabel:$taskName",
+              "-DparallelFuzzCapacity=" +
+                  providers.gradleProperty("maxParallelFuzzTargets").orElse("1").get(),
+            )
+          }
+        """.trimIndent()
+      }
+      File(projectDir, "build.gradle.kts").writeText(
+        """
+          plugins {
+            java
+            id("software.sava.build.feature.hardening")
+          }
+
+          repositories { mavenCentral() }
+
+          hardening {
+            $registrations
+          }
+
+          $taskWiring
+        """.trimIndent() + "\n"
+      )
+      val source = File(projectDir, "src/main/java/com/example/FakeParallelFuzz.java")
+      source.parentFile.mkdirs()
+      source.writeText(
+        """
+          package com.example;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.nio.file.StandardOpenOption;
+
+          public final class FakeParallelFuzz {
+            public static void main(String[] args) throws Exception {
+              Path stateDir = Path.of(System.getProperty("parallelFuzzSlotDir"));
+              Path events = stateDir.resolveSibling("parallel-fuzz.events");
+              Path overlapSeen = stateDir.resolveSibling("parallel-fuzz-overlap-seen");
+              String name = System.getProperty("parallelFuzzName");
+              int capacity = Integer.parseInt(System.getProperty("parallelFuzzCapacity"));
+              Files.createDirectories(stateDir);
+              Path counterLock = stateDir.resolve("counter.lock");
+              Path counter = stateDir.resolve("active");
+              int activeAfterStart;
+              try (var channel = java.nio.channels.FileChannel.open(counterLock,
+                  StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                  var ignored = channel.lock()) {
+                int active = Files.exists(counter)
+                    ? Integer.parseInt(Files.readString(counter).trim()) : 0;
+                activeAfterStart = active + 1;
+                Files.writeString(counter, Integer.toString(activeAfterStart),
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                if (activeAfterStart >= 2) {
+                  Files.writeString(overlapSeen, "observed\n",
+                      StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                }
+              }
+              Files.writeString(events, "start " + name + "\n",
+                  StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+              try {
+                if (activeAfterStart > capacity) {
+                  throw new IllegalStateException(
+                      "fuzz concurrency exceeded " + capacity + ": " + activeAfterStart);
+                }
+                Thread.sleep(600);
+              } finally {
+                Files.writeString(events, "end " + name + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                try (var channel = java.nio.channels.FileChannel.open(counterLock,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                    var ignored = channel.lock()) {
+                  int active = Integer.parseInt(Files.readString(counter).trim());
+                  Files.writeString(counter, Integer.toString(active - 1),
+                      StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                }
+              }
+              System.err.println("Done 17 runs in 1 second(s)");
+            }
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+    writeProject(fixtureDir, listOf("alpha", "beta"))
+    writeProject(File(fixtureDir, "b"), listOf("gamma"))
+
+    fun runAndAssert(capacity: Int, expectReuse: Boolean) {
+      val eventsFile = File(fixtureDir, "parallel-fuzz.events")
+      if (eventsFile.exists()) assertTrue(eventsFile.delete(), "could not reset fuzz event log")
+      val overlapSeen = File(fixtureDir, "parallel-fuzz-overlap-seen")
+      if (overlapSeen.exists()) assertTrue(overlapSeen.delete(), "could not reset overlap marker")
+      File(fixtureDir, "parallel-fuzz-slots").deleteRecursively()
+      val result = runner(
+        ":fuzzAlpha",
+        ":fuzzBeta",
+        ":b:fuzzGamma",
+        "-PmaxParallelFuzzTargets=$capacity",
+        "--parallel",
+        "--max-workers=4",
+      ).build()
+
+      assertFalse(result.output.contains("fuzz concurrency exceeded"), result.output)
+      if (expectReuse) assertTrue(result.output.contains("Configuration cache entry reused."), result.output)
+      val events = eventsFile.readLines()
+      assertEquals(6, events.size, "three fuzz tasks must record complete intervals: $events")
+      var active = 0
+      var observedMaximum = 0
+      events.forEach { event ->
+        if (event.startsWith("start ")) {
+          active++
+          observedMaximum = maxOf(observedMaximum, active)
+        } else {
+          assertTrue(event.startsWith("end "), events.toString())
+          active--
+        }
+        assertTrue(active in 0..capacity, "configured fuzz capacity $capacity was exceeded: $events")
+      }
+      assertEquals(0, active, events.toString())
+      assertEquals(capacity, observedMaximum, "configured fuzz capacity was not observed: $events")
+      assertEquals(capacity > 1, overlapSeen.isFile, "overlap marker disagreed with capacity $capacity")
+      assertEquals(
+        setOf("root:fuzzAlpha", "root:fuzzBeta", "b:fuzzGamma"),
+        events.filter { it.startsWith("start ") }.map { it.removePrefix("start ") }.toSet(),
+      )
+    }
+
+    runAndAssert(capacity = 1, expectReuse = false)
+    runAndAssert(capacity = 2, expectReuse = false)
+    runAndAssert(capacity = 2, expectReuse = true)
   }
 
   @Test

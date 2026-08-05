@@ -1240,3 +1240,65 @@ Rules: *build output is execution state, never a configuration-time graph select
 *configuration-cache coverage includes state transitions, not only cold storage*;
 *when a validator is conditional, keep the task edge invariant and make the action
 cheap on the no-evidence path*.
+
+## The clean proof that erased the fuzz proof
+
+A consumer completed its local `fuzzAll` campaign, then followed the supported cold
+mutation proof with `clean hardeningCertify`. The fuzz aggregate lived under
+`build/hardening/`, so `clean` removed it without warning. Both expensive observations
+had succeeded, but they could not coexist long enough for the release runner to retain
+them. Reversing the checklist order only moved the trap: a later clean build could still
+erase valid campaign evidence, while leaving no marker that distinguished deliberate
+cleanup from an interrupted or never-started fuzz run.
+
+The aggregate was also being asked to serve two incompatible lifecycles. It is generated
+state and must never be committed, but it is durable evidence of an explicit campaign,
+not a disposable product of the current build directory. Moving the receipt and its
+in-progress sentinel to the already-ignored project-local `.pitest-history/` boundary
+made that distinction concrete. `clean` now preserves a completed receipt. Starting a
+new campaign validates and deletes the durable receipt before any target runs, atomically
+publishes the sentinel, and only then checks and removes the one-release legacy state.
+That ordering matters: even a malformed legacy path leaves the new attempt visibly
+incomplete. The legacy path is confined to Gradle's configured build directory rather
+than the checkout, because centralized builds may put it elsewhere. Success writes the
+new receipt while the sentinel is still present and clears the sentinel last; failure or
+interruption therefore leaves no state that can be mistaken for a pass. The release
+runner invalidates regular receipts in both locations, refuses any filesystem entry at
+either generation's running-sentinel name, and retains only the new durable receipt.
+The aggregate also holds an OS lock for the full Gradle invocation. Without that ownership,
+an older campaign could finish after a newer one failed, publish its own receipt, and delete
+the newer failure sentinel. A competing invocation now fails before touching either file.
+
+Rules: *generated does not mean disposable — choose lifecycle from the claim an artifact
+supports*; *a new attempt invalidates the prior success before doing work*; *publish
+success before clearing the in-progress marker, so every interrupted state fails closed*;
+*a release checklist should not need a magic ordering merely to keep two valid proofs
+from deleting one another*.
+
+## Eight per-target minutes compressed into one
+
+A Ravina adoption selected eight fuzz targets with a 121-second budget under Gradle's
+parallel execution and completed the aggregate in about 135 seconds. The number looked
+efficient, but it exposed two missing contracts. `maxFuzzTime` was intended to describe
+each target's opportunity to explore; running every CPU-bound native driver at once made
+the work achieved by that wall-clock budget depend on fleet shape and machine load. The
+fuzz tasks also did not share PIT's execution semaphore, so a fuzz process elsewhere in
+the same multi-project build could turn mutation timeouts into load-dependent evidence.
+
+The aggregate receipt compounded the ambiguity: it recorded the requested budget and a
+list of tasks, but no achieved campaign count. A green Java process therefore proved only
+that the wrapper returned normally, not how much libFuzzer work the release was claiming.
+Mutable console logs could not repair that provenance after the fact.
+
+The first repair serialized all CPU-intensive hardening children. That made the observation
+comparable but made real fleet reviews needlessly additive. The final contract separates the
+concerns: PIT and corpus rewrites remain exclusive, while fuzz exploration uses an explicit
+build-wide `maxParallelFuzzTargets` semaphore. The chosen width is recorded beside the
+budget, each target's positive terminal `Done N runs in S second(s)` count, and their total.
+The local release runner copies and revalidates the same values in its immutable outer
+bundle. A standalone fuzz task stays a fast developer tool and makes no aggregate claim.
+
+Rules: *parallelism that affects achieved work is an input, not scheduler trivia*; *bound it,
+record it, and record the work actually achieved*; *do not run PIT beside CPU-bound fuzzers*;
+*capture process evidence from the live stream, then bind it through every retained receipt
+layer*.

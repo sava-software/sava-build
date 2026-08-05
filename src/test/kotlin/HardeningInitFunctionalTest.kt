@@ -121,7 +121,7 @@ class HardeningInitFunctionalTest {
     assertTrue(result.output.contains("exists — left untouched"), result.output)
     assertEquals("custom policy\n", File(fixtureDir, "config/pitest/README.md").readText())
     assertEquals(
-      "build/\n\n# optional ArcMutate history (machine-local when an applicable licence is present)\n.pitest-history/\n",
+      "build/\n\n# machine-local hardening state (PIT history and local fuzz campaign evidence)\n.pitest-history/\n",
       File(fixtureDir, ".gitignore").readText()
     )
   }

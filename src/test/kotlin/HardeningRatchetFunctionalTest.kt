@@ -1724,6 +1724,9 @@ $fuzzBlock
     assertTrue(toolchain.delete())
     val torn = runner("pitestEncodingVerify").buildAndFail().output
     assertTrue(torn.contains("committed mutation provenance is torn"), torn)
+    assertTrue(torn.contains("complete record written by a pre-sidecar release"), torn)
+    assertTrue(torn.contains("interrupted newer write"), torn)
+    assertFalse(torn.contains("failed/incomplete write"), torn)
     val tornDebt = runner("pitestEncodingDebt").buildAndFail().output
     assertTrue(tornDebt.contains("committed mutation provenance is torn"), tornDebt)
     val repairedTorn = runner("pitestEncodingBaselineRebase").build().output

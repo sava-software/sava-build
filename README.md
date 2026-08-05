@@ -458,7 +458,7 @@ commit with every manifest repo checked out as a sibling, run the strict forms i
 tools/fleet-canary.sh --release
 tools/fleet-canary.sh --verify-receipt build/hardening/fleet-canary-receipt.json
 
-tools/local-fuzz.sh --release --seconds 900
+tools/local-fuzz.sh --release --seconds 900 --parallel-targets 4
 tools/local-fuzz.sh --verify-receipt build/hardening/local-fuzz-receipt.json
 ```
 
@@ -471,9 +471,24 @@ preflight inventory, plugin-publish log, one log per consumer, and copies of the
 `pitest-certification.tsv` or `local-fuzz.tsv` evidence, plus the exact published
 `0.0.0-test` plugin JAR. The receipt binds and hashes those files together with the plugin
 commit/tree/origin, manifest digest, each consumer's commit/origin, exact tasks, and the
-fuzz budget. Every inner receipt's loaded-plugin hash must equal the retained JAR hash, so
+per-target fuzz budget and explicit concurrency bound. `-PmaxFuzzTime` applies independently
+to every target; `--parallel-targets` becomes the receipt-bound
+`-PmaxParallelFuzzTargets` limit across projects. Choose a sustainable value to shorten the
+campaign without pretending it was serialized, and do not mix PIT certification into the
+same invocation. Every successful inner fuzz
+receipt records the positive libFuzzer execution count captured live for each target and
+their total, and the immutable outer bundle revalidates those same counts against its
+retained TSV copies. Every inner receipt's loaded-plugin hash must equal the retained JAR hash, so
 all consumers resolving the same stale binary cannot agree their way to green. Keep the selected run directories with
 the release record, but do not commit them into the tree they certify.
+
+The plugin's inner fuzz receipt lives at each project’s ignored
+`.pitest-history/local-fuzz.tsv`, so `clean hardeningCertify` cannot erase a completed
+campaign before it is retained. A new `fuzzAll` invalidates that receipt before its
+targets run; an accompanying `local-fuzz.running` sentinel makes an interrupted campaign
+ineligible. A checkout-local OS lock rejects overlapping `fuzzAll` invocations before
+either can supersede the other's state. The outer release pointer and immutable bundle remain under this repository's
+`build/hardening/` because they are runner-owned release artifacts, not consumer state.
 
 The build-free verification commands rehash every retained file and, when a recorded
 checkout is still available, require its current commit, origin, and clean state to match.

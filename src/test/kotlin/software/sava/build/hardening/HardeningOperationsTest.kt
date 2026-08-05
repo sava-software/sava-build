@@ -10,12 +10,13 @@ class HardeningOperationsTest {
 
   @Test
   fun `the central option inventory separates active and removed properties`() {
-    assertEquals(9, HardeningOptionNames.descriptors.size)
+    assertEquals(10, HardeningOptionNames.descriptors.size)
     assertEquals(
       setOf(
         HardeningOptionNames.ADOPT_LOCAL_CORPUS,
         HardeningOptionNames.LIST_UNKILLED,
         HardeningOptionNames.MAX_FUZZ_TIME,
+        HardeningOptionNames.MAX_PARALLEL_FUZZ_TARGETS,
         HardeningOptionNames.MUTATE_ONLY,
         HardeningOptionNames.NO_MUTATION_HISTORY,
         HardeningOptionNames.PITEST_MODE,
@@ -51,6 +52,7 @@ class HardeningOperationsTest {
     assertTrue(help.contains("pitestEncodingTimeoutAuditInit"), help)
     assertTrue(help.contains("pitestModeCompareUnion"), help)
     assertTrue(help.contains("fuzzWireMinimize"), help)
+    assertTrue(help.contains("durable receipt in .pitest-history/"), help)
     assertTrue(help.contains("-PupdateMutationBaseline"), help)
     assertTrue(help.contains("use pitest<Suite>BaselineUpdate"), help)
     assertTrue(help.contains("refused since sava-build 21.5.22"), help)

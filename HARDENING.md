@@ -48,7 +48,7 @@ affect — not by habit in either direction:
 |---|---|---|
 | Inner loop | the module's `test` (or `--tests` for the touched classes) | The change works. |
 | Before handing off a change | the `pitest<Suite>`(s) whose mutated code the change can reach | No new unkilled mutants where the change lives. |
-| Before a release | `hardeningCertify` on every module; an explicit local `fuzzAll -PmaxFuzzTime=<seconds>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
+| Before a release | `hardeningCertify` on every module; an explicit local `fuzzAll -PmaxFuzzTime=<seconds> -PmaxParallelFuzzTargets=<count>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
 
 A release command without provenance is not durable evidence. Record the repository
 commit and clean-tree state, exact selectors and options, exit result, retained-log
@@ -70,7 +70,12 @@ requires a provenance-bound report for every suite, and writes
 compiled code, source, configuration, PIT tool classpath, and loaded plugin binary, but
 also the accepted baseline, audited timeout membership, recorded PIT-version and
 mutation-toolchain sidecars, and the suite's triage README that decided whether the
-observation was acceptable. Its cost
+observation was acceptable. The README is deliberately an exact whole-file input for
+every suite in that project: legacy unlabeled rows, shared arguments, and cross-section
+prose make a generic per-suite Markdown projection unsound. Any README edit therefore
+invalidates the existing project receipts; finish even prose-only cleanup before the
+final certification. A future narrower boundary requires an explicit versioned anchor
+schema rather than inference from today’s free-form document. Its cost
 scales with the repo's total
 mutant population, not with the size of the diff — so running it per change
 spends minutes re-learning results the change could not have moved. A suite
@@ -191,7 +196,9 @@ currently audited for base `1.7.1`; overriding `hardening.arcmutateBaseVersion` 
 different licensed engine is refused until its lookup contract is audited. Ordinary suite runs
 also enable `+arcmutate_history` against a rolling per-suite file at
 `<module>/.pitest-history/<suite>.hist` — outside `build/` so `clean` cannot erase
-it, git-ignored as machine-local state. A suite run with `-PnoMutationHistory` or
+it, git-ignored as machine-local state. The same directory holds durable local-fuzz
+campaign state; it is a machine-local hardening-state boundary, not solely ArcMutate
+history. A suite run with `-PnoMutationHistory` or
 inside certification suppresses that feature and its history input/output arguments;
 it does not remove the licensed base plugin. Mode snapshots and convergence refuse
 assisted evidence and direct the operator to that explicit flag.
@@ -229,7 +236,9 @@ versions equal to the configured versions; markerless ArcMutate package or servi
 sentinels are refused rather than mislabeled as open-source PIT. Its recorded identity
 therefore follows the same engine and certificate search as the child JVM. Intentional
 TestKit tools with neither real PIT/plugin sentinels remain supported.
-Delete `.pitest-history/` to reset a machine's history wholesale.
+Delete an individual `<suite>.hist` to reset that suite's ArcMutate history. Deleting
+`.pitest-history/` resets all machine-local hardening state, including the last local
+fuzz campaign receipt.
 
 The installed plugin exposes discoverable writer tasks. The former
 `-PupdateMutationBaseline`, `-PunionMutationBaseline`,
@@ -342,8 +351,10 @@ This path also adopts old records. A committed baseline or timeout set missing b
 sidecars is reported as the paired `legacy-unversioned` / `legacy-toolchain-unbound`
 state. Ordinary checks and `hardeningCertify` announce both, the certification receipt
 records that paired state, and every writer except Rebase refuses to adopt it. Exactly
-one missing sidecar is a torn write, not a legacy state: read/certification paths
-refuse it, while fresh safe-superset BaselineRebase is the recovery path. Rebase also
+one missing sidecar is structurally one-sided under the current schema. It may be a
+complete record written by a pre-sidecar release or an interrupted newer write; the
+plugin cannot distinguish those histories, so read/certification paths fail closed
+and fresh safe-superset BaselineRebase is the recovery path. Rebase also
 replaces malformed or internally disagreeing provenance; no stamp is hand-edited.
 Certification may verify a both-missing legacy record against a fresh current
 population, but it never pretends historical changes are attributable. Likewise, an
@@ -1488,14 +1499,42 @@ Fuzzing is an explicit local campaign, not a scheduled-workflow obligation. Run 
 target registered in a project with:
 
 ```shell
-./gradlew --continue fuzzAll -PmaxFuzzTime=900
+./gradlew --continue fuzzAll -PmaxFuzzTime=900 -PmaxParallelFuzzTargets=4 \
+  --parallel --configuration-cache
 ```
 
 `fuzzAll` derives its dependencies directly from the `hardening.fuzz` registrations,
 so adding a target cannot leave a hand-maintained task list stale. It writes
-`build/hardening/local-fuzz.tsv` after all selected targets succeed. `--continue` lets
-independent targets finish after one finds a failure; Gradle still exits non-zero.
+`.pitest-history/local-fuzz.tsv` after all selected targets succeed. That machine-local
+receipt deliberately survives `clean`, including a later `clean hardeningCertify`.
+Starting the next campaign deletes it before any target runs and creates
+`.pitest-history/local-fuzz.running`; failure or interruption leaves the sentinel and
+no valid receipt, while success publishes the new receipt before clearing the sentinel.
+An OS file lock held for the full aggregate invocation rejects a second `fuzzAll` before it
+can overwrite the first campaign's sentinel or receipt; parallelism belongs inside one
+owned campaign through `-PmaxParallelFuzzTargets`, not through competing Gradle processes.
+The release runner requires the receipt without the sentinel and copies it into its
+immutable bundle. `--continue` lets independent targets finish after one finds a failure;
+Gradle still exits non-zero.
 Run one `fuzz<Target>` directly for focused iteration.
+
+`-PmaxFuzzTime` is a budget **for each target**, not for the aggregate.
+`-PmaxParallelFuzzTargets` explicitly bounds concurrent fuzz children across all selected
+projects (default `1`). Choose a value the machine can sustain; `4` is a reasonable review
+starting point on a machine with at least four genuinely available cores. The configured
+width is part of the receipt beside every achieved execution count, so a faster parallel
+campaign is not mistaken for a serialized one. Do not combine mutation certification and
+fuzzing in the same invocation: PIT and corpus rewrites retain their exclusive slot because
+CPU saturation can turn mutation timeouts into load evidence.
+
+A passing aggregate receipt proves work, not merely task completion. Each campaign target
+must emit exactly one positive libFuzzer terminal `Done N runs in S second(s)` observation.
+The typed task parses that count directly from the live child stdout/stderr while forwarding
+the bytes unchanged; it does not recover evidence from a mutable Gradle log. The ignored
+inner TSV and the release runner's immutable outer bundle bind every target's achieved
+execution count and their exact total. Missing, duplicate, zero, inexact, or cross-layer
+inconsistent counts or a mismatched parallelism declaration refuse the receipt. A standalone `fuzz<Target>` remains useful for
+iteration but creates no aggregate proof.
 
 Release certification must run every registered fleet target against the exact candidate
 plugin binary, invalidate stale aggregate receipts before execution, and retain immutable,
@@ -1734,7 +1773,8 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    record it as a release-checklist item run locally (see the lifecycle
    section) — and say which in `AGENTS.md`.
 6. `hardeningInit` has already added `.pitest-history/` to `.gitignore`; leave that
-   harmless scaffold in place whether or not this repo is licensed. If the package,
+   machine-local PIT-history and fuzz-campaign state boundary in place whether or not
+   this repo is licensed. If the package,
    repository visibility, and entitlement all apply to an eligible public Sava repo,
    deliberately copy the `sava-build` repository-root certificate here and commit it
    as `arcmutate-licence.txt`. The plugin never distributes it. Never copy the Sava OSS
@@ -1936,7 +1976,8 @@ merely waiting for a release.
 >   test inside `check`, so it cannot rot between fuzz runs.
 > - **Run fuzz campaigns explicitly and locally.** `fuzzAll` is derived from every
 >   registered target, so it cannot drift from a hand-written workflow task list;
->   set and record `-PmaxFuzzTime=<seconds>` before release. Scheduled GitHub fuzz
+>   set and record `-PmaxFuzzTime=<seconds>` and
+>   `-PmaxParallelFuzzTargets=<count>` before release. Scheduled GitHub fuzz
 >   workflows are optional and are not release evidence.
 > - **When one thing has two representations, fuzz the differential.** Two
 >   parsers for one config, an encode/decode round trip, a fast path beside a
