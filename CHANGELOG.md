@@ -1,5 +1,51 @@
 # Changelog
 
+## [21.5.23](https://github.com/sava-software/sava-build/compare/21.5.22...21.5.23) (2026-08-05)
+
+
+### Features
+
+* **hardening:** extract the baseline engine, add the golden fleet corpus and canary gate ([7bebc1e](https://github.com/sava-software/sava-build/commit/7bebc1edcbce29c0858886bb41f4251174ddf731))
+* **hardening:** make certification portable and reproducible ([2f352bb](https://github.com/sava-software/sava-build/commit/2f352bbec2f122318cd1dcc4b5b6ed31bc6814b2))
+
+
+### Bug Fixes
+
+* **hardening:** close certification and runner evidence gaps ([7fc2a3a](https://github.com/sava-software/sava-build/commit/7fc2a3aff94bfd8ed3be5220ad81273e710cd1ca))
+* **hardening:** close evidence graph regressions ([282a912](https://github.com/sava-software/sava-build/commit/282a9124bfcbe407f07871d3c8ee6e5af92edbf3))
+* **hardening:** close release candidate gaps ([6df93b9](https://github.com/sava-software/sava-build/commit/6df93b9dacd48dba65003daa1977ff9d07476543))
+* **hardening:** finish named writer migration ([f0718b4](https://github.com/sava-software/sava-build/commit/f0718b40c03ba860738d6cc50dcf286e6e6a3efb))
+* **hardening:** make execution and evidence structural ([d3db3ec](https://github.com/sava-software/sava-build/commit/d3db3eca288e5cffd3148bf526911b2e231ffbdd))
+* **hardening:** make local fuzz evidence explicit ([3149b9f](https://github.com/sava-software/sava-build/commit/3149b9fc62c01496f72df254011751696d6bf1d9))
+* **hardening:** preserve licensed PIT population ([23b0165](https://github.com/sava-software/sava-build/commit/23b016502227dfc768b2efd44050c6715ce62b14))
+* **hardening:** preserve mutant and receipt identity ([43692d0](https://github.com/sava-software/sava-build/commit/43692d0ddcb6c5d9650e554ceb92ecc170579c5f))
+* **hardening:** preserve records and expose timeout drift ([608260c](https://github.com/sava-software/sava-build/commit/608260c9b2214ce396001f0ca0099611041caa26))
+* **hardening:** refuse partial and reused reports, diagnose malformed rows ([a8e0435](https://github.com/sava-software/sava-build/commit/a8e0435f5537adfbc3bbbae654b789bc9899dec2))
+* **hardening:** refuse stray canary flags and correct the detected-set doc ([df8c001](https://github.com/sava-software/sava-build/commit/df8c00167868f2d93a6baad9edbbc61ed4543745))
+* **hardening:** restore anchor and verifier guards ([43fc9ba](https://github.com/sava-software/sava-build/commit/43fc9ba37eae19fe5ef8480edf1b6a6707194bd5))
+* **hardening:** strengthen mutation and release evidence ([04f0b09](https://github.com/sava-software/sava-build/commit/04f0b09104b13a069b9395e0f7ff495713420fc7))
+* **release:** attest reviewed local adoptions ([1908786](https://github.com/sava-software/sava-build/commit/19087864b468c0a4c8bc17f671ed1b1fcaaf6ceb))
+* **release:** bind published jar to certification ([a950a40](https://github.com/sava-software/sava-build/commit/a950a40c1d7cb75340e2c65e4a3f5f1bf01cd5a7))
+* **release:** enforce hardening certification ([a9465a4](https://github.com/sava-software/sava-build/commit/a9465a43cbb580ebbbc137540f1a5df94c6f2eba))
+* **test:** isolate ArcMutate drift scenarios ([1e51491](https://github.com/sava-software/sava-build/commit/1e51491fb4996f86843b7d6de3a90cc9641545ae))
+* **test:** make hardening fixtures clean-build safe ([39f1333](https://github.com/sava-software/sava-build/commit/39f1333cbc21c4dbdd6d924b2ce0f986ae672ef9))
+
+
+### Build System
+
+* **hardening:** update PIT to 1.25.9 ([ab49585](https://github.com/sava-software/sava-build/commit/ab49585b499312b4492fa0d26944c120b2b3d1d5))
+
+
+### Documentation
+
+* **hardening:** clarify torn provenance adoption ([44b5849](https://github.com/sava-software/sava-build/commit/44b584983f55d4caf2d527cce86f3d39ba266059))
+* **hardening:** require contract-first mutation triage ([bf84c7b](https://github.com/sava-software/sava-build/commit/bf84c7b844025bb060b1491e6fc7eeb73f76ecdb))
+
+
+### Refactors
+
+* **hardening:** interpret mutants through one typed model ([5bc4121](https://github.com/sava-software/sava-build/commit/5bc412147e2ce9ada5d6b799619ff1218587ec93))
+
 ## [21.5.22](https://github.com/sava-software/sava-build/compare/21.5.21...21.5.22) (2026-08-03)
 
 
