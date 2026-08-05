@@ -632,9 +632,10 @@ invoked it*, and the failure looks exactly like a real regression.
   This default drift detail is independent of audited-set membership: the
   timeout set is intentionally line-less, so an existing membership row can
   cover a key whose timeout count just grew; membership suppresses the
-  unaudited-row warning, but it never suppresses the changed coordinate from
-  the drift output or its line-full candidates. Re-read that member's
-  structural cause before treating the new sibling as covered by it. The two
+  unaudited-row warning, but it does not authorize the new line. The anchored
+  liveness check names that sibling independently and strict certification
+  refuses it until reviewed; the drift output additionally retains the changed
+  coordinate, multiplicity, and every line-full candidate. The two
   runs are compared as per-coordinate
   **counts**, not as sets of coordinates: the coordinate is line-less, so one
   key routinely holds an accepted survivor *and* an audited timeout at the
@@ -699,13 +700,18 @@ invoked it*, and the failure looks exactly like a real regression.
   per member in `config/pitest/<suite>-timeouts.csv` (line-less so drift
   cannot churn membership; `#` comments allowed, and spacing around fields
   is normalized away, so rows may be aligned for reading), with a required
-  machine-readable comment category and the full structural cause written per
-  member in `config/pitest/README.md`:
+  machine-readable comment category, one or more reviewed `# line` anchors,
+  and the full structural cause written per member in
+  `config/pitest/README.md`:
 
-  - `cause:liveness` is the only admissible watchdog detection: the mutant
-    cannot complete (removed loop exit, reversed progress, leaked unlock,
-    deadlock, never-completing future) after deterministic seams, call budgets,
-    or injected clocks have been exhausted.
+  - `cause:liveness` is the only admissible watchdog detection: the mutated
+    path has no path-owned finite completion guarantee (removed loop exit,
+    reversed progress, leaked unlock, deadlock, completion contingent on an
+    unbounded external event) after deterministic seams, call budgets, or
+    injected clocks have been exhausted. A fixture's emergency exit — a stub
+    process that eventually terminates or a harness watchdog — does not turn
+    that production liveness loss into resource work; record the fixture bound
+    in the README so the frame is reviewable.
   - `cause:resource` says the mutant still completes but does too much work.
     It is a reviewer-stop, not detection. If allocation/complexity is a contract,
     assert it with a deterministic resource oracle; if that oracle also fails on
@@ -720,11 +726,20 @@ invoked it*, and the failure looks exactly like a real regression.
     neither category and must never be admitted.
 
   The category makes the disposition explicit; the README still carries the
-  evidence and cannot be replaced by the token. Adoption is seeded, not
+  evidence and cannot be replaced by the token. The line anchors scope that
+  disposition: a reviewed liveness mutant at line 10 does not authorize a
+  finite same-key sibling at line 20. PIT's CSV cannot distinguish two mutant
+  copies with the same class, method, mutator, **and line**. If copies at that
+  one location need different cause classifications, the key cannot honestly
+  be audited as liveness; give the copies deterministic dispositions instead.
+  Adoption is seeded, not
   transcribed: a suite whose summary reports timeouts with no set on disk is
   pointed at `pitest<Suite>TimeoutAuditInit`, which writes the membership rows from the
   run's report (observed lines riding in `#` comments) and leaves category
-  disposition plus the full cause to a person. The nudge also prints the would-be member rows
+  disposition plus the full cause to a person. Its output is intentionally not
+  certifiable: every seeded `cause:untriaged` row must become an anchored,
+  documented `cause:liveness` row or leave the set through a contract-first
+  disposition. The nudge also prints the would-be member rows
   paste-ready alongside the task hint: timeouts are load-dependent, so the run
   that prompted the nudge may be the only one holding them — a later
   seeding run against a clean report is rightly refused, and without the
@@ -772,29 +787,25 @@ invoked it*, and the failure looks exactly like a real regression.
   argued from the old method body. The
   line-less key is also the membership check's resolution: a *new* timed-out
   mutant in an already-audited method+mutator draws no **unaudited-member**
-  warning. It is not therefore invisible: when the timeout count grew from
-  the previous fresh report, run-to-run drift names the line-less key and
-  prints every current line-full candidate (the stash cannot distinguish the
-  old copy from the newcomer). A stable timeout multiplicity stays quiet; a
-  growth is evidence to re-read. The README cause
-  should name the line it argues about (the paste-ready row carries it in
-  the `#` comment) so a reviewer can notice when the code at that line is
-  no longer what the argument described — and "notice" has a machine half:
-  the `# line` comment is parsed back, and a member whose observed timeout
-  lines are all absent from its comment is warned as line drift (the anchor
-  the cause argues about moved entirely; a *new* sibling line next to a
-  recorded one does not masquerade as a full move, while its count growth is
-  still named by the run-to-run drift output above). Advisory only, never a failure, by
+  warning. It is not therefore authorized. The `# line` comments are parsed
+  back, and every timed-out line must be among that member's reviewed
+  `cause:liveness` anchors. A moved anchor or a new same-key sibling at another
+  source line is warned in ordinary runs and refused by strict certification
+  until each unexpected line is triaged; only then may the anchors change.
+  Run-to-run multiplicity
+  drift still prints every current line-full candidate, because the stash
+  cannot identify which copy is new. Advisory only, never a failure, by
   default: any one observed timeout can be load-dependent, so classification may be
   completed between ordinary runs. For certifying runs, `-PstrictTimeoutAudit` escalates
   exactly the findings that mean the audit is not being kept — an
   unaudited newcomer, a malformed row, a missing/inadmissible/unfinished cause
-  category, or a member whose cause was never written (the doctrine admits a newcomer only with its cause written, so a
+  category, a liveness timeout outside its reviewed line anchors, or a member
+  whose cause was never written (the doctrine admits a newcomer only with its cause written, so a
   cause-less member is an unfinished admission, not hygiene — row-then-cause
   is a legitimate sequence *between* certifications, not during one), or a
   timeout-carrying suite with no
   set at all — to failures; hygiene
-  findings (stale members, quiet streaks, drifted lines) stay advisory
+  findings (stale members and quiet streaks) stay advisory
   even there. An escalated finding is the failure, not an advisory — it is
   left out of the end-of-build summary, whose "none failed the build"
   framing must stay true. Both certification paths refuse a `-PmutateOnly`
@@ -803,12 +814,16 @@ invoked it*, and the failure looks exactly like a real regression.
   reading as a certification of the suite. Because every audit finding is advisory in the default modes,
   the build ends with a one-line-per-suite summary of the advisory findings
   it printed — a reviewer-stop nobody scrolls back to is not a stop.
-  The audit's static half — row shape and cause presence — reads committed
-  files only, so `pitest<Suite>Debt` runs it too (one implementation,
-  `TimeoutAudit`, so the two tasks cannot disagree): paste a row or write a
-  cause and confirm the tool agrees in seconds, without a mutation run.
-  `Debt` knows no staleness (that needs a report), so it asks every
-  well-formed member for its cause.
+  The audit's static half — row shape, cause category, line anchors, and README
+  presence — reads committed files only. `hardeningCertify`,
+  `pitest<Suite>BaselineRebase`, and explicit `-PstrictTimeoutAudit` run that
+  preflight before PIT; a fleet migration therefore fails in seconds rather
+  than after the first full suite. `pitest<Suite>Debt` runs the same check
+  manually (one `TimeoutAudit` implementation, so the tasks cannot disagree):
+  paste a row or write a cause and confirm the tool agrees without a mutation
+  run. Static validation knows no staleness, so it asks every well-formed
+  committed member for its cause. Use an ordinary `pitest<Suite>` observation
+  to prove and remove a stale row before retrying a strict workflow.
 - **Flip families do not settle while their cause remains — and "the cause
   remains" is a claim to re-measure, not a fact to record once.** Mutants
   equivalent on the wire but timing-dependent in detection (socket suites
@@ -1934,17 +1949,25 @@ merely waiting for a release.
 >   assertion — a timeout keeps "detecting" whatever the test asserts — so
 >   each suite's timeouts are an audited set, not a count:
 >   `config/pitest/<suite>-timeouts.csv` holds line-less `class,method,mutator`
->   keys plus a comment category. Only `cause:liveness` is admissible watchdog
->   detection after deterministic seams/budgets are exhausted; seeded
+>   keys plus a comment category and reviewed `# line` anchors. Only
+>   `cause:liveness` is admissible watchdog detection after deterministic
+>   seams/budgets are exhausted: the mutated path has no path-owned finite
+>   completion guarantee. A fixture's emergency exit does not demote that
+>   liveness loss to resource work; record the fixture bound in the README. Seeded
 >   `cause:untriaged`, missing/unknown categories, and finite `cause:resource`
 >   work are reviewer-stops. Resource behavior gets a deterministic contract
 >   test/fix when promised, otherwise a stable `SURVIVED` equivalence argument —
 >   never silent timeout membership. `config/pitest/README.md` still holds the
 >   full structural cause per member. The verify warns on any timeout outside
 >   the set — paste the printed row, classify it, then write the cause — and on
->   members matching no mutant. The key is the check's resolution: a new timed-out
->   mutant in an already-audited method+mutator draws no warning, so name the
->   line in the README cause and re-read it when that code changes.
+>   members matching no mutant. Line-less identity does not widen the cause:
+>   every timed-out line must match a reviewed liveness anchor, so a moved mutant
+>   or same-key resource sibling at another line is a reviewer-stop. Same-line
+>   copies are indistinguishable in PIT's CSV; a location needing mixed cause
+>   classifications cannot be admitted as audited liveness. Strict workflows run the
+>   committed-file half before PIT; use `pitest<Suite>Debt` for the same quick
+>   manual preview. `TimeoutAuditInit` deliberately seeds an uncertifiable file —
+>   classify every row before certification.
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
 >   boundary cannot be made deterministic, accept the mutant with a written
 >   reason rather than chasing it with sleeps or spin-waits.

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.hardening.task.HardeningCertificationTask
 import java.io.File
 import java.nio.file.Files
 
@@ -96,6 +97,16 @@ class PitestEvidenceTest {
 
     assertTrue(differences.any { it.startsWith("sourceSha256:") }, differences.toString())
     assertTrue(differences.any { it.startsWith("scope:") }, differences.toString())
+  }
+
+  @Test
+  fun `certification project evidence treats the Java runtime as project-wide`() {
+    val java25 = HardeningCertificationTask.ProjectEvidence.from(evidence())
+    val java21 = HardeningCertificationTask.ProjectEvidence.from(
+      evidence().copy(javaVersion = "21"),
+    )
+
+    assertEquals(listOf("javaVersion"), java25.differences(java21))
   }
 
   @Test

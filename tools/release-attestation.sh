@@ -24,6 +24,9 @@ Usage:
 
 `create-reviewed` reads completed hardening-certification receipts from each clean
 consumer checkout and requires every suite to have loaded the exact candidate JAR.
+Each `--adoption` value must be the canonical, symlink-free absolute path to the
+consumer Git worktree root. Literal `.` or `..`, repeated separators, and empty or
+trailing path components are refused.
 Commit the generated file to the Release Please PR. Tag creation and publication then
 validate the candidate identity and refuse a rebuilt JAR whose bytes differ from the
 reviewed candidate.
@@ -104,9 +107,14 @@ require_no_symlink_components() {
 }
 
 absolute_regular_directory() {
-  local requested=$1 label=$2 physical_pwd absolute
-  physical_pwd=$(pwd -P) || return 1
-  case "$requested" in /*) absolute=$requested ;; *) absolute="$physical_pwd/$requested" ;; esac
+  local requested=$1 label=$2 absolute
+  case "$requested" in
+    /*) absolute=$requested ;;
+    *)
+      echo "release-attestation: $label must be an absolute path: $requested" >&2
+      return 1
+      ;;
+  esac
   case "$absolute/" in
     */../*|*/./*|*//*)
       echo "release-attestation: $label path contains traversal or an empty component: $requested" >&2
@@ -935,6 +943,12 @@ self_test() {
   expect_cli_failure "consumer path traversal" "contains traversal" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumers/../reviewed-consumers/sava"
+  expect_cli_failure "relative consumer path" "must be an absolute path" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "reviewed-consumers/sava"
+  expect_cli_failure "consumer path trailing component" "contains traversal or an empty component" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava/"
   ln -s "$(basename "$consumer_sava")" "$consumers/sava-link"
   expect_cli_failure "symlinked consumer checkout" "contains a symlink component" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \

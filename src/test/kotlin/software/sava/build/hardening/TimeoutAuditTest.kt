@@ -1,6 +1,7 @@
 package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -114,6 +115,44 @@ class TimeoutAuditTest {
   }
 
   @Test
+  fun `liveness classification requires a recorded line anchor`() {
+    val member = "com.example.Codec,loop,MathMutator"
+    val membership = TimeoutAudit.parse(listOf(
+      "$member # cause:liveness removed loop exit",
+    ))
+
+    assertEquals(TimeoutAudit.CauseCategory.LIVENESS, membership.causeCategories[member])
+    assertEquals(
+      listOf(
+        TimeoutAudit.CauseFinding(
+          member,
+          "cause:liveness requires at least one '# line' anchor; line-less membership " +
+              "cannot authorize same-key mutants at every source line",
+        )
+      ),
+      membership.causeFindings,
+    )
+  }
+
+  @Test
+  fun `cause warning classifies liveness by the mutated path rather than a fixture escape`() {
+    val warning = TimeoutAudit.causeFindingWarning(
+      "encoding",
+      "encoding-timeouts.csv",
+      listOf(
+        TimeoutAudit.CauseFinding(
+          "com.example.Codec,loop,MathMutator",
+          "cause:untriaged has not been reviewed",
+        )
+      ),
+    )
+
+    assertTrue(warning.contains("no path-owned finite completion guarantee"), warning)
+    assertTrue(warning.contains("a fixture safety exit does not demote it"), warning)
+    assertFalse(warning.contains("only when the mutant cannot complete"), warning)
+  }
+
+  @Test
   fun `conflicting cause classifications fail the member instead of using file order`() {
     val membership = TimeoutAudit.parse(listOf(
       "com.example.Codec,wait,MathMutator # cause:liveness line 12",
@@ -158,8 +197,8 @@ class TimeoutAuditTest {
       "com.example.Codec,encode,MathMutator" to setOf(12, 30),
       "com.example.Codec,decode,IncrementsMutator" to setOf(44),
     )
-    // overlap on 30: a new sibling line next to a recorded one is the line-less
-    // key's stated no-warning resolution
+    // Overlap on 30: the legacy moved-anchor helper stays quiet. The separate
+    // liveness-authorization comparison reports sibling line 99.
     assertEquals(
       emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
       TimeoutAudit.lineDrift(recorded, mapOf("com.example.Codec,encode,MathMutator" to setOf(30, 99)))
@@ -177,6 +216,85 @@ class TimeoutAuditTest {
     assertEquals(
       emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
       TimeoutAudit.lineDrift(recorded, emptyMap())
+    )
+  }
+
+  @Test
+  fun `liveness authorization reports an unexpected same-key line even while its anchor stays live`() {
+    val member = "com.example.Codec,loop,MathMutator"
+    val membership = TimeoutAudit.parse(listOf(
+      "$member # cause:liveness line 10 — removed loop exit",
+    ))
+    val observed = mapOf(member to setOf(10, 20))
+
+    assertEquals(emptyList<TimeoutAudit.CauseFinding>(), membership.causeFindings)
+    assertEquals(
+      mapOf(member to (setOf(10) to setOf(20))),
+      TimeoutAudit.unauthorizedLivenessLines(membership, observed),
+    )
+    // This is deliberately not ordinary moved-anchor drift: line 10 still matches.
+    assertEquals(
+      emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+      TimeoutAudit.lineDrift(membership.recordedLines, observed),
+    )
+  }
+
+  @Test
+  fun `liveness authorization accepts stable anchors and ignores non-liveness members`() {
+    val liveness = "com.example.Codec,loop,MathMutator"
+    val resource = "com.example.Codec,grow,MathMutator"
+    val membership = TimeoutAudit.parse(listOf(
+      "$liveness # cause:liveness lines 10, 12",
+      "$resource # cause:resource line 20",
+    ))
+
+    assertEquals(
+      emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+      TimeoutAudit.unauthorizedLivenessLines(
+        membership,
+        mapOf(liveness to setOf(10, 12), resource to setOf(21)),
+      ),
+    )
+  }
+
+  @Test
+  fun `unanchored liveness is refused statically instead of counted again dynamically`() {
+    val member = "com.example.Codec,loop,MathMutator"
+    val membership = TimeoutAudit.parse(listOf(
+      "$member # cause:liveness removed loop exit",
+    ))
+
+    assertEquals(
+      emptyMap<String, Pair<Set<Int>, Set<Int>>>(),
+      TimeoutAudit.unauthorizedLivenessLines(membership, mapOf(member to setOf(10))),
+    )
+  }
+
+  @Test
+  fun `the liveness authorization warning names anchors and unexpected sibling lines`() {
+    val warning = TimeoutAudit.unauthorizedLivenessLineWarning(
+      "encoding",
+      "encoding-timeouts.csv",
+      mapOf(
+        "com.example.Codec,loop,MathMutator" to (setOf(10) to setOf(20, 30)),
+        "com.example.Codec,wait,VoidMethodCallMutator" to (emptySet<Int>() to setOf(44)),
+      ),
+    )
+
+    assertTrue(warning.contains("2 cause:liveness member(s) timed out at line(s)"), warning)
+    assertTrue(
+      warning.contains("same-key resource or untriaged sibling at another source line"),
+      warning,
+    )
+    assertTrue(
+      warning.contains(
+        "com.example.Codec,loop,MathMutator # authorized line(s) 10 -> unexpected 20, 30"),
+      warning,
+    )
+    assertTrue(
+      warning.contains(
+        "com.example.Codec,wait,VoidMethodCallMutator # authorized line(s) none -> unexpected 44"),
+      warning,
     )
   }
 

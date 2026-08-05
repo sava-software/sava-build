@@ -363,6 +363,97 @@ class HardeningOperationsFunctionalTest {
   }
 
   @Test
+  fun `certification and rebase refuse unfinished timeout causes before PIT`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        hardening {
+          mutation.register("decoding") {
+            targetClasses = listOf("com.example.*")
+            targetTests = "com.example.*Test*"
+          }
+        }
+
+        tasks.named<JavaExec>("pitestDecoding") {
+          mainClass = "com.example.FakePit"
+          classpath = sourceSets["main"].output
+        }
+      """.trimIndent() + "\n",
+    )
+    val config = File(fixtureDir, "config/pitest").apply { mkdirs() }
+    val decodingTimeouts = config.resolve("decoding-timeouts.csv")
+    decodingTimeouts.writeText(
+      "com.example.FakePit,main,MathMutator # cause:untriaged line 12\n" +
+          "com.example.Other,wait,VoidMethodCallMutator # cause:liveness line 44\n" +
+          "com.example.Broken,onlyTwo\n",
+    )
+    config.resolve("README.md").writeText(
+      "# FakePit timeout\n\n`FakePit.main`: the removed exit cannot make progress.\n",
+    )
+    val runs = File(fixtureDir, "build/fake-pit/runs.txt")
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+
+    val certify = runner("clean", "hardeningCertify").buildAndFail().output
+    assertTrue(certify.contains("committed timeout audit is not ready"), certify)
+    assertTrue(certify.contains("cause:untriaged has not been reviewed"), certify)
+    assertTrue(certify.contains("1 malformed row(s)"), certify)
+    assertTrue(certify.contains("1 member(s) without a README cause"), certify)
+    assertTrue(certify.contains("PIT has not run"), certify)
+    assertFalse(
+      runs.exists(),
+      "certification ran its first suite before finding later-suite static timeout debt",
+    )
+    assertFalse(receipt.exists(), "failed static preflight retained a certification receipt")
+    assertTrue(
+      File(fixtureDir, "build/hardening/pitest-certification.running").isFile,
+      "failed static preflight did not leave the invalidation sentinel",
+    )
+
+    val reusedCertify = runner("clean", "hardeningCertify").buildAndFail().output
+    assertTrue(reusedCertify.contains("Reusing configuration cache"), reusedCertify)
+    assertFalse(runs.exists(), "reused certification preflight reached PIT")
+
+    val continued = runner("clean", "hardeningCertify", "--continue").buildAndFail().output
+    assertTrue(continued.contains("committed timeout audit is not ready"), continued)
+    assertFalse(runs.exists(), "--continue let another certification suite reach PIT")
+
+    decodingTimeouts.writeText(
+      "com.example.FakePit,main,MathMutator # cause:liveness line 12\n",
+    )
+    val timeouts = config.resolve("encoding-timeouts.csv")
+    timeouts.writeText(
+      "com.example.FakePit,main,MathMutator # cause:untriaged line 12\n",
+    )
+    val rebase = runner("pitestEncodingBaselineRebase").buildAndFail().output
+    assertTrue(rebase.contains("committed timeout audit is not ready"), rebase)
+    assertTrue(rebase.contains("PIT has not run"), rebase)
+    assertFalse(runs.exists(), "BaselineRebase reached PIT before its static timeout preflight")
+
+    val reusedRebase = runner("pitestEncodingBaselineRebase").buildAndFail().output
+    assertTrue(reusedRebase.contains("Reusing configuration cache"), reusedRebase)
+    assertFalse(runs.exists(), "reused BaselineRebase preflight reached PIT")
+
+    File(fixtureDir, "fake-pit-status.txt").writeText("KILLED\n")
+    val ordinary = runner("pitestEncoding").build()
+    assertTrue(ordinary.output.contains(":pitestEncoding"), ordinary.output)
+    assertEquals(listOf("run"), runs.readLines())
+    assertTrue(runs.delete())
+
+    val strict = runner("pitestEncoding", "-PstrictTimeoutAudit").buildAndFail().output
+    assertTrue(strict.contains("committed timeout audit is not ready"), strict)
+    assertTrue(strict.contains("PIT has not run"), strict)
+    assertFalse(runs.exists(), "-PstrictTimeoutAudit reached PIT before static validation")
+
+    timeouts.writeText(
+      "com.example.FakePit,main,MathMutator # cause:liveness line 12\n",
+    )
+    val repaired = runner("pitestEncodingBaselineRebase").build()
+    assertTrue(repaired.output.contains("selected baseline provenance rebase"), repaired.output)
+    assertEquals(listOf("run"), runs.readLines())
+  }
+
+  @Test
   fun `named writer preserves committed POSIX modes and creates readable sidecars`() {
     assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"))
     writeFixture()

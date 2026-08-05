@@ -461,8 +461,8 @@ adoption was actually reviewed:
 version=$(jq -r '.["."]' .release-please-manifest.json)
 candidate=<final-reviewed-main-commit>
 reviewed_jar=<retained-0.0.0-test-jar-used-by-those-passes>
-sava_checkout=<path-to-clean-sava-checkout>
-http_servers_checkout=<path-to-clean-http-servers-checkout>
+sava_checkout=<canonical-absolute-path-to-clean-sava-checkout>
+http_servers_checkout=<canonical-absolute-path-to-clean-http-servers-checkout>
 tools/release-attestation.sh create-reviewed "$version" \
   --candidate "$candidate" \
   --plugin-jar "$reviewed_jar" \

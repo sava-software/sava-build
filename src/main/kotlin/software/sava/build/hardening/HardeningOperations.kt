@@ -612,7 +612,9 @@ internal object HardeningHelpText {
               "report rewrite; keep current timeout/flip-insurance evidence")
       appendLine("  ${prefix}BaselineUnion".padEnd(40) + "append only newly observed rows")
       appendLine("  ${prefix}BaselinePrune".padEnd(40) + "apply the reviewed shrink-only candidate set")
-      appendLine("  ${prefix}TimeoutAuditInit".padEnd(40) + "seed the suite timeout audit")
+      appendLine(
+          "  ${prefix}TimeoutAuditInit".padEnd(40) +
+              "seed the suite timeout audit (uncertifiable until classified)")
     }
     appendLine("  pitestModeCompareUnion".padEnd(40) + "annotate/write observed mode-flip insurance")
     if (fuzzTargetNames.isNotEmpty()) {

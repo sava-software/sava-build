@@ -26,6 +26,11 @@ tools/release-attestation.sh create-reviewed "$version" \
 git add "release-attestations/$version.json"
 ```
 
+Each `--adoption` argument must be the canonical, symlink-free absolute path to the
+consumer's Git worktree root. Do not use literal `.` or `..` components, repeated
+separators, or a trailing separator; those forms contain traversal or empty path
+components and are deliberately refused.
+
 `create-reviewed` fails on absent, incomplete, malformed, mixed, or stale
 certification evidence; a dirty checkout; a non-GitHub or duplicate origin; and
 symlinked or escaping evidence paths. It reads every checkout and receipt twice so

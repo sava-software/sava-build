@@ -435,9 +435,10 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
    * Fields whose inputs are project-wide even though PIT persists them once per suite.
    * Suite targeting and report identity deliberately remain outside this projection.
    */
-  private data class ProjectEvidence(
+  internal data class ProjectEvidence(
     val sourceSha256: String,
     val classesSha256: String,
+    val javaVersion: String,
     val pitestVersion: String,
     val pluginSha256: String,
     val toolClasspathSha256: String,
@@ -446,6 +447,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
     fun differences(reference: ProjectEvidence): List<String> = buildList {
       if (sourceSha256 != reference.sourceSha256) add("sourceSha256")
       if (classesSha256 != reference.classesSha256) add("classesSha256")
+      if (javaVersion != reference.javaVersion) add("javaVersion")
       if (pitestVersion != reference.pitestVersion) add("pitestVersion")
       if (pluginSha256 != reference.pluginSha256) add("pluginSha256")
       if (toolClasspathSha256 != reference.toolClasspathSha256) add("toolClasspathSha256")
@@ -458,6 +460,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
       fun from(evidence: PitestEvidence) = ProjectEvidence(
         sourceSha256 = evidence.sourceSha256,
         classesSha256 = evidence.classesSha256,
+        javaVersion = evidence.javaVersion,
         pitestVersion = evidence.pitestVersion,
         pluginSha256 = evidence.pluginSha256,
         toolClasspathSha256 = evidence.toolClasspathSha256,

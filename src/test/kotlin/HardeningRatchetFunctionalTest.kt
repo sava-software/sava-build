@@ -1324,8 +1324,8 @@ $fuzzBlock
     timeoutsFile.parentFile.mkdirs()
     timeoutsFile.writeText(
       "# structural causes live in config/pitest/README.md\n" +
-          "com.example.Codec,encode,MathMutator # cause:liveness removed loop exit\n" +
-          "com.example.Codec,gone,MathMutator # cause:liveness\n"
+          "com.example.Codec,encode,MathMutator # cause:liveness removed loop exit line 12\n" +
+          "com.example.Codec,gone,MathMutator # cause:liveness line 99\n"
     )
     writeReport(
       listOf(
@@ -1816,13 +1816,13 @@ $fuzzBlock
   }
 
   @Test
-  fun `an audited member timing out away from its recorded line is drift, not silence`() {
+  fun `the moved-anchor channel reports only disjoint timeout lines`() {
     // The '# line' comment is the anchor the README cause argues about, and
     // "re-read the cause when that code changes" was purely social: the key only
     // goes stale when the method disappears, never when the code moves within one.
-    // The report holds the observed side, so the verify compares — disjointness
-    // only, since a new sibling line next to a recorded one is the line-less key's
-    // stated no-warning resolution.
+    // The report holds the observed side, so the legacy moved-anchor channel compares
+    // disjointness only. The liveness-authorization channel separately handles a new
+    // sibling line beside a recorded one once the row has an admissible cause.
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
@@ -1846,12 +1846,13 @@ $fuzzBlock
       "drift missing from the advisory summary:\n$drifted"
     )
 
-    // a sibling line landing next to a still-live recorded one draws no warning
+    // A sibling line beside a still-live anchor is not *moved-anchor* drift. This
+    // deliberately cause-less fixture does not enter liveness authorization.
     report(12, 99)
     val sibling = runner("pitestEncodingVerify").build().output
     assertFalse(
       sibling.contains("line-drifted") || sibling.contains("comment does not name"),
-      "sibling line next to the recorded anchor read as drift:\n$sibling"
+      "sibling line next to the recorded anchor read as moved-anchor drift:\n$sibling"
     )
 
     // a row whose comment names no line recorded no anchor: nothing to drift from
@@ -2448,7 +2449,7 @@ $fuzzBlock
     // one audited member, plus a two-field row: malformed is the other finding the
     // strict flag escalates, so it must be excluded from the advisory summary too
     timeoutsFile.writeText(
-      "com.example.Codec,encode,MathMutator # cause:liveness\ncom.example.Codec,encode\n"
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\ncom.example.Codec,encode\n"
     )
     writeReport(
       listOf(
@@ -2479,8 +2480,8 @@ $fuzzBlock
     // certifying run stops on it too; row-then-cause is a legitimate sequence
     // between certifications, not during one
     timeoutsFile.writeText(
-      "com.example.Codec,encode,MathMutator # cause:liveness\n" +
-          "com.example.Codec,decode,IncrementsMutator # cause:liveness\n"
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n" +
+          "com.example.Codec,decode,IncrementsMutator # cause:liveness line 44\n"
     )
     val causeless = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
     assertTrue(
@@ -2490,7 +2491,7 @@ $fuzzBlock
 
     // with the causes written, a fully audited set passes strict even with hygiene
     // findings outstanding (the stale member below stays advisory)
-    timeoutsFile.appendText("com.example.Codec,gone,MathMutator # cause:liveness\n")
+    timeoutsFile.appendText("com.example.Codec,gone,MathMutator # cause:liveness line 99\n")
     File(fixtureDir, "config/pitest/README.md").writeText(
       "`Codec.encode` (MathMutator): the inflated estimate crawls, never fails.\n\n" +
           "`Codec.decode` (IncrementsMutator): the reversed cursor re-reads forever.\n"
@@ -2559,6 +2560,30 @@ $fuzzBlock
       classified.contains("cause classification"),
       "classified liveness rows stayed findings:\n$classified"
     )
+
+    // The membership key remains line-less, but the liveness argument is scoped to
+    // the reviewed line anchors. A same-key sibling at a new line may be finite
+    // resource work, so it must not inherit line 12's liveness classification.
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,TIMED_OUT,none",
+      ),
+      "",
+    )
+    val sibling = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      sibling.contains("1 cause:liveness member(s) timed out at line(s)") &&
+          sibling.contains("same-key resource or untriaged sibling") &&
+          sibling.contains("authorized line(s) 12 -> unexpected 20"),
+      "same-key timeout sibling inherited liveness silently:\n$sibling",
+    )
+    val strictSibling =
+      runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
+    assertTrue(
+      strictSibling.contains("1 liveness member(s) observed at unreviewed line(s)"),
+      "strict audit accepted a timeout outside the reviewed liveness anchors:\n$strictSibling",
+    )
   }
 
   @Test
@@ -2590,7 +2615,7 @@ $fuzzBlock
     // Fixing the timeout set removes those two findings. The fabricated report still
     // deliberately lacks a completed-run evidence manifest, so only that migration
     // advisory remains.
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # cause:liveness\n")
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # cause:liveness line 12\n")
     File(fixtureDir, "config/pitest/README.md")
       .writeText("`Codec.encode` (MathMutator): the estimate crawls, never fails.\n")
     val clean = runner("pitestEncodingVerify").build().output
@@ -4095,7 +4120,9 @@ $fuzzBlock
 
     // with an audited timeout set present, the stamp still has a record to certify
     File(fixtureDir, "config/pitest/encoding-timeouts.csv")
-      .writeText("com.example.Codec,encode,MathMutator # line 12\n")
+      .writeText("com.example.Codec,encode,MathMutator # cause:liveness line 12\n")
+    File(fixtureDir, "config/pitest/README.md")
+      .writeText("`Codec.encode`: the removed loop exit cannot make progress.\n")
     writeReport(
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
       ""

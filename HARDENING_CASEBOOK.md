@@ -30,6 +30,39 @@ closed triage. Rules: *a suite's percentage is not a target*; *allocation and
 timing harnesses are a last resort*; *a thin-margin bound is a flaky harness
 with extra steps*.
 
+## The liveness label that swallowed a finite sibling
+
+Classifying an existing fleet's timeout rows exposed three different phenomena
+that the old word "hang" had hidden:
+
+- Ravina's mutated Fibonacci overflow guard still terminates. Its state advances
+  bijectively modulo 2⁶⁴ and reaches the requested value only after roughly
+  1.4×10¹⁹ iterations. That is finite excessive work (`cause:resource`), not
+  watchdog detection, even though no mutation run will wait long enough to see it.
+- Three other Ravina mutants were killed deterministically and timed out only
+  when a slower covering test lost a load race. They were neither liveness nor
+  acceptable resource evidence; the right disposition is to repair/isolate the
+  harness and remove them from the audited set.
+- An idl-src-gen mutant deleted a guard and blocked on an external pipe read. Its
+  fixture's child process exits after 30 seconds solely so a broken test cannot
+  wedge forever. That emergency event does not give the mutated path its own
+  completion guarantee, so the row remains liveness and the fixture bound belongs
+  in its README argument.
+
+The classification also exposed an identity problem: Ravina held a reviewed
+liveness timeout and an accepted mutant at another line under the same line-less
+`class,method,mutator` key. A key-wide cause would let the liveness argument
+silently authorize the finite sibling whenever that sibling timed out. The repair
+keeps line-less membership identity but scopes `cause:liveness` to required,
+reviewed `# line` anchors. Any observed timeout at another line is a reviewer-stop
+and a strict refusal, even while an old anchor remains live. Rules: *classify by
+whether the mutated path owns a finite completion guarantee, not by a fixture's
+safety escape or by wall-clock practicality*; *a liveness argument authorizes
+observed source-line locations, not every future same-key mutant*; *PIT's CSV cannot
+separate same-coordinate, same-line copies, so a location needing mixed causes is
+not representable as audited liveness*; *load-only KILLED↔TIMED_OUT races are
+harness debt, not a third admissible cause category*.
+
 ## The 11× "speedup" that did no work
 
 Prototyping PIT incremental analysis on open-source PIT: `pitest-entry` ships
@@ -995,7 +1028,12 @@ observations by default. Because the stash cannot identify which duplicate was
 timed out previously, a key that already held a timeout prints **all** current
 candidates rather than guessing which line is new. An audit row can silence the
 missing-membership warning, never the evidence that its timeout population
-grew or the lines a reviewer must inspect.
+grew or the lines a reviewer must inspect. Cause categories later made that
+visibility insufficient as an authorization boundary: a key could hold both a
+liveness and a resource sibling. The audited row now requires reviewed line
+anchors, and an unexpected timed-out line is itself a strict refusal even when
+multiplicity did not change *(casebook: the liveness label that swallowed a
+finite sibling)*.
 
 Rules: *when a key stops identifying one thing, every comparison built on it
 is a multiset comparison — convert them together, not the ones you
@@ -1003,9 +1041,8 @@ remembered*; *an advisory that cannot distinguish "nothing moved" from "the
 dangerous thing happened" is worse than no advisory, because it trains the
 reader to filter the dangerous thing*; *a format migration that silences a
 check for exactly one run hides its own regression from the person doing the
-migration*; *a line-less membership row is permission to apply one reviewed
-cause to a coordinate, not permission to hide later multiplicity growth at that
-coordinate*.
+migration*; *line-less membership names the family, while reviewed line anchors
+bound which siblings its liveness cause actually authorizes*.
 
 ## The trap that never existed
 
