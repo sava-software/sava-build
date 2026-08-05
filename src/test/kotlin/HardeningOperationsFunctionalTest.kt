@@ -835,6 +835,9 @@ class HardeningOperationsFunctionalTest {
 
   @Test
   fun `typed PIT refuses configured versus effective ArcMutate classpath drift`() {
+    val scenariosRoot = fixtureDir
+    fixtureDir = scenariosRoot.resolve("missing-base").apply { mkdirs() }
+    enableTestKitConfigurationCache(fixtureDir)
     writeFixture()
     val marker = File(
       fixtureDir,
@@ -850,8 +853,12 @@ class HardeningOperationsFunctionalTest {
     )
     assertFalse(File(fixtureDir, "build/reports/pitest/encoding/.running").exists())
 
-    marker.parentFile.mkdirs()
-    marker.writeText("groupId=com.arcmutate\nartifactId=base\nversion=1.7.1\n")
+    // Exercise the inverse mismatch in a fresh checkout, keeping this assertion about
+    // the typed task's guard rather than configuration invalidation after the resource
+    // and licence transitions needed to construct the opposite state.
+    fixtureDir = scenariosRoot.resolve("hidden-base").apply { mkdirs() }
+    enableTestKitConfigurationCache(fixtureDir)
+    writeFixture()
     assertTrue(File(fixtureDir, "arcmutate-licence.txt").delete())
     val hiddenBase = runner("pitestEncoding").buildAndFail().output
     assertTrue(hiddenBase.contains("configured ArcMutate activation (false) disagrees"), hiddenBase)
