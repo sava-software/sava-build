@@ -56,9 +56,10 @@ digest, and the plugin binary actually loaded by every consumer. An explicit loc
 is valid; it needs neither a scheduled workflow nor an arbitrary soak window. A receipt
 must bind the complete expected roster, refuse a stale shared plugin binary, and say
 which recorded checkouts it revalidated. Keep evidence outside the tree it certifies
-*(casebook: the canary that skipped two consumers)*. The exact `sava-build` fleet/fuzz
-commands, bundle layout, verification behavior, and Release Please timing live only in
-the README's [Pre-release fleet certification](README.md#pre-release-fleet-certification)
+*(casebook: the canary that skipped two consumers)*. Releasing `sava-build` itself uses
+the already-reviewed local adoption passes rather than requiring a duplicate full-fleet
+campaign; its owner-attestation and Release Please mechanics live only in the README's
+[Local adoption and release attestation](README.md#local-adoption-and-release-attestation)
 section.
 
 `qualityGate` = `test` + every registered `pitest<Suite>`, serialized, each
@@ -1536,12 +1537,13 @@ execution count and their exact total. Missing, duplicate, zero, inexact, or cro
 inconsistent counts or a mismatched parallelism declaration refuse the receipt. A standalone `fuzz<Target>` remains useful for
 iteration but creates no aggregate proof.
 
-Release certification must run every registered fleet target against the exact candidate
-plugin binary, invalidate stale aggregate receipts before execution, and retain immutable,
-commit-bound evidence. A local campaign is sufficient; no soak window or scheduled workflow
-is required. Release owners should follow the single operational contract in the
-[sava-build README](README.md#pre-release-fleet-certification), rather than copying runner
-mechanics into consumer or policy documentation.
+A consumer's own fuzz certification must run every registered target against the exact
+candidate plugin binary, invalidate stale aggregate receipts before execution, and retain
+immutable, commit-bound evidence. A local campaign is sufficient; no soak window or scheduled
+workflow is required. The `sava-build` owner instead records the relevant local adoption
+passes already performed during development; its release mechanics live in the
+[sava-build README](README.md#local-adoption-and-release-attestation), rather than being
+copied into consumer or policy documentation.
 
 `fuzzWorkflowInSync` remains only as a compatibility no-op for older consumer scripts.
 It is not part of `check`, and the plugin neither requires nor validates a GitHub fuzz

@@ -437,125 +437,63 @@ checkout. When changing dependencies, regenerate the
 ./gradlew --write-verification-metadata pgp,sha256 check generatePrecompiledScriptPluginAccessors
 ```
 
-### Pre-release fleet certification
+### Local adoption and release attestation
 
-This section is the detailed operational contract for releasing `sava-build` itself;
-[HARDENING.md](HARDENING.md) states the portable evidence policy used by consumers.
+The release proof for `sava-build` is the set of deliberate local adoption passes made while
+the candidate is being developed. Those passes exercise real baselines, timeout audits,
+configuration-cache graphs, fuzz targets, and repository-specific conventions as each
+consumer moves to the candidate. Re-running every historical checkout as one final fleet is
+an optional diagnostic, not a tag or publication prerequisite.
 
-The quick canary stays useful during development:
+Before opening the release, retain the exact `0.0.0-test` JAR used by the reviewed adoption
+passes and record the final candidate commit. If later commits touch only release tooling,
+tests, or documentation, rebuild the JAR without the Gradle build cache and require its hash
+to remain equal to that reviewed JAR. A changed hash means the consumer evidence no longer
+describes the artifact and another relevant adoption pass is required.
 
-```shell
-tools/fleet-canary.sh                     # locally available manifest siblings
-tools/fleet-canary.sh --deep              # also run annotated mutation cycles
-tools/fleet-canary.sh ../sava ../ravina:pitestCalls
-```
-
-Those ordinary modes intentionally skip unavailable manifest siblings and permit an
-explicit subset. They are observations, not release certification. On a clean candidate
-commit with every manifest repo checked out as a sibling, run the strict forms instead:
-
-```shell
-tools/fleet-canary.sh --release
-tools/fleet-canary.sh --verify-receipt build/hardening/fleet-canary-receipt.json
-
-tools/local-fuzz.sh --release --seconds 900 --parallel-targets 4
-tools/local-fuzz.sh --verify-receipt build/hardening/local-fuzz-receipt.json
-```
-
-`--release` preflights the entire roster before publishing the test plugin and refuses a
-missing repo, mismatched GitHub remote, or dirty plugin or consumer worktree (linked
-worktrees included). Starting a run immediately changes the canonical receipt to an
-`in_progress` pointer, invalidating an older pass. A completed pointer names an immutable
-`build/hardening/<name>-runs/run.*/` bundle containing the machine-readable receipt,
-preflight inventory, plugin-publish log, one log per consumer, and copies of the inner
-`pitest-certification.tsv` or `local-fuzz.tsv` evidence, plus the exact published
-`0.0.0-test` plugin JAR. The receipt binds and hashes those files together with the plugin
-commit/tree/origin, manifest digest, each consumer's commit/origin, exact tasks, and the
-per-target fuzz budget and explicit concurrency bound. `-PmaxFuzzTime` applies independently
-to every target; `--parallel-targets` becomes the receipt-bound
-`-PmaxParallelFuzzTargets` limit across projects. Choose a sustainable value to shorten the
-campaign without pretending it was serialized, and do not mix PIT certification into the
-same invocation. Every successful inner fuzz
-receipt records the positive libFuzzer execution count captured live for each target and
-their total, and the immutable outer bundle revalidates those same counts against its
-retained TSV copies. Every inner receipt's loaded-plugin hash must equal the retained JAR hash, so
-all consumers resolving the same stale binary cannot agree their way to green. Keep the selected run directories with
-the release record, but do not commit them into the tree they certify.
-
-The plugin's inner fuzz receipt lives at each project’s ignored
-`.pitest-history/local-fuzz.tsv`, so `clean hardeningCertify` cannot erase a completed
-campaign before it is retained. A new `fuzzAll` invalidates that receipt before its
-targets run; an accompanying `local-fuzz.running` sentinel makes an interrupted campaign
-ineligible. A checkout-local OS lock rejects overlapping `fuzzAll` invocations before
-either can supersede the other's state. The outer release pointer and immutable bundle remain under this repository's
-`build/hardening/` because they are runner-owned release artifacts, not consumer state.
-
-The build-free verification commands rehash every retained file and, when a recorded
-checkout is still available, require its current commit, origin, and clean state to match.
-They report the exact number of consumer checkouts revalidated and refuse full verification
-when that number is zero; unavailable individual checkouts remain named skips whose retained
-artifacts are still checked.
-They accept only subsequent Release Please changes to `CHANGELOG.md` and
-`.release-please-manifest.json`; re-run both certifications after any other candidate,
-fixture, workflow, or policy change.
-
-The functional tests exercise synthetic fixtures; real baselines, audited timeout sets,
-README causes, task registration, and settings snippets have historically supplied a
-new post-release surprise one repo at a time. The canary publishes `0.0.0-test` and,
-under `-PsavaBuildLocalRepo`, runs lightweight debt and template checks in ordinary
-mode. Release mode requires every consumer's `hardeningCertify`, which freshly executes
-all registered mutation suites and writes provenance-bound per-project evidence; the
-retained certifications must exactly cover every project that exposed that task. Both
-release runners use `--configuration-cache` for discovery and execution, making cache
-serialization part of the real-consumer canary rather than only a synthetic fixture test.
-`--deep` remains an explicit repeated diagnostic, not a release soak or prerequisite.
-The separate local fuzz pass uses the plugin's `fuzzAll` aggregate; release mode requires
-both that aggregate and a nonempty registered target set in every consumer. Only ordinary
-diagnostic mode may fall back to discovered `fuzz<Target>` tasks (or `help` for a targetless
-repo). `--continue` lets independent targets finish after one fails.
-Neither release check trusts a merely green consumer build: each requires the
-`0.0.0-test` resolution notice, so an obsolete settings snippet cannot silently test
-the published plugin instead.
-
-Hardening advisories are evidence to review, not text to lose in a green log. Strict
-canary mode therefore fails when it sees one; after inspecting every reprinted payload,
-rerun with `--allow-advisories` to record that acknowledgement. A stale agent-template
-marker is expected while testing an unreleased digest, for example, but it still belongs
-in the release record. Any consumer shape the fixtures missed earns a focused functional
-test before release.
-
-The roster is [tools/fleet-manifest.txt](tools/fleet-manifest.txt). Scheduled GitHub fuzz
-workflows are outside the plugin contract; release evidence comes from the explicit
-local fuzz command and receipt, not from waiting for a schedule or soak window.
-
-The full receipts remain machine-local, but certification is now observable on the tag and
-publish paths. After Release Please has prepared the version metadata, check out that clean
-release branch and create the compact, versioned owner attestation from the two canonical
-pointers:
+After Release Please prepares the version metadata, check out its clean branch and create a
+compact owner attestation. Name only repositories whose local candidate adoption was actually
+reviewed:
 
 ```shell
 version=$(jq -r '.["."]' .release-please-manifest.json)
-tools/release-attestation.sh create "$version"
+candidate=<final-reviewed-main-commit>
+reviewed_jar=<retained-0.0.0-test-jar-used-by-those-passes>
+tools/release-attestation.sh create-reviewed "$version" \
+  --candidate "$candidate" \
+  --plugin-jar "$reviewed_jar" \
+  --adoption sava-software/sava \
+  --adoption sava-software/http-servers
 git add "release-attestations/$version.json"
 ```
 
 Commit only that generated file alongside Release Please's `CHANGELOG.md` and manifest
-changes. It contains candidate identity and receipt hashes, not the receipt bundles,
-absolute paths, or credentials. The full immutable bundles still need to be retained with
-the release record. From that clean release commit, exercise the same production gate the
-tag workflow will call before allowing Release Please to proceed:
+changes. The record contains the reviewed cohort plus the candidate commit, tree, origin, and
+JAR hash; it contains no absolute paths or credentials. From the clean attestation commit,
+exercise the same gates used by the release workflows:
 
 ```shell
 tools/release-attestation.sh verify "$version"
 tools/release-attestation.sh verify-pending-release
 ```
 
-The script's hermetic self-test drives successful and failing `create`, `verify`,
-`verify-pending-release`, `verify-tag`, and `verify-built-jar` paths; this clean-checkout
-invocation is the real repository rehearsal and remains a release blocker until the fleet
-and fuzz receipts exist. The Release Please workflow refuses to create a pending version's tag
-without this committed attestation, and the tag-triggered publish workflow verifies it
-again against the exact tag checkout. It then builds without the Gradle build cache and
-refuses publication unless that JAR's hash is the one recorded by the local fleet and fuzz
-receipts. Any source, fixture, workflow, policy, or fleet-roster change after certification
-invalidates the record and requires both strict runs again.
+The Release Please workflow refuses to create a pending version's tag without this committed
+record. The tag-triggered workflow verifies it again against the exact tag checkout, builds
+without the Gradle build cache, and refuses publication unless the resulting JAR has the
+reviewed hash. Any non-release source change after the recorded candidate invalidates the
+attestation.
+
+The aggregate tools remain useful when a change genuinely warrants another cross-repository
+experiment:
+
+```shell
+tools/fleet-canary.sh                     # available manifest siblings
+tools/fleet-canary.sh --deep              # optional repeated mutation diagnostic
+tools/fleet-canary.sh ../sava ../ravina:pitestCalls
+tools/local-fuzz.sh --seconds 121 --parallel-targets 4 ../ravina
+```
+
+Their strict `--release` modes still produce immutable, SHA-bound fleet/fuzz bundles and the
+legacy `release-attestation.sh create` command can bind those receipts when an owner explicitly
+chooses that stronger experiment. They are never required merely because a release is being
+cut. Scheduled GitHub fuzz workflows are likewise outside the plugin contract.

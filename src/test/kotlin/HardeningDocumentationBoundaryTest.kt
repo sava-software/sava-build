@@ -10,14 +10,15 @@ class HardeningDocumentationBoundaryTest {
   private val hardening = projectRoot.resolve("HARDENING.md").readText()
 
   @Test
-  fun `release runner mechanics live in the sava-build README only`() {
-    assertTrue(readme.contains("tools/fleet-canary.sh --release"))
-    assertTrue(readme.contains("tools/local-fuzz.sh --release --seconds 900"))
-    assertTrue(readme.contains("This section is the detailed operational contract"))
+  fun `release review mechanics live in the sava-build README only`() {
+    assertTrue(readme.contains("tools/release-attestation.sh create-reviewed"))
+    assertTrue(readme.contains("optional diagnostic, not a tag or publication prerequisite"))
+    assertFalse(readme.contains("tools/fleet-canary.sh --release"))
+    assertFalse(readme.contains("tools/local-fuzz.sh --release --seconds"))
     assertFalse(hardening.contains("tools/fleet-canary.sh --release"))
     assertFalse(hardening.contains("tools/local-fuzz.sh --release --seconds"))
     assertTrue(
-      hardening.contains("README.md#pre-release-fleet-certification"),
+      hardening.contains("README.md#local-adoption-and-release-attestation"),
       "portable policy must point release owners to the one operational contract",
     )
   }

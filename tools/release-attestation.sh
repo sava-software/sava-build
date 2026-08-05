@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Bridges machine-local fleet/fuzz evidence into the Git history that creates and
-# publishes a release. The committed file is an owner attestation, not a replacement
-# for the retained receipt bundles: it binds their hashes to the exact certified
-# candidate and lets the tag path refuse a forgotten or stale certification.
+# Bridges reviewed local adoption evidence into the Git history that creates and
+# publishes a release. The committed file is an owner attestation: it names the
+# projects whose local adoption passes were reviewed and binds that decision to the
+# exact candidate commit, tree, and plugin JAR. The optional strict fleet/fuzz runners
+# remain available for unusually broad changes, but are not a release prerequisite.
 set -euo pipefail
 export LC_ALL=C
 
@@ -20,6 +21,7 @@ release_attestation_self_test_cleanup_path=""
 usage() {
   cat <<'EOF'
 Usage:
+  tools/release-attestation.sh create-reviewed <version> --candidate <commit> --plugin-jar <path> --adoption <github-org/repo> [--adoption <github-org/repo> ...]
   tools/release-attestation.sh create <version> [--fleet-pointer <path>] [--fuzz-pointer <path>]
   tools/release-attestation.sh verify <version>
   tools/release-attestation.sh verify-tag <version>
@@ -27,10 +29,11 @@ Usage:
   tools/release-attestation.sh verify-pending-release
   tools/release-attestation.sh --self-test
 
-Run both strict release runners and their --verify-receipt commands first. `create`
-re-verifies those canonical pointers and writes release-attestations/<version>.json.
-Commit that one file to the Release Please PR. Tag creation and publication then
-validate it without needing access to the machine-local bundles.
+`create-reviewed` records the already-reviewed local adoption cohort and hashes the
+exact candidate JAR those passes exercised. `create` remains available when an owner deliberately
+chooses the optional full-fleet/fuzz receipt path. Commit the generated file to the
+Release Please PR. Tag creation and publication then validate the candidate identity
+and refuse a rebuilt JAR whose bytes differ from the reviewed candidate.
 EOF
 }
 
@@ -231,7 +234,7 @@ validate_release_diff() {
         seen_attestation=true
         ;;
       *)
-        echo "release-attestation: non-release file changed after fleet certification: $path" >&2
+        echo "release-attestation: non-release file changed after candidate review: $path" >&2
         return 1
         ;;
     esac
@@ -240,6 +243,89 @@ validate_release_diff() {
     echo "release-attestation: committed attestation is not newer than certified candidate $commit" >&2
     return 1
   fi
+}
+
+create_reviewed_attestation() {
+  local version=$1 candidate_commit=$2 requested_jar=$3
+  shift 3
+  local output tmp candidate_tree candidate_origin jar before after reviewed adoption duplicates
+  require_version "$version"
+  if [ "$(manifest_version)" != "$version" ]; then
+    echo "release-attestation: release manifest does not name version $version" >&2
+    return 1
+  fi
+  output="$attestations_dir/$version.json"
+  if [ -e "$output" ] || [ -L "$output" ]; then
+    echo "release-attestation: refusing to overwrite existing release record: $output" >&2
+    return 1
+  fi
+  require_clean_checkout
+  if ! [[ "$candidate_commit" =~ ^[0-9a-f]{40}$ ]] ||
+      ! git -C "$sava_build_dir" cat-file -e "$candidate_commit^{commit}" 2>/dev/null; then
+    echo "release-attestation: reviewed candidate is not a full commit in this checkout: $candidate_commit" >&2
+    return 1
+  fi
+  candidate_tree=$(git -C "$sava_build_dir" rev-parse "$candidate_commit^{tree}") || return 1
+  validate_candidate "$candidate_commit" "$candidate_tree"
+  validate_release_diff "$candidate_commit" "$version" false
+  candidate_origin=$(origin_slug "$(git -C "$sava_build_dir" remote get-url origin 2>/dev/null || true)")
+  if [ "$candidate_origin" != "$expected_origin_slug" ]; then
+    echo "release-attestation: candidate origin is '$candidate_origin', expected '$expected_origin_slug'" >&2
+    return 1
+  fi
+  if [ "$#" -eq 0 ]; then
+    echo "release-attestation: create-reviewed requires at least one --adoption github-org/repo" >&2
+    return 1
+  fi
+  for adoption in "$@"; do
+    if ! [[ "$adoption" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+      echo "release-attestation: invalid reviewed adoption slug: '$adoption'" >&2
+      return 1
+    fi
+  done
+  duplicates=$(printf '%s\n' "$@" | sort | uniq -d)
+  if [ -n "$duplicates" ]; then
+    echo "release-attestation: duplicate reviewed adoption slug(s):" >&2
+    printf '%s\n' "$duplicates" >&2
+    return 1
+  fi
+  reviewed=$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0)) | sort') || return 1
+
+  jar=$(absolute_file "$requested_jar") || return 1
+  if [ ! -f "$jar" ] || [ -L "$jar" ]; then
+    echo "release-attestation: missing or symlinked reviewed plugin JAR: $jar" >&2
+    return 1
+  fi
+  before=$(sha256_file "$jar") || return 1
+  require_clean_checkout
+  after=$(sha256_file "$jar") || return 1
+  if [ "$before" != "$after" ]; then
+    echo "release-attestation: reviewed plugin JAR changed during attestation: $jar" >&2
+    return 1
+  fi
+
+  if [ ! -d "$attestations_dir" ] || [ -L "$attestations_dir" ]; then
+    echo "release-attestation: missing regular release-attestations directory" >&2
+    return 1
+  fi
+  tmp=$(mktemp "$attestations_dir/.release-attestation.XXXXXX")
+  trap 'rm -f "$tmp"' RETURN
+  jq -nS \
+    --arg version "$version" --arg commit "$candidate_commit" --arg tree "$candidate_tree" \
+    --arg origin "$candidate_origin" --arg plugin_hash "$after" \
+    --argjson repositories "$reviewed" \
+    '{schema:2,kind:"sava-build-release-attestation",version:$version,
+      candidate:{commit:$commit,tree:$tree,origin:$origin,plugin_jar_sha256:$plugin_hash},
+      review:{kind:"reviewed-local-adoption-passes",repositories:$repositories}}' > "$tmp"
+  chmod 0644 "$tmp"
+  if [ -e "$output" ] || [ -L "$output" ]; then
+    echo "release-attestation: output appeared during creation; refusing overwrite" >&2
+    return 1
+  fi
+  mv "$tmp" "$output"
+  trap - RETURN
+  echo "release-attestation: wrote $output"
+  echo "release-attestation: commit it to the Release Please PR with only release metadata changes"
 }
 
 create_attestation() {
@@ -338,32 +424,55 @@ create_attestation() {
 }
 
 attestation_schema_valid() {
-  local file=$1 version=$2
-  jq -e --arg version "$version" --arg origin "$expected_origin_slug" '
-    keys == ["candidate","fleet","fuzz","kind","schema","version"] and
-    .schema == 1 and .kind == "sava-build-release-attestation" and .version == $version and
-    (.candidate | keys == ["commit","consumer_inventory_sha256","fleet_manifest_sha256","origin","plugin_jar_sha256","repository_count","tree"]) and
-    (.candidate.commit | test("^[0-9a-f]{40}$")) and
-    (.candidate.tree | test("^[0-9a-f]{40}$")) and .candidate.origin == $origin and
-    (.candidate.plugin_jar_sha256 | test("^[0-9a-f]{64}$")) and
-    (.candidate.consumer_inventory_sha256 | test("^[0-9a-f]{64}$")) and
-    (.candidate.fleet_manifest_sha256 | test("^[0-9a-f]{64}$")) and
-    (.candidate.repository_count | type == "number" and . > 0 and floor == .) and
-    (.fleet | keys == ["advisories_acknowledged","pointer_sha256","receipt_sha256","run_id"]) and
-    (.fleet.run_id | test("^run[.][A-Za-z0-9]+$")) and
-    (.fleet.pointer_sha256 | test("^[0-9a-f]{64}$")) and
-    (.fleet.receipt_sha256 | test("^[0-9a-f]{64}$")) and
-    (.fleet.advisories_acknowledged | type == "boolean") and
-    (.fuzz | keys == ["pointer_sha256","receipt_sha256","run_id","seconds_per_target"]) and
-    (.fuzz.run_id | test("^run[.][A-Za-z0-9]+$")) and
-    (.fuzz.pointer_sha256 | test("^[0-9a-f]{64}$")) and
-    (.fuzz.receipt_sha256 | test("^[0-9a-f]{64}$")) and
-    (.fuzz.seconds_per_target | type == "number" and . > 0 and floor == .)
-  ' "$file" >/dev/null
+  local file=$1 version=$2 schema
+  schema=$(jq -r '.schema // empty' "$file") || return 1
+  case "$schema" in
+    1)
+      jq -e --arg version "$version" --arg origin "$expected_origin_slug" '
+        keys == ["candidate","fleet","fuzz","kind","schema","version"] and
+        .schema == 1 and .kind == "sava-build-release-attestation" and .version == $version and
+        (.candidate | keys == ["commit","consumer_inventory_sha256","fleet_manifest_sha256","origin","plugin_jar_sha256","repository_count","tree"]) and
+        (.candidate.commit | test("^[0-9a-f]{40}$")) and
+        (.candidate.tree | test("^[0-9a-f]{40}$")) and .candidate.origin == $origin and
+        (.candidate.plugin_jar_sha256 | test("^[0-9a-f]{64}$")) and
+        (.candidate.consumer_inventory_sha256 | test("^[0-9a-f]{64}$")) and
+        (.candidate.fleet_manifest_sha256 | test("^[0-9a-f]{64}$")) and
+        (.candidate.repository_count | type == "number" and . > 0 and floor == .) and
+        (.fleet | keys == ["advisories_acknowledged","pointer_sha256","receipt_sha256","run_id"]) and
+        (.fleet.run_id | test("^run[.][A-Za-z0-9]+$")) and
+        (.fleet.pointer_sha256 | test("^[0-9a-f]{64}$")) and
+        (.fleet.receipt_sha256 | test("^[0-9a-f]{64}$")) and
+        (.fleet.advisories_acknowledged | type == "boolean") and
+        (.fuzz | keys == ["pointer_sha256","receipt_sha256","run_id","seconds_per_target"]) and
+        (.fuzz.run_id | test("^run[.][A-Za-z0-9]+$")) and
+        (.fuzz.pointer_sha256 | test("^[0-9a-f]{64}$")) and
+        (.fuzz.receipt_sha256 | test("^[0-9a-f]{64}$")) and
+        (.fuzz.seconds_per_target | type == "number" and . > 0 and floor == .)
+      ' "$file" >/dev/null
+      ;;
+    2)
+      jq -e --arg version "$version" --arg origin "$expected_origin_slug" '
+        keys == ["candidate","kind","review","schema","version"] and
+        .schema == 2 and .kind == "sava-build-release-attestation" and .version == $version and
+        (.candidate | keys == ["commit","origin","plugin_jar_sha256","tree"]) and
+        (.candidate.commit | test("^[0-9a-f]{40}$")) and
+        (.candidate.tree | test("^[0-9a-f]{40}$")) and .candidate.origin == $origin and
+        (.candidate.plugin_jar_sha256 | test("^[0-9a-f]{64}$")) and
+        (.review | keys == ["kind","repositories"]) and
+        .review.kind == "reviewed-local-adoption-passes" and
+        (.review.repositories | type == "array" and length > 0) and
+        all(.review.repositories[];
+          type == "string" and test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")) and
+        ((.review.repositories | unique | length) == (.review.repositories | length)) and
+        (.review.repositories == (.review.repositories | sort))
+      ' "$file" >/dev/null
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 verify_attestation() {
-  local version=$1 file relative mode commit tree count
+  local version=$1 file relative mode commit tree count schema reviewed_count
   require_version "$version"
   require_clean_checkout
   if [ "$(manifest_version)" != "$version" ]; then
@@ -390,16 +499,22 @@ verify_attestation() {
   tree=$(jq -r '.candidate.tree' "$file")
   validate_candidate "$commit" "$tree"
   validate_release_diff "$commit" "$version" true
-  if [ "$(sha256_file "$fleet_manifest")" != "$(jq -r '.candidate.fleet_manifest_sha256' "$file")" ]; then
-    echo "release-attestation: current fleet manifest does not match the certified manifest" >&2
-    return 1
+  schema=$(jq -r '.schema' "$file")
+  if [ "$schema" = 1 ]; then
+    if [ "$(sha256_file "$fleet_manifest")" != "$(jq -r '.candidate.fleet_manifest_sha256' "$file")" ]; then
+      echo "release-attestation: current fleet manifest does not match the certified manifest" >&2
+      return 1
+    fi
+    count=$(manifest_repository_count)
+    if [ "$count" != "$(jq -r '.candidate.repository_count' "$file")" ]; then
+      echo "release-attestation: current fleet roster size does not match the release record" >&2
+      return 1
+    fi
+    echo "release-attestation: version $version binds optional fleet/fuzz receipts to candidate $commit"
+  else
+    reviewed_count=$(jq -r '.review.repositories | length' "$file")
+    echo "release-attestation: version $version binds $reviewed_count reviewed local adoption pass(es) to candidate $commit"
   fi
-  count=$(manifest_repository_count)
-  if [ "$count" != "$(jq -r '.candidate.repository_count' "$file")" ]; then
-    echo "release-attestation: current fleet roster size does not match the release record" >&2
-    return 1
-  fi
-  echo "release-attestation: version $version binds fleet and fuzz receipts to candidate $commit"
 }
 
 verify_tag() {
@@ -428,8 +543,8 @@ verify_built_jar() {
   fi
   before=$(sha256_file "$jar") || return 1
   # Re-check the exact tagged checkout after the build, then prove that the artifact
-  # about to be published is the same deterministic JAR the local fleet and fuzz
-  # receipts certified. Hash twice so a concurrent replacement cannot pass unnoticed.
+  # about to be published is the same deterministic JAR the local adoption passes
+  # reviewed. Hash twice so a concurrent replacement cannot pass unnoticed.
   verify_tag "$version"
   expected=$(jq -r '.candidate.plugin_jar_sha256' \
     "$attestations_dir/$version.json") || return 1
@@ -460,7 +575,7 @@ verify_pending_release() {
     echo "release-attestation: $version is already tagged; no pending release gate"
     return 0
   fi
-  echo "release-attestation: tag $version is pending; requiring its committed fleet/fuzz attestation"
+  echo "release-attestation: tag $version is pending; requiring its committed reviewed release attestation"
   verify_attestation "$version"
 }
 
@@ -850,12 +965,204 @@ self_test() {
     echo "release-attestation self-test: post-certification source change was accepted" >&2
     return 1
   fi
+
+  # The normal release path records the already-reviewed local adoption cohort and
+  # the exact candidate JAR. Keep this fixture independent from the optional legacy
+  # fleet/fuzz receipt path above so neither mode can make the other's assertions pass.
+  local reviewed_fixture="$fixture/reviewed" reviewed_script reviewed_candidate reviewed_tree
+  local reviewed_divergent
+  local reviewed_jar reviewed_output valid_reviewed_attestation
+  mkdir -p "$reviewed_fixture/tools" "$reviewed_fixture/release-attestations" \
+    "$reviewed_fixture/build/libs"
+  cp "$script" "$reviewed_fixture/tools/release-attestation.sh"
+  reviewed_script="$reviewed_fixture/tools/release-attestation.sh"
+  chmod +x "$reviewed_script"
+  printf '%s\n' '{".":"1.0.0"}' > "$reviewed_fixture/.release-please-manifest.json"
+  printf '%s\n' '# Release attestations' > "$reviewed_fixture/release-attestations/README.md"
+  printf '%s\n' 'build/' > "$reviewed_fixture/.gitignore"
+  printf '%s\n' '# Changelog' > "$reviewed_fixture/CHANGELOG.md"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git init -q
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git remote add origin git@github.com:sava-software/sava-build.git
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test add .
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm candidate
+  )
+  reviewed_candidate=$(git -C "$reviewed_fixture" rev-parse HEAD)
+  reviewed_tree=$(git -C "$reviewed_fixture" rev-parse 'HEAD^{tree}')
+  reviewed_divergent=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$reviewed_fixture" -c user.name=SelfTest -c user.email=self@test \
+    commit-tree "$reviewed_tree" -m divergent)
+  printf '%s\n' '{".":"1.0.1"}' > "$reviewed_fixture/.release-please-manifest.json"
+  printf '%s\n' '# Changelog' '' '## 1.0.1' > "$reviewed_fixture/CHANGELOG.md"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add CHANGELOG.md .release-please-manifest.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'release metadata'
+  )
+  reviewed_jar="$reviewed_fixture/build/libs/sava-build-1.0.1.jar"
+  printf '%s' 'plugin jar' > "$reviewed_jar"
+  reviewed_output="$reviewed_fixture/release-attestations/1.0.1.json"
+
+  expect_cli_failure "reviewed attestation without an adoption" \
+    "requires at least one --adoption" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar"
+  expect_cli_failure "short reviewed candidate" "not a full commit" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "${reviewed_candidate:0:12}" \
+      --plugin-jar "$reviewed_jar" --adoption sava-software/sava
+  expect_cli_failure "non-ancestor reviewed candidate" "not an ancestor" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_divergent" \
+      --plugin-jar "$reviewed_jar" --adoption sava-software/sava
+  expect_cli_failure "invalid reviewed adoption slug" "invalid reviewed adoption slug" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption not-a-slug
+  expect_cli_failure "duplicate reviewed adoption" "duplicate reviewed adoption slug" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption sava-software/sava \
+      --adoption sava-software/sava
+  expect_cli_failure "missing reviewed plugin JAR" "missing or symlinked reviewed plugin JAR" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar.missing" --adoption sava-software/sava
+  ln -s "$(basename "$reviewed_jar")" "$reviewed_jar.link"
+  expect_cli_failure "symlinked reviewed plugin JAR" "missing or symlinked reviewed plugin JAR" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar.link" --adoption sava-software/sava
+  unlink "$reviewed_jar.link"
+  git -C "$reviewed_fixture" remote set-url origin git@github.com:example/not-sava-build.git
+  expect_cli_failure "wrong reviewed candidate origin" "candidate origin is" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption sava-software/sava
+  git -C "$reviewed_fixture" remote set-url origin git@github.com:sava-software/sava-build.git
+  "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+    --plugin-jar "$reviewed_jar" --adoption sava-software/ravina \
+    --adoption sava-software/sava >/dev/null
+  jq -e --arg candidate "$reviewed_candidate" --arg tree "$reviewed_tree" --arg jar "$jar_hash" '
+    .schema == 2 and .candidate.commit == $candidate and
+    .candidate.tree == $tree and
+    .candidate.plugin_jar_sha256 == $jar and
+    .review.kind == "reviewed-local-adoption-passes" and
+    .review.repositories == ["sava-software/ravina","sava-software/sava"]
+  ' "$reviewed_output" >/dev/null
+  expect_cli_failure "reviewed attestation overwrite" "refusing to overwrite existing release record" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption sava-software/sava
+  valid_reviewed_attestation=$(<"$reviewed_output")
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm attestation
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  "$reviewed_script" verify-pending-release >/dev/null
+  jq '.review.repositories += [.review.repositories[0]]' \
+    "$reviewed_output" > "$reviewed_output.tmp"
+  mv "$reviewed_output.tmp" "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'duplicate review record'
+  )
+  expect_cli_failure "duplicate adoption in committed review" "invalid release record schema" \
+    "$reviewed_script" verify 1.0.1
+  printf '%s\n' "$valid_reviewed_attestation" > "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore reviewed attestation'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  jq '.review.repositories |= reverse' "$reviewed_output" > "$reviewed_output.tmp"
+  mv "$reviewed_output.tmp" "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'unsorted review record'
+  )
+  expect_cli_failure "unsorted adoption in committed review" "invalid release record schema" \
+    "$reviewed_script" verify 1.0.1
+  printf '%s\n' "$valid_reviewed_attestation" > "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore sorted review record'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  printf '%s\n' 'post-review source change' > "$reviewed_fixture/source.txt"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git add source.txt
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'post-review source'
+  )
+  expect_cli_failure "post-review source change" "non-release file changed after candidate review" \
+    "$reviewed_script" verify 1.0.1
+  unlink "$reviewed_fixture/source.txt"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git add -u source.txt
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'remove post-review source'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  git -C "$reviewed_fixture" tag 1.0.1
+  "$reviewed_script" verify-tag 1.0.1 >/dev/null
+  "$reviewed_script" verify-built-jar 1.0.1 "$reviewed_jar" >/dev/null
+  printf '%s' 'different reviewed jar' > "$reviewed_jar"
+  expect_cli_failure "reviewed built JAR differs" \
+    "built plugin JAR does not match the certified candidate" \
+    "$reviewed_script" verify-built-jar 1.0.1 "$reviewed_jar"
   echo "release-attestation: self-test passed"
 }
 
 require_tools
 command_name=${1:-}
 case "$command_name" in
+  create-reviewed)
+    shift
+    version=${1:-}
+    [ -n "$version" ] || { usage >&2; exit 2; }
+    shift
+    candidate=""
+    plugin_jar=""
+    adoptions=()
+    adoption_count=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --candidate) shift; [ "$#" -gt 0 ] || { usage >&2; exit 2; }; candidate=$1 ;;
+        --plugin-jar) shift; [ "$#" -gt 0 ] || { usage >&2; exit 2; }; plugin_jar=$1 ;;
+        --adoption)
+          shift
+          [ "$#" -gt 0 ] || { usage >&2; exit 2; }
+          adoptions+=("$1")
+          adoption_count=$((adoption_count + 1))
+          ;;
+        *) echo "release-attestation: unknown create-reviewed option: $1" >&2; usage >&2; exit 2 ;;
+      esac
+      shift
+    done
+    [ -n "$candidate" ] && [ -n "$plugin_jar" ] || { usage >&2; exit 2; }
+    if [ "$adoption_count" -eq 0 ]; then
+      echo "release-attestation: create-reviewed requires at least one --adoption github-org/repo" >&2
+      exit 2
+    fi
+    create_reviewed_attestation "$version" "$candidate" "$plugin_jar" "${adoptions[@]}"
+    ;;
   create)
     shift
     version=${1:-}

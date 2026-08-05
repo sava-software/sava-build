@@ -34,7 +34,7 @@ jobs:
             echo "A newer main commit exists; its Gradle Check workflow will run the release gate."
             exit 1
           fi
-      - name: Verify pending fleet and fuzz release attestation
+      - name: Verify pending release attestation
         run: |
           bash -n tools/release-attestation.sh
           tools/release-attestation.sh verify-pending-release

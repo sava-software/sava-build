@@ -37,7 +37,7 @@ jobs:
           tools/local-fuzz.sh --self-test
           tools/release-attestation.sh --self-test
 
-      - name: Verify fleet and fuzz release attestation
+      - name: Verify reviewed release attestation
         run: tools/release-attestation.sh verify-tag "${GITHUB_REF_NAME}"
 
       - name: Check

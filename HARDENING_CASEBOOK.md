@@ -1168,6 +1168,20 @@ Rules: *expensive local evidence can have a cheap committed handoff*; *artifact
 provenance and process certification answer different questions*; *the operation that
 creates a release must observe the evidence required to authorize it*.
 
+### Supersession: reviewed adoption, not a duplicate release fleet
+
+The first implementation made the strict aggregate fleet and fuzz receipts mandatory at
+tag time. The 21.5.22 recovery demonstrated that this repeated the repository-by-repository
+adoption work against older snapshots, amplified load-only PIT failures, and turned a useful
+diagnostic into release ceremony. The release record now names the local adoption passes the
+owner actually reviewed and binds their exact candidate JAR. The no-build-cache tag build
+must reproduce that JAR before publication. Strict aggregate runners remain available when a
+change warrants them, but cutting a release does not itself require another fleet campaign.
+
+Rules: *record the evidence that informed the decision; do not manufacture a second process
+merely to satisfy the record*; *bind reviewer judgment to exact artifact bytes*; *optional
+diagnostics stay optional*.
+
 ## The migration refresh that deleted its evidence
 
 The first Sava consumer to take a candidate PIT bump followed the prescribed

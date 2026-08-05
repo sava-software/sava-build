@@ -59,11 +59,23 @@ class ReleaseAttestationWorkflowTest {
   }
 
   @Test
-  fun `release owner rehearses the production pending-release gate before tagging`() {
-    val create = readme.indexOf("tools/release-attestation.sh create \"\$version\"")
+  fun `release owner records reviewed local adoptions before rehearsing the tag gate`() {
+    val create = readme.indexOf("tools/release-attestation.sh create-reviewed \"\$version\"")
     val verify = readme.indexOf("tools/release-attestation.sh verify \"\$version\"")
     val pending = readme.indexOf("tools/release-attestation.sh verify-pending-release")
 
+    assertTrue(readme.contains("--candidate \"\$candidate\""), readme)
+    assertTrue(readme.contains("--plugin-jar \"\$reviewed_jar\""), readme)
+    assertTrue(readme.contains("--adoption sava-software/sava"), readme)
     assertTrue(create >= 0 && verify > create && pending > verify, readme)
+  }
+
+  @Test
+  fun `release workflows verify the owner record without rerunning aggregate campaigns`() {
+    listOf("release-gradle-plugin-please.yml", "gradle_plugin_publish.yml").forEach { name ->
+      val contents = workflow(name)
+      assertTrue(!contents.contains("fleet-canary.sh --release"), contents)
+      assertTrue(!contents.contains("local-fuzz.sh --release"), contents)
+    }
   }
 }
