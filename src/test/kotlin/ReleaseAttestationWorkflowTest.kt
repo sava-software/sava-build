@@ -25,13 +25,22 @@ class ReleaseAttestationWorkflowTest {
   }
 
   @Test
-  fun `tag publication verifies the exact tag before building artifacts`() {
+  fun `tag publication verifies the exact tag and certified artifact before publishing`() {
     val publish = workflow("gradle_plugin_publish.yml")
     val gate = publish.indexOf("tools/release-attestation.sh verify-tag \"\${GITHUB_REF_NAME}\"")
     val build = publish.indexOf("\n      - name: Check\n")
+    val artifactGate = publish.indexOf(
+      "tools/release-attestation.sh verify-built-jar \"\${GITHUB_REF_NAME}\" " +
+          "\"build/libs/sava-build-\${GITHUB_REF_NAME}.jar\"",
+    )
+    val publication = publish.indexOf("\n      - name: Github Packages\n")
 
     assertTrue(publish.contains("fetch-depth: 0"), publish)
-    assertTrue(gate >= 0 && build > gate, publish)
+    assertTrue(publish.contains("--no-build-cache -Psign=true"), publish)
+    assertTrue(
+      gate >= 0 && build > gate && artifactGate > build && publication > artifactGate,
+      publish,
+    )
   }
 
   @Test

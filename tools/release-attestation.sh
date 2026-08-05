@@ -23,6 +23,7 @@ Usage:
   tools/release-attestation.sh create <version> [--fleet-pointer <path>] [--fuzz-pointer <path>]
   tools/release-attestation.sh verify <version>
   tools/release-attestation.sh verify-tag <version>
+  tools/release-attestation.sh verify-built-jar <version> <jar>
   tools/release-attestation.sh verify-pending-release
   tools/release-attestation.sh --self-test
 
@@ -417,6 +418,34 @@ verify_tag() {
   verify_attestation "$version"
 }
 
+verify_built_jar() {
+  local version=$1 requested=$2 jar before after expected
+  require_version "$version"
+  jar=$(absolute_file "$requested") || return 1
+  if [ ! -f "$jar" ] || [ -L "$jar" ]; then
+    echo "release-attestation: missing or symlinked built plugin JAR: $jar" >&2
+    return 1
+  fi
+  before=$(sha256_file "$jar") || return 1
+  # Re-check the exact tagged checkout after the build, then prove that the artifact
+  # about to be published is the same deterministic JAR the local fleet and fuzz
+  # receipts certified. Hash twice so a concurrent replacement cannot pass unnoticed.
+  verify_tag "$version"
+  expected=$(jq -r '.candidate.plugin_jar_sha256' \
+    "$attestations_dir/$version.json") || return 1
+  after=$(sha256_file "$jar") || return 1
+  if [ "$before" != "$after" ]; then
+    echo "release-attestation: built plugin JAR changed during verification: $jar" >&2
+    return 1
+  fi
+  if [ "$after" != "$expected" ]; then
+    echo "release-attestation: built plugin JAR does not match the certified candidate: $jar" >&2
+    echo "release-attestation: expected $expected, found $after" >&2
+    return 1
+  fi
+  echo "release-attestation: built plugin JAR matches the certified candidate: $after"
+}
+
 verify_pending_release() {
   local version tagged
   require_clean_checkout
@@ -778,6 +807,22 @@ self_test() {
   git -C "$fixture" tag 1.0.1
   "$fixture_script" verify-tag 1.0.1 >/dev/null
   "$fixture_script" verify-pending-release >/dev/null
+  local built_jar="$fixture/build/libs/sava-build.jar"
+  mkdir -p "$(dirname "$built_jar")"
+  printf '%s' 'plugin jar' > "$built_jar"
+  "$fixture_script" verify-built-jar 1.0.1 "$built_jar" >/dev/null
+  printf '%s' 'different plugin jar' > "$built_jar"
+  expect_cli_failure "built JAR differs from certified candidate" \
+    "built plugin JAR does not match the certified candidate" \
+    "$fixture_script" verify-built-jar 1.0.1 "$built_jar"
+  unlink "$built_jar"
+  expect_cli_failure "built JAR is missing" "missing or symlinked built plugin JAR" \
+    "$fixture_script" verify-built-jar 1.0.1 "$built_jar"
+  printf '%s' 'plugin jar' > "$built_jar.real"
+  ln -s "$(basename "$built_jar.real")" "$built_jar"
+  expect_cli_failure "built JAR is a symlink" "missing or symlinked built plugin JAR" \
+    "$fixture_script" verify-built-jar 1.0.1 "$built_jar"
+  unlink "$built_jar"
   printf '%s\n' dirty > "$fixture/untracked-before-pending-verify.txt"
   expect_cli_failure "dirty already-tagged pending-release checkout" "checkout must be clean" \
     "$fixture_script" verify-pending-release
@@ -835,6 +880,10 @@ case "$command_name" in
   verify-tag)
     [ "$#" -eq 2 ] || { usage >&2; exit 2; }
     verify_tag "$2"
+    ;;
+  verify-built-jar)
+    [ "$#" -eq 3 ] || { usage >&2; exit 2; }
+    verify_built_jar "$2" "$3"
     ;;
   verify-pending-release)
     [ "$#" -eq 1 ] || { usage >&2; exit 2; }

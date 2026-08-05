@@ -551,9 +551,11 @@ tools/release-attestation.sh verify-pending-release
 ```
 
 The script's hermetic self-test drives successful and failing `create`, `verify`,
-`verify-pending-release`, and `verify-tag` paths; this clean-checkout invocation is the
-real repository rehearsal and remains a release blocker until the fleet and fuzz receipts
-exist. The Release Please workflow refuses to create a pending version's tag
+`verify-pending-release`, `verify-tag`, and `verify-built-jar` paths; this clean-checkout
+invocation is the real repository rehearsal and remains a release blocker until the fleet
+and fuzz receipts exist. The Release Please workflow refuses to create a pending version's tag
 without this committed attestation, and the tag-triggered publish workflow verifies it
-again against the exact tag checkout. Any source, fixture, workflow, policy, or fleet-roster
-change after certification invalidates the record and requires both strict runs again.
+again against the exact tag checkout. It then builds without the Gradle build cache and
+refuses publication unless that JAR's hash is the one recorded by the local fleet and fuzz
+receipts. Any source, fixture, workflow, policy, or fleet-roster change after certification
+invalidates the record and requires both strict runs again.
