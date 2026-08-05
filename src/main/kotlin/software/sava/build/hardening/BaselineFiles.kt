@@ -1,6 +1,7 @@
 package software.sava.build.hardening
 
 import java.io.File
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -8,6 +9,9 @@ import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.PosixFileAttributeView
+import java.nio.file.attribute.PosixFilePermission
+import java.util.UUID
 
 /**
  * Baseline rewrites are atomic: content lands in a sibling temp file that is
@@ -43,6 +47,12 @@ internal object BaselineFiles {
     val baselineRemoved: Boolean,
     val orphanVersionStampRemoved: Boolean,
     val orphanToolchainRecordRemoved: Boolean,
+  )
+
+  private data class PreviousFile(
+    val target: File,
+    val content: ByteArray?,
+    val posixPermissions: Set<PosixFilePermission>?,
   )
 
   /**
@@ -243,7 +253,12 @@ internal object BaselineFiles {
     }
     writes.forEach { requireRegularFileOrMissing(it.target) }
     val previous = writes.map { write ->
-      write.target to write.target.takeIf(File::isFile)?.readBytes()
+      val existed = write.target.isFile
+      PreviousFile(
+        write.target,
+        write.target.takeIf { existed }?.readBytes(),
+        write.target.takeIf { existed }?.let(::posixPermissions),
+      )
     }
     var committed = 0
     try {
@@ -253,9 +268,10 @@ internal object BaselineFiles {
         committed++
       }
     } catch (failure: Exception) {
-      previous.take(committed).asReversed().forEach { (target, bytes) ->
+      previous.take(committed).asReversed().forEach { prior ->
         try {
-          if (bytes == null) deleteIfExists(target) else writeBytesAtomically(target, bytes)
+          if (prior.content == null) deleteIfExists(prior.target)
+          else writeBytesAtomically(prior.target, prior.content, prior.posixPermissions)
         } catch (rollbackFailure: Exception) {
           failure.addSuppressed(rollbackFailure)
         }
@@ -270,18 +286,35 @@ internal object BaselineFiles {
     writeAllAtomically(writes)
   }
 
-  private fun writeBytesAtomically(target: File, content: ByteArray) {
+  private fun writeBytesAtomically(
+    target: File,
+    content: ByteArray,
+    restoredPosixPermissions: Set<PosixFilePermission>? = null,
+  ) {
     requireRegularFileOrMissing(target)
+    // An atomic rename publishes the staging file's inode, including its mode. Keep
+    // an existing record's POSIX permissions rather than replacing 0644 with the
+    // JDK's intentionally private createTempFile default (normally 0600). A rollback
+    // that recreates an earlier deletion supplies the removed inode's mode explicitly.
+    val publishedPosixPermissions = restoredPosixPermissions ?: target
+      .takeIf(File::isFile)
+      ?.let(::posixPermissions)
     target.parentFile.mkdirs()
     requireDirectoryOrMissing(target.parentFile)
     requireRegularFileOrMissing(target)
     // A fixed `<target>.tmp` races across Gradle processes: one writer can move the
     // shared temp file while another is still about to replace the target. Keep the
     // staging file beside the target for the atomic rename, but make it unique to
-    // this writer.
-    val tmp = Files.createTempFile(target.parentFile.toPath(), "${target.name}.", ".tmp").toFile()
+    // this writer. Files.createTempFile deliberately uses 0600 on POSIX; create a
+    // unique ordinary file instead so a new committed record receives the same
+    // readable, umask-governed mode as any normal file created in this directory.
+    val tmp = createSiblingStagingFile(target.parentFile.toPath()).toFile()
     try {
       tmp.writeBytes(content)
+      // Apply a read-only or otherwise restrictive target mode only after staging
+      // the complete bytes; the writer must not need that published mode to include
+      // OWNER_WRITE merely to prepare the replacement.
+      publishedPosixPermissions?.let { Files.setPosixFilePermissions(tmp.toPath(), it) }
       Files.move(
         tmp.toPath(), target.toPath(),
         StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE,
@@ -291,5 +324,30 @@ internal object BaselineFiles {
       // this invocation if writing or moving failed.
       Files.deleteIfExists(tmp.toPath())
     }
+  }
+
+  /** Returns a defensive copy on POSIX and `null` on providers without POSIX modes. */
+  private fun posixPermissions(file: File): Set<PosixFilePermission>? {
+    val path = file.toPath()
+    val view = Files.getFileAttributeView(
+        path, PosixFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS) ?: return null
+    return view.readAttributes().permissions().toSet()
+  }
+
+  /**
+   * Creates a collision-resistant ordinary sibling file. Unlike createTempFile, the
+   * provider's normal create-file mode and umask apply; this is also portable to
+   * providers that expose no POSIX attribute view.
+   */
+  private fun createSiblingStagingFile(parent: Path): Path {
+    repeat(16) {
+      val candidate = parent.resolve(".sava-hardening-${UUID.randomUUID()}.tmp")
+      try {
+        return Files.createFile(candidate)
+      } catch (_: FileAlreadyExistsException) {
+        // An adversarial collision is harmless; choose a fresh unique sibling.
+      }
+    }
+    throw IllegalStateException("could not allocate a unique mutation-record staging file in $parent")
   }
 }

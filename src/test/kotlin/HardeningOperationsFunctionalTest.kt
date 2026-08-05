@@ -3,11 +3,15 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.BaselineDocument
 import software.sava.build.hardening.HardeningOptionNames
 import java.io.File
+import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
 
 class HardeningOperationsFunctionalTest {
 
@@ -356,6 +360,34 @@ class HardeningOperationsFunctionalTest {
     assertTrue(before.contentEquals(baseline.readBytes()), "fixed-point rebase rewrote accepted evidence")
     val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
     assertFalse(args.contains("arcmutate_history"), args)
+  }
+
+  @Test
+  fun `named writer preserves committed POSIX modes and creates readable sidecars`() {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"))
+    writeFixture()
+    val (baseline, _) = acceptedBaseline()
+    val baselineMode = PosixFilePermissions.fromString("rw-r--r--")
+    Files.setPosixFilePermissions(baseline.toPath(), baselineMode)
+    val ordinary = baseline.parentFile.resolve("ordinary-file")
+    Files.createFile(ordinary.toPath())
+    val newFileMode = Files.getPosixFilePermissions(ordinary.toPath())
+    Files.delete(ordinary.toPath())
+
+    runner("pitestEncodingBaselineRebase").build()
+
+    assertEquals(baselineMode, Files.getPosixFilePermissions(baseline.toPath()))
+    listOf(
+      baseline.parentFile.resolve("encoding-pitest-version"),
+      baseline.parentFile.resolve("encoding-pitest-toolchain.tsv"),
+    ).forEach { sidecar ->
+      assertTrue(sidecar.isFile, "named writer did not create ${sidecar.name}")
+      assertEquals(
+        newFileMode,
+        Files.getPosixFilePermissions(sidecar.toPath()),
+        "named writer created ${sidecar.name} with a private temp-file mode",
+      )
+    }
   }
 
   @Test

@@ -2199,6 +2199,80 @@ $fuzzBlock
   }
 
   @Test
+  fun `timeout drift names changed coordinates already covered by line-less audit members`() {
+    // Audit membership is line-less. Once a key is present, the unaudited check
+    // cannot distinguish its original timeout from another sibling at the same
+    // class/method/mutator becoming TIMED_OUT. The status stash still sees the
+    // count increase; its default output must name the coordinate, while a genuine
+    // KILLED -> TIMED_OUT transition remains on the benign detected side.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,decode,IncrementsMutator,SURVIVED # covered sibling # line 30\n"
+    )
+    File(fixtureDir, "config/pitest/encoding-timeouts.csv").writeText(
+      "com.example.Codec,encode,MathMutator # line 12\n" +
+          "com.example.Codec,decode,IncrementsMutator\n"
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "# Codec timeout causes\n\n" +
+          "`Codec.encode` (`MathMutator`) loses its loop exit. " +
+          "`Codec.decode` (`IncrementsMutator`) reverses its cursor.\n"
+    )
+    fun mutant(method: String, mutator: String, line: Int, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+          "$mutator,$method,$line,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+
+    writeReport(
+      listOf(
+        mutant("encode", "MathMutator", 12, "TIMED_OUT"),
+        mutant("encode", "MathMutator", 20, "KILLED"),
+        mutant("decode", "IncrementsMutator", 30, "SURVIVED"),
+      ),
+      "",
+    )
+    runner("pitestEncodingVerify").build()
+
+    writeReport(
+      listOf(
+        mutant("encode", "MathMutator", 12, "TIMED_OUT"),
+        mutant("encode", "MathMutator", 20, "TIMED_OUT"),
+        mutant("decode", "IncrementsMutator", 30, "SURVIVED"),
+        mutant("decode", "IncrementsMutator", 40, "TIMED_OUT"),
+      ),
+      "",
+    )
+    val output = runner("pitestEncodingVerify").build().output
+
+    assertTrue(
+          output.contains("1 newly timed out (previously detected), 1 first observed") &&
+          output.contains(
+            "com.example.Codec,encode,MathMutator (+1) — " +
+                "previously detected (usually KILLED -> TIMED_OUT)") &&
+          output.contains(
+            "line-less stash cannot identify which 1 of 2 current TIMED_OUT mutant(s) " +
+                "are new; all candidates") &&
+          output.contains("candidate 1/2: com.example.Codec,encode,12,MathMutator") &&
+          output.contains("candidate 2/2: com.example.Codec,encode,20,MathMutator") &&
+          output.contains(
+            "com.example.Codec,decode,IncrementsMutator (+1) — " +
+                "first observed (reviewer-stop; no prior detected read)") &&
+          output.contains("newly TIMED_OUT: com.example.Codec,decode,40,IncrementsMutator"),
+      "changed audited coordinates and their current line-full candidates were not named:\n$output",
+    )
+    assertFalse(
+      output.contains("not in the audited set"),
+      "line-less members were incorrectly treated as unaudited:\n$output",
+    )
+    assertFalse(
+      output.contains("flipped SURVIVED -> TIMED_OUT") ||
+          output.contains("flipped NO_COVERAGE -> TIMED_OUT"),
+      "aggregate-stable or KILLED timeout drift was promoted to a dangerous flip:\n$output",
+    )
+  }
+
+  @Test
   fun `the deep leg filter matches every stash-cycle message`() {
     // The canary's deep leg greps run output with deep_pattern — message-text
     // coupling on the same terms as findings_pattern, but for the stash-cycle
@@ -2276,6 +2350,10 @@ $fuzzBlock
     assertTrue(
       flipped.contains("1 coordinate(s) flipped NO_COVERAGE -> TIMED_OUT"),
       "the never-reached origin must be the dangerous flavour:\n$flipped"
+    )
+    assertTrue(
+      flipped.contains("newly TIMED_OUT: com.example.Codec,encode,50,MathMutator"),
+      "dangerous positive delta omitted its line-full observation:\n$flipped",
     )
     assertFalse(flipped.contains("previously detected"), "a never-detected mutant claimed as detected:\n$flipped")
     assertFalse(flipped.contains("flipped SURVIVED"), flipped)

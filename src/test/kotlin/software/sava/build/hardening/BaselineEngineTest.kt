@@ -583,8 +583,44 @@ class BaselineEngineTest {
         (if (origin == "SURVIVED") drift.fromSurvived else drift.fromNoCoverage).contains(key),
         "seed $seed: $origin -> TIMED_OUT not flagged dangerous"
       )
+      assertEquals(
+        mapOf(key to 1),
+        drift.positiveTimedOutByCoordinate,
+        "seed $seed: dangerous positive delta lost its coordinate/multiplicity",
+      )
       assertEquals(0, drift.newlyTimedOut, "seed $seed: dangerous flip counted as previously detected")
     }
+  }
+
+  @Test
+  fun `timeout drift retains each changed coordinate without promoting killed flips`() {
+    val benign = "com.example.Codec,encode,MathMutator"
+    val first = "com.example.Codec,decode,IncrementsMutator"
+    val resolved = "com.example.Codec,close,VoidMethodCallMutator"
+    val previous = linkedMapOf(
+      benign to mapOf("KILLED" to 2),
+      first to mapOf("SURVIVED" to 1),
+      resolved to mapOf("TIMED_OUT" to 2),
+    )
+    val current = linkedMapOf(
+      benign to mapOf("KILLED" to 1, "TIMED_OUT" to 1),
+      // The existing survivor remains: this is a new sibling, not a
+      // SURVIVED -> TIMED_OUT transition at the aggregate coordinate.
+      first to mapOf("SURVIVED" to 1, "TIMED_OUT" to 2),
+      resolved to mapOf("TIMED_OUT" to 1, "KILLED" to 1),
+    )
+
+    val drift = BaselineEngine.driftCompare(previous, current)
+
+    assertTrue(drift.fromSurvived.isEmpty())
+    assertTrue(drift.fromNoCoverage.isEmpty())
+    assertEquals(mapOf(benign to 1, first to 2), drift.positiveTimedOutByCoordinate)
+    assertEquals(mapOf(benign to 1), drift.newlyTimedOutByCoordinate)
+    assertEquals(mapOf(first to 2), drift.firstObservedByCoordinate)
+    assertEquals(mapOf(resolved to 1), drift.resolvedByCoordinate)
+    assertEquals(1, drift.newlyTimedOut)
+    assertEquals(2, drift.firstObserved)
+    assertEquals(1, drift.resolved)
   }
 
   @Test

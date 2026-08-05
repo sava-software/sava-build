@@ -83,6 +83,17 @@ task graph. It is useful when validating a new plugin's evidence plumbing, but i
 an extra release soak requirement; ordinary `hardeningCertify` is already a fresh PIT
 observation.
 
+Certification receipts are deliberately **project-scoped**. In a multi-project build,
+the unqualified `hardeningCertify` selector runs each project that exposes that task and
+each writes its own receipt and session UUID; no one child receipt claims that the whole
+repository ran. The release fleet wrapper is the repository aggregate: before execution
+it discovers every project exposing `hardeningCertify`, then retains every child receipt
+and refuses unless the resulting project set matches that inventory exactly. A standalone
+release checklist that does not use the wrapper must likewise gather every per-project
+receipt rather than treating the first one found as repository evidence. Keeping
+project-scoped `hardeningCertify` also preserves the useful ability to certify one module
+without silently putting unrelated modules into certification mode.
+
 Generated evidence must never select the configuration-cache task graph. The PIT
 validators are always present and decide at execution time whether `.evidence.tsv`
 exists; creating the manifest in a PIT run, or removing it with `clean`, therefore does
@@ -585,8 +596,14 @@ invoked it*, and the failure looks exactly like a real regression.
   run's per-status coordinates — every status, `KILLED` included
   (`.pitest-history/<suite>.statuses`, machine-local, a `# stash format`
   header naming its format) — and names each newcomer's origin on the next
-  run. `KILLED -> TIMED_OUT` is the benign flavour and gets a one-line
-  count; `SURVIVED -> TIMED_OUT` gets a warning with the rows, because a
+  run. **Every positive timeout-count delta prints the affected coordinates,
+  `+N` multiplicity, and current line-full
+  `class,method,line,mutator` observations.** The stash is
+  line-less, so when that key already held a timeout it cannot prove which
+  current line is the newcomer; the output says so and prints every current
+  `TIMED_OUT` candidate instead of inventing an attribution.
+  `KILLED -> TIMED_OUT` is the benign flavour and gets a one-line count;
+  `SURVIVED -> TIMED_OUT` gets a warning with the rows, because a
   mutant nobody killed now reads as detected purely through load — do not
   let a refresh quietly drop it from the baseline on the strength of that.
   `NO_COVERAGE -> TIMED_OUT` gets the same warning: the mutant was never
@@ -598,8 +615,15 @@ invoked it*, and the failure looks exactly like a real regression.
   resets the comparison for one announced run instead of comparing blind.
   A timeout with no prior *detected* read at its key — a new coordinate, a
   new sibling at a gated-only key, or a key whose only prior reads were
-  PIT's not-counted-as-detected statuses — is named as a first observation,
-  never as "previously detected". The two runs are compared as per-coordinate
+  PIT's not-counted-as-detected statuses — is named, with its multiplicity,
+  as a **reviewer-stop first observation**, never as "previously detected".
+  This default drift detail is independent of audited-set membership: the
+  timeout set is intentionally line-less, so an existing membership row can
+  cover a key whose timeout count just grew; membership suppresses the
+  unaudited-row warning, but it never suppresses the changed coordinate from
+  the drift output or its line-full candidates. Re-read that member's
+  structural cause before treating the new sibling as covered by it. The two
+  runs are compared as per-coordinate
   **counts**, not as sets of coordinates: the coordinate is line-less, so one
   key routinely holds an accepted survivor *and* an audited timeout at the
   same time, and asking a set "is this key timed out now and was it survived
@@ -715,18 +739,21 @@ invoked it*, and the failure looks exactly like a real regression.
   interlude drops the counter rather than freezing it — staleness means the
   code moved, so quietness is re-measured once the mutant returns instead of
   argued from the old method body. The
-  line-less key is also the check's resolution: a *new* timed-out mutant in
-  an already-audited method+mutator matches the existing member and draws
-  no warning, so "no warning" certifies no new method+mutator, not no new
-  mutant — the price of a membership drift cannot churn. The README cause
+  line-less key is also the membership check's resolution: a *new* timed-out
+  mutant in an already-audited method+mutator draws no **unaudited-member**
+  warning. It is not therefore invisible: when the timeout count grew from
+  the previous fresh report, run-to-run drift names the line-less key and
+  prints every current line-full candidate (the stash cannot distinguish the
+  old copy from the newcomer). A stable timeout multiplicity stays quiet; a
+  growth is evidence to re-read. The README cause
   should name the line it argues about (the paste-ready row carries it in
   the `#` comment) so a reviewer can notice when the code at that line is
   no longer what the argument described — and "notice" has a machine half:
   the `# line` comment is parsed back, and a member whose observed timeout
   lines are all absent from its comment is warned as line drift (the anchor
   the cause argues about moved entirely; a *new* sibling line next to a
-  recorded one stays quiet, that being the line-less key's stated
-  resolution). Advisory only, never a failure, by
+  recorded one does not masquerade as a full move, while its count growth is
+  still named by the run-to-run drift output above). Advisory only, never a failure, by
   default: load can time out any mutant on any run, and both flavours are
   still detection. For certifying runs, `-PstrictTimeoutAudit` escalates
   exactly the findings that mean the audit is not being kept — an
@@ -1748,8 +1775,12 @@ an unrelated repo's agent tripped over it. The warning or failure prints the dig
 to paste. One softening: under `-PsavaBuildLocalRepo` (the fleet canary, or any build
 validating an unreleased checkout) a stale marker warns instead of failing — the repo
 acknowledges a *released* digest and the checkout's has not shipped, so the marker
-dance lands with the release, never before it. A marker-less existing file still
-fails in that mode; it is unadopted, not merely waiting for a release.
+dance normally lands with the release, never before it. A deliberate RC-adoption
+change may re-diff and stage the candidate block and marker now only when that consumer
+commit will land with or after the published plugin pin it acknowledges; landing the
+candidate marker while the older plugin remains selected would wedge ordinary checks.
+A marker-less existing file still fails in local-repo mode; it is unadopted, not
+merely waiting for a release.
 
 > - **Scale verification to the change.** Iterate with the module's `test`
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated

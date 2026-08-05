@@ -982,13 +982,30 @@ coincidence to hide rather than a structure, and the warning re-fires on the
 next run whose counts diverge, where the rejected subtraction stays blind at
 that key forever.
 
+A later consumer exposed a visibility seam between that count comparison and
+the audited-timeout set. Audit membership is intentionally line-less: once
+`class,method,mutator` was present, another sibling at that key becoming
+`TIMED_OUT` was no longer "unaudited." The drift classifier still saw the
+timeout count rise and correctly kept `KILLED -> TIMED_OUT` benign, but printed
+only `1 newly timed out`; the one fact a reviewer needed — *which existing
+audit argument now covered more mutants* — was absent unless they opened the
+CSV and reconstructed it. Drift results now retain and print the changed
+coordinates with `+N` multiplicity and the current line-full timeout
+observations by default. Because the stash cannot identify which duplicate was
+timed out previously, a key that already held a timeout prints **all** current
+candidates rather than guessing which line is new. An audit row can silence the
+missing-membership warning, never the evidence that its timeout population
+grew or the lines a reviewer must inspect.
+
 Rules: *when a key stops identifying one thing, every comparison built on it
 is a multiset comparison — convert them together, not the ones you
 remembered*; *an advisory that cannot distinguish "nothing moved" from "the
 dangerous thing happened" is worse than no advisory, because it trains the
 reader to filter the dangerous thing*; *a format migration that silences a
 check for exactly one run hides its own regression from the person doing the
-migration*.
+migration*; *a line-less membership row is permission to apply one reviewed
+cause to a coordinate, not permission to hide later multiplicity growth at that
+coordinate*.
 
 ## The trap that never existed
 

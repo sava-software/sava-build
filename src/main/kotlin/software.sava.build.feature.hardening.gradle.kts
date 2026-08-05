@@ -463,6 +463,8 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   // checkout's digest has not shipped yet. Failing here forced repos to acknowledge
   // unreleased digests ahead of the release — which then wedged their 'check'
   // against every published plugin until the release landed and the pin was bumped.
+  // A deliberate RC-adoption change may prepare the new block and marker now, but
+  // that consumer commit must land only with or after the release pin it acknowledges.
   val validatingUnreleased =
       providers.gradleProperty(HardeningOptionNames.SAVA_BUILD_LOCAL_REPO).isPresent
   val advisoryLog = hardeningAdvisoryLog
@@ -489,9 +491,11 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
     if (stale != null && validatingUnreleased) {
       logger.warn(
           "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.groupValues[1]}; this " +
-              "unreleased checkout's is $expected — the marker dance lands with the release that ships " +
-              "this digest, not before it. When bumping the plugin past that release, re-diff the " +
-              "AGENTS.md hardening block against './gradlew $templateTask', then update the marker to:\n" +
+              "unreleased checkout's is $expected — by default the marker dance lands with the release " +
+              "that ships this digest, not before it. If this is deliberate RC adoption, re-diff the " +
+              "AGENTS.md hardening block now and stage the marker with the new plugin pin, but do not " +
+              "land that consumer commit while it still resolves the older published plugin. Otherwise, " +
+              "when bumping past the release, re-diff against './gradlew $templateTask' and update to:\n" +
               "  <!-- hardening-template sha256:$expected -->"
       )
       advisoryLog.get().record(
@@ -2741,31 +2745,91 @@ hardening.mutation.all {
           // dangerous flavours name each lost-unkilled origin (a key can lose
           // both), "previously detected" requires an actual prior detected read,
           // and everything else is a first observation
-          val (fromSurvived, fromNoCoverage, newlyTimedOut, firstObserved, resolved) =
-              BaselineEngine.driftCompare(previous, current)
+          val drift = BaselineEngine.driftCompare(previous, current)
+          val fromSurvived = drift.fromSurvived
+          val fromNoCoverage = drift.fromNoCoverage
+          // The stash deliberately has no line identity. Render the current report's
+          // line-full observations for every positive timeout delta; if that key
+          // already held a timeout, do not pretend to know which current candidate
+          // is the newcomer.
+          fun positiveDeltaDetails(
+            label: String,
+            deltas: Map<String, Int>,
+          ): List<String> = deltas.entries.sortedBy { it.key }.flatMap { (key, count) ->
+            val candidates = rows
+                .filter { it.status == MutantStatus.TIMED_OUT && it.coordinate == key }
+                .sortedWith(compareBy<Mutant>({ it.line ?: Int.MAX_VALUE }, { it.lineFullKey }))
+            val exact = candidates.size == count
+            buildList {
+              add(
+                  "  $key (+$count) — $label; " + if (exact) {
+                    "all ${candidates.size} current TIMED_OUT mutant(s) are new:"
+                  } else {
+                    "the line-less stash cannot identify which $count of ${candidates.size} " +
+                        "current TIMED_OUT mutant(s) are new; all candidates:"
+                  }
+              )
+              candidates.forEachIndexed { index, mutant ->
+                val candidateLabel = if (exact) "newly TIMED_OUT" else
+                  "candidate ${index + 1}/${candidates.size}"
+                add("    $candidateLabel: ${mutant.lineFullKey}")
+              }
+            }
+          }
           if (fromSurvived.isNotEmpty()) {
+            val details = positiveDeltaDetails(
+                "SURVIVED -> TIMED_OUT",
+                fromSurvived.associateWith { drift.positiveTimedOutByCoordinate.getValue(it) },
+            )
             logger.warn(
                 "pitest '$suiteName': ${fromSurvived.size} coordinate(s) flipped SURVIVED -> TIMED_OUT — " +
                     "a mutant nobody killed now reads as detected, likely load-slowed tests rather than " +
                     "new kills; do not refresh them out:\n" +
-                    fromSurvived.sorted().joinToString("\n") { "  $it" }
+                    details.joinToString("\n")
             )
             advisoryLog.get().record(advisoryScope, "${fromSurvived.size} SURVIVED -> TIMED_OUT flip(s)")
           }
           if (fromNoCoverage.isNotEmpty()) {
+            val details = positiveDeltaDetails(
+                "NO_COVERAGE -> TIMED_OUT",
+                fromNoCoverage.associateWith { drift.positiveTimedOutByCoordinate.getValue(it) },
+            )
             logger.warn(
                 "pitest '$suiteName': ${fromNoCoverage.size} coordinate(s) flipped NO_COVERAGE -> TIMED_OUT — " +
                     "a mutant no test had reached now reads as detected because a newly covering test " +
                     "hangs on it; kill it with a fast test or audit the timeout, do not refresh it out:\n" +
-                    fromNoCoverage.sorted().joinToString("\n") { "  $it" }
+                    details.joinToString("\n")
             )
             advisoryLog.get().record(advisoryScope, "${fromNoCoverage.size} NO_COVERAGE -> TIMED_OUT flip(s)")
           }
-          if (newlyTimedOut > 0 || firstObserved > 0 || resolved > 0) {
+          if (drift.newlyTimedOut > 0 || drift.firstObserved > 0 || drift.resolved > 0) {
+            // Membership is deliberately line-less, so an already-audited key can
+            // gain another timed-out sibling without entering the unaudited list.
+            // Keep the benign KILLED -> TIMED_OUT classification, but name every
+            // changed coordinate, its multiplicity, and the current line-full
+            // TIMED_OUT candidates in the default output. The stash cannot know
+            // which prior line held a status, so when a key already had a timeout
+            // every current candidate is printed rather than falsely attributing
+            // the increase. The fleet canary's deep-pattern reprint retains these
+            // indented lines with the summary that triggered them.
+            val details = buildList {
+              addAll(positiveDeltaDetails(
+                  "previously detected (usually KILLED -> TIMED_OUT)",
+                  drift.newlyTimedOutByCoordinate,
+              ))
+              addAll(positiveDeltaDetails(
+                  "first observed (reviewer-stop; no prior detected read)",
+                  drift.firstObservedByCoordinate,
+              ))
+              drift.resolvedByCoordinate.entries.sortedBy { it.key }.forEach { (key, count) ->
+                add("  no longer TIMED_OUT: $key (-$count)")
+              }
+            }
             logger.lifecycle(
                 "pitest '$suiteName': timed-out drift vs previous run — " +
-                    "$newlyTimedOut newly timed out (previously detected), $firstObserved first observed " +
-                    "(no prior detected read), $resolved no longer; load-dependent"
+                    "${drift.newlyTimedOut} newly timed out (previously detected), " +
+                    "${drift.firstObserved} first observed (no prior detected read), " +
+                    "${drift.resolved} no longer; load-dependent\n" + details.joinToString("\n")
             )
           }
         }

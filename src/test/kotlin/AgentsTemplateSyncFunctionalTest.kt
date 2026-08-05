@@ -142,6 +142,11 @@ class AgentsTemplateSyncFunctionalTest {
       advisory.output.contains("the marker dance lands with the release that ships this digest"),
       "a stale marker under the canary flag must warn, not fail:\n" + advisory.output
     )
+    assertTrue(
+      advisory.output.contains("If this is deliberate RC adoption") &&
+          advisory.output.contains("do not land that consumer commit while it still resolves the older published plugin"),
+      "the advisory must distinguish release canaries from a staged RC-adoption change:\n" + advisory.output,
+    )
     assertTrue(advisory.output.contains("sha256:$expectedDigest"), advisory.output)
 
     // a marker-less AGENTS.md is an unadopted repo, not a pending marker dance —

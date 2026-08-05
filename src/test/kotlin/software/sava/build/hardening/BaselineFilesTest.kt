@@ -4,10 +4,14 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.nio.file.FileSystems
 import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import kotlin.concurrent.thread
@@ -58,6 +62,44 @@ class BaselineFilesTest {
   }
 
   @Test
+  fun `atomic replace preserves an existing POSIX file mode`() {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"))
+    val target = File(tempDir, "encoding-accepted.csv").apply { writeText("old\n") }
+    val expected = PosixFilePermissions.fromString("rw-r--r--")
+    Files.setPosixFilePermissions(target.toPath(), expected)
+
+    BaselineFiles.writeAtomically(target, "new\n")
+
+    assertEquals("new\n", target.readText())
+    assertEquals(expected, Files.getPosixFilePermissions(target.toPath()))
+
+    val readOnly = PosixFilePermissions.fromString("r--r--r--")
+    Files.setPosixFilePermissions(target.toPath(), readOnly)
+    BaselineFiles.writeAtomically(target, "newer\n")
+    assertEquals("newer\n", target.readText())
+    assertEquals(readOnly, Files.getPosixFilePermissions(target.toPath()))
+  }
+
+  @Test
+  fun `a new atomic file uses the provider's normal readable creation mode`() {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"))
+    val parent = File(tempDir, "config/pitest").apply { mkdirs() }
+    val ordinary = parent.resolve("ordinary-file")
+    Files.createFile(ordinary.toPath())
+    val expected = Files.getPosixFilePermissions(ordinary.toPath())
+    Files.delete(ordinary.toPath())
+    val target = parent.resolve("encoding-accepted.csv")
+
+    BaselineFiles.writeAtomically(target, "new record\n")
+
+    val actual = Files.getPosixFilePermissions(target.toPath())
+    assertEquals(expected, actual, "atomic creation must follow normal create-file and umask semantics")
+    assertTrue(PosixFilePermission.OWNER_READ in actual, "the creating user cannot read the new record")
+    assertTrue(PosixFilePermission.OWNER_WRITE in actual, "the creating user cannot update the new record")
+    assertTrue(actual.none { it.name.endsWith("EXECUTE") }, "a mutation record became executable")
+  }
+
+  @Test
   fun `an empty write is honoured rather than skipped`() {
     // The low-level single-file primitive must not silently skip empty content. Record
     // writers that canonicalize an empty baseline to absence use a null multi-file write.
@@ -95,6 +137,29 @@ class BaselineFilesTest {
       tempDir.walkTopDown().none { it.name.endsWith(".tmp") },
       "multi-file rollback leaked a staging file",
     )
+  }
+
+  @Test
+  fun `rollback of a committed deletion restores its POSIX file mode`() {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"))
+    val deletedFirst = File(tempDir, "record/accepted.csv").apply {
+      parentFile.mkdirs()
+      writeText("old accepted record\n")
+    }
+    val expected = PosixFilePermissions.fromString("rw-r-----")
+    Files.setPosixFilePermissions(deletedFirst.toPath(), expected)
+    val blockingParent = File(tempDir, "not-a-directory").apply { writeText("block") }
+    val impossible = File(blockingParent, "toolchain.tsv")
+
+    assertThrows(Exception::class.java) {
+      BaselineFiles.writeAllAtomically(listOf(
+        BaselineFiles.Write(deletedFirst, null),
+        BaselineFiles.Write(impossible, "new toolchain\n"),
+      ))
+    }
+
+    assertEquals("old accepted record\n", deletedFirst.readText())
+    assertEquals(expected, Files.getPosixFilePermissions(deletedFirst.toPath()))
   }
 
   @Test

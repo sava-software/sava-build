@@ -254,14 +254,29 @@ internal object BaselineEngine {
     return PruneRewrite(written, refreshedLineTags, sourceRowIndices)
   }
 
-  /** The drift comparison's outcome: dangerous flips by origin, and the benign tallies. */
+  /**
+   * The drift comparison's outcome: dangerous flips by origin, and every other
+   * timeout-count delta keyed by the line-less coordinate that changed. The maps
+   * retain multiplicity so output can name a new sibling even when that coordinate
+   * is already present in the audited-timeout set.
+   */
   data class Drift(
     val fromSurvived: List<String>,
     val fromNoCoverage: List<String>,
-    val newlyTimedOut: Int,
-    val firstObserved: Int,
-    val resolved: Int,
-  )
+    val positiveTimedOutByCoordinate: Map<String, Int>,
+    val newlyTimedOutByCoordinate: Map<String, Int>,
+    val firstObservedByCoordinate: Map<String, Int>,
+    val resolvedByCoordinate: Map<String, Int>,
+  ) {
+    val newlyTimedOut: Int
+      get() = newlyTimedOutByCoordinate.values.sum()
+
+    val firstObserved: Int
+      get() = firstObservedByCoordinate.values.sum()
+
+    val resolved: Int
+      get() = resolvedByCoordinate.values.sum()
+  }
 
   /**
    * Timed-out drift between two per-coordinate status tallies (every status
@@ -281,12 +296,14 @@ internal object BaselineEngine {
         (current[key]?.get(status) ?: 0) - (previous[key]?.get(status) ?: 0)
     val fromSurvived = mutableListOf<String>()
     val fromNoCoverage = mutableListOf<String>()
-    var newlyTimedOut = 0
-    var firstObserved = 0
-    var resolved = 0
+    val positiveTimedOut = linkedMapOf<String, Int>()
+    val newlyTimedOut = linkedMapOf<String, Int>()
+    val firstObserved = linkedMapOf<String, Int>()
+    val resolved = linkedMapOf<String, Int>()
     for (key in previous.keys + current.keys) {
       val timedOut = delta(key, "TIMED_OUT")
       if (timedOut > 0) {
+        positiveTimedOut[key] = timedOut
         val survivedDrop = delta(key, "SURVIVED") < 0
         val noCoverageDrop = delta(key, "NO_COVERAGE") < 0
         when {
@@ -296,14 +313,21 @@ internal object BaselineEngine {
           }
           key in previous &&
               previous.getValue(key).keys.any { it == "KILLED" || it == "TIMED_OUT" } ->
-            newlyTimedOut += timedOut
-          else -> firstObserved += timedOut
+            newlyTimedOut[key] = timedOut
+          else -> firstObserved[key] = timedOut
         }
       } else if (timedOut < 0) {
-        resolved -= timedOut
+        resolved[key] = -timedOut
       }
     }
-    return Drift(fromSurvived, fromNoCoverage, newlyTimedOut, firstObserved, resolved)
+    return Drift(
+        fromSurvived,
+        fromNoCoverage,
+        positiveTimedOut,
+        newlyTimedOut,
+        firstObserved,
+        resolved,
+    )
   }
 
   /** A report-driven rewrite plus protected rows: the lines and every named outcome. */
