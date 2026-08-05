@@ -446,31 +446,40 @@ consumer moves to the candidate. Re-running every historical checkout as one fin
 an optional diagnostic, not a tag or publication prerequisite.
 
 Before opening the release, retain the exact `0.0.0-test` JAR used by the reviewed adoption
-passes and record the final candidate commit. If later commits touch only release tooling,
-tests, or documentation, rebuild the JAR without the Gradle build cache and require its hash
-to remain equal to that reviewed JAR. A changed hash means the consumer evidence no longer
-describes the artifact and another relevant adoption pass is required.
+passes, keep each consumer's completed `build/hardening/pitest-certification.tsv` receipt,
+and record the final candidate commit. Multi-project consumers can contribute several such
+receipts. If later commits touch only release tooling, tests, or documentation, rebuild the
+JAR without the Gradle build cache and require its hash to remain equal to that reviewed JAR.
+A changed hash means the consumer evidence no longer describes the artifact and another
+relevant adoption pass is required.
 
 After Release Please prepares the version metadata, check out its clean branch and create a
-compact owner attestation. Name only repositories whose local candidate adoption was actually
-reviewed:
+compact owner attestation. Pass the root of each clean consumer checkout whose local candidate
+adoption was actually reviewed:
 
 ```shell
 version=$(jq -r '.["."]' .release-please-manifest.json)
 candidate=<final-reviewed-main-commit>
 reviewed_jar=<retained-0.0.0-test-jar-used-by-those-passes>
+sava_checkout=<path-to-clean-sava-checkout>
+http_servers_checkout=<path-to-clean-http-servers-checkout>
 tools/release-attestation.sh create-reviewed "$version" \
   --candidate "$candidate" \
   --plugin-jar "$reviewed_jar" \
-  --adoption sava-software/sava \
-  --adoption sava-software/http-servers
+  --adoption "$sava_checkout" \
+  --adoption "$http_servers_checkout"
 git add "release-attestations/$version.json"
 ```
 
 Commit only that generated file alongside Release Please's `CHANGELOG.md` and manifest
-changes. The record contains the reviewed cohort plus the candidate commit, tree, origin, and
-JAR hash; it contains no absolute paths or credentials. From the clean attestation commit,
-exercise the same gates used by the release workflows:
+changes. `create-reviewed` derives each consumer's GitHub slug, clean commit/tree, receipt
+hashes, projects, sessions, and suites; it refuses missing, incomplete, malformed, mixed, or
+stale receipts, including any suite whose `pluginSha256` differs from the retained JAR. The
+record contains relative receipt paths but no checkout paths or credentials. The generated
+entry says exactly which relative receipt paths/projects it found. It cannot
+infer an independent Gradle root that produced no receipt, so compare that list with the
+handoff's intended adoption scope before committing the record. From the clean attestation
+commit, exercise the same gates used by the release workflows:
 
 ```shell
 tools/release-attestation.sh verify "$version"
@@ -483,17 +492,21 @@ without the Gradle build cache, and refuses publication unless the resulting JAR
 reviewed hash. Any non-release source change after the recorded candidate invalidates the
 attestation.
 
-The aggregate tools remain useful when a change genuinely warrants another cross-repository
-experiment:
+Each adoption report has two upstream channels. First, report any plugin defect or
+consumer workaround immediately. Second, batch reusable rules, hazards, tempting false leads,
+process gaps, and paths the pass did not exercise at report-back, with the concrete evidence
+that supports them and a proposed destination (normative template, main doctrine, casebook, or
+repo-local notes). Always include the exact resolved plugin JAR SHA-256 and the consumer's
+starting and final commits. This keeps non-defect learning from disappearing without turning
+every observation into a shared-template revision.
+
+The local fuzz runner remains available when a change warrants a cross-repository campaign:
 
 ```shell
-tools/fleet-canary.sh                     # available manifest siblings
-tools/fleet-canary.sh --deep              # optional repeated mutation diagnostic
-tools/fleet-canary.sh ../sava ../ravina:pitestCalls
 tools/local-fuzz.sh --seconds 121 --parallel-targets 4 ../ravina
 ```
 
-Their strict `--release` modes still produce immutable, SHA-bound fleet/fuzz bundles and the
-legacy `release-attestation.sh create` command can bind those receipts when an owner explicitly
-chooses that stronger experiment. They are never required merely because a release is being
-cut. Scheduled GitHub fuzz workflows are likewise outside the plugin contract.
+Its strict `--release` mode can still produce an immutable, SHA-bound fuzz bundle for an
+explicit experiment, but release attestation is derived from the reviewed consumer
+certification receipts; a release never requires a duplicate aggregate mutation campaign.
+Scheduled GitHub fuzz workflows are likewise outside the plugin contract.

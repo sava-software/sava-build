@@ -2,9 +2,10 @@ package software.sava.build.hardening
 
 /**
  * The single place that knows the audited-timeout membership file's row format
- * (`config/pitest/<suite>-timeouts.csv`: line-less `class,method,mutator` keys, `#`
- * comments allowed), so the verify and `pitest<Suite>Debt` can never drift on what
- * parses, what is malformed, or which causes resolve.
+ * (`config/pitest/<suite>-timeouts.csv`: line-less `class,method,mutator` keys with
+ * backward-compatible `# cause:<category>` and line-anchor metadata), so the verify
+ * and `pitest<Suite>Debt` can never drift on what parses, what is malformed, which
+ * cause classes are admissible, or which README causes resolve.
  *
  * This is intentionally not an accepted-baseline [BaselineDocument]. Timeout audit
  * sets were introduced with this stable line-less three-field identity; unlike the
@@ -23,6 +24,26 @@ package software.sava.build.hardening
 internal object TimeoutAudit {
 
   /**
+   * A timeout row's reviewed explanation class. Only [LIVENESS] is admissible as
+   * watchdog detection: [RESOURCE] still terminates and needs a contract-first
+   * disposition, while [UNTRIAGED] is the seeder's explicit unfinished state.
+   */
+  enum class CauseCategory(val token: String) {
+    LIVENESS("liveness"),
+    RESOURCE("resource"),
+    UNTRIAGED("untriaged");
+
+    companion object {
+      fun fromToken(token: String): CauseCategory? = entries.singleOrNull { it.token == token }
+    }
+  }
+
+  data class CauseFinding(
+    val member: String,
+    val detail: String,
+  )
+
+  /**
    * Well-formed, de-duplicated `class,method,mutator` members, the rows that failed
    * to parse, and each member's recorded lines — the numbers a row's `# line 12` /
    * `# lines 12, 30` / `# lines 12/30` comment names, absent when the comment
@@ -32,12 +53,21 @@ internal object TimeoutAudit {
     val members: Set<String>,
     val malformed: List<String>,
     val recordedLines: Map<String, Set<Int>>,
+    val causeCategories: Map<String, CauseCategory>,
+    val causeFindings: List<CauseFinding>,
   )
 
   // Comma or slash between numbers: the seed writes commas, but hand-written rows
   // in shipped consumer files say '# lines 137/141' — a parser keeping only the
   // first number would read the second line's timeout as false drift.
   private val LINE_COMMENT = Regex("""\blines?\s+(\d+(?:\s*[,/]\s*\d+)*)""")
+  private val CAUSE_COMMENT = Regex("""\bcause\s*:\s*([A-Za-z][A-Za-z0-9_-]*)\b""")
+
+  private data class ParsedRow(
+    val key: String,
+    val recordedLines: List<Int>,
+    val causeTokens: List<String>,
+  )
 
   /**
    * Parses membership rows: `#` comments stripped, each field trimmed (spacing is
@@ -52,26 +82,80 @@ internal object TimeoutAudit {
    */
   fun parse(lines: List<String>): Membership {
     val rows = lines.map { line ->
+      val comment = line.substringAfter('#', "")
       val key = line.substringBefore('#').split(',').joinToString(",") { it.trim() }
-      val recorded = LINE_COMMENT.find(line.substringAfter('#', ""))
+      val recorded = LINE_COMMENT.find(comment)
           ?.groupValues?.get(1)?.split(',', '/')?.mapNotNull { it.trim().toIntOrNull() }
           .orEmpty()
-      key to recorded
-    }.filter { (key, _) -> key.isNotEmpty() }
-    val (memberRows, malformedRows) = rows.partition { (key, _) ->
-      val fields = key.split(',')
+      ParsedRow(
+          key,
+          recorded,
+          CAUSE_COMMENT.findAll(comment).map { it.groupValues[1] }.toList(),
+      )
+    }.filter { it.key.isNotEmpty() }
+    val (memberRows, malformedRows) = rows.partition { row ->
+      val fields = row.key.split(',')
       fields.size == 3 && fields.none { it.isEmpty() }
     }
     val recordedLines = memberRows
-        .filter { (_, recorded) -> recorded.isNotEmpty() }
-        .groupBy({ it.first }, { it.second })
+        .filter { it.recordedLines.isNotEmpty() }
+        .groupBy({ it.key }, { it.recordedLines })
         .mapValues { (_, recorded) -> recorded.flatten().toSet() }
+    val categories = linkedMapOf<String, CauseCategory>()
+    val causeFindings = mutableListOf<CauseFinding>()
+    memberRows.groupBy { it.key }.toSortedMap().forEach { (member, copies) ->
+      val tokens = copies.flatMap { it.causeTokens }.distinct()
+      when {
+        tokens.isEmpty() -> causeFindings += CauseFinding(
+            member, "missing cause:liveness/resource/untriaged")
+        tokens.size > 1 -> causeFindings += CauseFinding(
+            member, "conflicting cause categories: ${tokens.sorted().joinToString(", ")}")
+        else -> {
+          val token = tokens.single()
+          val category = CauseCategory.fromToken(token)
+          if (category == null) {
+            causeFindings += CauseFinding(member, "unknown cause category '$token'")
+          } else {
+            categories[member] = category
+            when (category) {
+              CauseCategory.LIVENESS -> Unit
+              CauseCategory.RESOURCE -> causeFindings += CauseFinding(
+                  member,
+                  "cause:resource terminates and needs a deterministic contract-first disposition, " +
+                      "not watchdog detection")
+              CauseCategory.UNTRIAGED -> causeFindings += CauseFinding(
+                  member, "cause:untriaged has not been reviewed")
+            }
+          }
+        }
+      }
+    }
     return Membership(
-        memberRows.map { it.first }.toSet(),
-        malformedRows.map { it.first },
+        memberRows.map { it.key }.toSet(),
+        malformedRows.map { it.key },
         recordedLines,
+        categories,
+        causeFindings,
     )
   }
+
+  /** Cause-classification findings for [members], preserving parser diagnostics. */
+  fun causeFindings(membership: Membership, members: Collection<String>): List<CauseFinding> {
+    val selected = members.toSet()
+    return membership.causeFindings.filter { it.member in selected }
+  }
+
+  fun causeFindingWarning(
+    suiteName: String,
+    fileName: String,
+    findings: Collection<CauseFinding>,
+  ): String =
+      "pitest '$suiteName': ${findings.size} audited-timeout member(s) lack an admissible cause " +
+          "classification in $fileName — use 'cause:liveness' only when the mutant cannot complete " +
+          "after deterministic seams/budgets are exhausted; 'cause:resource' requires either a " +
+          "deterministic resource-contract test/fix or a stable SURVIVED equivalence argument, and " +
+          "'cause:untriaged' is unfinished:\n" +
+          findings.sortedBy { it.member }.joinToString("\n") { "  ${it.member} # ${it.detail}" }
 
   /** The malformed-row warning, or null when every row parses. */
   fun malformedWarning(suiteName: String, fileName: String, malformed: List<String>): String? =

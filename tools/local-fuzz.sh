@@ -31,7 +31,7 @@ Ordinary no-argument mode runs available manifest siblings and defaults to 60
 seconds per target with one target at a time. It may fall back to discovered fuzz<Target> tasks for an
 older consumer contract, or run help when no target exists.
 
-Release mode requires an explicit bounded budget and concurrency, the complete clean fleet,
+Release mode requires an explicit bounded budget and concurrency, the complete clean roster,
 matching GitHub remotes, fuzzAll, and at least one registered target per repo.
 It retains and hashes the publish log, consumer logs, and plugin-generated
 local-fuzz.tsv receipts in a run-specific evidence bundle.
@@ -730,7 +730,7 @@ $changed"; else unexpected=$changed; fi
   recorded_manifest_hash=$(jq -r '.manifest_sha256' "$resolved_receipt") || return 1
   actual_manifest_hash=$(sha256_file "$manifest") || return 1
   if [ "$recorded_manifest_hash" != "$actual_manifest_hash" ]; then
-    echo "local-fuzz: fleet manifest changed after certification" >&2
+    echo "local-fuzz: local-fuzz manifest changed after certification" >&2
     return 1
   fi
   manifest_count=$(manifest_slugs | wc -l | tr -d ' ') || return 1

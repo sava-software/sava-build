@@ -89,6 +89,70 @@ class TimeoutAuditTest {
   }
 
   @Test
+  fun `only liveness is an admissible audited-timeout cause classification`() {
+    val membership = TimeoutAudit.parse(listOf(
+      "com.example.Codec,loop,MathMutator # cause:liveness line 12",
+      "com.example.Codec,grow,MathMutator # cause:resource line 20",
+      "com.example.Codec,pending,MathMutator # cause:untriaged line 30",
+      "com.example.Codec,legacy,MathMutator # line 40",
+      "com.example.Codec,typo,MathMutator # cause:nontermination line 50",
+    ))
+
+    assertEquals(
+      TimeoutAudit.CauseCategory.LIVENESS,
+      membership.causeCategories.getValue("com.example.Codec,loop,MathMutator")
+    )
+    assertEquals(
+      setOf(
+        "com.example.Codec,grow,MathMutator",
+        "com.example.Codec,pending,MathMutator",
+        "com.example.Codec,legacy,MathMutator",
+        "com.example.Codec,typo,MathMutator",
+      ),
+      membership.causeFindings.mapTo(linkedSetOf()) { it.member }
+    )
+  }
+
+  @Test
+  fun `conflicting cause classifications fail the member instead of using file order`() {
+    val membership = TimeoutAudit.parse(listOf(
+      "com.example.Codec,wait,MathMutator # cause:liveness line 12",
+      "com.example.Codec,wait,MathMutator # cause:resource line 30",
+    ))
+
+    assertEquals(emptyMap<String, TimeoutAudit.CauseCategory>(), membership.causeCategories)
+    assertEquals(1, membership.causeFindings.size)
+    assertTrue(membership.causeFindings.single().detail.contains("conflicting"))
+  }
+
+  @Test
+  fun `conflicting classifications on one row cannot hide behind the first token`() {
+    val membership = TimeoutAudit.parse(listOf(
+      "com.example.Codec,wait,MathMutator # cause:liveness cause:resource line 12",
+    ))
+
+    assertEquals(emptyMap<String, TimeoutAudit.CauseCategory>(), membership.causeCategories)
+    assertEquals(
+      "conflicting cause categories: liveness, resource",
+      membership.causeFindings.single().detail,
+    )
+  }
+
+  @Test
+  fun `cause findings can be scoped to live members`() {
+    val membership = TimeoutAudit.parse(listOf(
+      "com.example.Codec,live,MathMutator # cause:liveness line 12",
+      "com.example.Codec,stale,MathMutator # cause:untriaged line 30",
+    ))
+
+    assertEquals(
+      emptyList<TimeoutAudit.CauseFinding>(),
+      TimeoutAudit.causeFindings(
+        membership, listOf("com.example.Codec,live,MathMutator"))
+    )
+  }
+
+  @Test
   fun `line drift fires only when observed and recorded lines are disjoint`() {
     val recorded = mapOf(
       "com.example.Codec,encode,MathMutator" to setOf(12, 30),

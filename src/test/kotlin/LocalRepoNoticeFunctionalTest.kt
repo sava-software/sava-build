@@ -77,28 +77,26 @@ class LocalRepoNoticeFunctionalTest {
   }
 
   @Test
-  fun `the fleet canary resolution needle matches the notice`() {
-    // tools/fleet-canary.sh fails a green consumer build that does not print this
-    // line: a settings snippet predating -PsavaBuildLocalRepo ignores the property
-    // and resolves the released plugin — green output that canaries nothing. The
-    // needle is deliberately coupled to the notice's wording; this pins it so a
-    // reworded notice fails here instead of making the canary flag every healthy
-    // repo. Asserted in both directions, because a needle matching a non-resolving
-    // build would silence the check just as thoroughly.
-    val script = File(savaBuildTestProperty("savaBuild.root"), "tools/fleet-canary.sh").readText()
+  fun `the local fuzz resolution needle matches the notice`() {
+    // local-fuzz refuses a consumer build that does not print this line: an old
+    // settings snippet can ignore -PsavaBuildLocalRepo and resolve the released
+    // plugin while still producing a green build. Couple the runner's fixed needle
+    // to both sides of the notice so a wording change cannot reject healthy local
+    // resolutions or accept a published one.
+    val script = File(savaBuildTestProperty("savaBuild.root"), "tools/local-fuzz.sh").readText()
     val needle = Regex("(?m)^resolution_notice=\"([^\"]+)\"").find(script)?.groupValues?.get(1)
-      ?: error("resolution_notice line not found in tools/fleet-canary.sh")
+      ?: error("resolution_notice line not found in tools/local-fuzz.sh")
 
     writeFixture()
     val resolving = runBuild("help", "-PsavaBuildLocalRepo=$localRepo")
     assertTrue(
       resolving.output.contains(needle),
-      "canary needle '$needle' missing from a resolving build:\n${resolving.output}"
+      "local-fuzz needle '$needle' missing from a resolving build:\n${resolving.output}"
     )
     val published = runBuild("help")
     assertFalse(
       published.output.contains(needle),
-      "canary needle '$needle' matches a build that resolved nothing locally:\n${published.output}"
+      "local-fuzz needle '$needle' matches a build that resolved nothing locally:\n${published.output}"
     )
   }
 }

@@ -1,39 +1,32 @@
 #!/usr/bin/env bash
 # Bridges reviewed local adoption evidence into the Git history that creates and
-# publishes a release. The committed file is an owner attestation: it names the
-# projects whose local adoption passes were reviewed and binds that decision to the
-# exact candidate commit, tree, and plugin JAR. The optional strict fleet/fuzz runners
-# remain available for unusually broad changes, but are not a release prerequisite.
+# publishes a release. The committed file is an owner attestation: for new records it
+# derives each reviewed consumer's clean commit and completed certification receipts,
+# then binds them to the exact candidate commit, tree, and plugin JAR.
 set -euo pipefail
 export LC_ALL=C
 
 sava_build_dir=$(cd "$(dirname "$0")/.." && pwd -P)
 release_manifest="$sava_build_dir/.release-please-manifest.json"
-fleet_manifest="$sava_build_dir/tools/fleet-manifest.txt"
 attestations_dir="$sava_build_dir/release-attestations"
-fleet_verifier="$sava_build_dir/tools/fleet-canary.sh"
-fuzz_verifier="$sava_build_dir/tools/local-fuzz.sh"
-default_fleet_pointer="$sava_build_dir/build/hardening/fleet-canary-receipt.json"
-default_fuzz_pointer="$sava_build_dir/build/hardening/local-fuzz-receipt.json"
 expected_origin_slug="sava-software/sava-build"
 release_attestation_self_test_cleanup_path=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  tools/release-attestation.sh create-reviewed <version> --candidate <commit> --plugin-jar <path> --adoption <github-org/repo> [--adoption <github-org/repo> ...]
-  tools/release-attestation.sh create <version> [--fleet-pointer <path>] [--fuzz-pointer <path>]
+  tools/release-attestation.sh create-reviewed <version> --candidate <commit> --plugin-jar <path> --adoption <consumer-checkout> [--adoption <consumer-checkout> ...]
   tools/release-attestation.sh verify <version>
   tools/release-attestation.sh verify-tag <version>
   tools/release-attestation.sh verify-built-jar <version> <jar>
   tools/release-attestation.sh verify-pending-release
   tools/release-attestation.sh --self-test
 
-`create-reviewed` records the already-reviewed local adoption cohort and hashes the
-exact candidate JAR those passes exercised. `create` remains available when an owner deliberately
-chooses the optional full-fleet/fuzz receipt path. Commit the generated file to the
-Release Please PR. Tag creation and publication then validate the candidate identity
-and refuse a rebuilt JAR whose bytes differ from the reviewed candidate.
+`create-reviewed` reads completed hardening-certification receipts from each clean
+consumer checkout and requires every suite to have loaded the exact candidate JAR.
+Commit the generated file to the Release Please PR. Tag creation and publication then
+validate the candidate identity and refuse a rebuilt JAR whose bytes differ from the
+reviewed candidate.
 EOF
 }
 
@@ -89,6 +82,344 @@ absolute_file() {
   printf '%s/%s\n' "$parent" "$base"
 }
 
+require_no_symlink_components() {
+  local requested=$1 label=$2 probe="" component
+  local components=()
+  case "$requested" in
+    /*) ;;
+    *)
+      echo "release-attestation: internal error: $label path is not absolute: $requested" >&2
+      return 1
+      ;;
+  esac
+  IFS='/' read -r -a components <<< "${requested#/}"
+  for component in "${components[@]}"; do
+    [ -n "$component" ] || continue
+    probe="$probe/$component"
+    if [ -L "$probe" ]; then
+      echo "release-attestation: $label path contains a symlink component: $probe" >&2
+      return 1
+    fi
+  done
+}
+
+absolute_regular_directory() {
+  local requested=$1 label=$2 physical_pwd absolute
+  physical_pwd=$(pwd -P) || return 1
+  case "$requested" in /*) absolute=$requested ;; *) absolute="$physical_pwd/$requested" ;; esac
+  case "$absolute/" in
+    */../*|*/./*|*//*)
+      echo "release-attestation: $label path contains traversal or an empty component: $requested" >&2
+      return 1
+      ;;
+  esac
+  require_no_symlink_components "$absolute" "$label" || return 1
+  if [ ! -d "$absolute" ]; then
+    echo "release-attestation: missing $label directory: $absolute" >&2
+    return 1
+  fi
+  (cd "$absolute" && pwd -P)
+}
+
+normalized_github_origin() {
+  local value=$1 slug
+  case "$value" in
+    git@github.com:*) slug=${value#git@github.com:} ;;
+    https://github.com/*) slug=${value#https://github.com/} ;;
+    ssh://git@github.com/*) slug=${value#ssh://git@github.com/} ;;
+    *) return 1 ;;
+  esac
+  slug=${slug%.git}
+  if ! [[ "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    return 1
+  fi
+  slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]') || return 1
+  printf '%s\t%s\n' "$slug" "https://github.com/$slug.git"
+}
+
+certification_receipt_summary() {
+  local receipt=$1 relative=$2 expected_plugin_hash=$3 expected_commit=$4 expected_tree=$5
+  local before after metadata project session plugin_hash suite_count suites
+  local git_state git_commit git_tree git_status_sha256 git_project_directory expected_path
+  if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
+    echo "release-attestation: missing or symlinked certification receipt: $receipt" >&2
+    return 1
+  fi
+  require_no_symlink_components "$receipt" "certification receipt" || return 1
+  if [ -e "$(dirname "$receipt")/pitest-certification.running" ] ||
+      [ -L "$(dirname "$receipt")/pitest-certification.running" ]; then
+    echo "release-attestation: certification is incomplete or still running beside $receipt" >&2
+    return 1
+  fi
+  before=$(sha256_file "$receipt") || return 1
+  metadata=$(awk -F '\t' '
+    $1 == "schema" {
+      schemaRows++; if (NR != 1 || NF != 2 || $2 != "6") invalid=1; next
+    }
+    $1 == "project" {
+      projectRows++; if (NR != 2 || NF != 2 || $2 == "") invalid=1; project=$2; next
+    }
+    $1 == "session" {
+      sessionRows++; if (NR != 3 || NF != 2 || $2 == "") invalid=1; session=$2; next
+    }
+    $1 == "mode" {
+      modeRows++; if (NR != 4 || NF != 2 || $2 != "fresh-full-strict") invalid=1; next
+    }
+    $1 == "gitState" {
+      gitStateRows++; if (NR != 5 || NF != 2 ||
+        ($2 != "clean" && $2 != "dirty" && $2 != "unavailable")) invalid=1
+      gitState=$2; next
+    }
+    $1 == "gitCommit" {
+      gitCommitRows++; if (NR != 6 || NF != 2 || $2 == "") invalid=1
+      gitCommit=$2; next
+    }
+    $1 == "gitTree" {
+      gitTreeRows++; if (NR != 7 || NF != 2 || $2 == "") invalid=1
+      gitTree=$2; next
+    }
+    $1 == "gitStatusSha256" {
+      gitStatusRows++; if (NR != 8 || NF != 2 || $2 == "") invalid=1
+      gitStatus=$2; next
+    }
+    $1 == "gitProjectDirectory" {
+      gitProjectRows++; if (NR != 9 || NF != 2 || $2 == "") invalid=1
+      gitProject=$2; next
+    }
+    $1 == "pluginSha256" {
+      pluginRows++; if (NR != 10 || NF != 2 || length($2) != 64 || $2 ~ /[^0-9a-f]/) invalid=1
+      headerPlugin=$2; next
+    }
+    $1 == "columns" {
+      columnsRows++
+      if (NR != 11 || NF != 15 || $2 != "suite" || $3 != "name" || $4 != "invocation" ||
+          $5 != "reportSha256" || $6 != "sourceSha256" || $7 != "classesSha256" ||
+          $8 != "configurationSha256" || $9 != "pitestVersion" ||
+          $10 != "pluginSha256" || $11 != "toolClasspathSha256" ||
+          $12 != "mutationToolchainSha256" || $13 != "recordInputsSha256" ||
+          $14 != "recordPitestVersion" ||
+          $15 != "recordMutationToolchainSha256") invalid=1
+      next
+    }
+    $1 == "suite" {
+      suites++
+      if (NR <= 11 || NF != 14 || $2 == "" || $3 == "" || $8 == "" || $13 == "" ||
+          $14 == "" || seen[$2]++) invalid=1
+      for (i=4; i<=12; i++) {
+        if (i == 8) continue
+        if (length($i) != 64 || $i ~ /[^0-9a-f]/) invalid=1
+      }
+      if (!(($13 == "no-record" && $14 == "no-record") ||
+            ($13 == "legacy-unversioned" && $14 == "legacy-toolchain-unbound") ||
+            ($13 == $8 && length($14) == 64 && $14 !~ /[^0-9a-f]/ &&
+             ("x" $14) == ("x" $11)))) invalid=1
+      if ($9 != headerPlugin) invalid=1
+      if (suites == 1) {
+        projectSource=$5; projectClasses=$6; projectPitest=$8
+        projectToolClasspath=$10; projectMutationToolchain=$11
+      } else if ($5 != projectSource || $6 != projectClasses || $8 != projectPitest ||
+          $10 != projectToolClasspath || $11 != projectMutationToolchain) invalid=1
+      next
+    }
+    { invalid=1 }
+    END {
+      if (invalid || schemaRows != 1 || projectRows != 1 || sessionRows != 1 ||
+          modeRows != 1 || gitStateRows != 1 || gitCommitRows != 1 || gitTreeRows != 1 ||
+          gitStatusRows != 1 || gitProjectRows != 1 || pluginRows != 1 || columnsRows != 1) exit 1
+      if (gitState == "unavailable") {
+        if (gitCommit != "unavailable" || gitTree != "unavailable" ||
+            gitStatus != "unavailable" || gitProject != "unavailable") exit 1
+      } else {
+        if (length(gitCommit) != 40 || gitCommit ~ /[^0-9a-f]/ ||
+            length(gitTree) != 40 || gitTree ~ /[^0-9a-f]/ ||
+            length(gitStatus) != 64 || gitStatus ~ /[^0-9a-f]/) exit 1
+        if (gitProject == "" || gitProject ~ /[\t\r\n]/) exit 1
+        if (gitState == "clean" &&
+            gitStatus != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") exit 1
+        if (gitState == "dirty" &&
+            gitStatus == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") exit 1
+      }
+      printf "%s\n%s\n%s\n%d\n%s\n%s\n%s\n%s\n%s\n", project, session,
+        headerPlugin, suites, gitState, gitCommit, gitTree, gitStatus, gitProject
+    }
+  ' "$receipt") || {
+    echo "release-attestation: malformed or mixed certification receipt: $receipt" >&2
+    return 1
+  }
+  project=$(sed -n '1p' <<< "$metadata")
+  session=$(sed -n '2p' <<< "$metadata")
+  plugin_hash=$(sed -n '3p' <<< "$metadata")
+  suite_count=$(sed -n '4p' <<< "$metadata")
+  git_state=$(sed -n '5p' <<< "$metadata")
+  git_commit=$(sed -n '6p' <<< "$metadata")
+  git_tree=$(sed -n '7p' <<< "$metadata")
+  git_status_sha256=$(sed -n '8p' <<< "$metadata")
+  git_project_directory=$(sed -n '9p' <<< "$metadata")
+  if [ "$git_state" != clean ]; then
+    echo "release-attestation: certification receipt does not bind a clean Git checkout: $receipt" >&2
+    echo "release-attestation: recorded Git state is $git_state" >&2
+    return 1
+  fi
+  if [ "$git_commit" != "$expected_commit" ] || [ "$git_tree" != "$expected_tree" ]; then
+    echo "release-attestation: stale certification receipt belongs to a different consumer revision: $receipt" >&2
+    echo "release-attestation: expected $expected_commit/$expected_tree, found $git_commit/$git_tree" >&2
+    return 1
+  fi
+  if [ "$plugin_hash" != "$expected_plugin_hash" ]; then
+    echo "release-attestation: stale certification receipt loaded a different plugin JAR: $receipt" >&2
+    echo "release-attestation: expected $expected_plugin_hash, found $plugin_hash" >&2
+    return 1
+  fi
+  case "$git_project_directory" in
+    .) expected_path="build/hardening/pitest-certification.tsv" ;;
+    /*|''|*//*|../*|*/../*|./*|*/./*) expected_path="" ;;
+    *) expected_path="$git_project_directory/build/hardening/pitest-certification.tsv" ;;
+  esac
+  if [ -z "$expected_path" ] || [ "$relative" != "$expected_path" ]; then
+    echo "release-attestation: certification receipt path does not match its Git project directory: $receipt" >&2
+    echo "release-attestation: recorded '$git_project_directory', receipt '$relative'" >&2
+    return 1
+  fi
+  suites=$(awk -F '\t' '$1 == "suite" { print $2 }' "$receipt" |
+    jq -Rsc 'split("\n") | map(select(length > 0)) | sort') || return 1
+  after=$(sha256_file "$receipt") || return 1
+  if [ "$before" != "$after" ]; then
+    echo "release-attestation: certification receipt changed while being read: $receipt" >&2
+    return 1
+  fi
+  jq -cn --arg path "$relative" --arg sha256 "$after" --arg project "$project" \
+    --arg session "$session" --arg git_project_directory "$git_project_directory" \
+    --argjson suites "$suites" --argjson suite_count "$suite_count" \
+    '{path:$path,receipt_sha256:$sha256,schema:6,project:$project,session:$session,
+      git_project_directory:$git_project_directory,
+      suites:$suites,suite_count:$suite_count}'
+}
+
+reviewed_adoption_summary() {
+  local requested=$1 expected_plugin_hash=$2 checkout git_root status remote origin_pair slug origin
+  local commit tree inventory linked build_dir receipt receipt_root relative summary summary_suite_count
+  local certifications='[]'
+  local receipt_count=0 positive_suite_count=0
+  checkout=$(absolute_regular_directory "$requested" "consumer checkout") || return 1
+  if ! git_root=$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null); then
+    echo "release-attestation: consumer checkout is not a Git worktree: $checkout" >&2
+    return 1
+  fi
+  git_root=$(cd "$git_root" && pwd -P) || return 1
+  if [ "$git_root" != "$checkout" ]; then
+    echo "release-attestation: adoption path is not the consumer worktree root: $checkout" >&2
+    return 1
+  fi
+  if ! status=$(git -C "$checkout" status --porcelain --untracked-files=all \
+      --ignore-submodules=none); then
+    echo "release-attestation: could not inspect consumer checkout status: $checkout" >&2
+    return 1
+  fi
+  if [ -n "$status" ]; then
+    echo "release-attestation: consumer checkout must be clean before reading certification: $checkout" >&2
+    printf '%s\n' "$status" >&2
+    return 1
+  fi
+  remote=$(git -C "$checkout" remote get-url origin 2>/dev/null || true)
+  if ! origin_pair=$(normalized_github_origin "$remote"); then
+    echo "release-attestation: consumer origin is not a supported GitHub remote: '$remote'" >&2
+    return 1
+  fi
+  slug=${origin_pair%%$'\t'*}
+  origin=${origin_pair#*$'\t'}
+  commit=$(git -C "$checkout" rev-parse HEAD) || return 1
+  tree=$(git -C "$checkout" rev-parse 'HEAD^{tree}') || return 1
+  if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || ! [[ "$tree" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "release-attestation: consumer checkout did not resolve full commit/tree identities: $checkout" >&2
+    return 1
+  fi
+
+  linked=$(find -P "$checkout" -type d -name .git -prune -o \
+    -type d -name build -prune -o -type l -name build -print -quit) || return 1
+  if [ -n "$linked" ]; then
+    echo "release-attestation: certification evidence path contains a symlink: $linked" >&2
+    return 1
+  fi
+  inventory=$(mktemp "${TMPDIR:-/tmp}/release-attestation-certifications.XXXXXX") || {
+    echo "release-attestation: could not allocate certification inventory" >&2
+    return 1
+  }
+  if ! find -P "$checkout" -type d -name .git -prune -o \
+      -type d -name build -print0 -prune > "$inventory"; then
+    rm -f "$inventory"
+    echo "release-attestation: could not inventory certification receipts under $checkout" >&2
+    return 1
+  fi
+  while IFS= read -r -d '' build_dir; do
+    receipt="$build_dir/hardening/pitest-certification.tsv"
+    if [ -L "$build_dir/hardening" ] || [ -L "$receipt" ]; then
+      rm -f "$inventory"
+      echo "release-attestation: certification evidence path contains a symlink: $receipt" >&2
+      return 1
+    fi
+    [ -f "$receipt" ] || continue
+    receipt_count=$((receipt_count + 1))
+    receipt_root=$(git -C "$(dirname "$receipt")" rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -z "$receipt_root" ]; then
+      rm -f "$inventory"
+      echo "release-attestation: certification receipt is outside a Git worktree: $receipt" >&2
+      return 1
+    fi
+    receipt_root=$(cd "$receipt_root" && pwd -P) || { rm -f "$inventory"; return 1; }
+    if [ "$receipt_root" != "$checkout" ]; then
+      rm -f "$inventory"
+      echo "release-attestation: certification receipt belongs to a nested or different worktree: $receipt" >&2
+      return 1
+    fi
+    case "$receipt" in
+      "$checkout"/*) relative=${receipt#"$checkout"/} ;;
+      *)
+        rm -f "$inventory"
+        echo "release-attestation: certification receipt escapes its consumer checkout: $receipt" >&2
+        return 1
+        ;;
+    esac
+    summary=$(certification_receipt_summary \
+      "$receipt" "$relative" "$expected_plugin_hash" "$commit" "$tree") || {
+      rm -f "$inventory"
+      return 1
+    }
+    summary_suite_count=$(jq -er '.suite_count' <<< "$summary") || {
+      rm -f "$inventory"
+      return 1
+    }
+    positive_suite_count=$((positive_suite_count + summary_suite_count))
+    certifications=$(jq -cn --argjson existing "$certifications" --argjson item "$summary" \
+      '$existing + [$item]') || { rm -f "$inventory"; return 1; }
+  done < "$inventory"
+  rm -f "$inventory"
+  if [ "$receipt_count" -eq 0 ]; then
+    echo "release-attestation: no completed hardening certification receipt found under $checkout" >&2
+    return 1
+  fi
+  certifications=$(jq -cS 'sort_by(.path)' <<< "$certifications") || return 1
+  if [ "$positive_suite_count" -eq 0 ]; then
+    echo "release-attestation: certification receipts under $checkout contain zero certified suites" >&2
+    return 1
+  fi
+  if ! status=$(git -C "$checkout" status --porcelain --untracked-files=all \
+      --ignore-submodules=none); then
+    echo "release-attestation: could not re-inspect consumer checkout status: $checkout" >&2
+    return 1
+  fi
+  if [ -n "$status" ] || [ "$commit" != "$(git -C "$checkout" rev-parse HEAD)" ] ||
+      [ "$tree" != "$(git -C "$checkout" rev-parse 'HEAD^{tree}')" ]; then
+    echo "release-attestation: consumer checkout changed while certification was read: $checkout" >&2
+    [ -z "$status" ] || printf '%s\n' "$status" >&2
+    return 1
+  fi
+  jq -cn --arg slug "$slug" --arg commit "$commit" --arg tree "$tree" \
+    --arg origin "$origin" --arg plugin_hash "$expected_plugin_hash" \
+    --argjson certifications "$certifications" \
+    '{slug:$slug,commit:$commit,tree:$tree,origin:$origin,
+      plugin_jar_sha256:$plugin_hash,certifications:$certifications}'
+}
+
 require_clean_checkout() {
   local status
   status=$(git -C "$sava_build_dir" status --porcelain --untracked-files=all)
@@ -97,110 +428,6 @@ require_clean_checkout() {
     printf '%s\n' "$status" >&2
     return 1
   fi
-}
-
-manifest_repository_count() {
-  awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 }' "$fleet_manifest"
-}
-
-# Print a compact, trusted projection of one canonical pointer and its immutable
-# bundle receipt. The full runner verifier executes first; this function only binds
-# the fields the committed release attestation needs.
-verified_pointer_summary() {
-  local leg=$1 pointer_kind=$2 receipt_kind=$3 verifier=$4 requested=$5
-  local pointer pointer_before pointer_after pointer_json bundle receipt expected
-  local receipt_before receipt_after receipt_json
-  pointer=$(absolute_file "$requested") || return 1
-  if [ ! -f "$pointer" ] || [ -L "$pointer" ]; then
-    echo "release-attestation: missing or symlinked $leg pointer: $pointer" >&2
-    return 1
-  fi
-  pointer_before=$(sha256_file "$pointer") || return 1
-  # The caller guards this whole function with `|| return 1`, which disables
-  # errexit inside it on Bash 3.2. Every delegated verifier must be explicit.
-  if ! "$verifier" --verify-receipt "$pointer" >&2; then
-    echo "release-attestation: $leg receipt verifier rejected $pointer" >&2
-    return 1
-  fi
-  pointer_after=$(sha256_file "$pointer") || return 1
-  if [ "$pointer_before" != "$pointer_after" ]; then
-    echo "release-attestation: $leg pointer changed during verification: $pointer" >&2
-    return 1
-  fi
-  pointer_json=$(<"$pointer")
-  if ! jq -e --arg kind "$pointer_kind" '
-      .schema == 2 and .kind == $kind and .mode == "release" and .result == "passed" and
-      (.run_id | test("^run[.][A-Za-z0-9]+$")) and
-      (.plugin_sha | test("^[0-9a-f]{40}$")) and
-      (.receipt_sha256 | test("^[0-9a-f]{64}$")) and
-      (.bundle | type == "string" and length > 0)
-    ' <<< "$pointer_json" >/dev/null; then
-    echo "release-attestation: invalid completed $leg release pointer: $pointer" >&2
-    return 1
-  fi
-  bundle=$(jq -r '.bundle' <<< "$pointer_json")
-  case "$bundle" in
-    ''|/*)
-      echo "release-attestation: invalid $leg bundle path: $bundle" >&2
-      return 1
-      ;;
-  esac
-  case "/$bundle/" in
-    */../*|*/./*|*//* )
-      echo "release-attestation: $leg bundle escapes its pointer directory: $bundle" >&2
-      return 1
-      ;;
-  esac
-  receipt="$(dirname "$pointer")/$bundle"
-  if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
-    echo "release-attestation: missing or symlinked $leg bundle receipt: $receipt" >&2
-    return 1
-  fi
-  receipt_before=$(sha256_file "$receipt") || return 1
-  expected=$(jq -r '.receipt_sha256' <<< "$pointer_json")
-  if [ "$receipt_before" != "$expected" ]; then
-    echo "release-attestation: $leg bundle receipt hash does not match its pointer" >&2
-    return 1
-  fi
-  receipt_json=$(<"$receipt")
-  receipt_after=$(sha256_file "$receipt") || return 1
-  if [ "$receipt_before" != "$receipt_after" ]; then
-    echo "release-attestation: $leg bundle receipt changed while being projected" >&2
-    return 1
-  fi
-  if ! jq -e --arg kind "$receipt_kind" '
-      .schema == 3 and .kind == $kind and .mode == "release" and .result == "passed" and
-      (.run_id | test("^run[.][A-Za-z0-9]+$")) and
-      (.plugin.sha | test("^[0-9a-f]{40}$")) and
-      (.plugin.tree | test("^[0-9a-f]{40}$")) and
-      (.plugin.origin | type == "string" and length > 0) and
-      .plugin.dirty_before == false and .plugin.dirty_after == false and
-      (.plugin.test_jar_sha256 | test("^[0-9a-f]{64}$")) and
-      (.manifest_sha256 | test("^[0-9a-f]{64}$")) and
-      (.repositories | type == "array" and length > 0) and
-      all(.repositories[];
-        (.slug | type == "string" and length > 0) and
-        (.sha | test("^[0-9a-f]{40}$")) and
-        (.origin | type == "string" and length > 0)) and
-      (([.repositories[].slug] | unique | length) == (.repositories | length))
-    ' <<< "$receipt_json" >/dev/null; then
-    echo "release-attestation: invalid $leg bundle receipt: $receipt" >&2
-    return 1
-  fi
-  if [ "$(jq -r '.run_id' <<< "$pointer_json")" != "$(jq -r '.run_id' <<< "$receipt_json")" ] ||
-      [ "$(jq -r '.plugin_sha' <<< "$pointer_json")" != "$(jq -r '.plugin.sha' <<< "$receipt_json")" ]; then
-    echo "release-attestation: $leg pointer identity does not match its bundle receipt" >&2
-    return 1
-  fi
-  jq -cn --argjson receipt "$receipt_json" \
-    --arg pointer_sha256 "$pointer_before" --arg receipt_sha256 "$receipt_before" \
-    '{run_id:$receipt.run_id,pointer_sha256:$pointer_sha256,receipt_sha256:$receipt_sha256,
-      plugin_sha:$receipt.plugin.sha,plugin_tree:$receipt.plugin.tree,
-      plugin_origin:$receipt.plugin.origin,plugin_jar_sha256:$receipt.plugin.test_jar_sha256,
-      manifest_sha256:$receipt.manifest_sha256,repository_count:($receipt.repositories|length),
-      repository_identity:($receipt.repositories | map({slug,sha,origin}) | sort_by(.slug)),
-      advisories_acknowledged:($receipt.advisories_acknowledged // false),
-      seconds_per_target:($receipt.seconds_per_target // 0)}'
 }
 
 validate_candidate() {
@@ -248,7 +475,8 @@ validate_release_diff() {
 create_reviewed_attestation() {
   local version=$1 candidate_commit=$2 requested_jar=$3
   shift 3
-  local output tmp candidate_tree candidate_origin jar before after reviewed adoption duplicates
+  local output tmp candidate_tree candidate_origin jar before after reviewed='[]' reviewed_after='[]'
+  local adoption summary duplicates
   require_version "$version"
   if [ "$(manifest_version)" != "$version" ]; then
     echo "release-attestation: release manifest does not name version $version" >&2
@@ -274,29 +502,44 @@ create_reviewed_attestation() {
     return 1
   fi
   if [ "$#" -eq 0 ]; then
-    echo "release-attestation: create-reviewed requires at least one --adoption github-org/repo" >&2
+    echo "release-attestation: create-reviewed requires at least one --adoption consumer-checkout" >&2
     return 1
   fi
-  for adoption in "$@"; do
-    if ! [[ "$adoption" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-      echo "release-attestation: invalid reviewed adoption slug: '$adoption'" >&2
-      return 1
-    fi
-  done
-  duplicates=$(printf '%s\n' "$@" | sort | uniq -d)
-  if [ -n "$duplicates" ]; then
-    echo "release-attestation: duplicate reviewed adoption slug(s):" >&2
-    printf '%s\n' "$duplicates" >&2
-    return 1
-  fi
-  reviewed=$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0)) | sort') || return 1
 
   jar=$(absolute_file "$requested_jar") || return 1
   if [ ! -f "$jar" ] || [ -L "$jar" ]; then
     echo "release-attestation: missing or symlinked reviewed plugin JAR: $jar" >&2
     return 1
   fi
+  require_no_symlink_components "$jar" "reviewed plugin JAR" || return 1
   before=$(sha256_file "$jar") || return 1
+  for adoption in "$@"; do
+    summary=$(reviewed_adoption_summary "$adoption" "$before") || return 1
+    reviewed=$(jq -cn --argjson existing "$reviewed" --argjson item "$summary" \
+      '$existing + [$item]') || return 1
+  done
+  reviewed=$(jq -cS 'sort_by(.slug)' <<< "$reviewed") || return 1
+  duplicates=$(jq -r 'group_by(.slug) | map(select(length > 1) | .[0].slug) | .[]' \
+    <<< "$reviewed") || return 1
+  if [ -n "$duplicates" ]; then
+    echo "release-attestation: duplicate derived adoption slug(s):" >&2
+    printf '%s\n' "$duplicates" >&2
+    return 1
+  fi
+
+  # Re-derive all consumer evidence after the first complete pass. This binds the
+  # recorded clean HEADs and receipt hashes to one observation window instead of
+  # allowing an adoption checkout or ignored build receipt to change mid-command.
+  for adoption in "$@"; do
+    summary=$(reviewed_adoption_summary "$adoption" "$before") || return 1
+    reviewed_after=$(jq -cn --argjson existing "$reviewed_after" --argjson item "$summary" \
+      '$existing + [$item]') || return 1
+  done
+  reviewed_after=$(jq -cS 'sort_by(.slug)' <<< "$reviewed_after") || return 1
+  if [ "$reviewed" != "$reviewed_after" ]; then
+    echo "release-attestation: reviewed consumer evidence changed during attestation" >&2
+    return 1
+  fi
   require_clean_checkout
   after=$(sha256_file "$jar") || return 1
   if [ "$before" != "$after" ]; then
@@ -314,105 +557,10 @@ create_reviewed_attestation() {
     --arg version "$version" --arg commit "$candidate_commit" --arg tree "$candidate_tree" \
     --arg origin "$candidate_origin" --arg plugin_hash "$after" \
     --argjson repositories "$reviewed" \
-    '{schema:2,kind:"sava-build-release-attestation",version:$version,
+    '{schema:3,kind:"sava-build-release-attestation",version:$version,
       candidate:{commit:$commit,tree:$tree,origin:$origin,plugin_jar_sha256:$plugin_hash},
-      review:{kind:"reviewed-local-adoption-passes",repositories:$repositories}}' > "$tmp"
+      review:{kind:"derived-local-hardening-certifications",repositories:$repositories}}' > "$tmp"
   chmod 0644 "$tmp"
-  if [ -e "$output" ] || [ -L "$output" ]; then
-    echo "release-attestation: output appeared during creation; refusing overwrite" >&2
-    return 1
-  fi
-  mv "$tmp" "$output"
-  trap - RETURN
-  echo "release-attestation: wrote $output"
-  echo "release-attestation: commit it to the Release Please PR with only release metadata changes"
-}
-
-create_attestation() {
-  local version=$1 fleet_pointer=$2 fuzz_pointer=$3 output tmp
-  local fleet fuzz candidate_commit candidate_tree candidate_origin plugin_hash manifest_hash
-  local repo_count fleet_count fuzz_count fuzz_seconds advisories inventory_hash
-  require_version "$version"
-  if [ "$(manifest_version)" != "$version" ]; then
-    echo "release-attestation: release manifest does not name version $version" >&2
-    return 1
-  fi
-  output="$attestations_dir/$version.json"
-  if [ -e "$output" ] || [ -L "$output" ]; then
-    echo "release-attestation: refusing to overwrite existing release record: $output" >&2
-    return 1
-  fi
-  require_clean_checkout
-  fleet=$(verified_pointer_summary fleet fleet-canary-pointer fleet-canary-receipt \
-      "$fleet_verifier" "$fleet_pointer") || return 1
-  fuzz=$(verified_pointer_summary fuzz local-fuzz-pointer local-fuzz-receipt \
-      "$fuzz_verifier" "$fuzz_pointer") || return 1
-  require_clean_checkout
-
-  candidate_commit=$(jq -r '.plugin_sha' <<< "$fleet")
-  candidate_tree=$(jq -r '.plugin_tree' <<< "$fleet")
-  candidate_origin=$(origin_slug "$(jq -r '.plugin_origin' <<< "$fleet")")
-  plugin_hash=$(jq -r '.plugin_jar_sha256' <<< "$fleet")
-  manifest_hash=$(jq -r '.manifest_sha256' <<< "$fleet")
-  if [ "$candidate_commit" != "$(jq -r '.plugin_sha' <<< "$fuzz")" ] ||
-      [ "$candidate_tree" != "$(jq -r '.plugin_tree' <<< "$fuzz")" ] ||
-      [ "$candidate_origin" != "$(origin_slug "$(jq -r '.plugin_origin' <<< "$fuzz")")" ] ||
-      [ "$plugin_hash" != "$(jq -r '.plugin_jar_sha256' <<< "$fuzz")" ] ||
-      [ "$manifest_hash" != "$(jq -r '.manifest_sha256' <<< "$fuzz")" ] ||
-      [ "$(jq -cS '.repository_identity' <<< "$fleet")" != \
-        "$(jq -cS '.repository_identity' <<< "$fuzz")" ]; then
-    echo "release-attestation: fleet and fuzz receipts certify different candidates" >&2
-    return 1
-  fi
-  if [ "$candidate_origin" != "$expected_origin_slug" ]; then
-    echo "release-attestation: certified origin is '$candidate_origin', expected '$expected_origin_slug'" >&2
-    return 1
-  fi
-  validate_candidate "$candidate_commit" "$candidate_tree"
-  validate_release_diff "$candidate_commit" "$version" false
-  if [ "$(sha256_file "$fleet_manifest")" != "$manifest_hash" ]; then
-    echo "release-attestation: fleet manifest changed after certification" >&2
-    return 1
-  fi
-  repo_count=$(manifest_repository_count)
-  fleet_count=$(jq -r '.repository_count' <<< "$fleet")
-  fuzz_count=$(jq -r '.repository_count' <<< "$fuzz")
-  if [ "$repo_count" -le 0 ] || [ "$fleet_count" != "$repo_count" ] || [ "$fuzz_count" != "$repo_count" ]; then
-    echo "release-attestation: receipt repository counts do not match the current manifest" >&2
-    return 1
-  fi
-  fuzz_seconds=$(jq -r '.seconds_per_target' <<< "$fuzz")
-  case "$fuzz_seconds" in ''|*[!0-9]*|0) echo "release-attestation: invalid fuzz budget: $fuzz_seconds" >&2; return 1 ;; esac
-  advisories=$(jq -r '.advisories_acknowledged' <<< "$fleet")
-  inventory_hash=$(jq -cS '.repository_identity' <<< "$fleet" | sha256_stream)
-
-  if [ ! -d "$attestations_dir" ] || [ -L "$attestations_dir" ]; then
-    echo "release-attestation: missing regular release-attestations directory" >&2
-    return 1
-  fi
-  tmp=$(mktemp "$attestations_dir/.release-attestation.XXXXXX")
-  trap 'rm -f "$tmp"' RETURN
-  jq -nS \
-    --arg version "$version" --arg commit "$candidate_commit" --arg tree "$candidate_tree" \
-    --arg origin "$candidate_origin" --arg plugin_hash "$plugin_hash" \
-    --arg manifest_hash "$manifest_hash" --argjson repo_count "$repo_count" \
-    --arg inventory_hash "$inventory_hash" \
-    --arg fleet_run "$(jq -r '.run_id' <<< "$fleet")" \
-    --arg fleet_pointer_hash "$(jq -r '.pointer_sha256' <<< "$fleet")" \
-    --arg fleet_receipt_hash "$(jq -r '.receipt_sha256' <<< "$fleet")" \
-    --argjson advisories "$advisories" \
-    --arg fuzz_run "$(jq -r '.run_id' <<< "$fuzz")" \
-    --arg fuzz_pointer_hash "$(jq -r '.pointer_sha256' <<< "$fuzz")" \
-    --arg fuzz_receipt_hash "$(jq -r '.receipt_sha256' <<< "$fuzz")" \
-    --argjson fuzz_seconds "$fuzz_seconds" \
-    '{schema:1,kind:"sava-build-release-attestation",version:$version,
-      candidate:{commit:$commit,tree:$tree,origin:$origin,
-        plugin_jar_sha256:$plugin_hash,fleet_manifest_sha256:$manifest_hash,
-        repository_count:$repo_count,consumer_inventory_sha256:$inventory_hash},
-      fleet:{run_id:$fleet_run,pointer_sha256:$fleet_pointer_hash,
-        receipt_sha256:$fleet_receipt_hash,advisories_acknowledged:$advisories},
-      fuzz:{run_id:$fuzz_run,pointer_sha256:$fuzz_pointer_hash,
-        receipt_sha256:$fuzz_receipt_hash,seconds_per_target:$fuzz_seconds}}' > "$tmp"
   if [ -e "$output" ] || [ -L "$output" ]; then
     echo "release-attestation: output appeared during creation; refusing overwrite" >&2
     return 1
@@ -427,29 +575,6 @@ attestation_schema_valid() {
   local file=$1 version=$2 schema
   schema=$(jq -r '.schema // empty' "$file") || return 1
   case "$schema" in
-    1)
-      jq -e --arg version "$version" --arg origin "$expected_origin_slug" '
-        keys == ["candidate","fleet","fuzz","kind","schema","version"] and
-        .schema == 1 and .kind == "sava-build-release-attestation" and .version == $version and
-        (.candidate | keys == ["commit","consumer_inventory_sha256","fleet_manifest_sha256","origin","plugin_jar_sha256","repository_count","tree"]) and
-        (.candidate.commit | test("^[0-9a-f]{40}$")) and
-        (.candidate.tree | test("^[0-9a-f]{40}$")) and .candidate.origin == $origin and
-        (.candidate.plugin_jar_sha256 | test("^[0-9a-f]{64}$")) and
-        (.candidate.consumer_inventory_sha256 | test("^[0-9a-f]{64}$")) and
-        (.candidate.fleet_manifest_sha256 | test("^[0-9a-f]{64}$")) and
-        (.candidate.repository_count | type == "number" and . > 0 and floor == .) and
-        (.fleet | keys == ["advisories_acknowledged","pointer_sha256","receipt_sha256","run_id"]) and
-        (.fleet.run_id | test("^run[.][A-Za-z0-9]+$")) and
-        (.fleet.pointer_sha256 | test("^[0-9a-f]{64}$")) and
-        (.fleet.receipt_sha256 | test("^[0-9a-f]{64}$")) and
-        (.fleet.advisories_acknowledged | type == "boolean") and
-        (.fuzz | keys == ["pointer_sha256","receipt_sha256","run_id","seconds_per_target"]) and
-        (.fuzz.run_id | test("^run[.][A-Za-z0-9]+$")) and
-        (.fuzz.pointer_sha256 | test("^[0-9a-f]{64}$")) and
-        (.fuzz.receipt_sha256 | test("^[0-9a-f]{64}$")) and
-        (.fuzz.seconds_per_target | type == "number" and . > 0 and floor == .)
-      ' "$file" >/dev/null
-      ;;
     2)
       jq -e --arg version "$version" --arg origin "$expected_origin_slug" '
         keys == ["candidate","kind","review","schema","version"] and
@@ -467,12 +592,66 @@ attestation_schema_valid() {
         (.review.repositories == (.review.repositories | sort))
       ' "$file" >/dev/null
       ;;
+    3)
+      jq -e --arg version "$version" --arg origin "$expected_origin_slug" '
+        .candidate.plugin_jar_sha256 as $plugin |
+        keys == ["candidate","kind","review","schema","version"] and
+        .schema == 3 and .kind == "sava-build-release-attestation" and .version == $version and
+        (.candidate | keys == ["commit","origin","plugin_jar_sha256","tree"]) and
+        (.candidate.commit | test("^[0-9a-f]{40}$")) and
+        (.candidate.tree | test("^[0-9a-f]{40}$")) and .candidate.origin == $origin and
+        (.candidate.plugin_jar_sha256 | test("^[0-9a-f]{64}$")) and
+        (.review | keys == ["kind","repositories"]) and
+        .review.kind == "derived-local-hardening-certifications" and
+        (.review.repositories | type == "array" and length > 0) and
+        all(.review.repositories[];
+          (. | keys == ["certifications","commit","origin","plugin_jar_sha256","slug","tree"]) and
+          (.slug | test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")) and
+          .slug == (.slug | ascii_downcase) and
+          .origin == ("https://github.com/" + .slug + ".git") and
+          (.commit | test("^[0-9a-f]{40}$")) and
+          (.tree | test("^[0-9a-f]{40}$")) and
+          .plugin_jar_sha256 == $plugin and
+          (.certifications | type == "array" and length > 0) and
+          (.certifications == (.certifications | sort_by(.path))) and
+          (([.certifications[].path] | unique | length) == (.certifications | length)) and
+          (([.certifications[].suite_count] | add) > 0) and
+          all(.certifications[];
+            (. | keys == ["git_project_directory","path","project","receipt_sha256","schema","session","suite_count","suites"]) and
+            .schema == 6 and
+            (.path | type == "string" and
+              test("^(?:[^/]+/)*build/hardening/pitest-certification[.]tsv$") and
+              (startswith("/") | not) and
+              (contains("/../") | not) and
+              (contains("/./") | not) and
+              (split("/") | all(.[]; length > 0 and . != "." and . != ".."))) and
+            (.git_project_directory | type == "string" and
+              (. == "." or
+                (test("^(?:[^/]+/)*[^/]+$") and
+                  (split("/") | all(.[]; length > 0 and . != "." and . != ".."))))) and
+            .path == (if .git_project_directory == "." then
+                "build/hardening/pitest-certification.tsv"
+              else .git_project_directory + "/build/hardening/pitest-certification.tsv" end) and
+            (.receipt_sha256 | test("^[0-9a-f]{64}$")) and
+            (.project | type == "string" and length > 0) and
+            (.session | type == "string" and length > 0) and
+            (.suite_count | type == "number" and . >= 0 and floor == .) and
+            (.suites | type == "array") and
+            ((.suites | length) == .suite_count) and
+            (.suites == (.suites | sort)) and
+            ((.suites | unique | length) == (.suites | length)) and
+            all(.suites[]; type == "string" and length > 0)))
+        and
+        (([.review.repositories[].slug] | unique | length) == (.review.repositories | length)) and
+        (.review.repositories == (.review.repositories | sort_by(.slug)))
+      ' "$file" >/dev/null
+      ;;
     *) return 1 ;;
   esac
 }
 
 verify_attestation() {
-  local version=$1 file relative mode commit tree count schema reviewed_count
+  local version=$1 file relative mode commit tree reviewed_count
   require_version "$version"
   require_clean_checkout
   if [ "$(manifest_version)" != "$version" ]; then
@@ -499,22 +678,8 @@ verify_attestation() {
   tree=$(jq -r '.candidate.tree' "$file")
   validate_candidate "$commit" "$tree"
   validate_release_diff "$commit" "$version" true
-  schema=$(jq -r '.schema' "$file")
-  if [ "$schema" = 1 ]; then
-    if [ "$(sha256_file "$fleet_manifest")" != "$(jq -r '.candidate.fleet_manifest_sha256' "$file")" ]; then
-      echo "release-attestation: current fleet manifest does not match the certified manifest" >&2
-      return 1
-    fi
-    count=$(manifest_repository_count)
-    if [ "$count" != "$(jq -r '.candidate.repository_count' "$file")" ]; then
-      echo "release-attestation: current fleet roster size does not match the release record" >&2
-      return 1
-    fi
-    echo "release-attestation: version $version binds optional fleet/fuzz receipts to candidate $commit"
-  else
-    reviewed_count=$(jq -r '.review.repositories | length' "$file")
-    echo "release-attestation: version $version binds $reviewed_count reviewed local adoption pass(es) to candidate $commit"
-  fi
+  reviewed_count=$(jq -r '.review.repositories | length' "$file")
+  echo "release-attestation: version $version binds $reviewed_count reviewed local adoption pass(es) to candidate $commit"
 }
 
 verify_tag() {
@@ -580,10 +745,7 @@ verify_pending_release() {
 }
 
 self_test() {
-  local fixture script fixture_script candidate candidate_tree manifest_hash jar_hash
-  local fleet_receipt fuzz_receipt fleet_pointer fuzz_pointer fleet_hash fuzz_hash output
-  local divergent valid_attestation verifier_log expected_verifier_calls actual_verifier_calls
-  local valid_fleet_receipt valid_fuzz_receipt valid_fleet_pointer valid_fuzz_pointer failure_log
+  local fixture script jar_hash failure_log
   local GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
   require_tools
@@ -604,121 +766,8 @@ self_test() {
   ' RETURN EXIT
   fixture=$(cd "$fixture" && pwd -P)
   script="$sava_build_dir/tools/release-attestation.sh"
-  mkdir -p "$fixture/tools" "$fixture/release-attestations" "$fixture/build/hardening/fleet-runs/run.A" \
-    "$fixture/build/hardening/fuzz-runs/run.B"
-  cp "$script" "$fixture/tools/release-attestation.sh"
-  fixture_script="$fixture/tools/release-attestation.sh"
-  chmod +x "$fixture_script"
-  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
-    '[ "$1" = --verify-receipt ]' '[ -f "$2" ]' \
-    'case "$(basename "$0")" in' \
-    '  fleet-canary.sh) kind=fleet-canary-pointer ;;' \
-    '  local-fuzz.sh) kind=local-fuzz-pointer ;;' \
-    '  *) exit 1 ;;' \
-    'esac' \
-    'jq -e --arg kind "$kind" ".kind == \$kind" "$2" >/dev/null' \
-    'printf "%s\t%s\n" "$kind" "$2" >> "${RELEASE_ATTESTATION_SELF_TEST_VERIFIER_LOG:?}"' \
-    'if [ "${RELEASE_ATTESTATION_SELF_TEST_REJECT_KIND:-}" = "$kind" ]; then' \
-    '  echo "stub verifier: injected $kind rejection" >&2' \
-    '  exit 23' \
-    'fi' \
-    'if [ "${RELEASE_ATTESTATION_SELF_TEST_DIRTY_KIND:-}" = "$kind" ]; then' \
-    '  printf "injected verifier mutation\n" >> "${RELEASE_ATTESTATION_SELF_TEST_DIRTY_FILE:?}"' \
-    'fi' \
-    'echo "stub verifier: retained artifacts and checkout revalidation passed"' \
-    > "$fixture/tools/fleet-canary.sh"
-  cp "$fixture/tools/fleet-canary.sh" "$fixture/tools/local-fuzz.sh"
-  chmod +x "$fixture/tools/fleet-canary.sh" "$fixture/tools/local-fuzz.sh"
-  printf '%s\n' 'sava-software/example' > "$fixture/tools/fleet-manifest.txt"
-  printf '%s\n' '{".":"1.0.0"}' > "$fixture/.release-please-manifest.json"
-  printf '%s\n' '# Release attestations' > "$fixture/release-attestations/README.md"
-  printf '%s\n' 'build/' > "$fixture/.gitignore"
-  printf '%s\n' '# Changelog' > "$fixture/CHANGELOG.md"
-  (
-    cd "$fixture"
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git init -q
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test add .
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm candidate
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git tag 1.0.0
-  )
-  "$fixture_script" verify-pending-release >/dev/null
-  candidate=$(git -C "$fixture" rev-parse HEAD)
-  candidate_tree=$(git -C "$fixture" rev-parse HEAD^{tree})
-  manifest_hash=$(sha256_file "$fixture/tools/fleet-manifest.txt")
   jar_hash=$(printf 'plugin jar' | sha256_stream)
-  fleet_receipt="$fixture/build/hardening/fleet-runs/run.A/receipt.json"
-  fuzz_receipt="$fixture/build/hardening/fuzz-runs/run.B/receipt.json"
-  jq -n --arg commit "$candidate" --arg tree "$candidate_tree" --arg jar "$jar_hash" \
-    --arg manifest "$manifest_hash" \
-    '{schema:3,kind:"fleet-canary-receipt",mode:"release",result:"passed",run_id:"run.A",
-      plugin:{sha:$commit,tree:$tree,origin:"git@github.com:sava-software/sava-build.git",
-        dirty_before:false,dirty_after:false,test_jar_sha256:$jar},manifest_sha256:$manifest,
-      advisories_acknowledged:false,
-      repositories:[{slug:"sava-software/example",sha:$commit,
-        origin:"git@github.com:sava-software/example.git"}]}' > "$fleet_receipt"
-  jq -n --arg commit "$candidate" --arg tree "$candidate_tree" --arg jar "$jar_hash" \
-    --arg manifest "$manifest_hash" \
-    '{schema:3,kind:"local-fuzz-receipt",mode:"release",result:"passed",run_id:"run.B",
-      seconds_per_target:17,
-      plugin:{sha:$commit,tree:$tree,origin:"https://github.com/sava-software/sava-build.git",
-        dirty_before:false,dirty_after:false,test_jar_sha256:$jar},manifest_sha256:$manifest,
-      repositories:[{slug:"sava-software/example",sha:$commit,
-        origin:"git@github.com:sava-software/example.git"}]}' > "$fuzz_receipt"
-  fleet_hash=$(sha256_file "$fleet_receipt")
-  fuzz_hash=$(sha256_file "$fuzz_receipt")
-  fleet_pointer="$fixture/build/hardening/fleet-canary-receipt.json"
-  fuzz_pointer="$fixture/build/hardening/local-fuzz-receipt.json"
-  verifier_log="$fixture/build/hardening/verifier-calls.tsv"
-  export RELEASE_ATTESTATION_SELF_TEST_VERIFIER_LOG="$verifier_log"
-  jq -n --arg hash "$fleet_hash" --arg commit "$candidate" \
-    '{schema:2,kind:"fleet-canary-pointer",mode:"release",result:"passed",run_id:"run.A",
-      plugin_sha:$commit,bundle:"fleet-runs/run.A/receipt.json",receipt_sha256:$hash}' > "$fleet_pointer"
-  jq -n --arg hash "$fuzz_hash" --arg commit "$candidate" \
-    '{schema:2,kind:"local-fuzz-pointer",mode:"release",result:"passed",run_id:"run.B",
-      plugin_sha:$commit,bundle:"fuzz-runs/run.B/receipt.json",receipt_sha256:$hash}' > "$fuzz_pointer"
-  valid_fleet_receipt=$(<"$fleet_receipt")
-  valid_fuzz_receipt=$(<"$fuzz_receipt")
-  valid_fleet_pointer=$(<"$fleet_pointer")
-  valid_fuzz_pointer=$(<"$fuzz_pointer")
-  expected_verifier_calls=$(printf 'fleet-canary-pointer\t%s\nlocal-fuzz-pointer\t%s' \
-    "$fleet_pointer" "$fuzz_pointer")
-  printf '%s\n' '{".":"1.0.1"}' > "$fixture/.release-please-manifest.json"
-  printf '%s\n' '# Changelog' '' '## 1.0.1' > "$fixture/CHANGELOG.md"
-  (
-    cd "$fixture"
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git add CHANGELOG.md .release-please-manifest.json
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm 'release metadata'
-  )
-  output="$fixture/release-attestations/1.0.1.json"
-  failure_log="$fixture/build/hardening/release-attestation-failure.log"
-  expect_create_failure() {
-    local label=$1 expected=${2:-} fleet_input=${3:-$fleet_pointer} fuzz_input=${4:-$fuzz_pointer}
-    local failure_output
-    if "$fixture_script" create 1.0.1 \
-        --fleet-pointer "$fleet_input" --fuzz-pointer "$fuzz_input" \
-        > "$failure_log" 2>&1; then
-      echo "release-attestation self-test: $label was accepted" >&2
-      return 1
-    fi
-    if [ -e "$output" ] || [ -L "$output" ]; then
-      echo "release-attestation self-test: $label left a release record" >&2
-      return 1
-    fi
-    failure_output=$(<"$failure_log")
-    if [ -n "$expected" ]; then
-      case "$failure_output" in
-        *"$expected"*) ;;
-        *)
-          echo "release-attestation self-test: $label failed for the wrong reason" >&2
-          printf '%s\n' "$failure_output" >&2
-          return 1
-          ;;
-      esac
-    fi
-  }
+  failure_log="$fixture/release-attestation-failure.log"
   expect_cli_failure() {
     local label=$1 expected=$2 failure_output
     shift 2
@@ -736,242 +785,18 @@ self_test() {
         ;;
     esac
   }
-  restore_evidence() {
-    printf '%s\n' "$valid_fleet_receipt" > "$fleet_receipt"
-    printf '%s\n' "$valid_fuzz_receipt" > "$fuzz_receipt"
-    printf '%s\n' "$valid_fleet_pointer" > "$fleet_pointer"
-    printf '%s\n' "$valid_fuzz_pointer" > "$fuzz_pointer"
-  }
-  refresh_pointer_hash() {
-    local receipt_file=$1 pointer_file=$2 pointer_json=$3 refreshed_hash
-    refreshed_hash=$(sha256_file "$receipt_file") || return 1
-    jq --arg hash "$refreshed_hash" '.receipt_sha256 = $hash' \
-      <<< "$pointer_json" > "$pointer_file"
-  }
-  divergent=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-    git -C "$fixture" -c user.name=SelfTest -c user.email=self@test \
-    commit-tree "$candidate_tree" -m divergent)
-  git -C "$fixture" tag 1.0.1 "$divergent"
-  if "$fixture_script" verify-pending-release >/dev/null 2>&1; then
-    echo "release-attestation self-test: divergent existing tag suppressed the gate" >&2
-    return 1
-  fi
-  git -C "$fixture" tag -d 1.0.1 >/dev/null
-  if "$fixture_script" verify-pending-release >/dev/null 2>&1; then
-    echo "release-attestation self-test: pending release passed without a record" >&2
-    return 1
-  fi
 
-  : > "$verifier_log"
-  printf '%s\n' dirty > "$fixture/untracked-before-create.txt"
-  expect_create_failure "dirty checkout before create" "checkout must be clean"
-  if [ -s "$verifier_log" ]; then
-    echo "release-attestation self-test: dirty preflight invoked a receipt verifier" >&2
-    return 1
-  fi
-  unlink "$fixture/untracked-before-create.txt"
-
-  local pointer_link="$fixture/build/hardening/fleet-pointer-link.json"
-  ln -s "$(basename "$fleet_pointer")" "$pointer_link"
-  expect_create_failure "symlinked fleet pointer" "missing or symlinked fleet pointer" "$pointer_link"
-  unlink "$pointer_link"
-
-  local traversal_pointer="$fixture/build/hardening/fleet-traversal-pointer.json"
-  jq '.bundle = "fleet-runs/run.A/../run.A/receipt.json"' \
-    <<< "$valid_fleet_pointer" > "$traversal_pointer"
-  expect_create_failure "traversing fleet bundle" \
-    "fleet bundle escapes its pointer directory" "$traversal_pointer"
-
-  local bad_hash_pointer="$fixture/build/hardening/fleet-bad-hash-pointer.json"
-  jq '.receipt_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \
-    <<< "$valid_fleet_pointer" > "$bad_hash_pointer"
-  expect_create_failure "mismatched fleet receipt hash" \
-    "fleet bundle receipt hash does not match its pointer" "$bad_hash_pointer"
-
-  local receipt_link="$fixture/build/hardening/fleet-runs/run.A/receipt-link.json"
-  local receipt_link_pointer="$fixture/build/hardening/fleet-receipt-link-pointer.json"
-  ln -s receipt.json "$receipt_link"
-  jq '.bundle = "fleet-runs/run.A/receipt-link.json"' \
-    <<< "$valid_fleet_pointer" > "$receipt_link_pointer"
-  expect_create_failure "symlinked fleet bundle receipt" \
-    "missing or symlinked fleet bundle receipt" "$receipt_link_pointer"
-  unlink "$receipt_link"
-
-  export RELEASE_ATTESTATION_SELF_TEST_REJECT_KIND=fleet-canary-pointer
-  expect_create_failure "rejected fleet receipt verification" "fleet receipt verifier rejected"
-  unset RELEASE_ATTESTATION_SELF_TEST_REJECT_KIND
-  export RELEASE_ATTESTATION_SELF_TEST_REJECT_KIND=local-fuzz-pointer
-  expect_create_failure "rejected fuzz receipt verification" "fuzz receipt verifier rejected"
-  unset RELEASE_ATTESTATION_SELF_TEST_REJECT_KIND
-
-  : > "$verifier_log"
-  export RELEASE_ATTESTATION_SELF_TEST_DIRTY_KIND=local-fuzz-pointer
-  export RELEASE_ATTESTATION_SELF_TEST_DIRTY_FILE="$fixture/untracked-during-create.txt"
-  expect_create_failure "checkout dirtied during receipt verification" "checkout must be clean"
-  unset RELEASE_ATTESTATION_SELF_TEST_DIRTY_KIND RELEASE_ATTESTATION_SELF_TEST_DIRTY_FILE
-  unlink "$fixture/untracked-during-create.txt"
-  actual_verifier_calls=$(<"$verifier_log")
-  if [ "$actual_verifier_calls" != "$expected_verifier_calls" ]; then
-    echo "release-attestation self-test: post-verifier clean guard ran before both verifiers" >&2
-    return 1
-  fi
-
-  jq '.plugin.origin = "https://github.com/example/not-sava-build.git"' \
-    <<< "$valid_fleet_receipt" > "$fleet_receipt"
-  jq '.plugin.origin = "https://github.com/example/not-sava-build.git"' \
-    <<< "$valid_fuzz_receipt" > "$fuzz_receipt"
-  refresh_pointer_hash "$fleet_receipt" "$fleet_pointer" "$valid_fleet_pointer"
-  refresh_pointer_hash "$fuzz_receipt" "$fuzz_pointer" "$valid_fuzz_pointer"
-  expect_create_failure "wrong certified plugin origin" "certified origin is"
-  restore_evidence
-
-  jq '.manifest_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \
-    <<< "$valid_fleet_receipt" > "$fleet_receipt"
-  jq '.manifest_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \
-    <<< "$valid_fuzz_receipt" > "$fuzz_receipt"
-  refresh_pointer_hash "$fleet_receipt" "$fleet_pointer" "$valid_fleet_pointer"
-  refresh_pointer_hash "$fuzz_receipt" "$fuzz_pointer" "$valid_fuzz_pointer"
-  expect_create_failure "wrong certified fleet manifest" "fleet manifest changed after certification"
-  restore_evidence
-
-  jq --arg sha "$candidate" \
-    '.repositories += [{slug:"sava-software/second",sha:$sha,
-      origin:"git@github.com:sava-software/second.git"}]' \
-    <<< "$valid_fleet_receipt" > "$fleet_receipt"
-  jq --arg sha "$candidate" \
-    '.repositories += [{slug:"sava-software/second",sha:$sha,
-      origin:"git@github.com:sava-software/second.git"}]' \
-    <<< "$valid_fuzz_receipt" > "$fuzz_receipt"
-  refresh_pointer_hash "$fleet_receipt" "$fleet_pointer" "$valid_fleet_pointer"
-  refresh_pointer_hash "$fuzz_receipt" "$fuzz_pointer" "$valid_fuzz_pointer"
-  expect_create_failure "receipt roster count mismatch" \
-    "receipt repository counts do not match the current manifest"
-  restore_evidence
-
-  jq --arg sha "1111111111111111111111111111111111111111" \
-    '.repositories[0].sha = $sha' "$fuzz_receipt" > "$fuzz_receipt.tmp"
-  mv "$fuzz_receipt.tmp" "$fuzz_receipt"
-  fuzz_hash=$(sha256_file "$fuzz_receipt")
-  jq --arg hash "$fuzz_hash" '.receipt_sha256 = $hash' "$fuzz_pointer" > "$fuzz_pointer.tmp"
-  mv "$fuzz_pointer.tmp" "$fuzz_pointer"
-  expect_create_failure "mismatched consumer inventories" \
-    "fleet and fuzz receipts certify different candidates"
-  restore_evidence
-  : > "$verifier_log"
-  "$fixture_script" create 1.0.1 --fleet-pointer "$fleet_pointer" --fuzz-pointer "$fuzz_pointer"
-  [ -f "$output" ] || { echo "release-attestation self-test: create wrote no record" >&2; return 1; }
-  if "$fixture_script" create 1.0.1 --fleet-pointer "$fleet_pointer" \
-      --fuzz-pointer "$fuzz_pointer" >/dev/null 2>&1; then
-    echo "release-attestation self-test: create overwrote a release record" >&2
-    return 1
-  fi
-  actual_verifier_calls=$(<"$verifier_log")
-  if [ "$actual_verifier_calls" != "$expected_verifier_calls" ]; then
-    echo "release-attestation self-test: create did not invoke each full verifier exactly once" >&2
-    printf 'expected:\n%s\nactual:\n%s\n' "$expected_verifier_calls" "$actual_verifier_calls" >&2
-    return 1
-  fi
-  (
-    cd "$fixture"
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git add release-attestations/1.0.1.json
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm attestation
-  )
-  printf '%s\n' dirty > "$fixture/untracked-before-verify.txt"
-  expect_cli_failure "dirty checkout before verify" "checkout must be clean" \
-    "$fixture_script" verify 1.0.1
-  unlink "$fixture/untracked-before-verify.txt"
-  "$fixture_script" verify 1.0.1 >/dev/null
-  "$fixture_script" verify-pending-release >/dev/null
-  valid_attestation=$(<"$output")
-
-  chmod +x "$output"
-  (
-    cd "$fixture"
-    git add release-attestations/1.0.1.json
-    git -c user.name=SelfTest -c user.email=self@test commit -qm 'executable attestation'
-  )
-  expect_cli_failure "executable committed attestation" \
-    "release record is not a tracked regular file" "$fixture_script" verify 1.0.1
-  chmod -x "$output"
-  (
-    cd "$fixture"
-    git add release-attestations/1.0.1.json
-    git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore attestation mode'
-  )
-  "$fixture_script" verify 1.0.1 >/dev/null
-
-  jq '.unexpected = true' "$output" > "$output.tmp"
-  mv "$output.tmp" "$output"
-  (
-    cd "$fixture"
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git add release-attestations/1.0.1.json
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm 'malformed attestation'
-  )
-  expect_cli_failure "malformed committed attestation" "invalid release record schema" \
-    "$fixture_script" verify 1.0.1
-  printf '%s\n' "$valid_attestation" > "$output"
-  (
-    cd "$fixture"
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git add release-attestations/1.0.1.json
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore attestation'
-  )
-  "$fixture_script" verify 1.0.1 >/dev/null
-  git -C "$fixture" tag 1.0.1
-  "$fixture_script" verify-tag 1.0.1 >/dev/null
-  "$fixture_script" verify-pending-release >/dev/null
-  local built_jar="$fixture/build/libs/sava-build.jar"
-  mkdir -p "$(dirname "$built_jar")"
-  printf '%s' 'plugin jar' > "$built_jar"
-  "$fixture_script" verify-built-jar 1.0.1 "$built_jar" >/dev/null
-  printf '%s' 'different plugin jar' > "$built_jar"
-  expect_cli_failure "built JAR differs from certified candidate" \
-    "built plugin JAR does not match the certified candidate" \
-    "$fixture_script" verify-built-jar 1.0.1 "$built_jar"
-  unlink "$built_jar"
-  expect_cli_failure "built JAR is missing" "missing or symlinked built plugin JAR" \
-    "$fixture_script" verify-built-jar 1.0.1 "$built_jar"
-  printf '%s' 'plugin jar' > "$built_jar.real"
-  ln -s "$(basename "$built_jar.real")" "$built_jar"
-  expect_cli_failure "built JAR is a symlink" "missing or symlinked built plugin JAR" \
-    "$fixture_script" verify-built-jar 1.0.1 "$built_jar"
-  unlink "$built_jar"
-  printf '%s\n' dirty > "$fixture/untracked-before-pending-verify.txt"
-  expect_cli_failure "dirty already-tagged pending-release checkout" "checkout must be clean" \
-    "$fixture_script" verify-pending-release
-  unlink "$fixture/untracked-before-pending-verify.txt"
-  printf '%s\n' '# Changelog' '' '## 1.0.1' '' 'release note correction' > "$fixture/CHANGELOG.md"
-  (
-    cd "$fixture"
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git add CHANGELOG.md
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm 'allowed release metadata'
-  )
-  "$fixture_script" verify 1.0.1 >/dev/null
-  if "$fixture_script" verify-tag 1.0.1 >/dev/null 2>&1; then
-    echo "release-attestation self-test: a tag pointing behind HEAD was accepted" >&2
-    return 1
-  fi
-  printf '%s\n' 'post-certification source change' > "$fixture/source.txt"
-  (
-    cd "$fixture"
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git add source.txt
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm source
-  )
-  if "$fixture_script" verify 1.0.1 >/dev/null 2>&1; then
-    echo "release-attestation self-test: post-certification source change was accepted" >&2
-    return 1
-  fi
-
-  # The normal release path records the already-reviewed local adoption cohort and
-  # the exact candidate JAR. Keep this fixture independent from the optional legacy
-  # fleet/fuzz receipt path above so neither mode can make the other's assertions pass.
+  # The release path derives the reviewed cohort from clean consumer checkouts and
+  # their completed certification receipts.
   local reviewed_fixture="$fixture/reviewed" reviewed_script reviewed_candidate reviewed_tree
   local reviewed_divergent
-  local reviewed_jar reviewed_output valid_reviewed_attestation
+  local reviewed_jar reviewed_output valid_reviewed_attestation historic_reviewed_attestation
+  local consumers="$fixture/reviewed-consumers" consumer_sava="$fixture/reviewed-consumers/sava"
+  local consumer_ravina="$fixture/reviewed-consumers/ravina"
+  local consumer_sava_copy="$fixture/reviewed-consumers/sava-copy"
+  local consumer_missing="$fixture/reviewed-consumers/missing"
+  local sava_commit sava_tree ravina_commit ravina_tree valid_sava_receipt
+  local sava_receipt_sha ravina_core_receipt_sha ravina_server_receipt_sha
   mkdir -p "$reviewed_fixture/tools" "$reviewed_fixture/release-attestations" \
     "$reviewed_fixture/build/libs"
   cp "$script" "$reviewed_fixture/tools/release-attestation.sh"
@@ -1009,49 +834,349 @@ self_test() {
   printf '%s' 'plugin jar' > "$reviewed_jar"
   reviewed_output="$reviewed_fixture/release-attestations/1.0.1.json"
 
+  write_reviewed_certification() {
+    local receipt=$1 project=$2 session=$3 plugin=$4 suite=$5 git_project_directory=$6
+    local git_commit git_tree
+    local h1=1111111111111111111111111111111111111111111111111111111111111111
+    local h2=2222222222222222222222222222222222222222222222222222222222222222
+    local h3=3333333333333333333333333333333333333333333333333333333333333333
+    local h4=4444444444444444444444444444444444444444444444444444444444444444
+    mkdir -p "$(dirname "$receipt")"
+    git_commit=$(git -C "$(dirname "$receipt")" rev-parse HEAD)
+    git_tree=$(git -C "$(dirname "$receipt")" rev-parse 'HEAD^{tree}')
+    printf '%s\n' \
+      'schema	6' \
+      "project	$project" \
+      "session	$session" \
+      'mode	fresh-full-strict' \
+      'gitState	clean' \
+      "gitCommit	$git_commit" \
+      "gitTree	$git_tree" \
+      'gitStatusSha256	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' \
+      "gitProjectDirectory	$git_project_directory" \
+      "pluginSha256	$plugin" \
+      'columns	suite	name	invocation	reportSha256	sourceSha256	classesSha256	configurationSha256	pitestVersion	pluginSha256	toolClasspathSha256	mutationToolchainSha256	recordInputsSha256	recordPitestVersion	recordMutationToolchainSha256' \
+      "suite	$suite	$h1	$h2	$h3	$h4	$h1	1.25.9	$plugin	$h2	$h3	$h4	1.25.9	$h3" \
+      > "$receipt"
+  }
+  write_empty_reviewed_certification() {
+    local receipt=$1 project=$2 session=$3 plugin=$4 git_project_directory=$5
+    local git_commit git_tree
+    mkdir -p "$(dirname "$receipt")"
+    git_commit=$(git -C "$(dirname "$receipt")" rev-parse HEAD)
+    git_tree=$(git -C "$(dirname "$receipt")" rev-parse 'HEAD^{tree}')
+    printf '%s\n' \
+      'schema	6' \
+      "project	$project" \
+      "session	$session" \
+      'mode	fresh-full-strict' \
+      'gitState	clean' \
+      "gitCommit	$git_commit" \
+      "gitTree	$git_tree" \
+      'gitStatusSha256	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' \
+      "gitProjectDirectory	$git_project_directory" \
+      "pluginSha256	$plugin" \
+      'columns	suite	name	invocation	reportSha256	sourceSha256	classesSha256	configurationSha256	pitestVersion	pluginSha256	toolClasspathSha256	mutationToolchainSha256	recordInputsSha256	recordPitestVersion	recordMutationToolchainSha256' \
+      > "$receipt"
+  }
+  init_reviewed_consumer() {
+    local checkout=$1 remote=$2
+    mkdir -p "$checkout"
+    printf '%s\n' 'build/' '*/build/' > "$checkout/.gitignore"
+    printf '%s\n' 'consumer' > "$checkout/README.md"
+    (
+      cd "$checkout"
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git init -q
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git remote add origin "$remote"
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        git -c user.name=SelfTest -c user.email=self@test add .
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        git -c user.name=SelfTest -c user.email=self@test commit -qm adoption
+    )
+  }
+  mkdir -p "$consumers"
+  init_reviewed_consumer "$consumer_sava" git@github.com:sava-software/sava.git
+  init_reviewed_consumer "$consumer_ravina" https://github.com/sava-software/ravina.git
+  init_reviewed_consumer "$consumer_sava_copy" ssh://git@github.com/SAVA-Software/SAVA.git
+  init_reviewed_consumer "$consumer_missing" git@github.com:sava-software/missing.git
+  write_reviewed_certification \
+    "$consumer_sava/build/hardening/pitest-certification.tsv" : session.sava "$jar_hash" ws .
+  write_reviewed_certification \
+    "$consumer_ravina/build/hardening/pitest-certification.tsv" \
+    : session.ravina.root "$jar_hash" core .
+  write_reviewed_certification \
+    "$consumer_ravina/ravina-core/build/hardening/pitest-certification.tsv" \
+    :ravina-core session.ravina.core "$jar_hash" dispatch ravina-core
+  write_empty_reviewed_certification \
+    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv" \
+    :ravina-server session.ravina.server "$jar_hash" ravina-server
+  write_reviewed_certification \
+    "$consumer_sava_copy/build/hardening/pitest-certification.tsv" \
+    : session.sava.copy "$jar_hash" ws .
+  sava_commit=$(git -C "$consumer_sava" rev-parse HEAD)
+  sava_tree=$(git -C "$consumer_sava" rev-parse 'HEAD^{tree}')
+  ravina_commit=$(git -C "$consumer_ravina" rev-parse HEAD)
+  ravina_tree=$(git -C "$consumer_ravina" rev-parse 'HEAD^{tree}')
+  valid_sava_receipt=$(<"$consumer_sava/build/hardening/pitest-certification.tsv")
+
   expect_cli_failure "reviewed attestation without an adoption" \
     "requires at least one --adoption" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar"
   expect_cli_failure "short reviewed candidate" "not a full commit" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "${reviewed_candidate:0:12}" \
-      --plugin-jar "$reviewed_jar" --adoption sava-software/sava
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   expect_cli_failure "non-ancestor reviewed candidate" "not an ancestor" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_divergent" \
-      --plugin-jar "$reviewed_jar" --adoption sava-software/sava
-  expect_cli_failure "invalid reviewed adoption slug" "invalid reviewed adoption slug" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  expect_cli_failure "missing consumer checkout" "missing consumer checkout directory" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-      --plugin-jar "$reviewed_jar" --adoption not-a-slug
-  expect_cli_failure "duplicate reviewed adoption" "duplicate reviewed adoption slug" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumers/absent"
+  expect_cli_failure "consumer path traversal" "contains traversal" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-      --plugin-jar "$reviewed_jar" --adoption sava-software/sava \
-      --adoption sava-software/sava
+      --plugin-jar "$reviewed_jar" --adoption "$consumers/../reviewed-consumers/sava"
+  ln -s "$(basename "$consumer_sava")" "$consumers/sava-link"
+  expect_cli_failure "symlinked consumer checkout" "contains a symlink component" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumers/sava-link"
+  unlink "$consumers/sava-link"
+  expect_cli_failure "consumer without certification" "no completed hardening certification" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_missing"
+  write_empty_reviewed_certification \
+    "$consumer_missing/build/hardening/pitest-certification.tsv" \
+    : session.missing "$jar_hash" .
+  expect_cli_failure "consumer with only zero-suite certification" "contain zero certified suites" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_missing"
+  printf '%s\n' 'advance after certification' > "$consumer_sava/post-certification.txt"
+  (
+    cd "$consumer_sava"
+    git add post-certification.txt
+    git -c user.name=SelfTest -c user.email=self@test commit -qm 'advance after certification'
+  )
+  expect_cli_failure "stale consumer revision" "different consumer revision" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  write_reviewed_certification \
+    "$consumer_sava/build/hardening/pitest-certification.tsv" : session.sava "$jar_hash" ws .
+  sava_commit=$(git -C "$consumer_sava" rev-parse HEAD)
+  sava_tree=$(git -C "$consumer_sava" rev-parse 'HEAD^{tree}')
+  valid_sava_receipt=$(<"$consumer_sava/build/hardening/pitest-certification.tsv")
+
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "schema" { print "schema", "5"; next }
+    $1 ~ /^git/ || $1 == "pluginSha256" { next }
+    { print }
+  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "schema-5 consumer certification" "malformed or mixed certification" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "gitState" || $1 == "gitCommit" || $1 == "gitTree" ||
+      $1 == "gitStatusSha256" || $1 == "gitProjectDirectory" { $2="unavailable" }
+    { print }
+  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "unavailable certification Git identity" "does not bind a clean Git checkout" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "gitState" { $2="dirty" }
+    { print }
+  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "dirty identity with clean status digest" "malformed or mixed certification" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "gitState" { $2="dirty" }
+    $1 == "gitStatusSha256" {
+      $2="1111111111111111111111111111111111111111111111111111111111111111"
+    }
+    { print }
+  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "dirty certification Git identity" "does not bind a clean Git checkout" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "gitCommit" { $2="0000000000000000000000000000000000000000" }
+    { print }
+  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "mismatched certification Git revision" "different consumer revision" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "gitProjectDirectory" { $2="other" }
+    { print }
+  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "mismatched certification project directory" \
+    "path does not match its Git project directory" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "pluginSha256" {
+      $2="0000000000000000000000000000000000000000000000000000000000000000"
+    }
+    { print }
+  ' "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv" > \
+    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "zero-suite stale header plugin" "stale certification receipt" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_ravina"
+  write_empty_reviewed_certification \
+    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv" \
+    :ravina-server session.ravina.server "$jar_hash" ravina-server
+
+  printf '%s\n' dirty > "$consumer_sava/dirty.txt"
+  expect_cli_failure "dirty consumer checkout" "consumer checkout must be clean" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  unlink "$consumer_sava/dirty.txt"
+  git -C "$consumer_sava" remote set-url origin /not/github
+  expect_cli_failure "non-GitHub consumer origin" "not a supported GitHub remote" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  git -C "$consumer_sava" remote set-url origin git@github.com:sava-software/sava.git
+  printf '%s\n' "$valid_sava_receipt" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.real"
+  unlink "$consumer_sava/build/hardening/pitest-certification.tsv"
+  ln -s pitest-certification.tsv.real \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "symlinked certification receipt" "evidence path contains a symlink" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  unlink "$consumer_sava/build/hardening/pitest-certification.tsv"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.real" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' running > "$consumer_sava/build/hardening/pitest-certification.running"
+  expect_cli_failure "incomplete certification" "incomplete or still running" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  unlink "$consumer_sava/build/hardening/pitest-certification.running"
+  sed "s/$jar_hash/0000000000000000000000000000000000000000000000000000000000000000/" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "stale consumer certification" "stale certification receipt" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "suite" {
+      $9="0000000000000000000000000000000000000000000000000000000000000000"
+    }
+    { print }
+  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
+  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "stale suite-row plugin with current header" \
+    "malformed or mixed certification" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%b\n' "suite\tsecond\t1111111111111111111111111111111111111111111111111111111111111111\t2222222222222222222222222222222222222222222222222222222222222222\t0000000000000000000000000000000000000000000000000000000000000000\t4444444444444444444444444444444444444444444444444444444444444444\t1111111111111111111111111111111111111111111111111111111111111111\t1.25.9\t$jar_hash\t2222222222222222222222222222222222222222222222222222222222222222\t3333333333333333333333333333333333333333333333333333333333333333\t4444444444444444444444444444444444444444444444444444444444444444\t1.25.9\t3333333333333333333333333333333333333333333333333333333333333333" \
+    >> "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "mixed consumer certification" "malformed or mixed certification" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "duplicate derived adoption" "duplicate derived adoption slug" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava" \
+      --adoption "$consumer_sava_copy"
   expect_cli_failure "missing reviewed plugin JAR" "missing or symlinked reviewed plugin JAR" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-      --plugin-jar "$reviewed_jar.missing" --adoption sava-software/sava
+      --plugin-jar "$reviewed_jar.missing" --adoption "$consumer_sava"
   ln -s "$(basename "$reviewed_jar")" "$reviewed_jar.link"
   expect_cli_failure "symlinked reviewed plugin JAR" "missing or symlinked reviewed plugin JAR" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-      --plugin-jar "$reviewed_jar.link" --adoption sava-software/sava
+      --plugin-jar "$reviewed_jar.link" --adoption "$consumer_sava"
   unlink "$reviewed_jar.link"
   git -C "$reviewed_fixture" remote set-url origin git@github.com:example/not-sava-build.git
   expect_cli_failure "wrong reviewed candidate origin" "candidate origin is" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-      --plugin-jar "$reviewed_jar" --adoption sava-software/sava
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   git -C "$reviewed_fixture" remote set-url origin git@github.com:sava-software/sava-build.git
+  sava_receipt_sha=$(sha256_file \
+    "$consumer_sava/build/hardening/pitest-certification.tsv")
+  ravina_core_receipt_sha=$(sha256_file \
+    "$consumer_ravina/ravina-core/build/hardening/pitest-certification.tsv")
+  ravina_server_receipt_sha=$(sha256_file \
+    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv")
   "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-    --plugin-jar "$reviewed_jar" --adoption sava-software/ravina \
-    --adoption sava-software/sava >/dev/null
-  jq -e --arg candidate "$reviewed_candidate" --arg tree "$reviewed_tree" --arg jar "$jar_hash" '
-    .schema == 2 and .candidate.commit == $candidate and
+    --plugin-jar "$reviewed_jar" --adoption "$consumer_sava" \
+    --adoption "$consumer_ravina" >/dev/null
+  jq -e --arg candidate "$reviewed_candidate" --arg tree "$reviewed_tree" --arg jar "$jar_hash" \
+      --arg sava_commit "$sava_commit" --arg sava_tree "$sava_tree" \
+      --arg ravina_commit "$ravina_commit" --arg ravina_tree "$ravina_tree" \
+      --arg sava_receipt_sha "$sava_receipt_sha" \
+      --arg ravina_core_receipt_sha "$ravina_core_receipt_sha" \
+      --arg ravina_server_receipt_sha "$ravina_server_receipt_sha" '
+    .schema == 3 and .candidate.commit == $candidate and
     .candidate.tree == $tree and
     .candidate.plugin_jar_sha256 == $jar and
-    .review.kind == "reviewed-local-adoption-passes" and
-    .review.repositories == ["sava-software/ravina","sava-software/sava"]
+    .review.kind == "derived-local-hardening-certifications" and
+    [.review.repositories[].slug] == ["sava-software/ravina","sava-software/sava"] and
+    .review.repositories[0].commit == $ravina_commit and
+    .review.repositories[0].tree == $ravina_tree and
+    .review.repositories[0].plugin_jar_sha256 == $jar and
+    [.review.repositories[0].certifications[].path] ==
+      ["build/hardening/pitest-certification.tsv",
+       "ravina-core/build/hardening/pitest-certification.tsv",
+       "ravina-server/build/hardening/pitest-certification.tsv"] and
+    all(.review.repositories[0].certifications[];
+      .schema == 6 and (.receipt_sha256 | test("^[0-9a-f]{64}$"))) and
+    [.review.repositories[0].certifications[].git_project_directory] ==
+      [".","ravina-core","ravina-server"] and
+    .review.repositories[0].certifications[1].receipt_sha256 ==
+      $ravina_core_receipt_sha and
+    .review.repositories[0].certifications[2].receipt_sha256 ==
+      $ravina_server_receipt_sha and
+    .review.repositories[0].certifications[2].suite_count == 0 and
+    .review.repositories[0].certifications[2].suites == [] and
+    .review.repositories[1].commit == $sava_commit and
+    .review.repositories[1].tree == $sava_tree and
+    .review.repositories[1].origin == "https://github.com/sava-software/sava.git" and
+    .review.repositories[1].plugin_jar_sha256 == $jar and
+    .review.repositories[1].certifications[0].receipt_sha256 == $sava_receipt_sha and
+    .review.repositories[1].certifications[0].suites == ["ws"]
   ' "$reviewed_output" >/dev/null
   expect_cli_failure "reviewed attestation overwrite" "refusing to overwrite existing release record" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-      --plugin-jar "$reviewed_jar" --adoption sava-software/sava
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   valid_reviewed_attestation=$(<"$reviewed_output")
   (
     cd "$reviewed_fixture"
@@ -1062,6 +1187,53 @@ self_test() {
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
   "$reviewed_script" verify-pending-release >/dev/null
+  historic_reviewed_attestation=$(jq -nS --arg candidate "$reviewed_candidate" \
+    --arg tree "$reviewed_tree" --arg jar "$jar_hash" \
+    '{schema:2,kind:"sava-build-release-attestation",version:"1.0.1",
+      candidate:{commit:$candidate,tree:$tree,origin:"sava-software/sava-build",
+        plugin_jar_sha256:$jar},
+      review:{kind:"reviewed-local-adoption-passes",
+        repositories:["sava-software/ravina","sava-software/sava"]}}')
+  printf '%s\n' "$historic_reviewed_attestation" > "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'historical schema 2 review'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  printf '%s\n' "$valid_reviewed_attestation" > "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore schema 3 review'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  jq '.review.repositories[0].slug = "SAVA-SOFTWARE/RAVINA" |
+      .review.repositories[0].origin = "https://github.com/SAVA-SOFTWARE/RAVINA.git"' \
+    "$reviewed_output" > "$reviewed_output.tmp"
+  mv "$reviewed_output.tmp" "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'uppercase review slug'
+  )
+  expect_cli_failure "uppercase adoption in committed review" "invalid release record schema" \
+    "$reviewed_script" verify 1.0.1
+  printf '%s\n' "$valid_reviewed_attestation" > "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore lowercase review slug'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
   jq '.review.repositories += [.review.repositories[0]]' \
     "$reviewed_output" > "$reviewed_output.tmp"
   mv "$reviewed_output.tmp" "$reviewed_output"
@@ -1101,6 +1273,50 @@ self_test() {
       git add release-attestations/1.0.1.json
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
       git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore sorted review record'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  jq '.review.repositories[0].plugin_jar_sha256 =
+      "0000000000000000000000000000000000000000000000000000000000000000"' \
+    "$reviewed_output" > "$reviewed_output.tmp"
+  mv "$reviewed_output.tmp" "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'mismatched review plugin'
+  )
+  expect_cli_failure "mismatched plugin in committed review" "invalid release record schema" \
+    "$reviewed_script" verify 1.0.1
+  printf '%s\n' "$valid_reviewed_attestation" > "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore matched review plugin'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  jq '.review.repositories[0].certifications[0].path =
+      "../build/hardening/pitest-certification.tsv"' \
+    "$reviewed_output" > "$reviewed_output.tmp"
+  mv "$reviewed_output.tmp" "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'escaping review receipt'
+  )
+  expect_cli_failure "escaping receipt in committed review" "invalid release record schema" \
+    "$reviewed_script" verify 1.0.1
+  printf '%s\n' "$valid_reviewed_attestation" > "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore contained review receipt'
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
   printf '%s\n' 'post-review source change' > "$reviewed_fixture/source.txt"
@@ -1158,27 +1374,10 @@ case "$command_name" in
     done
     [ -n "$candidate" ] && [ -n "$plugin_jar" ] || { usage >&2; exit 2; }
     if [ "$adoption_count" -eq 0 ]; then
-      echo "release-attestation: create-reviewed requires at least one --adoption github-org/repo" >&2
+      echo "release-attestation: create-reviewed requires at least one --adoption consumer-checkout" >&2
       exit 2
     fi
     create_reviewed_attestation "$version" "$candidate" "$plugin_jar" "${adoptions[@]}"
-    ;;
-  create)
-    shift
-    version=${1:-}
-    [ -n "$version" ] || { usage >&2; exit 2; }
-    shift
-    fleet_pointer=$default_fleet_pointer
-    fuzz_pointer=$default_fuzz_pointer
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --fleet-pointer) shift; [ "$#" -gt 0 ] || { usage >&2; exit 2; }; fleet_pointer=$1 ;;
-        --fuzz-pointer) shift; [ "$#" -gt 0 ] || { usage >&2; exit 2; }; fuzz_pointer=$1 ;;
-        *) echo "release-attestation: unknown create option: $1" >&2; usage >&2; exit 2 ;;
-      esac
-      shift
-    done
-    create_attestation "$version" "$fleet_pointer" "$fuzz_pointer"
     ;;
   verify)
     [ "$#" -eq 2 ] || { usage >&2; exit 2; }

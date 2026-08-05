@@ -19,6 +19,11 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
     val evidenceSha256: String,
   )
 
+  internal data class FinalProjectIdentity(
+    val git: CertificationGitIdentity,
+    val pluginSha256: String,
+  )
+
   private data class SuiteKey(val projectPath: String, val suite: String)
 
   private data class Attempt(val invocationId: String, val completed: VerifiedEvidence?)
@@ -31,11 +36,13 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
   private val verified = mutableMapOf<SuiteKey, VerifiedEvidence>()
   private val verifiedRecordInputs = mutableMapOf<SuiteKey, String>()
   private val revalidated = mutableMapOf<SuiteKey, VerifiedEvidence>()
+  private val finalProjectIdentities = mutableMapOf<String, FinalProjectIdentity>()
 
   @Synchronized
   fun activate(projectPath: String): String {
     val current = activeSessions[projectPath]
     if (current != null) return current
+    finalProjectIdentities.remove(projectPath)
     return UUID.randomUUID().toString().also { activeSessions[projectPath] = it }
   }
 
@@ -181,4 +188,27 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
     }
     return actual
   }
+
+  @Synchronized
+  internal fun recordFinalProjectIdentity(
+    projectPath: String,
+    before: CertificationGitIdentity,
+    after: CertificationGitIdentity,
+    pluginBeforeSha256: String,
+    pluginAfterSha256: String,
+  ) {
+    check(activeSessions.containsKey(projectPath)) {
+      "certification preflight did not activate an execution session"
+    }
+    CertificationGitIdentity.requireUnchanged(before, after)
+    check(pluginBeforeSha256 == pluginAfterSha256) {
+      "hardening plugin code changed during final certification validation"
+    }
+    finalProjectIdentities[projectPath] = FinalProjectIdentity(after, pluginAfterSha256)
+  }
+
+  @Synchronized
+  internal fun requireFinalProjectIdentity(projectPath: String): FinalProjectIdentity =
+    finalProjectIdentities[projectPath] ?: throw IllegalStateException(
+      "final Git/plugin identity was not captured in this certification invocation")
 }

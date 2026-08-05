@@ -127,7 +127,7 @@ class AgentsTemplateSyncFunctionalTest {
 
   @Test
   fun `a stale acknowledgment warns instead of failing when validating an unreleased checkout`() {
-    // The fleet canary builds consumers against this checkout via
+    // Local candidate adoption builds consumers against this checkout via
     // -PsavaBuildLocalRepo, and this checkout's digest has not shipped: a marker
     // acknowledging the released digest is the expected state there, not a defect.
     // Failing forced repos to acknowledge unreleased digests ahead of the release,
@@ -140,12 +140,12 @@ class AgentsTemplateSyncFunctionalTest {
     val advisory = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout").build()
     assertTrue(
       advisory.output.contains("the marker dance lands with the release that ships this digest"),
-      "a stale marker under the canary flag must warn, not fail:\n" + advisory.output
+      "a stale marker under the local-candidate flag must warn, not fail:\n" + advisory.output
     )
     assertTrue(
       advisory.output.contains("If this is deliberate RC adoption") &&
           advisory.output.contains("do not land that consumer commit while it still resolves the older published plugin"),
-      "the advisory must distinguish release canaries from a staged RC-adoption change:\n" + advisory.output,
+      "the advisory must distinguish ordinary candidate validation from a staged RC-adoption change:\n" + advisory.output,
     )
     assertTrue(advisory.output.contains("sha256:$expectedDigest"), advisory.output)
 

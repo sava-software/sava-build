@@ -75,7 +75,10 @@ class HardeningInitFunctionalTest {
     )
     assertTrue(readmeText.contains("## Audited timeout causes"), readmeText)
     assertTrue(
-      readmeText.contains("name its class and method together in the same Markdown heading-delimited section"),
+      readmeText.contains("Only `cause:liveness` is admissible") &&
+          readmeText.contains(
+            "Name the member's class and method together in the same Markdown heading-delimited section"
+          ),
       readmeText,
     )
     (HardeningOptionNames.removedWriterProperties.map { "-P$it" } +

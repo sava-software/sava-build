@@ -22,8 +22,7 @@ jobs:
           release: ${{ vars.GRADLE_JAVA_VERSION }}
       - name: Check release tooling
         run: |
-          bash -n tools/fleet-canary.sh tools/local-fuzz.sh tools/release-attestation.sh
-          tools/fleet-canary.sh --self-test
+          bash -n tools/local-fuzz.sh tools/release-attestation.sh
           tools/local-fuzz.sh --self-test
           tools/release-attestation.sh --self-test
       - name: Gradle Check

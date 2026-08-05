@@ -1063,8 +1063,8 @@ $fuzzBlock
       checking.contains("1 malformed row(s) in encoding-accepted.csv"),
       "malformed row not named:\n$checking"
     )
-    // Debt diagnoses the same row on the same terms — it is the fleet canary's
-    // whole view of these files — and its label breakdown excludes it, so the
+    // Debt diagnoses the same row on the same terms — it is the quick read-only
+    // view of these files — and its label breakdown excludes it, so the
     // two surfaces report the same row count
     val debt = runner("pitestEncodingDebt").build().output
     assertTrue(
@@ -1324,8 +1324,8 @@ $fuzzBlock
     timeoutsFile.parentFile.mkdirs()
     timeoutsFile.writeText(
       "# structural causes live in config/pitest/README.md\n" +
-          "com.example.Codec,encode,MathMutator # removed loop exit\n" +
-          "com.example.Codec,gone,MathMutator\n"
+          "com.example.Codec,encode,MathMutator # cause:liveness removed loop exit\n" +
+          "com.example.Codec,gone,MathMutator # cause:liveness\n"
     )
     writeReport(
       listOf(
@@ -1338,7 +1338,7 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     // the printed row is the membership key verbatim with the line in a '#' comment
-    val printedRow = "com.example.Codec,encode,IncrementsMutator # line 30"
+    val printedRow = "com.example.Codec,encode,IncrementsMutator # cause:untriaged line 30"
     assertTrue(
       output.contains("1 timed-out mutant(s) not in the audited set (encoding-timeouts.csv)") &&
           output.contains(printedRow),
@@ -1362,11 +1362,12 @@ $fuzzBlock
       pasted.contains("not in the audited set"),
       "pasted printed row did not satisfy the audit:\n$pasted"
     )
-    // stale members print comment-stripped and indented; the pre-existing 'gone' row
-    // still reports, so absence must be asserted for this key specifically
-    assertFalse(
-      pasted.contains("  com.example.Codec,encode,IncrementsMutator"),
-      "pasted printed row read as stale:\n$pasted"
+    // The pasted member is live, not stale, but its seeded category remains an
+    // explicit reviewer-stop until a person classifies the cause.
+    assertTrue(
+      pasted.contains("cause:untriaged has not been reviewed") &&
+          pasted.contains("1 audited-timeout row(s) match no mutant"),
+      "pasted printed row lost its classification/staleness distinction:\n$pasted"
     )
 
     // a member being told to retire is not simultaneously asked for its cause: the
@@ -1413,16 +1414,16 @@ $fuzzBlock
     // reproduce for a later pitestEncodingTimeoutAuditInit run, and without the rows here the
     // coordinate that timed out is recoverable only from the daemon log
     assertTrue(
-      unadopted.contains("  com.example.Codec,encode,MathMutator # line 12") &&
-          unadopted.contains("  com.example.Codec,encode,IncrementsMutator # line 30"),
+      unadopted.contains("  com.example.Codec,encode,MathMutator # cause:untriaged line 12") &&
+          unadopted.contains("  com.example.Codec,encode,IncrementsMutator # cause:untriaged line 30"),
       "adoption hint rows not paste-ready:\n$unadopted"
     )
 
     // the paste round trip: the nudged rows, written as the membership file, must arm
     // the audit — no adoption nudge, no unaudited-newcomer warning, no stale notice
     timeoutsFile.writeText(
-      "com.example.Codec,encode,MathMutator # line 12\n" +
-          "com.example.Codec,encode,IncrementsMutator # line 30\n"
+      "com.example.Codec,encode,MathMutator # cause:untriaged line 12\n" +
+          "com.example.Codec,encode,IncrementsMutator # cause:untriaged line 30\n"
     )
     val adopted = runner("pitestEncodingVerify").build().output
     assertFalse(
@@ -1433,142 +1434,13 @@ $fuzzBlock
   }
 
   @Test
-  fun `the fleet canary reprint filter matches every warning it canaries`() {
-    // tools/fleet-canary.sh reprints hardening warnings from consumer build output by
-    // grepping with a fixed pattern — deliberately coupled to the messages' wording,
-    // since the script cannot see log levels through Gradle's plain console. This
-    // provokes every canaried warning in one verify run and greps the output with the
-    // script's own pattern, so rewording a message fails here instead of silently
-    // dropping the warning from the canary's reprint.
-    val script = File(savaBuildTestProperty("savaBuild.root"), "tools/fleet-canary.sh").readText()
-    val pattern = Regex("(?m)^findings_pattern='([^']+)'").find(script)?.groupValues?.get(1)
-      ?: error("findings_pattern line not found in tools/fleet-canary.sh")
-
-    // targets widened and given a glob to swallow with: a production class the
-    // exclusion drops -> 'swallowed by excludedClasses', from the Debt task's
-    // static half (the audit reads class-file names, not bytecode)
-    writeFixture(
-      encodingTargets = listOf("com.example.*"),
-      encodingExcludes = listOf("com.example.Swallowed*"),
-      // a record that argues for nothing -> 'match no swallowed', and one with no
-      // reason -> 'suppress nothing' (which also leaves its class in the report)
-      extraSuites = """
-          mutation.register("declines") {
-            targetClasses = listOf("com.example.*")
-            excludedClasses = listOf("com.example.Swallowed*")
-            targetTests = "com.example.*Test*"
-            declineExclusionAudit("com.example.Retired*", "a glob that swallows nothing")
-            declineExclusionAudit("com.example.Swallowed*", "")
-          }
-      """.trimIndent()
-    )
-    // Compile a real production class. Writing a synthetic class directly into the
-    // JavaCompile destination is invalid fixture setup: on a genuinely clean build
-    // Gradle owns and rebuilds that directory before Debt scans it, deleting the
-    // synthetic entry and making this warning disappear only in CI.
-    writeProductionClassSource("com.example.SwallowedHelper")
-    // Debt deliberately scans a population left by a prior compile; sibling Debt
-    // tasks do not all depend on the shared producer, so stage that population in
-    // its own invocation instead of relying on incidental task order.
-    runner("compileForPitest").build()
-    baselineFile().parentFile.mkdirs()
-    // an accepted row whose family label has no README section -> 'no argument in config'
-    baselineFile().writeText("com.example.Codec,decode,40,InvertNegsMutator,SURVIVED # mystery family\n")
-    File(fixtureDir, "config/pitest/encoding-timeouts.csv").writeText(
-      "com.example.Codec,encode,MathMutator\n" + // cause never written -> 'appear nowhere'
-          "com.example.Codec,gone,MathMutator\n" + // stale member -> 'match no mutant'
-          "com.example.Codec,encode\n" // two fields -> 'malformed row'
-    )
-    File(fixtureDir, "config/pitest/README.md").writeText("# Baseline\n\nNo causes or labels yet.\n")
-    // a stale tool-version record -> 'written by PIT'
-    File(fixtureDir, "config/pitest/encoding-pitest-version").writeText("0.0.0-stale\n")
-    File(fixtureDir, "config/pitest/encoding-pitest-toolchain.tsv").writeText(
-      "schema\t1\n" +
-          "pitest\t0.0.0-stale\n" +
-          "junitPlugin\t1.2.3\n" +
-          "toolClasspathSha256\t${"0".repeat(64)}\n" +
-          "arcMutateBase\tabsent\n" +
-          "arcMutateLicenceSha256\tabsent\n" +
-          "arcMutateLicenceExpires\tabsent\n"
-    )
-    // a stale template marker under the canary's own local-repo flag -> 'marker dance'
-    File(fixtureDir, "AGENTS.md").writeText("# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n")
-    writeReport(
-      listOf(
-        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
-        // an unaudited timed-out newcomer -> 'not in the audited set'
-        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,encode,30,TIMED_OUT,none",
-        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.InvertNegsMutator,decode,40,SURVIVED,none",
-      ),
-      ""
-    )
-
-    // every finding is advisory, so the run passes — the advisory summary at the
-    // end of the build supplies the pattern's 'advisory finding' alternation, the
-    // Debt task rides along for the fragments only its static halves emit, and
-    // agentsTemplateInSync runs under the canary's flag for the marker-dance one
-    val output = runner(
-      "pitestEncodingVerify", "pitestEncodingDebt", "pitestDeclinesDebt",
-      "agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout"
-    ).build().output
-
-    // Debt deliberately soft-fails an unusable current report so it remains a
-    // triage surface. The fleet canary must nevertheless reprint both the generic
-    // fallback warning and the parser's reason; otherwise an ordinary sweep turns
-    // a corrupt report into an invisible green observation.
-    writeReport(listOf("Codec.java,com.example.Codec,broken"), "")
-    val invalidDebtOutput = runner("pitestEncodingDebt").build().output
-    val allCanaryOutput = output + invalidDebtOutput
-    pattern.split('|').forEach { fragment ->
-      assertTrue(
-        allCanaryOutput.contains(fragment),
-        "canary pattern fragment '$fragment' matches nothing — reworded warning?\n$allCanaryOutput"
-      )
-    }
-
-    // The canary's reprint_findings rides two-space-indented payload rows along
-    // with their matched header — the paste-ready member rows and marker lines
-    // the headers tell a person to act on. Pin both sides of that contract: the
-    // script's indent rule verbatim (edit the awk and this names the line), and
-    // the plugin's listing indentation, by replaying the same rule over this
-    // run's real output and finding the rows the headers promise.
-    assertTrue(
-      script.contains("keep == 1 && /^  / { print; next }"),
-      "fleet-canary.sh's reprint indent rule moved — update this pin and the replay below together"
-    )
-    val reprint = buildString {
-      var keep = false
-      val headerRegex = Regex(pattern)
-      output.lineSequence().forEach { line ->
-        when {
-          headerRegex.containsMatchIn(line) -> {
-            appendLine(line)
-            keep = true
-          }
-          keep && line.startsWith("  ") -> appendLine(line)
-          else -> keep = false
-        }
-      }
-    }
-    assertTrue(
-      reprint.contains("\n  com.example.Codec,encode,IncrementsMutator # line 30"),
-      "the unaudited-set warning's paste-ready row no longer rides the reprint — " +
-          "listing indentation changed from two spaces?\n$reprint"
-    )
-    assertTrue(
-      reprint.contains("\n  <!-- hardening-template sha256:"),
-      "the marker-dance payload line no longer rides the reprint:\n$reprint"
-    )
-  }
-
-  @Test
   fun `the exclusion audit reads partition handoffs as ownership, statically in Debt`() {
     // Two suites partition com.example.*: 'encoding' hands decoding.* to its
     // sibling, which is ownership, not a swallow — while a glob nothing else
     // targets ('Legacy*') is a genuine hole and must stay a finding. Exercised
-    // through the Debt task because that is the fleet canary's whole view of
-    // consumer globs: the audit's in-run half only fires inside a real pitest
-    // execution, which the canary never performs (casebook: the partition the
+    // through the Debt task because that is the quick read-only view of consumer
+    // globs: the audit's in-run half only fires inside a real pitest execution
+    // (casebook: the partition the
     // audit called a hole). Compile real production sources because
     // compileForPitest owns and may recreate build/mutation-classes before the
     // static Debt audit reads it; the audit itself reads names, never bytecode.
@@ -1612,7 +1484,7 @@ $fuzzBlock
     // across the fleet, leaving it underivable meant ~1600 advisory lines from one
     // suite's generated package every run — the corrosion the audit's own casebook
     // entry warns about, one category over. Exercised through Debt because that is
-    // the half the fleet canary can execute.
+    // the read-only half a diagnostic sweep can execute.
     writeFixture(
       encodingTargets = listOf("com.example.*"),
       encodingExcludes = listOf("com.example.gen.*", "com.example.Legacy*"),
@@ -2055,8 +1927,8 @@ $fuzzBlock
     val written = timeoutsFile.readText()
     // sibling timeouts of one member collapse to one row, both observed lines kept
     assertTrue(
-      written.contains("com.example.Codec,encode,MathMutator # lines 12, 30") &&
-          written.contains("com.example.Codec,decode,IncrementsMutator # line 44"),
+      written.contains("com.example.Codec,encode,MathMutator # cause:untriaged lines 12, 30") &&
+          written.contains("com.example.Codec,decode,IncrementsMutator # cause:untriaged line 44"),
       "seeded membership wrong:\n$written"
     )
     assertFalse(written.contains("KILLED") || written.contains("decode,MathMutator"), "non-timeout seeded:\n$written")
@@ -2287,62 +2159,6 @@ $fuzzBlock
           output.contains("flipped NO_COVERAGE -> TIMED_OUT"),
       "aggregate-stable or KILLED timeout drift was promoted to a dangerous flip:\n$output",
     )
-  }
-
-  @Test
-  fun `the deep leg filter matches every stash-cycle message`() {
-    // The canary's deep leg greps run output with deep_pattern — message-text
-    // coupling on the same terms as findings_pattern, but for the stash-cycle
-    // lines only two consecutive real runs can provoke, so the reprint-filter
-    // test cannot cover them in its single run. Provokes all four across two
-    // verify runs (the reset notice only prints against a legacy stash, which
-    // that run then cannot also compare) and holds the script's own pattern to
-    // the combined output — reword one of the messages and this names the line.
-    val script = File(savaBuildTestProperty("savaBuild.root"), "tools/fleet-canary.sh").readText()
-    val pattern = Regex("(?m)^deep_pattern='([^']+)'").find(script)?.groupValues?.get(1)
-      ?: error("deep_pattern line not found in tools/fleet-canary.sh")
-
-    writeFixture()
-    baselineFile().parentFile.mkdirs()
-    baselineFile().writeText(
-      "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n" +
-          "com.example.Codec,encode,IncrementsMutator,NO_COVERAGE # line 15\n" +
-          "com.example.Codec,decode,IncrementsMutator,SURVIVED # line 40\n"
-    )
-    val stash = File(fixtureDir, ".pitest-history/encoding.statuses")
-    stash.parentFile.mkdirs()
-    stash.writeText("com.example.Codec,encode,10,MathMutator,SURVIVED\n")
-    fun mutant(method: String, mutator: String, line: Int, status: String) =
-      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.$mutator,$method,$line,$status,none"
-    // run 1: the legacy stash provokes the reset notice
-    writeReport(
-      listOf(
-        mutant("encode", "MathMutator", 10, "SURVIVED"),
-        mutant("encode", "IncrementsMutator", 15, "NO_COVERAGE"),
-        mutant("decode", "IncrementsMutator", 40, "SURVIVED"),
-      ),
-      ""
-    )
-    val first = runner("pitestEncodingVerify").build().output
-    // run 2: the encode survivor became a timeout (the flip warning), the
-    // never-reached mutant became one too (the NO_COVERAGE flip warning), and a
-    // fresh key timed out with its survivors intact (the drift line)
-    writeReport(
-      listOf(
-        mutant("encode", "MathMutator", 10, "TIMED_OUT"),
-        mutant("encode", "IncrementsMutator", 15, "TIMED_OUT"),
-        mutant("decode", "IncrementsMutator", 40, "SURVIVED"),
-        mutant("decode", "InvertNegsMutator", 44, "TIMED_OUT"),
-      ),
-      ""
-    )
-    val combined = first + runner("pitestEncodingVerify").build().output
-    pattern.split('|').forEach { fragment ->
-      assertTrue(
-        combined.contains(fragment),
-        "deep pattern fragment '$fragment' matches nothing — reworded message?\n$combined"
-      )
-    }
   }
 
   @Test
@@ -2631,7 +2447,9 @@ $fuzzBlock
     timeoutsFile.parentFile.mkdirs()
     // one audited member, plus a two-field row: malformed is the other finding the
     // strict flag escalates, so it must be excluded from the advisory summary too
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\ncom.example.Codec,encode\n")
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness\ncom.example.Codec,encode\n"
+    )
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
@@ -2661,7 +2479,8 @@ $fuzzBlock
     // certifying run stops on it too; row-then-cause is a legitimate sequence
     // between certifications, not during one
     timeoutsFile.writeText(
-      "com.example.Codec,encode,MathMutator\ncom.example.Codec,decode,IncrementsMutator\n"
+      "com.example.Codec,encode,MathMutator # cause:liveness\n" +
+          "com.example.Codec,decode,IncrementsMutator # cause:liveness\n"
     )
     val causeless = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
     assertTrue(
@@ -2671,7 +2490,7 @@ $fuzzBlock
 
     // with the causes written, a fully audited set passes strict even with hygiene
     // findings outstanding (the stale member below stays advisory)
-    timeoutsFile.appendText("com.example.Codec,gone,MathMutator\n")
+    timeoutsFile.appendText("com.example.Codec,gone,MathMutator # cause:liveness\n")
     File(fixtureDir, "config/pitest/README.md").writeText(
       "`Codec.encode` (MathMutator): the inflated estimate crawls, never fails.\n\n" +
           "`Codec.decode` (IncrementsMutator): the reversed cursor re-reads forever.\n"
@@ -2688,6 +2507,57 @@ $fuzzBlock
     assertTrue(
       unadopted.contains("no audited") && unadopted.contains("pitestEncodingTimeoutAuditInit"),
       "strict run did not fail on the unadopted suite:\n$unadopted"
+    )
+  }
+
+  @Test
+  fun `timeout cause categories distinguish liveness from finite resource work`() {
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:resource line 12\n" +
+          "com.example.Codec,decode,IncrementsMutator # cause:untriaged line 30\n" +
+          "com.example.Codec,wait,VoidMethodCallMutator # line 44\n"
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec causes\n\n" +
+          "`Codec.encode`: finite excessive allocation.\n" +
+          "`Codec.decode`: not reviewed yet.\n" +
+          "`Codec.wait`: removed loop exit.\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,30,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,44,TIMED_OUT,none",
+      ),
+      ""
+    )
+
+    val debt = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      debt.contains("3 audited-timeout member(s) lack an admissible cause classification") &&
+          debt.contains("cause:resource terminates") &&
+          debt.contains("cause:untriaged has not been reviewed") &&
+          debt.contains("missing cause:liveness/resource/untriaged"),
+      "Debt did not share the cause-category audit:\n$debt"
+    )
+    val strict = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
+    assertTrue(
+      strict.contains("3 inadmissible or unfinished cause classification(s)"),
+      "strict audit accepted finite or unfinished timeout causes:\n$strict"
+    )
+
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n" +
+          "com.example.Codec,decode,IncrementsMutator # cause:liveness line 30\n" +
+          "com.example.Codec,wait,VoidMethodCallMutator # cause:liveness line 44\n"
+    )
+    val classified = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").build().output
+    assertFalse(
+      classified.contains("cause classification"),
+      "classified liveness rows stayed findings:\n$classified"
     )
   }
 
@@ -2720,7 +2590,7 @@ $fuzzBlock
     // Fixing the timeout set removes those two findings. The fabricated report still
     // deliberately lacks a completed-run evidence manifest, so only that migration
     // advisory remains.
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # cause:liveness\n")
     File(fixtureDir, "config/pitest/README.md")
       .writeText("`Codec.encode` (MathMutator): the estimate crawls, never fails.\n")
     val clean = runner("pitestEncodingVerify").build().output

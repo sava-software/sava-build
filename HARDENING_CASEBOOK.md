@@ -912,9 +912,9 @@ looks.
 Rules: *a check must recognize every exclusion category the doctrine
 endorses, or it will flag the doctrine*; *an advisory that fires on a repo's
 deliberate structure every run is not noise but corrosion — it teaches
-readers to skim the channel*; *every advisory needs a half the fleet canary
-can execute, because a check that only fires inside a real mutation run
-ships unvalidated against real consumer data*.
+readers to skim the channel*; *every advisory needs a cheap read-only surface
+that local adoption actually executes, because a check that only fires inside
+a real mutation run ships unvalidated against real consumer data*.
 
 ## The advisory that named two thousand deliberate exclusions
 
@@ -1316,3 +1316,122 @@ Rules: *parallelism that affects achieved work is an input, not scheduler trivia
 record it, and record the work actually achieved*; *do not run PIT beside CPU-bound fuzzers*;
 *capture process evidence from the live stream, then bind it through every retained receipt
 layer*.
+
+## The growth guard called allocation routing
+
+Json-iterator carried five accepted mutants under the doctrine's unqualified
+“allocation-size only” family. Their return values were identical, but the mutations
+removed or reversed growth policy: two `parseMultiByteString` guards, a
+`widenToCharBuf` capacity path, and `Math.max(n, x << 1)` changed to `>> 1` in
+`JIUtil.ensureCapacity`. These were not constant-factor routing choices. They changed
+how the work scaled, and one bulk-input test “killed” a sibling only by exhausting the
+heap. Under a loaded certification that coordinate became `TIMED_OUT`; alone it read
+`KILLED`. A resource regression had manufactured the same random one-coordinate abort
+three consumers had spent long certification reruns diagnosing.
+
+The deterministic oracle was smaller, not heavier. `TestAllocation` decoded 54
+characters from a two-character starting buffer and allowed 8 KiB where the mutant
+used roughly 1 MiB — an orders-of-magnitude margin in 29 lines. It killed the growth
+family without racing the heap or watchdog. One first attempt wrapped the right
+allocation counter around the wrong overload and observed no difference; reaching the
+mutated path remained part of the proof. Iterator moved 1798/1919 to 1802/1919, util
+351/394 to 352/394, and their accepted baselines shrank 121 to 118 and 43 to 42.
+
+This does not repeal the allocation-harness warning above. Its 88-vs-90-byte gap was
+an incidental constant factor with a thin margin. A capacity guard or amortisation
+condition explicitly exists to control growth, and a test can choose a small input
+whose ratio is enormous. Rules: *content equality does not imply complexity
+equivalence*; *“allocation-size only” applies to incidental constant factors, never a
+changed complexity class*; *make the ratio large while keeping the input small, so the
+assertion fails before the heap does*; *a sound oracle around the wrong code path proves
+nothing*.
+
+## The timeout whose cause still terminated
+
+Sava classified its fourteen audited timeout members by their written causes. Thirteen
+were liveness failures: a removed loop exit or progress step, or a lock that could never
+be released. One, `Base58.limbsLength`, returned the same answer after much more finite
+work. It timed out when allocation and GC caught up under load and survived when idle.
+The free-prose audit had accepted both shapes even though only the first makes the PIT
+watchdog the unavoidable oracle.
+
+Widening package-private visibility and asserting the method's stated value bound killed
+all six relevant mutants. An allocation harness killed five, required management modules,
+a volatile sink and warm-up, and left the flapper. The direct contract moved the suite
+960/984 to 961/984, survivors 24 to 23, timeouts two to one, and the baseline 25 to 23
+after two independent runs agreed. Rules: *classify a timeout before admitting it*;
+*watchdog detection is for non-completion after deterministic seams are exhausted*;
+*finite excessive work needs contract-first review, not timeout membership*; *prefer a
+value bound, operation counter, or injected clock before allocation or time*.
+
+## The load average that explained nothing
+
+Six Sava certification failures initially looked load-correlated. They occurred at six
+different coordinates, none repeated, and the machine's load average supplied a tidy
+story — until certification succeeded at load 280–308, failed at 44, and a baseline
+rebase succeeded at 102. A quiet solo run even produced a `RUN_ERROR`. The measured
+condition described where an event was first noticed, not what caused it.
+
+The durable discriminator remained coordinate recurrence. Retain the row before a quiet
+rerun overwrites it; the same coordinate recurring is a code/test defect to investigate,
+while different one-offs remain transient infrastructure evidence. Rules: *load average
+is context, not diagnosis*; *do not turn correlation into an automatic retry*; *identity
+and recurrence decide whether two failures are the same observation*.
+
+## The ancestry check that never ran
+
+A manual `git merge-base --is-ancestor <reviewed> <tag>` returned non-zero and briefly
+looked like a release-integrity failure. The tag object simply had not been fetched. No
+ancestry question had been evaluated. Production release verification already resolves
+the commit and tag objects before asking the graph question, but the bare diagnostic
+command hid that distinction.
+
+Rules: *prove both objects exist before interpreting graph predicates*; *exit 1 from a
+successfully evaluated ancestry predicate means false, while command/evaluation errors
+need their own message*; *“could not check” is never evidence for either answer*.
+
+## The reviewed repository that ran different bytes
+
+The schema-2 release attestation for 21.5.23 named json-iterator among the reviewed
+adoptions and bound the release candidate JAR at
+`495f0d43332978bea8001358991bc15b00064125f8ad5b705087a18a6d9671d3`. Json-iterator's
+last pre-release pass had actually certified an earlier candidate JAR at
+`516b1b79e63e50ad51d3d0849d9ec28d632c2183f9c12e0dd441ceab893c762e`. The command
+accepted repository slugs from the owner and derived everything else, so every release
+gate passed: the artifact itself was sound, but the durable record overstated which
+consumer had observed those exact bytes. A post-release published-artifact pass later
+closed the real validation gap; it did not make the original claim derived evidence.
+
+Schema 3 removes that asserted field. `create-reviewed --adoption` now takes a clean
+consumer checkout, derives its GitHub origin and commit/tree, discovers completed
+schema-6 certification receipts, and refuses unless the project-level plugin identity and
+every suite row name the retained candidate JAR. It records the receipt hashes, sessions,
+projects, suites, and relative
+paths so a multi-project adoption says exactly what ran. The committed schema-2 record
+remains verifiable as a historical statement; no schema-1 record was ever committed, so
+the deleted fleet-backed creation path and its dead validator were removed together.
+
+Rules: *a reviewer name is not artifact evidence*; *derive every claim that existing
+receipts can prove*; *bind the consumer commit and exact loaded bytes together*;
+*preserve shipped old schemas for verification without allowing them for new records*.
+
+## The optional fleet runner that remained mandatory to maintain
+
+Deliberate local consumer adoptions became the release proof, and the owner attestation
+began deriving their exact certification receipts directly. The old aggregate fleet
+runner was no longer a tag or publication gate, but `check`, all three build workflows,
+and several functional tests still compiled and self-tested its 1,829-line shell program.
+Its warning reprint filters and second receipt protocol therefore remained a mandatory
+maintenance surface even though running the experiment was optional.
+
+Deleting the superseded orchestrator did not mean deleting evidence with a different
+job. The golden mutation corpus still tests parsers against real shipped baselines, and
+the local-fuzz roster still supports an explicit bounded cross-repository campaign. The
+schema-2 attestation actually committed for 21.5.23 also remains verifiable. What left was
+the duplicate runner, its workflow/build hooks, its message-coupling tests, and the
+never-committed schema-1 fleet-attestation path.
+
+Rules: *when the release proof changes, remove the superseded orchestrator instead of
+calling it optional while testing it everywhere*; *retain fixtures by the independent
+claim they prove, not because they once belonged to the old runner*; *backward
+compatibility protects records that exist, not hypothetical formats that never shipped*.

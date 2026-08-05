@@ -301,6 +301,34 @@ $buildTail
     corpus.resolve("seedB").writeText("beta-longer")
   }
 
+  private fun initializeGitFixture(): Pair<String, String> {
+    File(fixtureDir, ".gitignore").writeText(".gradle/\nbuild/\n.pitest-history/\n")
+    val emptyTemplate = File(fixtureDir, ".empty-git-template").apply { mkdirs() }
+    git("-c", "init.templateDir=${emptyTemplate.absolutePath}", "init", "--quiet", "--initial-branch=main")
+    git("add", "-A")
+    git(
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "user.name=Hardening Fixture",
+      "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "fixture",
+    )
+    return git("rev-parse", "HEAD") to git("rev-parse", "HEAD^{tree}")
+  }
+
+  private fun git(vararg arguments: String): String {
+    val process = ProcessBuilder(listOf("git", "-C", fixtureDir.absolutePath) + arguments)
+      .redirectErrorStream(true)
+      .apply {
+        environment()["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        environment()["GIT_CONFIG_SYSTEM"] = "/dev/null"
+        environment()["GIT_TERMINAL_PROMPT"] = "0"
+      }
+      .start()
+    val output = process.inputStream.bufferedReader().readText()
+    assertEquals(0, process.waitFor(), "git ${arguments.joinToString(" ")} failed:\n$output")
+    return output.trim()
+  }
+
   /**
    * Keeps the real PIT tool configuration on the fake process classpath so this one
    * fixture can observe the two ArcMutate levers independently. The fake emits a
@@ -839,8 +867,14 @@ $buildTail
     assertTrue(evidence.isFile, "completed PIT evidence missing:\n${certified.output}")
     assertTrue(receipt.isFile, "certification receipt missing:\n${certified.output}")
     val receiptText = receipt.readText()
-    assertTrue(receiptText.contains("schema\t5"), receiptText)
+    assertTrue(receiptText.contains("schema\t6"), receiptText)
     assertTrue(receiptText.contains("session\t"), receiptText)
+    assertTrue(receiptText.contains("gitState\tunavailable"), receiptText)
+    assertTrue(receiptText.contains("gitCommit\tunavailable"), receiptText)
+    assertTrue(receiptText.contains("gitTree\tunavailable"), receiptText)
+    assertTrue(receiptText.contains("gitStatusSha256\tunavailable"), receiptText)
+    assertTrue(receiptText.contains("gitProjectDirectory\tunavailable"), receiptText)
+    assertTrue(Regex("(?m)^pluginSha256\\t[0-9a-f]{64}$").containsMatchIn(receiptText), receiptText)
     assertTrue(receiptText.contains("toolClasspathSha256"), receiptText)
     assertTrue(receiptText.contains("mutationToolchainSha256"), receiptText)
     assertTrue(receiptText.contains("recordInputsSha256"), receiptText)
@@ -855,6 +889,14 @@ $buildTail
     val columns = receiptText.lineSequence().first { it.startsWith("columns\t") }.split('\t')
     val suiteRow = receiptText.lineSequence().first { it.startsWith("suite\tencoding\t") }.split('\t')
     val recordInputsIndex = columns.indexOf("recordInputsSha256") - 1
+    val suitePluginIndex = columns.indexOf("pluginSha256") - 1
+    val topLevelPlugin = receiptText.lineSequence()
+      .single { it.startsWith("pluginSha256\t") }.substringAfter('\t')
+    assertEquals(
+      topLevelPlugin,
+      suiteRow[suitePluginIndex],
+      "top-level plugin identity diverged from the suite evidence",
+    )
     val configDir = File(fixtureDir, "config/pitest")
     assertEquals(
       PitestEvidence.fingerprint(
@@ -894,6 +936,99 @@ $buildTail
     val stale = runner("pitestEncodingVerify").buildAndFail().output
     assertTrue(stale.contains("completed report evidence no longer matches the current build"), stale)
     assertTrue(stale.contains("sourceSha256"), stale)
+  }
+
+  @Test
+  fun `certification binds a clean Git commit and remains visibly stale after HEAD advances`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val (certifiedCommit, certifiedTree) = initializeGitFixture()
+
+    val certified = runner("clean", "hardeningCertify").build()
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receiptAtA = receipt.readText()
+    val statusAtA = git("status", "--porcelain=v1", "--untracked-files=all")
+    assertTrue(receiptAtA.contains("schema\t6\n"), receiptAtA)
+    assertTrue(receiptAtA.contains("gitState\tclean\n"), "status=$statusAtA\n$receiptAtA")
+    assertTrue(receiptAtA.contains("gitCommit\t$certifiedCommit\n"), receiptAtA)
+    assertTrue(receiptAtA.contains("gitTree\t$certifiedTree\n"), receiptAtA)
+    assertTrue(
+      receiptAtA.contains("gitStatusSha256\t${PitestEvidence.sha256(byteArrayOf())}\n"),
+      receiptAtA,
+    )
+    assertTrue(receiptAtA.contains("gitProjectDirectory\t.\n"), receiptAtA)
+    assertTrue(statusAtA.isEmpty(), "${certified.output}\n$statusAtA")
+
+    File(fixtureDir, "post-certification.txt").writeText("advance the clean checkout\n")
+    git("add", "post-certification.txt")
+    git(
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "user.name=Hardening Fixture",
+      "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "advance after certification",
+    )
+    val currentCommit = git("rev-parse", "HEAD")
+    val currentTree = git("rev-parse", "HEAD^{tree}")
+    assertFalse(currentCommit == certifiedCommit)
+    assertFalse(currentTree == certifiedTree)
+    assertTrue(git("status", "--porcelain=v1", "--untracked-files=all").isEmpty())
+    assertEquals(receiptAtA, receipt.readText(), "advancing HEAD rewrote the prior certification receipt")
+    assertTrue(receipt.readText().contains("gitCommit\t$certifiedCommit\n"))
+    assertFalse(receipt.readText().contains("gitCommit\t$currentCommit\n"))
+  }
+
+  @Test
+  fun `certification records an explicit dirty Git state without refusing local use`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val (commit, tree) = initializeGitFixture()
+    File(fixtureDir, "dirty-marker.txt").writeText("deliberately uncommitted\n")
+
+    val certified = runner("clean", "hardeningCertify").build()
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv").readText()
+
+    assertTrue(receipt.contains("gitState\tdirty\n"), receipt)
+    assertTrue(receipt.contains("gitCommit\t$commit\n"), receipt)
+    assertTrue(receipt.contains("gitTree\t$tree\n"), receipt)
+    assertTrue(
+      Regex("(?m)^gitStatusSha256\\t(?!${PitestEvidence.sha256(byteArrayOf())}$)[0-9a-f]{64}$")
+        .containsMatchIn(receipt),
+      receipt,
+    )
+    assertTrue(certified.output.contains("suite(s) certified"), certified.output)
+  }
+
+  @Test
+  fun `zero-suite certification still binds top-level plugin and Git identity`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "hardening-zero-suite-smoke-test"
+      """.trimIndent() + "\n",
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+      """.trimIndent() + "\n",
+    )
+    val (commit, tree) = initializeGitFixture()
+
+    val certified = runner("clean", "hardeningCertify").build()
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv").readText()
+
+    assertTrue(receipt.contains("schema\t6\n"), receipt)
+    assertTrue(receipt.contains("gitState\tclean\n"), receipt)
+    assertTrue(receipt.contains("gitCommit\t$commit\n"), receipt)
+    assertTrue(receipt.contains("gitTree\t$tree\n"), receipt)
+    assertTrue(Regex("(?m)^pluginSha256\\t[0-9a-f]{64}$").containsMatchIn(receipt), receipt)
+    assertFalse(receipt.lineSequence().any { it.startsWith("suite\t") }, receipt)
+    assertTrue(certified.output.contains("0 suite(s) certified"), certified.output)
   }
 
   @Test
@@ -971,6 +1106,37 @@ $buildTail
     assertTrue(failed.contains("inputs changed after verification"), failed)
     assertTrue(failed.contains("sourceSha256"), failed)
     assertFalse(receipt.exists(), "stale-input certification left a passing receipt")
+  }
+
+  @Test
+  fun `certification refuses suites that observed different project-wide toolchains`() {
+    writeFixture(
+      buildTail = """
+        hardening {
+          mutation.register("decoding") {
+            targetClasses = listOf("com.example.*")
+            targetTests = "com.example.*Test*"
+          }
+        }
+        tasks.named<JavaExec>("pitestDecoding") {
+          mainClass = "com.example.FakePit"
+          classpath = files(sourceSets["main"].output, layout.projectDirectory.dir("extra-pit-tool"))
+        }
+      """.trimIndent(),
+    )
+    File(fixtureDir, "extra-pit-tool").apply { mkdirs() }
+      .resolve("fixture-marker.txt").writeText("suite-specific tool input\n")
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val failed = runner("clean", "hardeningCertify").buildAndFail().output
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+
+    assertTrue(failed.contains("suites do not describe one project-wide tree"), failed)
+    assertTrue(failed.contains("'encoding'") && failed.contains("'decoding'"), failed)
+    assertTrue(failed.contains("toolClasspathSha256"), failed)
+    assertTrue(failed.contains("mutationToolchainSha256"), failed)
+    assertFalse(receipt.exists(), "mixed-tree certification left a passing receipt")
   }
 
   @Test

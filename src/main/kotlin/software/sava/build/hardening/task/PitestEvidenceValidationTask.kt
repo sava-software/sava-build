@@ -15,9 +15,11 @@ import org.gradle.api.tasks.Nested
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.UntrackedTask
 import org.gradle.jvm.toolchain.JavaLauncher
+import org.gradle.process.ExecOperations
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.BaselineFiles
+import software.sava.build.hardening.CertificationGitIdentityCapture
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
@@ -353,9 +355,23 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
   @get:Nested
   val suiteEvidence: NamedDomainObjectContainer<PitestEvidenceSpec> =
     objects.domainObjectContainer(PitestEvidenceSpec::class.java)
+  @get:Internal abstract val certificationProjectDirectory: DirectoryProperty
+  @get:Internal abstract val certificationPluginCode: ConfigurableFileCollection
+  @get:Input abstract val hardeningProjectPath: Property<String>
+
+  @get:ServiceReference("hardeningCertificationSession")
+  abstract val certificationSession: Property<HardeningCertificationSession>
+
+  @get:Inject
+  protected abstract val execOperations: ExecOperations
 
   @TaskAction
   fun validateFinalInputs() {
+    val projectDirectory = certificationProjectDirectory.get().asFile
+    val gitBefore = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
+    val pluginBeforeSha256 = PitestEvidence.fingerprintTree(certificationPluginCode.singleFile)
+    val completedProjectSnapshots = mutableListOf<NamedProjectEvidence>()
+    val currentProjectSnapshots = mutableListOf<NamedProjectEvidence>()
     suiteEvidence.sortedBy { it.name }.forEach { evidence ->
       val reportDir = evidence.reportDirectory.get().asFile
       val report = reportDir.resolve("mutations.csv")
@@ -392,6 +408,94 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
             "commit a stale receipt:\n" + differences.joinToString("\n") { "  $it" }
         )
       }
+      val suite = evidence.suiteName.get()
+      completedProjectSnapshots += NamedProjectEvidence(suite, ProjectEvidence.from(recorded))
+      currentProjectSnapshots += NamedProjectEvidence(suite, ProjectEvidence.from(current))
+    }
+    requireOneProjectTree("completed evidence", completedProjectSnapshots)
+    requireOneProjectTree("current inputs", currentProjectSnapshots)
+    val gitAfter = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
+    val pluginAfterSha256 = PitestEvidence.fingerprintTree(certificationPluginCode.singleFile)
+    requirePluginIdentity("completed evidence", completedProjectSnapshots, pluginBeforeSha256)
+    requirePluginIdentity("current inputs", currentProjectSnapshots, pluginAfterSha256)
+    try {
+      certificationSession.get().recordFinalProjectIdentity(
+        hardeningProjectPath.get(),
+        gitBefore,
+        gitAfter,
+        pluginBeforeSha256,
+        pluginAfterSha256,
+      )
+    } catch (e: IllegalStateException) {
+      throw GradleException("hardeningCertify: ${e.message}", e)
+    }
+  }
+
+  /**
+   * Fields whose inputs are project-wide even though PIT persists them once per suite.
+   * Suite targeting and report identity deliberately remain outside this projection.
+   */
+  private data class ProjectEvidence(
+    val sourceSha256: String,
+    val classesSha256: String,
+    val pitestVersion: String,
+    val pluginSha256: String,
+    val toolClasspathSha256: String,
+    val mutationToolchainSha256: String,
+  ) {
+    fun differences(reference: ProjectEvidence): List<String> = buildList {
+      if (sourceSha256 != reference.sourceSha256) add("sourceSha256")
+      if (classesSha256 != reference.classesSha256) add("classesSha256")
+      if (pitestVersion != reference.pitestVersion) add("pitestVersion")
+      if (pluginSha256 != reference.pluginSha256) add("pluginSha256")
+      if (toolClasspathSha256 != reference.toolClasspathSha256) add("toolClasspathSha256")
+      if (mutationToolchainSha256 != reference.mutationToolchainSha256) {
+        add("mutationToolchainSha256")
+      }
+    }
+
+    companion object {
+      fun from(evidence: PitestEvidence) = ProjectEvidence(
+        sourceSha256 = evidence.sourceSha256,
+        classesSha256 = evidence.classesSha256,
+        pitestVersion = evidence.pitestVersion,
+        pluginSha256 = evidence.pluginSha256,
+        toolClasspathSha256 = evidence.toolClasspathSha256,
+        mutationToolchainSha256 = evidence.mutationToolchainSha256,
+      )
+    }
+  }
+
+  private data class NamedProjectEvidence(val suite: String, val evidence: ProjectEvidence)
+
+  private fun requireOneProjectTree(label: String, snapshots: List<NamedProjectEvidence>) {
+    val reference = snapshots.firstOrNull() ?: return
+    val conflicts = snapshots.drop(1).mapNotNull { candidate ->
+      candidate.evidence.differences(reference.evidence).takeIf(List<String>::isNotEmpty)?.let {
+        "'${candidate.suite}' differs from '${reference.suite}' in ${it.joinToString(", ")}"
+      }
+    }
+    if (conflicts.isNotEmpty()) {
+      throw GradleException(
+        "hardeningCertify: suites do not describe one project-wide tree in $label — " +
+          "refusing to commit a mixed-observation receipt:\n" +
+          conflicts.joinToString("\n") { "  $it" }
+      )
+    }
+  }
+
+  private fun requirePluginIdentity(
+    label: String,
+    snapshots: List<NamedProjectEvidence>,
+    pluginSha256: String,
+  ) {
+    val mismatches = snapshots.filter { it.evidence.pluginSha256 != pluginSha256 }.map { it.suite }
+    if (mismatches.isNotEmpty()) {
+      throw GradleException(
+        "hardeningCertify: $label for suite(s) ${mismatches.joinToString(", ") { "'$it'" }} " +
+          "does not match the project-wide hardening plugin code — refusing to commit a " +
+          "mixed-plugin receipt"
+      )
     }
   }
 }

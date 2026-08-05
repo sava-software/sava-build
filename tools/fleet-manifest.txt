@@ -1,17 +1,12 @@
-# Fleet canary roster: every known Java repo consuming sava-build's hardening
-# plugin. `tools/fleet-canary.sh` and `tools/local-fuzz.sh` use the locally
-# available sibling checkouts in ordinary mode; `--release` requires every
-# entry and a clean checkout at the declared GitHub remote. It writes an
-# immutable SHA-bound run bundle under build/hardening and atomically points the
-# canonical receipt at that bundle.
-# Pass `--deep` when an explicit repeated diagnostic is worth its cost; strict
-# release certification itself runs every suite once and does not require a soak.
+# Local fuzz roster: every known Java repo consuming sava-build's hardening plugin.
+# `tools/local-fuzz.sh` uses locally available sibling checkouts in ordinary mode;
+# its explicit `--release` experiment requires every entry and a clean checkout at
+# the declared GitHub remote, then writes an immutable SHA-bound run bundle.
 #
-# Format: one repo per line, `<github-org>/<repo>`, optional
-# ` deep=<pitestSuiteTask>`. '#' lines and blank lines are ignored.
+# Format: one repo per line, `<github-org>/<repo>`. '#' lines and blank lines are ignored.
 sava-software/sava
 sava-software/ravina
-sava-software/json-iterator deep=pitestUtil
+sava-software/json-iterator
 sava-software/http-servers
 sava-software/idl-src-gen
 sava-software/incident-client

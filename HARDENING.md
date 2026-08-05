@@ -56,7 +56,7 @@ digest, and the plugin binary actually loaded by every consumer. An explicit loc
 is valid; it needs neither a scheduled workflow nor an arbitrary soak window. A receipt
 must bind the complete expected roster, refuse a stale shared plugin binary, and say
 which recorded checkouts it revalidated. Keep evidence outside the tree it certifies
-*(casebook: the canary that skipped two consumers)*. Releasing `sava-build` itself uses
+*(casebook: the aggregate run that skipped two consumers)*. Releasing `sava-build` itself uses
 the already-reviewed local adoption passes rather than requiring a duplicate full-fleet
 campaign; its owner-attestation and Release Please mechanics live only in the README's
 [Local adoption and release attestation](README.md#local-adoption-and-release-attestation)
@@ -92,13 +92,13 @@ observation.
 Certification receipts are deliberately **project-scoped**. In a multi-project build,
 the unqualified `hardeningCertify` selector runs each project that exposes that task and
 each writes its own receipt and session UUID; no one child receipt claims that the whole
-repository ran. The release fleet wrapper is the repository aggregate: before execution
-it discovers every project exposing `hardeningCertify`, then retains every child receipt
-and refuses unless the resulting project set matches that inventory exactly. A standalone
-release checklist that does not use the wrapper must likewise gather every per-project
-receipt rather than treating the first one found as repository evidence. Keeping
-project-scoped `hardeningCertify` also preserves the useful ability to certify one module
-without silently putting unrelated modules into certification mode.
+repository ran. Release attestation gathers every canonical certification receipt present
+in each reviewed checkout and records its relative path, project, session, and suite set.
+It cannot discover an independent Gradle root that was never run, so the release owner must
+compare that derived receipt list with the adoption handoff's intended roots rather than
+treating the first receipt found as repository evidence. Keeping project-scoped
+`hardeningCertify` also preserves the useful ability to certify one module without silently
+putting unrelated modules into certification mode.
 
 Generated evidence must never select the configuration-cache task graph. The PIT
 validators are always present and decide at execution time whether `.evidence.tsv`
@@ -698,14 +698,33 @@ invoked it*, and the failure looks exactly like a real regression.
   compensating control is the audited set: one `class,method,mutator` row
   per member in `config/pitest/<suite>-timeouts.csv` (line-less so drift
   cannot churn membership; `#` comments allowed, and spacing around fields
-  is normalized away, so rows may be aligned for reading), with the
-  structural cause
-  (the removed loop exit, the reversed increment, the leaked unlock)
-  written per member in `config/pitest/README.md`. Adoption is seeded, not
+  is normalized away, so rows may be aligned for reading), with a required
+  machine-readable comment category and the full structural cause written per
+  member in `config/pitest/README.md`:
+
+  - `cause:liveness` is the only admissible watchdog detection: the mutant
+    cannot complete (removed loop exit, reversed progress, leaked unlock,
+    deadlock, never-completing future) after deterministic seams, call budgets,
+    or injected clocks have been exhausted.
+  - `cause:resource` says the mutant still completes but does too much work.
+    It is a reviewer-stop, not detection. If allocation/complexity is a contract,
+    assert it with a deterministic resource oracle; if that oracle also fails on
+    unmutated production, demonstrate and fix the production bug rather than
+    weakening the bound. If the difference is incidental, shrink or retime the
+    covering input until the mutant reads reliably `SURVIVED` and argue ordinary
+    accepted equivalence.
+    It does not belong in the timeout set either way.
+  - `cause:untriaged` is what the seeder writes and is deliberately unfinished.
+    Missing, unknown, conflicting, `resource`, and `untriaged` categories warn,
+    and strict certification refuses them. Infrastructure or harness slowness is
+    neither category and must never be admitted.
+
+  The category makes the disposition explicit; the README still carries the
+  evidence and cannot be replaced by the token. Adoption is seeded, not
   transcribed: a suite whose summary reports timeouts with no set on disk is
   pointed at `pitest<Suite>TimeoutAuditInit`, which writes the membership rows from the
-  run's report (observed lines riding in `#` comments) and leaves only the
-  causes to a person. The nudge also prints the would-be member rows
+  run's report (observed lines riding in `#` comments) and leaves category
+  disposition plus the full cause to a person. The nudge also prints the would-be member rows
   paste-ready alongside the task hint: timeouts are load-dependent, so the run
   that prompted the nudge may be the only one holding them — a later
   seeding run against a clean report is rightly refused, and without the
@@ -766,11 +785,11 @@ invoked it*, and the failure looks exactly like a real regression.
   the cause argues about moved entirely; a *new* sibling line next to a
   recorded one does not masquerade as a full move, while its count growth is
   still named by the run-to-run drift output above). Advisory only, never a failure, by
-  default: load can time out any mutant on any run, and both flavours are
-  still detection. For certifying runs, `-PstrictTimeoutAudit` escalates
+  default: any one observed timeout can be load-dependent, so classification may be
+  completed between ordinary runs. For certifying runs, `-PstrictTimeoutAudit` escalates
   exactly the findings that mean the audit is not being kept — an
-  unaudited newcomer, a malformed row, a member whose cause was never
-  written (the doctrine admits a newcomer only with its cause written, so a
+  unaudited newcomer, a malformed row, a missing/inadmissible/unfinished cause
+  category, or a member whose cause was never written (the doctrine admits a newcomer only with its cause written, so a
   cause-less member is an unfinished admission, not hygiene — row-then-cause
   is a legitimate sequence *between* certifications, not during one), or a
   timeout-carrying suite with no
@@ -973,8 +992,13 @@ acceptance: mint a fresh key per invocation so every run takes the miss path
 Most accepted mutants fall into a handful of shapes; group the baseline by
 family rather than listing rows:
 
-- **Allocation-size only** — changes how much is reserved, never what is
-  computed.
+- **Allocation-size only** — equivalent only when the change is an incidental
+  **constant factor** and no resource contract observes it. Removing a growth
+  guard, capacity check, or doubling/amortisation condition can leave returned
+  bytes identical while changing the complexity class (`O(log N)` growths to
+  `O(N)`, or bounded allocation to explosive allocation); that is a resource
+  regression, not this family *(see “Turning equivalent mutants into killable
+  ones” below; casebook: the growth guard called allocation routing)*.
 - **Fast-path / alternate-path routing** — both branches reach the same
   result; a guard subsumed by a later branch is the common case
   (`if (a.feePayer()) return a;` above a `signer()` branch returning the same
@@ -1038,6 +1062,19 @@ readers are invisible to result assertions but visible to
 `com.sun.management.ThreadMXBean#getCurrentThreadAllocatedBytes`. If
 allocation, ordering, or laziness is the point of the code, assert it.
 
+**Content-identical does not mean complexity-equivalent.** A mutant that removes
+a growth guard, reverses a capacity shift, or defeats amortisation has two common
+presentations if only result values are asserted: it survives as a falsely
+accepted “allocation-size” equivalent, or a bulk-input test kills it by exhausting
+the heap. The latter races PIT's watchdog and reappears as a random single-coordinate
+`TIMED_OUT`, not a deterministic assertion. An asymptotic gap in code whose purpose
+is bounded growth satisfies “the point of the code” gate by itself. Assert it with
+an input that makes the ratio orders of magnitude while remaining small in absolute
+terms — for example, grow a two-character buffer to decode a short value — so the
+bound fails before the heap does. Make sure the vehicle reaches the mutated path;
+a sound allocation oracle around a different overload proves nothing *(casebook:
+the growth guard called allocation routing)*.
+
 **"The point of the code" is the whole gate, and it is easy to read past.**
 Is the property a design goal you would defend in review — a documented
 zero-allocation contract, a laziness guarantee callers rely on — or an
@@ -1045,7 +1082,8 @@ incidental micro-optimisation that happens to be the only observable
 difference? Only the first earns the machinery; the second is an acceptance
 whose reason is already written ("this branch is allocation routing only").
 
-The costs are real *(casebook: the allocation harness that flapped)*:
+For incidental constant-factor routing, the harness remains a last resort and the
+costs are real *(casebook: the allocation harness that flapped)*:
 
 - PIT re-runs covering tests once per mutant, so a measurement harness
   multiplies like a sleep does.
@@ -1137,7 +1175,7 @@ as more than it is. The generic edges:
   swallows it *(casebook: the partition the audit called a hole)*. The check
   runs inside each real `pitest<Suite>` execution and, statically, in
   `pitest<Suite>Debt` whenever a prior run left recompiled classes behind —
-  the Debt half is what the fleet canary sees.
+  the Debt half is the quick read-only diagnostic surface.
 
   The targeting policy endorses a third exclusion category the scan cannot
   derive: **deliberate opt-outs** — generated bindings, vendored code, a main
@@ -1791,9 +1829,9 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    judgment in its hardening notes. Scheduled GitHub campaigns are optional and are not
    checked by the plugin.
 8. For a first-party `sava-build` consumer, add its canonical GitHub slug to
-   `tools/fleet-manifest.txt` in the plugin repo. A checkout that happens to be
-   absent during an ordinary canary is skipped; strict release certification
-   refuses the omission, which is why the roster must be explicit.
+   `tools/fleet-manifest.txt` in the plugin repo so an explicit cross-repository
+   local-fuzz experiment can discover it. Ordinary local-fuzz runs skip absent
+   sibling checkouts; its opt-in strict mode refuses omissions.
 
 ## Agent instructions template
 
@@ -1814,8 +1852,8 @@ block: update it only after re-diffing the block against the release-matched tem
 and syncing or **acting on** each changed bullet — a new requirement may mean new
 code, not just new prose; that is how sava's corpus-replay gap went unnoticed until
 an unrelated repo's agent tripped over it. The warning or failure prints the digest
-to paste. One softening: under `-PsavaBuildLocalRepo` (the fleet canary, or any build
-validating an unreleased checkout) a stale marker warns instead of failing — the repo
+to paste. One softening: under `-PsavaBuildLocalRepo` (any build validating an
+unreleased checkout) a stale marker warns instead of failing — the repo
 acknowledges a *released* digest and the checkout's has not shipped, so the marker
 dance normally lands with the release, never before it. A deliberate RC-adoption
 change may re-diff and stage the candidate block and marker now only when that consumer
@@ -1896,11 +1934,15 @@ merely waiting for a release.
 >   assertion — a timeout keeps "detecting" whatever the test asserts — so
 >   each suite's timeouts are an audited set, not a count:
 >   `config/pitest/<suite>-timeouts.csv` holds line-less `class,method,mutator`
->   keys, and `config/pitest/README.md` the structural cause per member (the
->   removed loop exit, the reversed cursor, the leaked unlock). The verify
->   warns on any timeout outside the set — paste the printed row, then write
->   the cause — and on members matching no mutant; admit a newcomer only with
->   its cause written. The key is the check's resolution: a new timed-out
+>   keys plus a comment category. Only `cause:liveness` is admissible watchdog
+>   detection after deterministic seams/budgets are exhausted; seeded
+>   `cause:untriaged`, missing/unknown categories, and finite `cause:resource`
+>   work are reviewer-stops. Resource behavior gets a deterministic contract
+>   test/fix when promised, otherwise a stable `SURVIVED` equivalence argument —
+>   never silent timeout membership. `config/pitest/README.md` still holds the
+>   full structural cause per member. The verify warns on any timeout outside
+>   the set — paste the printed row, classify it, then write the cause — and on
+>   members matching no mutant. The key is the check's resolution: a new timed-out
 >   mutant in an already-audited method+mutator draws no warning, so name the
 >   line in the README cause and re-read it when that code changes.
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
@@ -1910,10 +1952,13 @@ merely waiting for a release.
 >   reason is finished work, not debt. Before trying to raise a number, check
 >   whether the remainder is `NO_COVERAGE` (real work) or documented
 >   equivalents (already closed).
-> - **Allocation and timing harnesses are a last resort**, reserved for
->   properties that are a stated design goal. They re-run once per mutant, need
->   a `volatile` sink so escape analysis cannot delete what they measure, and
->   flap when the margin is thin.
+> - **Allocation and timing harnesses are a last resort for thin constant-factor
+>   differences**, reserved for properties that are a stated design goal. A
+>   removed growth/capacity/amortisation guard that changes complexity class is
+>   not “allocation-size only”: use a small input with an orders-of-magnitude
+>   margin and the correct path through the mutated code. Harnesses re-run once
+>   per mutant, need a `volatile` sink so escape analysis cannot delete what they
+>   measure, and flap when the margin is thin.
 > - When a test you believe in will not go green, **suspect the code before you
 >   soften the assertion** — that is where this process finds real bugs.
 > - **A wandering unkilled count is a defect, not noise** — chase it before
@@ -1965,7 +2010,8 @@ merely waiting for a release.
 > - **Transient infra failures are not results.** PIT `MINION_DIED` fails
 >   before writing a report, so it cannot corrupt one — re-run the suite; a
 >   Gradle-worker `EOFException` death is the same shape, and a per-mutant
->   `RUN_ERROR` under load is the same shape smaller (the hardening parser refuses
+>   `RUN_ERROR` often first observed in a multi-suite run is the same
+>   shape smaller (load average itself proves nothing; the hardening parser refuses
 >   the report rather than certifying PIT's detected score). The refusal and
 >   `pitest<Suite>Debt` name every offending row; retain the coordinate before a
 >   quiet re-run replaces the report, because the same coordinate twice is a defect,

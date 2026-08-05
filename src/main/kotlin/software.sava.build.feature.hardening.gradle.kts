@@ -190,6 +190,8 @@ tasks.register<HardeningHelpTask>("hardeningHelp") {
 }
 val certificationReceiptFile = layout.buildDirectory.file("hardening/pitest-certification.tsv")
 val certificationReceiptRunning = layout.buildDirectory.file("hardening/pitest-certification.running")
+val hardeningImplementationCode =
+    File(PitestEvidence::class.java.protectionDomain.codeSource.location.toURI())
 val hardeningCertifyPreflight = tasks.register("hardeningCertifyPreflight") {
   description = "Internal to hardeningCertify: refuses flags that make the run partial or state-changing."
   // `clean hardeningCertify` is the most useful cold certification. Without an
@@ -239,6 +241,10 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   dependsOn(hardeningCertifyPreflight)
   val certificationSession = hardeningCertificationSession
   usesService(certificationSession)
+  this.certificationSession.set(certificationSession)
+  hardeningProjectPath.set(project.path)
+  certificationProjectDirectory.set(layout.projectDirectory)
+  certificationPluginCode.from(hardeningImplementationCode)
   val reportRoot = layout.buildDirectory.dir("reports/pitest")
   val receiptFile = certificationReceiptFile
   val receiptRunning = certificationReceiptRunning
@@ -261,6 +267,11 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   doLast {
     val sessionId = certificationSession.get().sessionId(certifiedProjectPath)
         ?: throw GradleException("hardeningCertify: certification session is not active")
+    val finalProjectIdentity = try {
+      certificationSession.get().requireFinalProjectIdentity(certifiedProjectPath)
+    } catch (e: IllegalStateException) {
+      throw GradleException("hardeningCertify: ${e.message}", e)
+    }
     val receiptRows = mutableListOf<String>()
     BaselineFiles.requireDirectoryOrMissing(certifiedProjectDirectory, configDir.asFile)
     certifiedSuiteNames.sorted().forEach { suiteName ->
@@ -372,9 +383,9 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
       }
       // The report and compiled/configured inputs prove what PIT observed; these
       // committed files prove what made that observation acceptable. Keep their
-      // digest in the inner receipt too, rather than relying only on the fleet
-      // wrapper's clean Git commit to bind the baseline, timeout membership, causes,
-      // and PIT-version provenance.
+      // digest in every suite row too: the schema-6 receipt's project-level Git
+      // identity binds the checkout, while this field names the exact baseline,
+      // timeout membership, causes, and PIT-version provenance used by the suite.
       val recordInputsSha256 = PitestEvidence.mutationRecordFingerprint(
           certifiedProjectDirectory, configDir.asFile, suiteName)
       try {
@@ -406,10 +417,16 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
           ).joinToString("\t"))
     }
     val receipt = buildString {
-      appendLine("schema\t5")
+      appendLine("schema\t6")
       appendLine("project\t$certifiedProjectPath")
       appendLine("session\t$sessionId")
       appendLine("mode\tfresh-full-strict")
+      appendLine("gitState\t${finalProjectIdentity.git.state.receiptValue}")
+      appendLine("gitCommit\t${finalProjectIdentity.git.commit}")
+      appendLine("gitTree\t${finalProjectIdentity.git.tree}")
+      appendLine("gitStatusSha256\t${finalProjectIdentity.git.statusSha256}")
+      appendLine("gitProjectDirectory\t${finalProjectIdentity.git.projectDirectory}")
+      appendLine("pluginSha256\t${finalProjectIdentity.pluginSha256}")
       appendLine(
           "columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\t" +
               "configurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\t" +
@@ -471,8 +488,8 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   val agentsDoc = rootProject.layout.projectDirectory.file("AGENTS.md").asFile
   val expected = HardeningTemplateDigest.SHA256_12
   val templateTask = if (project.path == ":") "hardeningAgentTemplate" else "${project.path}:hardeningAgentTemplate"
-  // Set when a build resolves an unreleased sava-build checkout (the fleet canary's
-  // '-PsavaBuildLocalRepo'). A stale marker under that flag is the expected state,
+  // Set when a build resolves an unreleased sava-build checkout through
+  // '-PsavaBuildLocalRepo'. A stale marker under that flag is the expected state,
   // not a defect: the repo acknowledges the digest of a RELEASED plugin, and this
   // checkout's digest has not shipped yet. Failing here forced repos to acknowledge
   // unreleased digests ahead of the release — which then wedged their 'check'
@@ -2096,7 +2113,7 @@ hardening.mutation.all {
     pitestResourceDirs.any { it.absolutePath == file.absolutePath } ||
         !file.absolutePath.startsWith(pitestBuildDirPath)
   }
-  val evidencePluginCode = File(PitestEvidence::class.java.protectionDomain.codeSource.location.toURI())
+  val evidencePluginCode = hardeningImplementationCode
   val defaultPitestJavaLauncher = javaToolchains.launcherFor(java.toolchain)
   // Hoisted so the two helpers below read only locals. Both run from inside task
   // actions and argument providers, and a lambda that touches a script-level
@@ -2936,8 +2953,8 @@ hardening.mutation.all {
             // TIMED_OUT candidates in the default output. The stash cannot know
             // which prior line held a status, so when a key already had a timeout
             // every current candidate is printed rather than falsely attributing
-            // the increase. The fleet canary's deep-pattern reprint retains these
-            // indented lines with the summary that triggered them.
+            // the increase. Keep these indented lines next to the summary that
+            // triggered them so the coordinate is retained in ordinary logs.
             val details = buildList {
               addAll(positiveDeltaDetails(
                   "previously detected (usually KILLED -> TIMED_OUT)",
@@ -2971,19 +2988,19 @@ hardening.mutation.all {
       // wrongness — the ratchet cannot see a weakened covering assertion behind it,
       // so "N timed out (load-dependent)" in the summary must be an audited
       // membership rather than a count. 'config/pitest/<suite>-timeouts.csv' holds
-      // one 'class,method,mutator' per row ('#' comments allowed) — line-less so
-      // drift cannot churn membership; the suite README carries each member's line
-      // and structural cause. Warning-level by design: load can time out any mutant
-      // on any run and both flavours are still detection, but an unaudited newcomer
-      // is a change to stop on, not noise to absorb. Absent file, absent check —
-      // adoption is per-repo.
+      // one 'class,method,mutator' per row — line-less so drift cannot churn
+      // membership — and the comment carries a machine-readable cause category.
+      // Only cause:liveness is watchdog detection; a finite cause:resource mutant
+      // needs a contract-first deterministic disposition, while cause:untriaged is
+      // the seeder's explicit unfinished state. The suite README carries the full
+      // structural argument. Absent file, absent check — adoption is per-repo.
       val timedOutByAuditKey = rows.filter { it.status == MutantStatus.TIMED_OUT }.groupBy { it.coordinate }
       // One membership row per key, sibling lines collapsed into the '# line' comment —
       // the shape the seeder writes, the unaudited warning prints, and a hand paste must
       // satisfy verbatim. Every surface that offers a row to paste renders it here.
       fun pasteReadyMemberRows(indent: String) = timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
         val lines = timedOutByAuditKey.getValue(key).map { it.lineText }.distinct()
-        "$indent$key # line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
+        "$indent$key # cause:untriaged line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
       }
       var pendingTimeoutAuditContent: String? = null
       if (initTimeoutAudit) {
@@ -3021,8 +3038,10 @@ hardening.mutation.all {
         pendingTimeoutAuditContent =
             "# Audited TIMED_OUT set for the '$suiteName' suite (HARDENING.md, the audited-timeout\n" +
                 "# bullet): one line-less 'class,method,mutator' member per row. A timeout detects\n" +
-                "# slowness, not wrongness, so the ratchet cannot see a weakened covering assertion\n" +
-                "# behind one; each member's structural cause belongs in config/pitest/README.md.\n" +
+                "# slowness, not wrongness. Replace cause:untriaged with cause:liveness only when\n" +
+                "# the mutant cannot complete after deterministic seams/budgets are exhausted; a\n" +
+                "# finite cause:resource mutant needs a contract-first disposition. Write the full\n" +
+                "# structural argument for every member in config/pitest/README.md.\n" +
                 seeded + "\n"
       }
       if (timeoutsFile.isFile || pendingTimeoutAuditContent != null) {
@@ -3061,7 +3080,9 @@ hardening.mutation.all {
                   "behind \"detected\"; identify the structural cause (the removed loop exit, the " +
                   "reversed cursor), add the row below to the set and the cause to " +
                   "config/pitest/README.md:\n" +
-                  unaudited.joinToString("\n") { "  ${it.coordinate} # line ${it.lineText}" }
+                  unaudited.joinToString("\n") {
+                    "  ${it.coordinate} # cause:untriaged line ${it.lineText}"
+                  }
           )
           if (!strictTimeoutAudit) {
             advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
@@ -3081,6 +3102,16 @@ hardening.mutation.all {
           advisoryLog.get().record(advisoryScope, "${staleMembers.size} stale audit row(s)")
         }
         val liveMembers = members - staleMembers.toSet()
+        val causeFindings = TimeoutAudit.causeFindings(membership, liveMembers)
+        if (causeFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.causeFindingWarning(
+              suiteName, timeoutsFile.name, causeFindings))
+          if (!strictTimeoutAudit) {
+            advisoryLog.get().record(
+                advisoryScope,
+                "${causeFindings.size} audited timeout(s) without an admissible cause classification")
+          }
+        }
         // The '# line' comment the seed writes (and the paste-ready row carries) is
         // the anchor its README cause argues about, and the doctrine's "re-read the
         // cause when that code changes" was purely social: the key going stale only
@@ -3189,12 +3220,15 @@ hardening.mutation.all {
         // unfinished admission, not hygiene; row-then-cause is a legitimate sequence
         // *between* certifications, not during one. Hygiene findings (stale members,
         // quiet streaks, drifted lines) stay advisory even here.
-        if (strictTimeoutAudit && (unaudited.isNotEmpty() || malformed.isNotEmpty() || undocumented.isNotEmpty())) {
+        if (strictTimeoutAudit &&
+            (unaudited.isNotEmpty() || malformed.isNotEmpty() || causeFindings.isNotEmpty() ||
+                undocumented.isNotEmpty())) {
           throw GradleException(
               "pitest '$suiteName': -PstrictTimeoutAudit — ${unaudited.size} unaudited timed-out mutant(s), " +
-                  "${malformed.size} malformed membership row(s), and ${undocumented.size} audited member(s) " +
-                  "without a README cause; see the warnings above. Paste the printed row(s) into " +
-                  "${timeoutsFile.name} and write each cause in config/pitest/README.md."
+                  "${malformed.size} malformed membership row(s), ${causeFindings.size} inadmissible or " +
+                  "unfinished cause classification(s), and ${undocumented.size} audited member(s) without " +
+                  "a README cause; see the warnings above. Paste the printed row(s) into ${timeoutsFile.name}, " +
+                  "classify each cause, and write each structural argument in config/pitest/README.md."
           )
         }
       } else if (timedOutByAuditKey.isNotEmpty()) {
@@ -3214,7 +3248,8 @@ hardening.mutation.all {
                 "config/pitest/${timeoutsFile.name} from this run), or paste the row(s) below — " +
                 "load-dependent timeouts may not reproduce for a later seeding run:\n" +
                 pasteReadyMemberRows("  ") + "\n" +
-                "then write each member's structural cause in config/pitest/README.md."
+                "then replace cause:untriaged and write each member's structural argument in " +
+                "config/pitest/README.md."
         if (strictTimeoutAudit) {
           throw GradleException(hint)
         }
@@ -3772,8 +3807,9 @@ hardening.mutation.all {
         }
         logger.lifecycle(
             "pitest '$suiteName': seeded ${timedOutByAuditKey.size} audited-timeout member(s) into " +
-                "${timeoutsFile.name} and bound its mutation provenance — now write each member's " +
-                "structural cause in config/pitest/README.md")
+                "${timeoutsFile.name} and bound its mutation provenance — now replace every " +
+                "cause:untriaged token and write each member's structural argument in " +
+                "config/pitest/README.md")
       }
       if (certificationActive) {
         val evidence = verifiedEvidence ?: throw GradleException(
@@ -3836,8 +3872,8 @@ hardening.mutation.all {
           debtToolchainFile,
       ).forEach { BaselineFiles.requireRegularFileOrMissing(debtProjectDirectory, it) }
       // Committed-files-only, like the audit's static half below — which makes Debt
-      // (and therefore the fleet canary) the place a plugin release that bumps PIT
-      // surfaces per consumer repo, before anyone reads tool churn as code churn.
+      // the quick place a plugin release that bumps PIT surfaces per consumer repo,
+      // before anyone reads tool churn as code churn.
       val debtHasRecord = baselineFile.isFile || debtTimeoutsFile.isFile
       val debtProvenance = CommittedMutationProvenance.classify(
           debtHasRecord,
@@ -3920,6 +3956,11 @@ hardening.mutation.all {
         val membership = TimeoutAudit.parse(debtTimeoutsFile.readLines())
         TimeoutAudit.malformedWarning(suiteName, debtTimeoutsFile.name, membership.malformed)
             ?.let { logger.warn(it) }
+        val causeFindings = TimeoutAudit.causeFindings(membership, membership.members)
+        if (causeFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.causeFindingWarning(
+              suiteName, debtTimeoutsFile.name, causeFindings))
+        }
         val undocumented = TimeoutAudit.undocumentedCauses(membership.members) {
           readmeFile.takeIf { it.isFile }?.readText() ?: ""
         }
@@ -3931,10 +3972,9 @@ hardening.mutation.all {
       // The exclusion audit's static half, mirroring the timeout audit's: the
       // policy is pure given recompiled classes, so when a prior run left
       // build/mutation-classes behind it is checkable here without a mutation
-      // run — which is what puts it in front of the fleet canary, whose Debt
-      // runs are where a plugin release meets real consumer globs. Its in-run
-      // half only fired inside a real 'pitest<Suite>' execution, which the
-      // canary never does, and that blind spot shipped a release *(casebook:
+      // run — which puts it in the quick read-only Debt surface where a plugin
+      // release meets real consumer globs. Its in-run half only fired inside a
+      // real 'pitest<Suite>' execution, and that blind spot shipped a release *(casebook:
       // the partition the audit called a hole)*. Absent classes stay silent:
       // nothing was scanned, and silence means "unscanned", never "clean" —
       // and like the report above, the classes may be stale; both caveats ride
@@ -3961,8 +4001,8 @@ hardening.mutation.all {
             statuses.count { it == "SURVIVED" } to statuses.count { it == "NO_COVERAGE" }
           }
 
-      // BaselineDocument validates the schema before Debt interprets a row; the
-      // fleet canary therefore cannot report green on a marker that verify would
+      // BaselineDocument validates the schema before Debt interprets a row, so a
+      // read-only diagnostic cannot report green on a marker that verify would
       // reject. Malformed rows remain named on verify's terms and excluded from
       // both the tally and label breakdown.
       val baselineDocument = BaselineDocument.parse(
@@ -4712,7 +4752,7 @@ tasks.register("hardeningInit") {
           |
           |## Audited timeout causes
           |
-          |For every audited timeout row, name its class and method together in the same Markdown heading-delimited section and record the measured structural cause. A global statement that the suite is slow is not evidence for an individual mutant.
+          |For every audited timeout row, replace the seeded `cause:untriaged` comment category. Only `cause:liveness` is admissible after deterministic seams or budgets are exhausted; finite `cause:resource` work needs a contract-first test/fix or stable SURVIVED equivalence instead of timeout membership. Name the member's class and method together in the same Markdown heading-delimited section and record the measured structural cause. A global statement that the suite is slow is not evidence for an individual mutant.
           |""".trimMargin()
       )
       logger.lifecycle("hardeningInit: wrote $readme")
@@ -4737,8 +4777,9 @@ tasks.register("hardeningInit") {
         |  2. pin any unseeded randomness in the test suite
         |  3. seed each baseline: ./gradlew pitest<Suite>BaselineUpdate
         |  4. for suites whose summary reports timed-out mutants, seed the audited set:
-        |       ./gradlew pitest<Suite>TimeoutAuditInit — then write each member's
-        |       structural cause in config/pitest/README.md (HARDENING.md, audited-timeout bullet)
+        |       ./gradlew pitest<Suite>TimeoutAuditInit — then classify each seeded
+        |       cause:untriaged row and write its structural argument in
+        |       config/pitest/README.md (HARDENING.md, audited-timeout bullet)
         |  5. run ./gradlew hardeningAgentTemplate and copy that exact version-matched
         |       agent-instructions template into AGENTS.md with:
         |       <!-- hardening-template sha256:$digest -->

@@ -66,7 +66,8 @@ class ReleaseAttestationWorkflowTest {
 
     assertTrue(readme.contains("--candidate \"\$candidate\""), readme)
     assertTrue(readme.contains("--plugin-jar \"\$reviewed_jar\""), readme)
-    assertTrue(readme.contains("--adoption sava-software/sava"), readme)
+    assertTrue(readme.contains("--adoption \"\$sava_checkout\""), readme)
+    assertTrue(readme.contains("--adoption \"\$http_servers_checkout\""), readme)
     assertTrue(create >= 0 && verify > create && pending > verify, readme)
   }
 
@@ -74,7 +75,6 @@ class ReleaseAttestationWorkflowTest {
   fun `release workflows verify the owner record without rerunning aggregate campaigns`() {
     listOf("release-gradle-plugin-please.yml", "gradle_plugin_publish.yml").forEach { name ->
       val contents = workflow(name)
-      assertTrue(!contents.contains("fleet-canary.sh --release"), contents)
       assertTrue(!contents.contains("local-fuzz.sh --release"), contents)
     }
   }

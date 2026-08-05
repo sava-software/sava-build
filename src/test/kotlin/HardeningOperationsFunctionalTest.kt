@@ -480,7 +480,9 @@ class HardeningOperationsFunctionalTest {
     assertTrue(cold.output.contains("selected timeout-audit initialization"), cold.output)
     assertTrue(cold.output.contains("seeded 1 audited-timeout member(s)"), cold.output)
     assertTrue(
-      timeouts.readText().contains("com.example.FakePit,main,MathMutator # line 12"),
+      timeouts.readText().contains(
+        "com.example.FakePit,main,MathMutator # cause:untriaged line 12"
+      ),
       timeouts.readText(),
     )
     val args = File(fixtureDir, "build/fake-pit/args.txt").readText()

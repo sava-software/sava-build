@@ -13,9 +13,7 @@ class HardeningDocumentationBoundaryTest {
   fun `release review mechanics live in the sava-build README only`() {
     assertTrue(readme.contains("tools/release-attestation.sh create-reviewed"))
     assertTrue(readme.contains("optional diagnostic, not a tag or publication prerequisite"))
-    assertFalse(readme.contains("tools/fleet-canary.sh --release"))
     assertFalse(readme.contains("tools/local-fuzz.sh --release --seconds"))
-    assertFalse(hardening.contains("tools/fleet-canary.sh --release"))
     assertFalse(hardening.contains("tools/local-fuzz.sh --release --seconds"))
     assertTrue(
       hardening.contains("README.md#local-adoption-and-release-attestation"),
