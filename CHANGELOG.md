@@ -1,5 +1,25 @@
 # Changelog
 
+## [21.5.22](https://github.com/sava-software/sava-build/compare/21.5.21...21.5.22) (2026-08-03)
+
+
+### Features
+
+* **hardening:** print adoption-nudge rows and honour flip insurance ([3925181](https://github.com/sava-software/sava-build/commit/39251815cf301c150e986ae3d3448b3b5dfbae3a))
+
+
+### Bug Fixes
+
+* **hardening:** require an unmatched counterpart for prune's pending-flip keep ([b6291af](https://github.com/sava-software/sava-build/commit/b6291af87359a4e628b44f5498feda85561f84f0))
+* **hardening:** reset the drift comparison on a pre-line-less status stash ([bb4f89e](https://github.com/sava-software/sava-build/commit/bb4f89e776f03fec69cad3f5915b3eb97d7697a7))
+* **hardening:** unify the prune/hint keep plan and stash every status ([c435126](https://github.com/sava-software/sava-build/commit/c43512669dfac960b096a53b411dd9cd1a9e2963))
+* **hardening:** write the status stash atomically and reprint canary payloads ([9eef139](https://github.com/sava-software/sava-build/commit/9eef1396674811c32efc65f21c607d20b0a181cb))
+
+
+### Documentation
+
+* **hardening:** expand NO_COVERAGE handling and improve process clarity ([07a07f3](https://github.com/sava-software/sava-build/commit/07a07f3663024517c6703e09a187d1379cd82815))
+
 ## [21.5.21](https://github.com/sava-software/sava-build/compare/21.5.20...21.5.21) (2026-08-02)
 
 
