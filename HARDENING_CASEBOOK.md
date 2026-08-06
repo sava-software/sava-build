@@ -1507,6 +1507,52 @@ cover mutated code, irrelevant wall-clock work is repaid across those mutants an
 manufacture load flips*; *report the cost and remeasure a behavior-preserving change,
 never prescribe one mechanical seam for every test*.
 
+## The clock the subject never received
+
+Ravina's `CallFactoryTests` injected a `TestClock` into a capacity-state collaborator,
+then built the call itself through a clockless overload that slept on
+`NanoClock.SYSTEM`. `clock.sleeps.isEmpty()` passed whether or not the subject slept
+because the observed clock never reached it. The surrounding routing assertions still
+tested their contracts; only the sleep assertion was vacuous.
+
+Rules: *a fake clock asserts only calls routed through that instance*; *trace the
+clock/budget into the mutated path before using it to justify deterministic behavior or
+timeout membership*.
+
+## The leaked lock with a synchronous oracle
+
+A removed `unlock()` was initially treated as watchdog-only liveness because a waiting
+thread would block forever. The returning thread could instead inspect lock ownership
+directly; no waiter, clock, or timeout was needed. `tryLock()` would have been the wrong
+probe because the lock was reentrant and its owner could acquire it again. `isLocked()`
+or hold count observed the leaked state synchronously.
+
+Rules: *a liveness defect is not necessarily observable only through a hang*; *look for
+lock ownership, latch count, executor shutdown, closed state, or another synchronous
+reader before admitting timeout detection*; *a reentrant acquisition is not an
+ownership-release oracle*.
+
+## The long retry bound with an int counter
+
+Ravina's courteous claim loops accepted `CallContext.maxTryClaim()` as a `long`, but
+counted attempts with an `int`: one loop used
+`for (int i = 0; i < maxTryClaim(); ++i)`, the other `if (++i >= maxTry) break`.
+For any finite limit above `Integer.MAX_VALUE` — including three billion — the counter
+wrapped before reaching the bound. The force-call fallback and the `null` decline below
+it were unreachable. Chasing the last audited timeout exposed a production bug, not a
+new timeout category; widening the counter restored the declared bound and made those
+outcomes reachable.
+
+That edit also demonstrated an ArcMutate interpretation trap. Changing the counter's
+mutation site (`IINC` to long arithmetic) made an unrelated conditional mutant in the
+same method disappear, even though its source line did not change. Some ArcMutate 1.7.1
+subsumption rules compare candidates across a method, so an unmatched baseline row is
+population evidence, not proof that anything changed at that row.
+
+Rules: *the induction variable must represent every value admitted by its bound*;
+*under method-wide subsumption, inspect the whole method before explaining or pruning
+an unmatched row*.
+
 ## The ancestry check that never ran
 
 A manual `git merge-base --is-ancestor <reviewed> <tag>` returned non-zero and briefly

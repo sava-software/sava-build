@@ -2446,7 +2446,10 @@ $fuzzBlock
     val third = runner("pitestEncodingVerify").build().output
     assertTrue(
       third.contains(quietNotice) &&
-          third.contains("com.example.Codec,encode,MathMutator (quiet for 3 runs)"),
+          third.contains(
+            "com.example.Codec,encode,MathMutator " +
+                "(quiet for 3 runs; latest fresh report KILLED x1)"
+          ),
       "third quiet report not noticed:\n$third"
     )
     // the retirement criterion family is one advisory tier: like its siblings the
@@ -2468,6 +2471,70 @@ $fuzzBlock
     report("KILLED")
     val afterReset = runner("pitestEncodingVerify").build().output
     assertFalse(afterReset.contains(quietNotice), "streak not restarted from zero:\n$afterReset")
+  }
+
+  @Test
+  fun `timeout retirement notice reports the latest mixed status without overstating the streak`() {
+    // The quiet counter records only consecutive absence of TIMED_OUT. The separate
+    // format-3 status stash already owns last-observed statuses, so the notice should
+    // render the current fresh multiset rather than inventing a second history schema
+    // or claiming all three observations were kills.
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # mixed sibling # line 20\n"
+    )
+    val killedOnly = listOf(
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,10,KILLED,com.example.CodecTest"
+    )
+    val mixed = listOf(
+      killedOnly.single(),
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,20,SURVIVED,none",
+    )
+    writeReport(killedOnly, "")
+    val reportCsv = File(fixtureDir, "build/reports/pitest/encoding/mutations.csv")
+
+    runner("pitestEncodingVerify").build()
+    assertTrue(
+      reportCsv.setLastModified(reportCsv.lastModified() + 1_000),
+      "could not freshen the report for observation 2"
+    )
+    val second = runner("pitestEncodingVerify").build().output
+    assertFalse(
+      second.contains("audited-timeout member(s) have not timed out in 3+"),
+      "notice fired before the third observation:\n$second"
+    )
+
+    // Change, rather than merely touch, the final observation. This pins that the
+    // rendered multiset comes from the latest fresh report instead of the first one
+    // that began the quiet streak.
+    writeReport(
+      mixed,
+      ""
+    )
+    assertTrue(
+      reportCsv.setLastModified(reportCsv.lastModified() + 1_000),
+      "could not freshen the report for observation 3"
+    )
+    val third = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      third.contains(
+        "com.example.Codec,encode,MathMutator " +
+            "(quiet for 3 runs; latest fresh report KILLED x1, SURVIVED x1)"
+      ),
+      "latest mixed status was not rendered deterministically:\n$third"
+    )
+    assertFalse(
+      third.contains("tests now detect the mutant outright"),
+      "quiet evidence was overstated as three killing observations:\n$third"
+    )
   }
 
   @Test

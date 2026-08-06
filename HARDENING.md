@@ -201,6 +201,13 @@ not only run speed. Assisted and fresh runs in that project must therefore retai
 the same base plugin. Without a licence file, no ArcMutate dependency or flags are
 added and PIT runs fully from scratch using its open-source engine.
 
+ArcMutate's subsumption is not necessarily edit-local. With the audited 1.7.1
+engine, changing one candidate in a method has made a different candidate at an
+unchanged line disappear from the generated population. An unmatched accepted row
+therefore means only that its mutant is absent from this population — not that it was
+killed, or that its own source line changed. Review the whole method and the toolchain
+before pruning it *(casebook: the long retry bound with an int counter)*.
+
 **With an applicable licence, activation is dropping one file.** The plugin keys
 everything off `arcmutate-licence.txt` at the project or root-project directory:
 when present, `com.arcmutate:base` joins PIT's classpath. Licensed provenance is
@@ -742,7 +749,11 @@ invoked it*, and the failure looks exactly like a real regression.
     injected clocks have been exhausted. A fixture's emergency exit — a stub
     process that eventually terminates or a harness watchdog — does not turn
     that production liveness loss into resource work; record the fixture bound
-    in the README so the frame is reviewable.
+    in the README so the frame is reviewable. A liveness defect is not thereby
+    watchdog-only: first look for a synchronous reader of the mutated state —
+    lock ownership or hold count, latch count, executor shutdown, closed state.
+    For a reentrant lock, `tryLock()` is not an ownership probe because the owner
+    can acquire it again; use `isLocked()`/hold count or another direct state reader.
   - `cause:resource` says the mutant still completes but does too much work.
     It is a reviewer-stop, not detection. If allocation/complexity is a contract,
     assert it with a deterministic resource oracle; if that oracle also fails on
@@ -1675,6 +1686,11 @@ Two mutation-specific details:
   monotonic nanos by default (system implementation overriding with the real
   epoch clock), a test clock implementing `nanoTime()` alone advances both
   coherently, and no mutant hides in a mixed-source comparison.
+- **Trace the seam into the subject.** A `TestClock` observes only calls routed
+  through that instance. Injecting it into a collaborator while constructing the
+  subject through a clockless overload that defaults to `NanoClock.SYSTEM` makes
+  `clock.sleeps` assertions vacuous. Before interpreting one, prove the mutated
+  path receives the clock or budget the test observes.
 
 **Socket harnesses add their own determinism rules.** Test clients name
 `127.0.0.1`, never `localhost`: a client resolving `localhost` may try `::1`
@@ -2004,7 +2020,11 @@ merely waiting for a release.
 >   `cause:liveness` is admissible watchdog detection after deterministic
 >   seams/budgets are exhausted: the mutated path has no path-owned finite
 >   completion guarantee. A fixture's emergency exit does not demote that
->   liveness loss to resource work; record the fixture bound in the README. Seeded
+>   liveness loss to resource work; record the fixture bound in the README. Before
+>   admitting liveness, prove the mutated path receives the clock/budget the test
+>   observes, and check for a synchronous state reader that can expose the defect
+>   without waiting. A `TestClock` on a collaborator cannot observe a subject using
+>   the system clock. Seeded
 >   `cause:untriaged`, missing/unknown categories, and finite `cause:resource`
 >   work are reviewer-stops. Resource behavior gets a deterministic contract
 >   test/fix when promised, otherwise a stable `SURVIVED` equivalence argument —

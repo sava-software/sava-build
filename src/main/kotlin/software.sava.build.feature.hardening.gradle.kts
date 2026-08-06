@@ -3267,13 +3267,27 @@ hardening.mutation.all {
           // runs the quiet notice as many hundred lines up-screen as any other.
           val settled = quietRuns.filterValues { it >= 3 }
           if (settled.isNotEmpty()) {
+            // The format-3 status stash already persists the latest fresh status
+            // multiset. Do not duplicate it into the quiet-counter schema: the
+            // current rows are the observation that advanced (or replayed) this
+            // count, and rendering them here tells KILLED from SURVIVED/NO_COVERAGE
+            // without pretending the counter remembers three runs of that status.
+            val latestStatuses = rows.groupBy { it.coordinate }.mapValues { (_, mutants) ->
+              mutants.groupingBy { it.rawStatus }.eachCount()
+            }
+            fun latestStatusSummary(member: String): String = latestStatuses[member].orEmpty()
+                .entries.sortedBy { it.key }
+                .joinToString(", ") { (status, count) -> "$status x$count" }
             logger.warn(
                 "$advisoryScope: ${settled.size} audited-timeout member(s) have not timed out in 3+ " +
-                    "consecutive mutation runs — if a member only times out under gate load this is normal " +
-                    "on solo streaks; otherwise its tests now detect the mutant outright, and the member " +
-                    "(with its README cause) can be retired:\n" +
+                    "consecutive mutation runs — a member that only times out under gate load can be quiet " +
+                    "on solo streaks. The latest fresh status below is a clue, not a three-run status " +
+                    "history; confirm any retirement under the relevant solo/gate load:\n" +
                     settled.entries.sortedBy { it.key }
-                        .joinToString("\n") { "  ${it.key} (quiet for ${it.value} runs)" }
+                        .joinToString("\n") {
+                          "  ${it.key} (quiet for ${it.value} runs; latest fresh report " +
+                              "${latestStatusSummary(it.key)})"
+                        }
             )
             advisoryLog.get().record(advisoryScope, "${settled.size} quiet audited-timeout member(s)")
           }

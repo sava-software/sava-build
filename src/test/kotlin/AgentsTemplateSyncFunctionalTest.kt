@@ -124,8 +124,10 @@ class AgentsTemplateSyncFunctionalTest {
     assertTrue(
       printed.contains("A `[history]` report may check") &&
           printed.contains("run `pitest<Suite> -PnoMutationHistory` first") &&
-          printed.contains("without") && printed.contains("relying on PIT test order"),
-      "the version-matched template must keep record decisions history-free:\n$printed",
+          printed.contains("without") && printed.contains("relying on PIT test order") &&
+          printed.contains("prove the mutated path receives the clock/budget") &&
+          printed.contains("check for a synchronous state reader"),
+      "the version-matched template must keep record decisions history-free and timeout evidence observable:\n$printed",
     )
     assertFalse(printed.contains("Migration is one-way"), printed)
     assertFalse(printed.contains("pitest ≥"), printed)
