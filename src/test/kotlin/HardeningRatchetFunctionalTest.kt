@@ -365,8 +365,14 @@ $fuzzBlock
         </mutation>
       """.trimIndent()
     )
+    File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").writeText("")
     val output = runner("pitestEncodingVerify").buildAndFail().output
     assertTrue(output.contains("1 unkilled mutant(s) not in the accepted baseline"), output)
+    assertTrue(
+      output.contains("This [history] result is check-only") &&
+          output.contains("pitestEncoding -PnoMutationHistory"),
+      "an assisted fresh-mutant failure invited a record edit:\n$output",
+    )
     assertTrue(
       output.contains("churn: 0 newly covered, 1 unexplained (of 1 new; 0 stale)"),
       "churn tally missing:\n$output"
@@ -399,8 +405,17 @@ $fuzzBlock
       "one report must not claim a cause or prescribe a destructive refresh:\n$output"
     )
     assertTrue(
-      output.contains("One fresh run cannot distinguish stable removal from an uninsured load- or mode-dependent flip"),
+      output.contains("One history-free run cannot distinguish stable removal from an uninsured load- or mode-dependent flip") &&
+          output.contains("pitestEncoding -PnoMutationHistory"),
       "the preview did not explain what one report cannot prove:\n$output",
+    )
+
+    File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").writeText("")
+    val assisted = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      assisted.contains("This [history] result is check-only") &&
+          assisted.contains("pitestEncoding -PnoMutationHistory"),
+      "an assisted prune preview invited a record edit:\n$assisted",
     )
   }
 
@@ -1024,21 +1039,90 @@ $fuzzBlock
     baselineFile().parentFile.mkdirs()
     val baselineBefore = "com.example.Codec,encode,MathMutator,SURVIVED # line 10\n"
     baselineFile().writeText(baselineBefore)
+    File(fixtureDir, "config/pitest/encoding-timeouts.csv").writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 10\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "`com.example.Codec.encode`: removing progress makes the production path non-terminating.\n",
+    )
     writeReport(
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,SURVIVED,none"),
       ""
     )
     File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").writeText("")
+    val statusStash = File(fixtureDir, ".pitest-history/encoding.statuses").apply {
+      parentFile.mkdirs()
+      writeText(
+        "# stash format 2\n" +
+            "com.example.Codec,encode,MathMutator,TIMED_OUT\n",
+      )
+    }
+    val quietStash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet").apply {
+      writeText(
+        "# report 1,1\n" +
+            "com.example.Codec,encode,MathMutator,2\n",
+      )
+    }
+    val statusBefore = statusStash.readBytes()
+    val quietBefore = quietStash.readBytes()
 
     val checking = runner("pitestEncodingVerify").build().output
     assertTrue(checking.contains(" [history]"), "the summary tag must read the marker:\n$checking")
+    assertTrue(
+      checking.contains("history-assisted results are a read-only preview") &&
+          checking.contains("pitestEncoding -PnoMutationHistory"),
+      "the assisted report did not prohibit record decisions:\n$checking",
+    )
+    assertFalse(
+      checking.contains("timed-out drift vs previous run") ||
+          checking.contains("have not timed out in 3+") ||
+          checking.contains("can be retired"),
+      "assisted statuses still produced timeout-transition decision evidence:\n$checking",
+    )
 
     assertEquals(baselineBefore, baselineFile().readText(), "checking reused evidence changed the baseline")
+    assertTrue(statusBefore.contentEquals(statusStash.readBytes()), "assisted evidence replaced the status stash")
+    assertTrue(quietBefore.contentEquals(quietStash.readBytes()), "assisted evidence advanced the quiet stash")
+
+    val debt = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      debt.contains("current [history] report (read-only preview)") &&
+          debt.contains("pitestEncoding -PnoMutationHistory before any accepted-baseline or timeout-audit decision"),
+      "Debt presented assisted statuses as current decision evidence:\n$debt",
+    )
+
+    val strict = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
+    assertTrue(
+      strict.contains("strict timeout audit refuses a history-assisted report") &&
+          strict.contains("pitestEncoding -PstrictTimeoutAudit") &&
+          strict.contains("disables history automatically"),
+      "strict audit accepted reused timeout statuses:\n$strict",
+    )
+    assertFalse(
+      strict.contains("before changing any accepted-baseline or timeout-audit record"),
+      "strict refusal printed a weaker non-strict remedy too:\n$strict",
+    )
+    assertTrue(statusBefore.contentEquals(statusStash.readBytes()), "strict audit replaced the status stash")
+    assertTrue(quietBefore.contentEquals(quietStash.readBytes()), "strict audit advanced the quiet stash")
 
     // without the marker the same report is a full run: ordinary checking is allowed
     File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").delete()
     val full = runner("pitestEncodingVerify").build().output
     assertFalse(full.contains(" [history]"), "tag printed without the marker:\n$full")
+    assertTrue(
+      full.contains("status stash predates the current stash format"),
+      "pre-fix status evidence was not reset:\n$full",
+    )
+    assertTrue(
+      full.contains("timeout-retirement stash predates fresh-only evidence"),
+      "pre-fix quiet evidence was not reset:\n$full",
+    )
+    assertTrue(statusStash.readText().startsWith("# stash format 3\n"), statusStash.readText())
+    assertTrue(quietStash.readText().startsWith("# timeout quiet format 2\n"), quietStash.readText())
+    assertTrue(
+      quietStash.readText().contains("com.example.Codec,encode,MathMutator,1"),
+      "the first fresh report inherited two assisted quiet observations:\n${quietStash.readText()}",
+    )
   }
 
   @Test
@@ -1564,8 +1648,8 @@ $fuzzBlock
       "\nhardening.pitestVersion.set(\"0.0.0-new\")\n",
     )
 
-    // A fresh ordinary observation is permitted but names both boundaries.
-    val checked = runner("pitestEncoding").build()
+    // A history-free ordinary observation is permitted and names both boundaries.
+    val checked = runner("pitestEncoding", "-PnoMutationHistory").build()
     assertTrue(
       checked.output.contains("baseline record written by PIT $stamped, this run used PIT 0.0.0-new") &&
           checked.output.contains("mutation toolchain changed since the committed record"),

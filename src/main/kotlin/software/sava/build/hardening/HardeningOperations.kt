@@ -74,7 +74,8 @@ internal object HardeningOptionNames {
     Descriptor(MUTATE_ONLY, "class-glob[,class-glob]",
         "run a deliberately scoped mutation-development iteration"),
     Descriptor(NO_MUTATION_HISTORY, null,
-        "disable ArcMutate result reuse without changing the licensed PIT population"),
+        "disable ArcMutate result reuse without changing the licensed PIT population; " +
+            "required when an ordinary run supports any accepted-baseline or timeout-audit decision"),
     Descriptor(PITEST_MODE, "label",
         "label a pitestModeSnapshot observation"),
     Descriptor(SAVA_BUILD_LOCAL_REPO, "directory",

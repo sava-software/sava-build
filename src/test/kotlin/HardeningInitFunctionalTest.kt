@@ -73,6 +73,12 @@ class HardeningInitFunctionalTest {
       ),
       readmeText,
     )
+    assertTrue(
+      normalizedReadme.contains(
+        "An ArcMutate `[history]` report is check-only: run `pitest<Suite> -PnoMutationHistory`"
+      ),
+      readmeText,
+    )
     assertTrue(readmeText.contains("## Audited timeout causes"), readmeText)
     assertTrue(
       readmeText.contains("Only anchored `cause:liveness` is admissible") &&

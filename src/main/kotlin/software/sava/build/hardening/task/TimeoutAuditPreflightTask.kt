@@ -91,8 +91,8 @@ abstract class TimeoutAuditPreflightTask : DefaultTask() {
           "${malformed.size} malformed membership row(s), ${causeFindings.size} inadmissible or " +
           "unfinished cause classification(s), and ${undocumented.size} member(s) without a " +
           "README cause. Run ${pitestTask}Debt for the same read-only detail; classify and " +
-          "document every committed member, or use an ordinary $pitestTask observation to " +
-          "prove and remove stale rows, before retrying. PIT has not run."
+          "document every committed member, or run $pitestTask -PnoMutationHistory to make a " +
+          "fresh observation that can prove and remove stale rows, before retrying. PIT has not run."
       if (certificationActive || operation == BaselineWriteOperation.REBASE) {
         try {
           operationSession.get().reject(projectPath, reason)

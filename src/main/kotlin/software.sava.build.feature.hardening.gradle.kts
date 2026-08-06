@@ -81,11 +81,13 @@ if (removedWriterProperties.isNotEmpty()) {
   throw GradleException(HardeningOptionNames.removedWriterMessage(removedWriterProperties))
 }
 
-// Arcmutate incremental analysis ("history"): reuses per-mutant results across runs
-// when neither the mutated class nor its covering tests changed. Open-source PIT
-// accepts the history flags but cannot honour them — its only registered history
-// factory throws — so the licence certificate controls whether com.arcmutate:base is
-// part of the PIT toolchain. Keep that classpath decision independent from reuse:
+// Arcmutate incremental analysis ("history"): the licensed engine decides which
+// per-mutant results can be reused across runs. Treat that decision as an optimisation,
+// never as a fresh-observation guarantee — in particular, changed consumer tests have
+// been observed alongside a reused status. Open-source PIT accepts the history flags
+// but cannot honour them — its only registered history factory throws — so the licence
+// certificate controls whether com.arcmutate:base is part of the PIT toolchain. Keep
+// that classpath decision independent from reuse:
 // ArcMutate's base plugin can change the effective mutant population even with history
 // disabled. '-PnoMutationHistory' therefore suppresses only the history feature and
 // its input/output files; it must not silently switch a licensed run back to a different
@@ -98,8 +100,11 @@ val arcMutateProjectLicence = layout.projectDirectory.file("arcmutate-licence.tx
 val arcMutateRootLicence = rootProject.layout.projectDirectory.file("arcmutate-licence.txt")
 val arcMutateLicencePresent = arcMutateProjectLicence.asFile.isFile ||
     arcMutateRootLicence.asFile.isFile
-val mutationHistoryExplicitlyDisabled =
-    providers.gradleProperty(HardeningOptionNames.NO_MUTATION_HISTORY).isPresent
+val mutationHistoryDisabledForExecution = providers
+    .gradleProperty(HardeningOptionNames.NO_MUTATION_HISTORY)
+    .orElse(providers.gradleProperty(HardeningOptionNames.STRICT_TIMEOUT_AUDIT))
+    .map { true }
+    .orElse(false)
 
 val pitest = configurations.create("pitest") {
   isCanBeConsumed = false
@@ -2498,8 +2503,9 @@ hardening.mutation.all {
       if (committedProvenance.legacyUnbound) {
         legacyProvenanceFinding(
             "pitest '$suiteName': committed mutation record is legacy-unversioned; its PIT version is " +
-                "unknown, so a population change cannot be attributed automatically. Review this fresh " +
-                "observation and run ${pitestTaskName}BaselineRebase to bind it.",
+                "unknown, so a population change cannot be attributed automatically. Review a history-free " +
+                "$pitestTaskName -PnoMutationHistory observation and run " +
+                "${pitestTaskName}BaselineRebase to bind it.",
             "committed record is legacy-unversioned")
         if (writingRecord && !rebase) {
           throw GradleException(
@@ -2510,8 +2516,9 @@ hardening.mutation.all {
       if (committedProvenance.legacyUnbound) {
         legacyProvenanceFinding(
             "pitest '$suiteName': committed mutation record is legacy-toolchain-unbound; ArcMutate " +
-                "licence/base or PIT plugin changes cannot be distinguished from code churn. Review this " +
-                "fresh observation and run ${pitestTaskName}BaselineRebase to bind it.",
+                "licence/base or PIT plugin changes cannot be distinguished from code churn. Review a " +
+                "history-free $pitestTaskName -PnoMutationHistory observation and run " +
+                "${pitestTaskName}BaselineRebase to bind it.",
             "committed record is legacy-toolchain-unbound")
         if (writingRecord && !rebase) {
           throw GradleException(
@@ -2525,15 +2532,16 @@ hardening.mutation.all {
               "pitest '$suiteName': the baseline record was written by PIT $recordedPit but this run used " +
                   "PIT $currentPit — refusing to rewrite the record across a tool bump, whose population " +
                   "churn would be indistinguishable from code churn. Run " +
-                  "${pitestTaskName}BaselineRebase after reviewing an ordinary $pitestTaskName observation; " +
+                  "${pitestTaskName}BaselineRebase after reviewing a history-free " +
+                  "$pitestTaskName -PnoMutationHistory observation; " +
                   "it preserves old evidence and adopts the new provenance only after a successful fresh run."
           )
         }
         if (!rebase) {
           val versionWarning = "pitest '$suiteName': baseline record written by PIT $recordedPit, this run " +
-              "used PIT $currentPit — population differences may be the tool, not the code. Review this " +
-              "observation, then run ${pitestTaskName}BaselineRebase; other record-writing tasks refuse " +
-              "the mismatch."
+              "used PIT $currentPit — population differences may be the tool, not the code. Review a " +
+              "history-free $pitestTaskName -PnoMutationHistory observation, then run " +
+              "${pitestTaskName}BaselineRebase; other record-writing tasks refuse the mismatch."
           logger.warn(versionWarning)
           advisoryLog.get().record(advisoryScope, "baseline written by PIT $recordedPit, ran $currentPit")
         }
@@ -2544,13 +2552,16 @@ hardening.mutation.all {
           throw GradleException(
               "pitest '$suiteName': committed mutation toolchain " +
                   "${recordedToolchain.identitySha256} differs from this run's " +
-                  "${currentToolchain.identitySha256}. Run ${pitestTaskName}BaselineRebase after reviewing " +
-                  "the population; it preserves old evidence and stamps only after a successful fresh run.")
+                  "${currentToolchain.identitySha256}. Review a history-free " +
+                  "$pitestTaskName -PnoMutationHistory population, then run " +
+                  "${pitestTaskName}BaselineRebase; it preserves old evidence and stamps only after a " +
+                  "successful fresh run.")
         }
         if (!rebase) {
           logger.warn(
               "pitest '$suiteName': mutation toolchain changed since the committed record — population " +
-                  "differences may be ArcMutate/PIT tooling, not code. Review, then run " +
+                  "differences may be ArcMutate/PIT tooling, not code. Review a history-free " +
+                  "$pitestTaskName -PnoMutationHistory observation, then run " +
                   "${pitestTaskName}BaselineRebase; other writers refuse.")
           advisoryLog.get().record(advisoryScope, "committed mutation toolchain differs from this run")
         }
@@ -2629,6 +2640,26 @@ hardening.mutation.all {
               (if (split.isEmpty()) "" else " — ${split.joinToString(", ")}") +
               (if (historyAssistedReport) " [history]" else "")
       )
+      val historyDecisionCaveat = if (historyAssistedReport) {
+        "\nThis [history] result is check-only. Run $pitestTaskName -PnoMutationHistory " +
+            "before changing any accepted-baseline or timeout-audit record."
+      } else {
+        ""
+      }
+      if (strictTimeoutAudit && historyAssistedReport) {
+        throw GradleException(
+            "pitest '$suiteName': strict timeout audit refuses a history-assisted report — cached " +
+                "statuses cannot prove the current timeout set. Run $pitestTaskName " +
+                "-PstrictTimeoutAudit; explicit strict mode disables history automatically and " +
+                "repeats the audit against fresh evidence.")
+      }
+      if (historyAssistedReport) {
+        logger.warn(
+            "pitest '$suiteName': history-assisted results are a read-only preview, not a fresh " +
+                "observation. Do not add, remove, relabel, or re-anchor accepted-baseline or " +
+                "timeout-audit rows from this report; run $pitestTaskName -PnoMutationHistory " +
+                "first. Run-to-run status and timeout-retirement stashes stay unchanged.")
+      }
 
       // A suite whose exclusions miss a test-source class mutates its own scaffolding:
       // the population inflates and the survivors are triaged as if they were production
@@ -2877,6 +2908,10 @@ hardening.mutation.all {
       // timeout count rose *and* whose survivor count fell.
       val statusStash = statusStashFile
       run {
+        // ArcMutate reuse is a read-only preview, not another observation. Letting a
+        // regenerated assisted report replace this stash makes the next fresh run's
+        // drift relative to cached statuses and can manufacture or hide a transition.
+        if (historyAssistedReport) return@run
         fun tally(pairs: List<Pair<String, String>>): Map<String, Map<String, Int>> = pairs
             .groupBy({ it.first }, { it.second })
             .mapValues { (_, statuses) -> statuses.groupingBy { it }.eachCount() }
@@ -2887,7 +2922,12 @@ hardening.mutation.all {
         // real. Announce the reset instead: a migration that silences (or garbles) a
         // check for exactly one run hides its own regression from the person doing
         // the migration (casebook: the flip that fired forever).
-        // Format 2 stashes EVERY status: an origin the stash omits is an origin
+        // Format 3 stashes EVERY status and, unlike format 2, is known to contain
+        // fresh observations only. A pre-format-3 stash may have been replaced by
+        // an assisted report, so carrying it across this upgrade would make the
+        // next fresh run compare against cached statuses.
+        //
+        // Every-status storage still matters: an origin the stash omits is an origin
         // the comparison silently misreads. NO_COVERAGE omitted read the dangerous
         // never-reached flip as benign; KILLED omitted made a benign flap at a
         // fully-killed key read as a coordinate "first observed". The header line
@@ -2895,7 +2935,7 @@ hardening.mutation.all {
         // written by an earlier plugin, and its comparison would silently
         // degenerate exactly one way or another, so it resets with a notice
         // instead.
-        val stashFormatHeader = "# stash format 2"
+        val stashFormatHeader = "# stash format 3"
         val stashLines = if (statusStash.isFile) statusStash.readLines() else emptyList()
         val stashEntries = stashLines
             .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
@@ -2909,7 +2949,7 @@ hardening.mutation.all {
         if (staleFormat) {
           logger.lifecycle(
               "pitest '$suiteName': status stash predates the current stash format — " +
-                  "run-to-run drift comparison resets this run and resumes on the next"
+                  "fresh-only run-to-run drift comparison resets this run and resumes on the next"
           )
         }
         val previous = if (staleFormat) emptyMap() else tally(stashEntries)
@@ -3117,7 +3157,7 @@ hardening.mutation.all {
                   "config/pitest/README.md:\n" +
                   unaudited.joinToString("\n") {
                     "  ${it.coordinate} # cause:untriaged line ${it.lineText}"
-                  }
+                  } + historyDecisionCaveat
           )
           if (!strictTimeoutAudit) {
             advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
@@ -3132,7 +3172,8 @@ hardening.mutation.all {
           logger.warn(
               "pitest '$suiteName': ${staleMembers.size} audited-timeout row(s) match no mutant in " +
                   "this run's report — the code moved or the mutator set changed; retire or fix:\n" +
-                  staleMembers.sorted().joinToString("\n") { "  $it" }
+                  staleMembers.sorted().joinToString("\n") { "  $it" } +
+                  historyDecisionCaveat
           )
           advisoryLog.get().record(advisoryScope, "${staleMembers.size} stale audit row(s)")
         }
@@ -3158,8 +3199,10 @@ hardening.mutation.all {
         val unauthorizedLivenessLines =
             TimeoutAudit.unauthorizedLivenessLines(membership, observedTimeoutLines)
         if (unauthorizedLivenessLines.isNotEmpty()) {
-          logger.warn(TimeoutAudit.unauthorizedLivenessLineWarning(
-              suiteName, timeoutsFile.name, unauthorizedLivenessLines))
+          logger.warn(
+              TimeoutAudit.unauthorizedLivenessLineWarning(
+                  suiteName, timeoutsFile.name, unauthorizedLivenessLines) +
+                  historyDecisionCaveat)
           if (!strictTimeoutAudit) {
             advisoryLog.get().record(
                 advisoryScope,
@@ -3181,7 +3224,9 @@ hardening.mutation.all {
             observedTimeoutLines,
         ).filterKeys { it !in unauthorizedLivenessLines }
         if (drifted.isNotEmpty()) {
-          logger.warn(TimeoutAudit.lineDriftWarning(suiteName, timeoutsFile.name, drifted))
+          logger.warn(
+              TimeoutAudit.lineDriftWarning(suiteName, timeoutsFile.name, drifted) +
+                  historyDecisionCaveat)
           advisoryLog.get().record(advisoryScope, "${drifted.size} line-drifted audit row(s)")
         }
         // The check the set was missing: membership was validated against ALL mutants,
@@ -3196,20 +3241,36 @@ hardening.mutation.all {
         // reset by gate runs and nagged only during long solo streaks — the notice
         // says so rather than presuming retirement.
         run {
+          // The same rule as the status stash above: a new report timestamp does not
+          // make reused statuses a fresh quiet observation. In particular it must not
+          // advance the three-run timeout-membership retirement nudge.
+          if (historyAssistedReport) return@run
           // The counter advances per fresh report, not per invocation: the verify
           // runs standalone against the existing report ('finalizedBy', not a
           // dependency), so re-running it to exercise its checks would otherwise
-          // manufacture quiet evidence from a single mutation run. The stash's first
-          // line fingerprints the report; on a match the stored counts replay
-          // untouched. Timestamp over content hash on purpose — a fresh PIT run with
-          // identical results IS a fresh quiet observation.
+          // manufacture quiet evidence from a single mutation run. After the format
+          // header, the report line fingerprints the observation; on a match the
+          // stored counts replay untouched. Timestamp over content hash on purpose —
+          // a fresh PIT run with identical results IS a fresh quiet observation.
+          val quietFormatHeader = "# timeout quiet format 2"
           val reportFingerprint = "# report ${csv.lastModified()},${csv.length()}"
           val previousLines = if (timeoutQuietFile.isFile) timeoutQuietFile.readLines() else emptyList()
-          val sameReport = previousLines.firstOrNull() == reportFingerprint
-          val previousQuiet = previousLines.filterNot { it.startsWith("#") }.mapNotNull { line ->
-            val sep = line.lastIndexOf(',')
-            if (sep < 0) null else line.substring(0, sep) to (line.substring(sep + 1).toIntOrNull() ?: 0)
-          }.toMap()
+          val currentQuietFormat = previousLines.firstOrNull() == quietFormatHeader
+          if (previousLines.isNotEmpty() && !currentQuietFormat) {
+            logger.lifecycle(
+                "pitest '$suiteName': timeout-retirement stash predates fresh-only evidence — " +
+                    "the quiet-run counter resets this run")
+          }
+          val sameReport = currentQuietFormat && previousLines.getOrNull(1) == reportFingerprint
+          val previousQuiet = if (currentQuietFormat) {
+            previousLines.filterNot { it.startsWith("#") }.mapNotNull { line ->
+              val sep = line.lastIndexOf(',')
+              if (sep < 0) null else
+                line.substring(0, sep) to (line.substring(sep + 1).toIntOrNull() ?: 0)
+            }.toMap()
+          } else {
+            emptyMap()
+          }
           // Live members only, which also means a stale member's count is dropped,
           // not frozen: staleness says the code moved (or the mutator set changed),
           // and quiet evidence about the old method body must be re-measured from
@@ -3226,7 +3287,11 @@ hardening.mutation.all {
           BaselineFiles.writeAtomically(
               timeoutQuietFile,
               quietRuns.entries.sortedBy { it.key }
-                  .joinToString("\n", prefix = "$reportFingerprint\n", postfix = "\n") { "${it.key},${it.value}" }
+                  .joinToString(
+                      "\n",
+                      prefix = "$quietFormatHeader\n$reportFingerprint\n",
+                      postfix = "\n",
+                  ) { "${it.key},${it.value}" }
           )
           // Derived from the counts, so a same-report re-run reprints it — like every
           // other audit advisory, which are all recomputed from the report rather
@@ -3305,7 +3370,7 @@ hardening.mutation.all {
                 pasteReadyMemberRows("  ") + "\n" +
                 "then replace cause:untriaged, retain only reviewed line anchors, and write each " +
                 "member's structural argument in config/pitest/README.md; the seeded state is " +
-                "intentionally uncertifiable."
+                "intentionally uncertifiable." + historyDecisionCaveat
         if (strictTimeoutAudit) {
           throw GradleException(hint)
         }
@@ -3767,12 +3832,13 @@ hardening.mutation.all {
                   "${pitestTaskName}BaselinePrune would remove exactly these candidate row(s) if deliberately chosen " +
                   "(preview only; no baseline change):\n" +
                   staleGone.joinToString("\n") { "  ${BaselineNotes.render(acceptedRows[it])}" } +
-                  "\nOne fresh run cannot distinguish stable removal from an uninsured load- or " +
+                  "\nOne history-free run cannot distinguish stable removal from an uninsured load- or " +
                   "mode-dependent flip. This preview is evidence to investigate, not authorization " +
-                  "to shrink the record. Re-measure under the relevant solo/gate load, reconcile " +
+                  "to shrink the record. Re-measure with $pitestTaskName -PnoMutationHistory under " +
+                  "the relevant solo/gate load, reconcile " +
                   "each row with its written removal criterion and local evidence, and only then " +
                   "invoke ${pitestTaskName}BaselinePrune if these exact rows stay absent." +
-                  concurrentFresh)
+                  concurrentFresh + historyDecisionCaveat)
         }
         if (staleInsured.isNotEmpty()) {
           // "unmatched at their own status", not "read killed": the insured
@@ -3836,7 +3902,8 @@ hardening.mutation.all {
                 detail +
                 "\nKill them with tests, or accept knowingly by running ${pitestTaskName}BaselineUpdate " +
                 "and documenting the reason (see HARDENING.md). If this suite has never been seeded, " +
-                "${pitestTaskName}BaselineUpdate creates config/pitest/$suiteName-accepted.csv."
+                "${pitestTaskName}BaselineUpdate creates config/pitest/$suiteName-accepted.csv." +
+                historyDecisionCaveat
         )
       }
       if (initTimeoutAudit) {
@@ -3968,12 +4035,14 @@ hardening.mutation.all {
       if (debtProvenance.legacyUnbound) {
         logger.warn(
             "pitest '$suiteName': committed mutation record is legacy-unversioned; its PIT " +
-                "version is unknown — review a fresh observation, then run " +
+                "version is unknown — review a history-free $pitestTaskName " +
+                "-PnoMutationHistory observation, then run " +
                 "${pitestTaskName}BaselineRebase")
         logger.warn(
             "pitest '$suiteName': committed mutation record is legacy-toolchain-unbound; " +
                 "ArcMutate/PIT tool changes cannot be distinguished from code churn — review a " +
-                "fresh observation, then run ${pitestTaskName}BaselineRebase")
+                "history-free $pitestTaskName -PnoMutationHistory observation, then run " +
+                "${pitestTaskName}BaselineRebase")
       }
       debtProvenance.toolchain?.let { recordedToolchain ->
         val effectiveToolchain = try {
@@ -3987,7 +4056,8 @@ hardening.mutation.all {
           logger.warn(
               "pitest '$suiteName': committed mutation toolchain differs from the current " +
                   "PIT/ArcMutate/licence identity — population differences may be tool churn; " +
-                  "review a fresh observation, then run ${pitestTaskName}BaselineRebase")
+                  "review a history-free $pitestTaskName -PnoMutationHistory observation, then run " +
+                  "${pitestTaskName}BaselineRebase")
         }
       }
       val recordedPit = debtProvenance.pitVersion
@@ -3995,7 +4065,8 @@ hardening.mutation.all {
         logger.warn(
             "pitest '$suiteName': baseline record written by PIT $recordedPit, this plugin runs " +
                 "PIT ${debtPitVersion.get()} — population differences may be the tool, not the code; " +
-                "review a fresh observation, then run ${pitestTaskName}BaselineRebase"
+                "review a history-free $pitestTaskName -PnoMutationHistory observation, then run " +
+                "${pitestTaskName}BaselineRebase"
         )
       }
       // The audited-timeout set's static half, shared with the verify (TimeoutAudit):
@@ -4079,6 +4150,7 @@ hardening.mutation.all {
           .map { it[0] to it.last() }
       val csv = csvProvider.get().asFile
       BaselineFiles.requireRegularFileOrMissing(csv)
+      val historyAssistedDebt = csv.parentFile.resolve(".history-assisted").isFile
       var invalidReport = false
       // scoped and interrupted-run reports both fall back to the baseline: a
       // partial population under-counts debt exactly like a hand-picked one. An
@@ -4104,12 +4176,19 @@ hardening.mutation.all {
         null
       }
       val source = when {
+        reportPairs != null && historyAssistedDebt -> "current [history] report (read-only preview)"
         reportPairs != null -> "current report"
         invalidReport -> "baseline (current report invalid)"
         else -> "baseline (no full report present)"
       }
       val debt = tally(reportPairs ?: baselinePairs)
       val baselineDebt = tally(baselinePairs)
+      if (reportPairs != null && historyAssistedDebt) {
+        logger.warn(
+            "pitest '$suiteName' debt: the current report is history-assisted and check-only — " +
+                "run $pitestTaskName -PnoMutationHistory before any accepted-baseline or " +
+                "timeout-audit decision.")
+      }
       if (debt.isEmpty()) {
         logger.lifecycle("pitest '$suiteName' debt: none — nothing unkilled in the $source")
         return@doLast
@@ -4136,7 +4215,11 @@ hardening.mutation.all {
       // run made before the current change are not read as current.
       val age = if (reportPairs == null) "" else {
         val minutes = (System.currentTimeMillis() - csv.lastModified()) / 60_000
-        if (minutes < 2) "" else ", ${minutes}m old — rerun $pitestTaskName if stale"
+        if (minutes < 2) "" else if (historyAssistedDebt) {
+          ", ${minutes}m old — rerun $pitestTaskName -PnoMutationHistory before decisions"
+        } else {
+          ", ${minutes}m old — rerun $pitestTaskName if stale"
+        }
       }
       // Label breakdown from the baseline (the well-formed rows parsed above):
       // triaged-accepted rows carry a family label, seeded debt reads '# untriaged',
@@ -4227,7 +4310,7 @@ hardening.mutation.all {
     task.historyFile.set(layout.projectDirectory.file(".pitest-history/${suite.name}.hist"))
     task.historyRequested.set(withHistory)
     task.historyLicensed.set(arcMutateLicencePresent)
-    task.historyExplicitlyDisabled.set(mutationHistoryExplicitlyDisabled)
+    task.historyExplicitlyDisabled.set(mutationHistoryDisabledForExecution)
     task.enforceExit.set(enforceExit)
     task.bindSuiteEvidence.set(bindSuiteEvidence)
 
@@ -4799,6 +4882,8 @@ tasks.register("hardeningInit") {
           |short accepted-family label. When timeout verification prints paste-ready
           |membership rows for a load-dependent mutant that cannot be reseeded, adding
           |those exact rows to `<suite>-timeouts.csv` is also an intentional manual edit.
+          |An ArcMutate `[history]` report is check-only: run
+          |`pitest<Suite> -PnoMutationHistory` before either kind of manual record decision.
           |
           |## Untriaged debt
           |

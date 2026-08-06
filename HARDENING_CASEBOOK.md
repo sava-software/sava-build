@@ -63,6 +63,54 @@ separate same-coordinate, same-line copies, so a location needing mixed causes i
 not representable as audited liveness*; *load-only KILLED↔TIMED_OUT races are
 harness debt, not a third admissible cause category*.
 
+## The liveness loop that raced the heap
+
+Ravina's `LookupTableCacheMap.getOrFetchTables` iterated set bits with a manual
+cursor. `MathMutator` changed `i + 1` to `i - 1`. When bit zero was set, the next
+lookup threw immediately and one covering test killed the mutant. When the first set
+bit was greater than zero, the cursor returned that same bit forever while appending
+the same key to an `ArrayList`. The mutated control flow had no finite exit, but the
+machine alternated between watchdog `TIMED_OUT` and heap `MEMORY_ERROR` depending on
+which limit won.
+
+That does not make the control flow resource work. It is `cause:liveness`; allocation
+is an incidental effect of non-progress. But the cause label cannot promote
+`MEMORY_ERROR` into completed evidence: the same status could mean a broken test JVM,
+and certifying whichever machine limit wins would make the audit host-dependent. The
+sound continuation is the process's existing second outcome — refactor the mutation
+site out while preserving the independently tested contract — by traversing
+`BitSet.stream()` in order into the same mutable list. Ravina must then use a
+history-free run to prove the old cursor mutant absent before its timeout row and
+obsolete heap prose leave.
+
+Rules: *cause class describes the mutated path, while report status describes the
+experiment*; *liveness authorizes valid `TIMED_OUT`, never `MEMORY_ERROR`*; *when a
+non-progressing loop races the heap, make every covering path fail deterministically
+without relying on test order or replace manual progress arithmetic with a
+behavior-preserving abstraction and prove the coordinate gone*.
+
+## The fresh decision made from cached history
+
+In the same Ravina review, a test change made a previously timed-out mutant
+deterministically `KILLED`. An ordinary PIT run still printed the old `TIMED_OUT`
+status with its `[history]` marker; only `-PnoMutationHistory` exposed the kill. The
+handoff nevertheless named the ordinary run as proof for retiring timeout rows, and
+the plugin still let explicit `-PstrictTimeoutAudit` request ArcMutate history. Its
+machine-local status and three-run quiet stashes could also be overwritten or advanced
+by assisted reports, letting one later fresh run inherit cached observations.
+
+The repair separates checking from deciding. Assisted reports may exercise the
+ratchet, but every diagnostic that suggests a committed accepted/timeout edit names
+the history-free command. Explicit strict audit disables history and refuses an old
+assisted report. Assisted verification no longer writes either local stash, and both
+stash formats advance so pre-fix cached observations reset on the first fresh run.
+`clean` is irrelevant because `.pitest-history/` deliberately survives it.
+
+Rules: *a cache hit is not an observation even when the report is newly written*;
+*manual accepted/timeout decisions require `-PnoMutationHistory`*; *strict evidence
+must disable reuse structurally*; *when the meaning of machine-local evidence changes,
+version and reset it rather than trusting bytes written under the old rule*.
+
 ## The 11× "speedup" that did no work
 
 Prototyping PIT incremental analysis on open-source PIT: `pitest-entry` ships

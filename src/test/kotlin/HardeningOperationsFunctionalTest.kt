@@ -178,6 +178,11 @@ class HardeningOperationsFunctionalTest {
     assertTrue(output.contains("-PupdateMutationBaseline") &&
         output.contains("use pitest<Suite>BaselineUpdate"), output)
     assertTrue(output.contains("Named tasks are the only supported committed-file write interface"), output)
+    assertTrue(
+      output.contains("-PnoMutationHistory") &&
+          output.contains("required when an ordinary run supports any accepted-baseline or timeout-audit decision"),
+      output,
+    )
 
     val reused = runner("hardeningHelp").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
@@ -435,19 +440,33 @@ class HardeningOperationsFunctionalTest {
     assertFalse(runs.exists(), "reused BaselineRebase preflight reached PIT")
 
     File(fixtureDir, "fake-pit-status.txt").writeText("KILLED\n")
-    val ordinary = runner("pitestEncoding").build()
+    val ordinary = runner("pitestEncoding", "-PnoMutationHistory").build()
     assertTrue(ordinary.output.contains(":pitestEncoding"), ordinary.output)
     assertEquals(listOf("run"), runs.readLines())
+    val ordinaryArgs = File(fixtureDir, "build/fake-pit/args.txt").readText()
+    assertFalse(ordinaryArgs.contains("arcmutate_history"), ordinaryArgs)
+    assertFalse(ordinaryArgs.contains("--historyInputLocation"), ordinaryArgs)
+    assertFalse(ordinaryArgs.contains("--historyOutputLocation"), ordinaryArgs)
     assertTrue(runs.delete())
 
     val strict = runner("pitestEncoding", "-PstrictTimeoutAudit").buildAndFail().output
     assertTrue(strict.contains("committed timeout audit is not ready"), strict)
     assertTrue(strict.contains("PIT has not run"), strict)
+    assertTrue(strict.contains("pitestEncoding -PnoMutationHistory"), strict)
     assertFalse(runs.exists(), "-PstrictTimeoutAudit reached PIT before static validation")
 
     timeouts.writeText(
       "com.example.FakePit,main,MathMutator # cause:liveness line 12\n",
     )
+    val strictFresh = runner("pitestEncoding", "-PstrictTimeoutAudit").build()
+    assertTrue(strictFresh.output.contains(":pitestEncoding"), strictFresh.output)
+    val strictArgs = File(fixtureDir, "build/fake-pit/args.txt").readText()
+    assertFalse(strictArgs.contains("arcmutate_history"), strictArgs)
+    assertFalse(strictArgs.contains("--historyInputLocation"), strictArgs)
+    assertFalse(strictArgs.contains("--historyOutputLocation"), strictArgs)
+    assertEquals(listOf("run"), runs.readLines())
+    assertTrue(runs.delete())
+
     val repaired = runner("pitestEncodingBaselineRebase").build()
     assertTrue(repaired.output.contains("selected baseline provenance rebase"), repaired.output)
     assertEquals(listOf("run"), runs.readLines())

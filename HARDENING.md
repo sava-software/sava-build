@@ -148,7 +148,8 @@ run cheaper. The cost model is directly optimisable:
   oversubscription inflates exactly the tests PIT re-runs most.
 - **Scope the iteration loop with `-PmutateOnly=<glob[,glob]>`** — mutate
   only the class under attack while writing its kills, then re-run unscoped
-  once before refreshing. The scoped report is stamped `.scoped` and every
+  with `-PnoMutationHistory` once before making any accepted-baseline or
+  timeout-audit decision. The scoped report is stamped `.scoped` and every
   baseline-touching consumer (the ratchet, named writer tasks, mode snapshots)
   refuses it, so the shortcut
   cannot leak into the record. Coverage still runs the full test set.
@@ -216,7 +217,7 @@ unless they obtain a licence that applies to them. The unique
 `subscriptions.arcmutate.com` download URL is private and must stay out of source,
 documentation, logs, and commit messages.
 
-Two honesty rules come with it. Each assisted run announces itself — a
+Three honesty rules come with it. Each assisted run announces itself — a
 lifecycle line at start and a `[history]` marker on the verify summary, read
 from the report's own `.history-assisted` stamp so the tag describes the
 report on disk, not this invocation's settings — so a reused number is never
@@ -237,6 +238,19 @@ versions equal to the configured versions; markerless ArcMutate package or servi
 sentinels are refused rather than mislabeled as open-source PIT. Its recorded identity
 therefore follows the same engine and certificate search as the child JVM. Intentional
 TestKit tools with neither real PIT/plugin sentinels remain supported.
+
+The third rule is that **an assisted report may check the current ratchet but cannot
+support a manual record decision**. ArcMutate owns its reuse policy; a changed test has
+been observed alongside a reused `TIMED_OUT` status, so `[history]` is never proof that
+a mutant is still timed out, newly killed, newly surviving, absent, or safe to re-anchor.
+Before adding, removing, relabelling, or re-anchoring an accepted-baseline or timeout-audit
+row, run `pitest<Suite> -PnoMutationHistory`. Explicit `-PstrictTimeoutAudit` disables
+history too. Assisted reports do not replace the status-drift stash or advance the
+three-run timeout-retirement counter, and the first fresh run after this rule resets
+older machine-local counters that may already contain assisted observations. `clean`
+does not erase `.pitest-history/` *(casebook: the fresh decision made from cached
+history)*.
+
 Delete an individual `<suite>.hist` to reset that suite's ArcMutate history. Deleting
 `.pitest-history/` resets all machine-local hardening state, including the last local
 fuzz campaign receipt.
@@ -331,8 +345,9 @@ ordinary record writer refuse the mismatch; manually editing either stamp would
 claim provenance that no run earned. Rebase is the sole transition path:
 
 1. When provenance is a valid pair or both sidecars are missing as a legacy record,
-   run the ordinary `pitest<Suite>` and review the population difference while the
-   old or explicitly unbound provenance remains visible. A torn pair, malformed
+   run `pitest<Suite> -PnoMutationHistory` and review the fresh population difference
+   while the old or explicitly unbound provenance remains visible. An assisted run's
+   `[history]` statuses are reuse, not evidence for this decision. A torn pair, malformed
    sidecar, or internally disagreeing pair instead fails closed before the hardening
    baseline delta is available; do not soften that read gate or treat PIT's aggregate
    console counts as the review.
@@ -363,7 +378,7 @@ old completed report whose evidence predates portable toolchain identity is anno
 as `legacy-unbound` and must be regenerated before it can support a transition.
 
 The baseline is a ratchet: removing debt that is *proved stably gone* is an
-improvement, while growing it requires a written reason. A single fresh run is
+improvement, while growing it requires a written reason. A single history-free run is
 not that proof — an unmarked load- or mode-dependent flip looks exactly like a
 removed mutant on the run where it reads killed. Repos may seed their first
 baseline with the full pre-existing survivor population — that is triage debt
@@ -556,7 +571,8 @@ The third refresh is mechanically shrink-only, not self-authorizing:
 adds no rows. One run cannot distinguish a stable removal from an uninsured
 load- or mode-dependent flip, so the ordinary verify prints a **preview of the
 exact candidate rows** without recommending the flag. Re-measure those rows
-under the relevant solo/gate load and prune only when the same candidates stay
+with `-PnoMutationHistory` under the relevant solo/gate load and prune only when
+the same candidates stay
 absent; a row proved to flip belongs in persistent `# flip insurance` instead.
 Prune also refreshes the `# line` tag of each retained row matched at its own
 key, using line affinity before file order; unmatched rows kept for
@@ -725,6 +741,19 @@ invoked it*, and the failure looks exactly like a real regression.
     and strict certification refuses them. Infrastructure or harness slowness is
     neither category and must never be admitted.
 
+  Cause class and report status are separate claims. `cause:liveness` explains why
+  a valid `TIMED_OUT` result can detect that mutant; it never turns `MEMORY_ERROR`
+  or another incomplete experiment into evidence. If a non-advancing loop also
+  allocates until the heap fails, whichever machine limit wins is not a stable
+  result to bless. Make every covering path fail deterministically without relying
+  on PIT's test order, or use the process's behavior-preserving **refactor it out of
+  existence** outcome
+  (for example, replace manual set-bit cursor arithmetic with the JDK's ordered
+  traversal abstraction), then prove the old mutant is absent with a history-free
+  run. Refactoring away a mutation site does not require inventing a production bug;
+  it must preserve the independently tested contract.
+  *(casebook: the liveness loop that raced the heap)*
+
   The category makes the disposition explicit; the README still carries the
   evidence and cannot be replaced by the token. The line anchors scope that
   disposition: a reviewed liveness mutant at line 10 does not authorize a
@@ -822,8 +851,11 @@ invoked it*, and the failure looks exactly like a real regression.
   manually (one `TimeoutAudit` implementation, so the tasks cannot disagree):
   paste a row or write a cause and confirm the tool agrees without a mutation
   run. Static validation knows no staleness, so it asks every well-formed
-  committed member for its cause. Use an ordinary `pitest<Suite>` observation
-  to prove and remove a stale row before retrying a strict workflow.
+  committed member for its cause. Use a history-free
+  `pitest<Suite> -PnoMutationHistory` observation to prove and remove a stale row
+  before retrying a strict workflow. History-assisted reports are read-only previews:
+  they neither replace the run-to-run status stash nor advance the three-run quiet
+  counter, because cached `TIMED_OUT`/`KILLED` statuses cannot retire evidence.
 - **Flip families do not settle while their cause remains — and "the cause
   remains" is a claim to re-measure, not a fact to record once.** Mutants
   equivalent on the wire but timing-dependent in detection (socket suites
@@ -1915,15 +1947,18 @@ merely waiting for a release.
 >   ArcMutate-base, or certificate change uses `pitest<Suite>BaselineRebase`: it
 >   preserves every old row, seeds new rows `# untriaged`, and stamps the reviewed
 >   toolchain only after a successful fresh observation. Perform a schema
->   migration/rollback only with a fleet pin plan.
+>   migration/rollback only with a fleet pin plan. A `[history]` report may check
+>   the ratchet but cannot support adding, removing, relabelling, or re-anchoring
+>   accepted/timeout records; run `pitest<Suite> -PnoMutationHistory` first.
 > - Consumer hardening notes contain only local ownership, measurements, acceptance
 >   reasons, and provenance. `AGENTS.md` may carry this exact generated,
 >   digest-pinned template plus those local facts, but no independently maintained
 >   copy of plugin task semantics; use `hardeningHelp` and
 >   `hardeningAgentTemplate` as the installed-version authorities.
 > - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
->   seconds instead of the full suite — then re-run unscoped before any
->   refresh; the tooling refuses to let a scoped report touch the baseline.
+>   seconds instead of the full suite — then re-run unscoped with
+>   `-PnoMutationHistory` before any record decision; the tooling refuses to let
+>   a scoped report touch the baseline.
 > - Identical baseline rows are sibling mutants of one compound condition and
 >   the comparison is a multiset: never hand-dedupe. When one sibling
 >   survives, the verify names the killed sibling's test — the survivor is
@@ -1957,7 +1992,12 @@ merely waiting for a release.
 >   `cause:untriaged`, missing/unknown categories, and finite `cause:resource`
 >   work are reviewer-stops. Resource behavior gets a deterministic contract
 >   test/fix when promised, otherwise a stable `SURVIVED` equivalence argument —
->   never silent timeout membership. `config/pitest/README.md` still holds the
+>   never silent timeout membership. Liveness authorizes valid `TIMED_OUT`
+>   evidence only, never `MEMORY_ERROR`: if a non-advancing loop races the heap
+>   against the watchdog, make every covering path fail deterministically without
+>   relying on PIT test order, or refactor the manual progress mutation site out
+>   while preserving the tested contract.
+>   `config/pitest/README.md` still holds the
 >   full structural cause per member. The verify warns on any timeout outside
 >   the set — paste the printed row, classify it, then write the cause — and on
 >   members matching no mutant. Line-less identity does not widen the cause:
@@ -1967,7 +2007,9 @@ merely waiting for a release.
 >   classifications cannot be admitted as audited liveness. Strict workflows run the
 >   committed-file half before PIT; use `pitest<Suite>Debt` for the same quick
 >   manual preview. `TimeoutAuditInit` deliberately seeds an uncertifiable file —
->   classify every row before certification.
+>   classify every row before certification. Proving a row can be retired requires
+>   `pitest<Suite> -PnoMutationHistory`; assisted reports are previews and do not
+>   advance timeout status or quiet-run evidence.
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
 >   boundary cannot be made deterministic, accept the mutant with a written
 >   reason rather than chasing it with sleeps or spin-waits.

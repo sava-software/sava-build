@@ -813,6 +813,15 @@ $buildTail
     assertTrue(assistedEvidence.historyAssisted, assisted.output)
     assertEquals(1, assistedPopulation, "the classpath-sensitive population probe did not activate")
 
+    val strictAgainstAssisted = runner("pitestEncodingVerify", "-PstrictTimeoutAudit")
+      .buildAndFail().output
+    assertTrue(
+      strictAgainstAssisted.contains("strict timeout audit refuses a history-assisted report") &&
+          strictAgainstAssisted.contains("pitestEncoding -PstrictTimeoutAudit") &&
+          strictAgainstAssisted.contains("disables history automatically"),
+      strictAgainstAssisted,
+    )
+
     val fresh = runner("clean", "pitestEncoding", "-PnoMutationHistory").build()
     val freshEvidence = PitestEvidence.parse(evidenceFile.readText())
     val freshArgs = argsFile.readLines()
@@ -832,6 +841,22 @@ $buildTail
       assistedEvidence.toolClasspathSha256,
       freshEvidence.toolClasspathSha256,
       "the flag changed the evidence-bound PIT tool classpath",
+    )
+
+    val strict = runner("clean", "pitestEncoding", "-PstrictTimeoutAudit").build()
+    val strictEvidence = PitestEvidence.parse(evidenceFile.readText())
+    val strictArgs = argsFile.readLines()
+    val strictClasspath = classpathFile.readLines()
+    val strictPopulation = reportFile.readLines().size
+    assertFalse(strictArgs.any { it.startsWith("--history") }, strictArgs.toString())
+    assertFalse(strictArgs.contains("--features=+arcmutate_history"), strictArgs.toString())
+    assertFalse(strictEvidence.historyAssisted, strict.output)
+    assertEquals(freshClasspath, strictClasspath, "strict audit changed the licensed PIT tool classpath")
+    assertEquals(freshPopulation, strictPopulation, "strict audit changed the mutation population")
+    assertEquals(
+      freshEvidence.toolClasspathSha256,
+      strictEvidence.toolClasspathSha256,
+      "strict audit bound a different PIT tool classpath into its evidence",
     )
 
     val certified = runner("clean", "hardeningCertify").build()

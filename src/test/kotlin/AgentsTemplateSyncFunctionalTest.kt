@@ -121,6 +121,12 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("never embed PIT coordinates or line numbers"),
       "the version-matched template must require a contract-first mutation decision at handoff:\n$printed",
     )
+    assertTrue(
+      printed.contains("A `[history]` report may check") &&
+          printed.contains("run `pitest<Suite> -PnoMutationHistory` first") &&
+          printed.contains("without") && printed.contains("relying on PIT test order"),
+      "the version-matched template must keep record decisions history-free:\n$printed",
+    )
     assertFalse(printed.contains("Migration is one-way"), printed)
     assertFalse(printed.contains("pitest ≥"), printed)
   }
