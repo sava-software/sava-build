@@ -36,10 +36,12 @@ class HardeningToolExecFunctionalTest {
     moneyMath: Boolean = false,
     declineLines: String = "",
     buildTail: String = "",
+    pluginManagement: String = savaBuildPluginManagement,
+    projectRepositories: String = "repositories { mavenCentral() }",
   ) {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
-        $savaBuildPluginManagement
+        $pluginManagement
 
         rootProject.name = "hardening-tool-exec-smoke-test"
       """.trimIndent() + "\n"
@@ -51,9 +53,7 @@ class HardeningToolExecFunctionalTest {
           id("software.sava.build.feature.hardening")
         }
 
-        repositories {
-          mavenCentral()
-        }
+        $projectRepositories
 
         dependencies {
           // hardeningCertify includes the real test lifecycle; generated corpus
@@ -196,10 +196,16 @@ $buildTail
             }
             Path dir = Path.of(reportDir);
             Files.createDirectories(dir);
-            String status = mode.equals("timeout") ? "TIMED_OUT" : "KILLED";
+            String status = mode.equals("timeout") ? "TIMED_OUT" :
+                (mode.equals("survive") ? "SURVIVED" : "KILLED");
             Files.writeString(dir.resolve("mutations.csv"),
                 "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12," +
                     status + ",com.example.CodecTest\n");
+            if (mode.equals("mutate-plugin")) {
+              Files.writeString(Path.of(System.getenv("FIXTURE_PLUGIN_ARTIFACT")),
+                  "replaced while PIT was running",
+                  StandardOpenOption.APPEND);
+            }
             if (mode.equals("mutate-input")) {
               Files.writeString(Path.of("src/main/java/com/example/FakePit.java"),
                   "\n// changed while PIT was running\n", StandardOpenOption.APPEND);
@@ -590,7 +596,10 @@ $buildTail
 
     val scopedReportDir = File(fixtureDir, "build/reports/pitest-scoped/encoding")
     val marker = scopedReportDir.resolve(".scoped")
+    val mode = File(fixtureDir, "fake-pit-mode.txt")
+    mode.writeText("survive")
     val scoped = runner("pitestEncoding", "-PmutateOnly=com.example.Codec").build()
+    mode.delete()
     assertEquals("com.example.Codec\n", marker.readText(), "scoped marker not written")
     assertTrue(scoped.output.contains("SCOPED run (-PmutateOnly=com.example.Codec)"), scoped.output)
     assertTrue(scopedReportDir.resolve("mutations.csv").isFile, "scoped CSV missing")
@@ -600,6 +609,17 @@ $buildTail
       fullBeforeScoped,
       reportSnapshot(fullReportDir),
       "a successful scoped run replaced full-population evidence",
+    )
+    val scopedCsv = scopedReportDir.resolve("mutations.csv")
+    assertTrue(
+      fullReportDir.resolve("mutations.csv").setLastModified(scopedCsv.lastModified() - 2_000L),
+      "could not make the full-report age ordering deterministic",
+    )
+    val debt = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      debt.contains("latest full report (newer scoped diagnostic excluded)") &&
+          debt.contains("debt: none"),
+      "Debt did not identify the excluded newer scoped survivor or read the full report:\n$debt",
     )
 
     val wrongScope = runner(
@@ -636,7 +656,6 @@ $buildTail
       "a refused blank scope changed full-population evidence",
     )
 
-    val mode = File(fixtureDir, "fake-pit-mode.txt")
     mode.writeText("slow-fail")
     runner("pitestEncoding", "-PmutateOnly=com.example.Codec").buildAndFail()
     assertEquals(
@@ -960,7 +979,7 @@ $buildTail
 
     val assistedDebt = runner("pitestEncodingDebt").build().output
     assertTrue(
-      assistedDebt.contains("current [history] report (read-only preview)") &&
+      assistedDebt.contains("latest full [history] report (read-only preview)") &&
           assistedDebt.contains(
             "pitestEncoding -PnoMutationHistory before any accepted-baseline or timeout-audit decision",
           ),
@@ -1028,6 +1047,81 @@ $buildTail
       certifiedEvidence.toolClasspathSha256,
       "fresh workflows bound different PIT tool classpaths into their evidence",
     )
+  }
+
+  @Test
+  fun `isolated mutation units are scoped history-free diagnostics`() {
+    writeHistoryClasspathProbeFixture()
+    val fullReportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    val scopedReportDir = File(fixtureDir, "build/reports/pitest-scoped/encoding")
+    val argsFile = File(fixtureDir, "build/fake-pit-probe/args.txt")
+
+    runner("pitestEncoding").build()
+    val fullSnapshot = listOf("mutations.csv", ".evidence.tsv", ".toolchain.tsv")
+      .associateWith { fullReportDir.resolve(it).readBytes().toList() }
+
+    val scopedControl = runner(
+      "pitestEncoding",
+      "-PmutateOnly=com.example.FakePit",
+      "-PnoMutationHistory",
+    ).build()
+    val controlArgs = argsFile.readLines()
+    val controlEvidence = PitestEvidence.parse(
+      scopedReportDir.resolve(".evidence.tsv").readText(),
+    )
+    assertFalse(controlArgs.any { it.startsWith("--history") }, controlArgs.toString())
+    assertFalse(controlArgs.contains("--features=+arcmutate_history"), controlArgs.toString())
+    assertFalse(controlArgs.any { it.startsWith("--mutationUnitSize=") }, controlArgs.toString())
+    assertEquals("com.example.FakePit", controlEvidence.scope)
+    assertFalse(controlEvidence.historyAssisted)
+    assertTrue(scopedControl.output.contains("SCOPED run"), scopedControl.output)
+
+    val isolated = runner(
+      "pitestEncoding",
+      "-PmutateOnly=com.example.FakePit",
+      "-PisolateMutants",
+    ).build()
+    val isolatedArgs = argsFile.readLines()
+    val isolatedEvidence = PitestEvidence.parse(
+      scopedReportDir.resolve(".evidence.tsv").readText(),
+    )
+
+    assertTrue(isolatedArgs.contains("--mutationUnitSize=1"), isolatedArgs.toString())
+    assertFalse(isolatedArgs.any { it.startsWith("--history") }, isolatedArgs.toString())
+    assertFalse(isolatedArgs.contains("--features=+arcmutate_history"), isolatedArgs.toString())
+    assertEquals("com.example.FakePit", isolatedEvidence.scope)
+    assertFalse(isolatedEvidence.historyAssisted)
+    assertTrue(
+      isolated.output.contains("one-mutant-per-unit diagnostic") &&
+          isolated.output.contains("cannot support a record decision"),
+      isolated.output,
+    )
+    fullSnapshot.forEach { (name, bytes) ->
+      assertEquals(bytes, fullReportDir.resolve(name).readBytes().toList(), name)
+    }
+
+    val reused = runner(
+      "pitestEncoding",
+      "-PmutateOnly=com.example.FakePit",
+      "-PisolateMutants",
+    ).build()
+    assertTrue(reused.output.contains("Configuration cache entry reused."), reused.output)
+
+    val ordinaryValidation = runner(
+      "pitestEncodingVerify",
+      "-PmutateOnly=com.example.FakePit",
+    ).buildAndFail().output
+    assertTrue(
+      ordinaryValidation.contains("configurationSha256"),
+      "isolated evidence revalidated as an ordinary scoped run:\n$ordinaryValidation",
+    )
+
+    val missingScope = runner("pitestEncoding", "-PisolateMutants").buildAndFail().output
+    assertTrue(missingScope.contains("-PisolateMutants requires -PmutateOnly"), missingScope)
+    assertFalse(fullReportDir.resolve(".running").exists(), "refused isolation started a full attempt")
+    fullSnapshot.forEach { (name, bytes) ->
+      assertEquals(bytes, fullReportDir.resolve(name).readBytes().toList(), name)
+    }
   }
 
   @Test
@@ -1435,6 +1529,37 @@ $buildTail
     assertFalse(
       File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile,
       "PIT ran before certification preflight refused the scoped flag")
+
+    val isolated = runner("hardeningCertify", "-PisolateMutants").buildAndFail().output
+    assertTrue(isolated.contains("incompatible flag(s): -PisolateMutants"), isolated)
+    assertFalse(
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile,
+      "PIT ran before certification preflight refused isolated execution",
+    )
+  }
+
+  @Test
+  fun `baseline writers reject isolated execution before PIT or record changes`() {
+    writeFixture()
+    val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv")
+    val before = "!sava-hardening-baseline-schema,1\n"
+    baseline.parentFile.mkdirs()
+    baseline.writeText(before)
+
+    val refused = runner(
+      "pitestEncodingBaselineRebase",
+      "-PisolateMutants",
+    ).buildAndFail().output
+
+    assertTrue(
+      refused.contains("requires full, unscoped evidence; remove -PisolateMutants"),
+      refused,
+    )
+    assertEquals(before, baseline.readText())
+    assertFalse(
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile,
+      "PIT ran before the writer refused isolated execution",
+    )
   }
 
   @Test
@@ -1577,6 +1702,50 @@ $buildTail
     assertTrue(failed.contains("sourceSha256"), failed)
     assertFalse(reportDir.resolve(".evidence.tsv").exists(), "drifting inputs committed evidence")
     assertTrue(reportDir.resolve(".running").isFile, "drifting inputs exposed the report")
+  }
+
+  @Test
+  fun `PIT refuses a plugin code path replaced after application`() {
+    val privateRepo = fixtureDir.resolve("private-test-repo")
+    check(File(savaBuildTestProperty("savaBuild.testRepo")).copyRecursively(privateRepo))
+    val fixturePlugin = privateRepo.resolve(
+      "software/sava/sava-build/$savaBuildTestRepoVersion/" +
+        "sava-build-$savaBuildTestRepoVersion.jar"
+    )
+    val escapedRepo = privateRepo.absolutePath.replace("\\", "\\\\")
+    val privatePluginManagement =
+      "pluginManagement { repositories { maven(url = \"$escapedRepo\"); gradlePluginPortal() }; " +
+        "resolutionStrategy.eachPlugin { if (requested.id.id.startsWith(\"software.sava.build\")) { " +
+        "useModule(\"software.sava:sava-build:$savaBuildTestRepoVersion\") } } }\n" +
+        "plugins { id(\"software.sava.build\") version \"$savaBuildTestRepoVersion\" }"
+    val escapedPlugin = fixturePlugin.absolutePath.replace("\\", "\\\\")
+    writeFixture(
+      buildTail =
+        """
+          tasks.named<JavaExec>("pitestEncoding") {
+            environment("FIXTURE_PLUGIN_ARTIFACT", "$escapedPlugin")
+          }
+        """.trimIndent(),
+      pluginManagement = privatePluginManagement,
+      projectRepositories = "",
+    )
+    File(fixtureDir, "fake-pit-mode.txt").writeText("mutate-plugin\n")
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val failed = runner(
+      "hardeningCertify", "--refresh-dependencies", "-PsavaBuildLocalRepo=$privateRepo",
+    ).buildAndFail().output
+    val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
+
+    assertTrue(failed.contains("local plugin artifact changed after plugin application"), failed)
+    assertTrue(failed.contains("refusing evidence from mixed plugin bytes"), failed)
+    assertFalse(reportDir.resolve(".evidence.tsv").exists(), "mixed plugin bytes committed evidence")
+    assertTrue(reportDir.resolve(".running").isFile, "mixed plugin bytes exposed the report")
+    assertFalse(
+      File(fixtureDir, "build/hardening/pitest-certification.tsv").exists(),
+      "mixed plugin bytes committed a certification receipt",
+    )
   }
 
   @Test

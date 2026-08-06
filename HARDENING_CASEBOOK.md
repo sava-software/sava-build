@@ -1664,3 +1664,60 @@ Rules: *when the release proof changes, remove the superseded orchestrator inste
 calling it optional while testing it everywhere*; *retain fixtures by the independent
 claim they prove, not because they once belonged to the old runner*; *backward
 compatibility protects records that exist, not hypothetical formats that never shipped*.
+
+## The leaked runner that manufactured a survivor
+
+GLAM's `KaminoCacheImpl.run` had a `VoidMethodCallMutator` that removed one
+`System.Logger.log` call. PIT 1.25.9 reported it `SURVIVED` with one test run, while
+PIT's HTML **Covering tests** list named a polling test that already asserted the full
+rendered message. Generating PIT's exact mutant bytes and running that test normally
+made it fail, which first looked like a mutation-engine execution defect.
+
+The discriminating comparison held the class scope and history-free mode constant and
+changed only PIT's mutation-unit size. The scoped class-batched run kept the survivor;
+`-PmutateOnly=<class> -PisolateMutants` killed it with the expected polling test. An
+earlier killed mutant made an assertion fail before the test reached
+`runner.interrupt()`, `runner.join()`, and `LogCapture.close()`. PIT legitimately keeps
+one worker for a class-sized mutation unit, so the leaked runner and handler survived
+into later mutants. That old runner still contained the earlier method body and emitted
+the warning removed by the current mutant, satisfying the fresh handler and
+manufacturing a false `SURVIVED` result. The test also published records from the
+runner thread into a plain `ArrayList`, an independent data race even though it was not
+the cause of this status.
+
+The consumer repair is unconditional lifecycle cleanup: own threads, executors, log
+handlers, sockets, and temporary global state with `finally` or
+`try`-with-resources so a mutant-induced assertion failure cannot skip teardown. A
+one-mutant-per-unit run is a diagnostic, not the default; it isolates the cause but
+costs substantially more than class batching. After cleanup, the normal batched,
+history-free run is the verdict that retires the baseline row.
+
+Rules: *when a survivor contradicts an existing oracle, inspect the HTML covering-test
+list rather than guessing from its count*; *if isolation changes the result, look for
+state leaked by an earlier killed mutant*; *cleanup after spawned work must survive
+assertion failure*; *never accept contaminated evidence or add a duplicate assertion
+to compensate for it*.
+
+## The static local coordinate that changed during certification
+
+A GLAM certification began against one reviewed `0.0.0-test` JAR. Eleven seconds
+later another build republished that same static Maven coordinate. The old wiring
+fingerprinted the plugin path only when PIT captured its evidence, so a receipt could
+name bytes chosen after the build had already loaded and applied plugin code. Reading
+the receipt exposed the mismatch; the local-repository warning named only the path and
+publish age, so nothing made it visible at application time. A multi-project build had
+the worse theoretical form: later projects could resolve different bytes under the
+same coordinate.
+
+The repair freezes the loaded plugin SHA-256 at the settings application boundary and,
+for local-candidate builds, freezes the configured repository JAR's path and SHA-256
+beside it. PIT, certification, and fuzz evidence rehash both paths at their execution
+boundaries; certification also requires every project to retain one application-time
+identity. The end-of-build notice prints the frozen SHA and independently checks the
+paths again. A republish is therefore a reason to start a new consumer invocation,
+never an event an in-flight evidence run is allowed to absorb.
+
+Rules: *a static development coordinate is mutable input, not artifact identity*;
+*capture identity at the earliest common application boundary, then verify it where
+evidence is committed*; *bind all projects in one build to the same bytes*; *print the
+hash operators must compare, not merely the repository it came from*.

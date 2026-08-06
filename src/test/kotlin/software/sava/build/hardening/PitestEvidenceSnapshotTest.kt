@@ -115,6 +115,34 @@ class PitestEvidenceSnapshotTest {
     assertNotEquals(first.configurationSha256, reversed.configurationSha256)
   }
 
+  @Test
+  fun `internal capture uses the application-time plugin identity scalar`() {
+    val pluginCode = file("plugin/sava-build.jar", "application-time bytes")
+    val expected = PitestEvidence.sha256(pluginCode)
+    val input = input(pluginCode = pluginCode)
+    pluginCode.writeText("later bytes")
+
+    val evidence = PitestEvidenceSnapshot.capture(input, emptyList(), expected)
+
+    assertEquals(expected, evidence.pluginSha256)
+    assertNotEquals(PitestEvidence.sha256(pluginCode), evidence.pluginSha256)
+  }
+
+  @Test
+  fun `isolated mutation units change configuration identity without changing defaults`() {
+    val pluginCode = file("plugin/sava-build.jar", "sava-build")
+    val input = input(pluginCode = pluginCode)
+    val pluginSha256 = PitestEvidence.sha256(pluginCode)
+    val legacy = PitestEvidenceSnapshot.capture(input, emptyList(), pluginSha256)
+    val explicitZero =
+      PitestEvidenceSnapshot.capture(input, emptyList(), pluginSha256, 0)
+    val isolated =
+      PitestEvidenceSnapshot.capture(input, emptyList(), pluginSha256, 1)
+
+    assertEquals(legacy.configurationSha256, explicitZero.configurationSha256)
+    assertNotEquals(legacy.configurationSha256, isolated.configurationSha256)
+  }
+
   private fun input(
     sourceFiles: Iterable<File> = emptyList(),
     classFiles: Iterable<File> = emptyList(),

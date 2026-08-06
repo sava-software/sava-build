@@ -61,7 +61,34 @@ object PitestEvidenceSnapshot {
   internal fun capture(
     input: PitestEvidenceSnapshotInput,
     minionJvmArgs: Iterable<String>,
+  ): PitestEvidence = capture(
+    input,
+    minionJvmArgs,
+    PitestEvidence.fingerprintTree(input.pluginCode),
+  )
+
+  /**
+   * Captures evidence with the plugin identity frozen when the convention was applied.
+   * Callers separately validate that [PitestEvidenceSnapshotInput.pluginCode] still
+   * hashes to this value at their execution boundaries.
+   */
+  internal fun capture(
+    input: PitestEvidenceSnapshotInput,
+    minionJvmArgs: Iterable<String>,
+    pluginSha256: String,
+  ): PitestEvidence = capture(input, minionJvmArgs, pluginSha256, 0)
+
+  /**
+   * Adds execution-only PIT settings without changing the published snapshot-input ABI.
+   * Zero remains absent from the canonical text so every ordinary-run hash is stable.
+   */
+  internal fun capture(
+    input: PitestEvidenceSnapshotInput,
+    minionJvmArgs: Iterable<String>,
+    pluginSha256: String,
+    mutationUnitSize: Int,
   ): PitestEvidence {
+    require(mutationUnitSize >= 0) { "PIT mutation unit size must not be negative" }
     // Realize once at the execution boundary. Apart from avoiding inconsistent views
     // of a mutable FileCollection, this guarantees the order hash and content hash see
     // exactly the same classpath membership.
@@ -79,6 +106,9 @@ object PitestEvidenceSnapshot {
       }
       appendLine("timeoutFactor=${input.timeoutFactor}")
       appendLine("timeoutConst=${input.timeoutConst}")
+      if (mutationUnitSize > 0) {
+        appendLine("mutationUnitSize=$mutationUnitSize")
+      }
       appendLine("mutationBytecodeRelease=${input.mutationBytecodeRelease}")
       appendLine("recompileExcludes=${input.recompileExcludes.sorted().joinToString(",")}")
       appendLine(
@@ -97,7 +127,7 @@ object PitestEvidenceSnapshot {
       invocationId = input.invocationId,
       pitestVersion = input.pitestVersion,
       junitPluginVersion = input.junitPluginVersion,
-      pluginSha256 = PitestEvidence.fingerprintTree(input.pluginCode),
+      pluginSha256 = pluginSha256,
       identitySchema = PitestEvidence.CURRENT_IDENTITY_SCHEMA,
       javaVersion = input.javaVersion,
       sourceSha256 = PitestEvidence.fingerprint(input.projectDirectory, input.sourceFiles),

@@ -37,9 +37,19 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
   private val verifiedRecordInputs = mutableMapOf<SuiteKey, String>()
   private val revalidated = mutableMapOf<SuiteKey, VerifiedEvidence>()
   private val finalProjectIdentities = mutableMapOf<String, FinalProjectIdentity>()
+  private val pluginIdentities = CertificationPluginIdentities()
+
+  /** Retains the published service API for non-certifying third-party task wiring. */
+  @Synchronized
+  fun activate(projectPath: String): String = activateSession(projectPath)
 
   @Synchronized
-  fun activate(projectPath: String): String {
+  fun activate(projectPath: String, pluginSha256: String): String {
+    pluginIdentities.register(projectPath, pluginSha256)
+    return activateSession(projectPath)
+  }
+
+  private fun activateSession(projectPath: String): String {
     val current = activeSessions[projectPath]
     if (current != null) return current
     finalProjectIdentities.remove(projectPath)
@@ -200,6 +210,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
     check(activeSessions.containsKey(projectPath)) {
       "certification preflight did not activate an execution session"
     }
+    pluginIdentities.requireExpected(projectPath, pluginBeforeSha256)
     CertificationGitIdentity.requireUnchanged(before, after)
     check(pluginBeforeSha256 == pluginAfterSha256) {
       "hardening plugin code changed during final certification validation"

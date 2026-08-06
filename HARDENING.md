@@ -198,8 +198,11 @@ run cheaper. The cost model is directly optimisable:
   rewrite *(casebook: the fake clock that still waited 416ms)*.
 - **`pitest<Suite>Debt` prints where the debt lives** — survivors and
   no-coverage grouped by class, largest first, with the delta against the
-  baseline. Use it to pick the next cluster instead of re-deriving the
-  ranking from the CSV.
+  baseline. It deliberately reads the latest valid **full** report: a scoped
+  `-PmutateOnly` diagnostic cannot describe suite-wide debt. When a newer
+  scoped report exists, Debt says that it excluded it instead of presenting
+  the older full observation as simply “current.” Use the result to pick the
+  next cluster instead of re-deriving the ranking from the CSV.
 
 *(casebook: loop-speed measurements)*
 
@@ -905,9 +908,10 @@ invoked it*, and the failure looks exactly like a real regression.
   manually (one `TimeoutAudit` implementation, so the tasks cannot disagree):
   paste a row or write a cause and confirm the tool agrees without a mutation
   run. Static validation knows no staleness, so it asks every well-formed
-  committed member for its cause. Use a history-free
-  `pitest<Suite> -PnoMutationHistory` observation to prove and remove a stale row
-  before retrying a strict workflow. History-assisted reports are read-only previews:
+  committed member for its cause. Never remove a timeout member on one
+  observation. Wait until the tool emits its **3+ distinct fresh full-run quiet**
+  notice, then confirm the absence under the relevant solo/gate load before editing
+  the record. History-assisted reports are read-only previews:
   they neither replace the run-to-run status stash nor advance the three-run quiet
   counter, because cached `TIMED_OUT`/`KILLED` statuses cannot retire evidence.
 - **Flip families do not settle while their cause remains — and "the cause
@@ -1063,6 +1067,17 @@ Worked in this order, each step cheaper than the one after it:
    often an in-lock recheck or short-circuit leg that only a concurrent
    interleaving could observe. Triage it as its own mutant; do not assume it
    is the one the test was aimed at.
+   For any `SURVIVED` mutant that an existing assertion appears to kill, do
+   not infer the covering test from `numberOfTestsRun`: open PIT's HTML
+   report and expand **Covering tests**. If the expected test is listed,
+   compare two runs over the same scope with history disabled: first
+   `-PmutateOnly=<class> -PnoMutationHistory`, then
+   `-PmutateOnly=<class> -PisolateMutants`. The second command changes only the
+   mutation-unit size and runs one mutant per unit. A mutant killed only in isolation points to inter-mutant test
+   contamination, commonly a thread, executor, handler, or static fixture
+   leaked when an earlier mutant makes an assertion fail before cleanup.
+   Put teardown in `finally`/`try`-with-resources and re-run normally; do not
+   accept the row or add a redundant assertion around leaked state.
 3. **Suspect the code before declaring equivalence.** A survivor that looks
    unkillable is a claim that the guarded behaviour cannot be observed —
    sometimes true, sometimes the observation *path* is broken. The campaigns
@@ -2037,6 +2052,15 @@ instruction text; the digest still names the canonical quoted source block.
 >   the comparison is a multiset: never hand-dedupe. When one sibling
 >   survives, the verify names the killed sibling's test — the survivor is
 >   the opposite branch direction; triage it as its own mutant.
+> - **A survivor contradicted by an existing oracle may be contaminated evidence.**
+>   Open PIT's HTML **Covering tests** list, then compare the same scoped,
+>   history-free population with and without isolation:
+>   `-PmutateOnly=<class> -PnoMutationHistory`, then
+>   `-PmutateOnly=<class> -PisolateMutants`. An isolation-only kill points
+>   to state leaked between mutants — commonly a thread, executor, handler, or
+>   static fixture whose cleanup an earlier assertion failure skipped. Put
+>   teardown in `finally`/`try`-with-resources and rerun normally, history-free;
+>   isolated execution is diagnostic evidence, never a baseline decision.
 > - **Stubs and fixtures return distinguishable, non-default values.** A stub
 >   returning null/0/""/true/empty makes the matching return-value mutant
 >   equivalent by accident of the fixture — the clock non-zero-origin rule
@@ -2093,8 +2117,9 @@ instruction text; the digest still names the canonical quoted source block.
 >   change. Strict workflows run the
 >   committed-file half before PIT; use `pitest<Suite>Debt` for the same quick
 >   manual preview. `TimeoutAuditInit` deliberately seeds an uncertifiable file —
->   classify every row before certification. Proving a row can be retired requires
->   `pitest<Suite> -PnoMutationHistory`; assisted reports are previews and do not
+>   classify every row before certification. Do not retire a member until the tool
+>   emits its 3+ distinct fresh full-run quiet notice and the absence is confirmed
+>   under the relevant solo/gate load. Assisted reports are previews and do not
 >   advance timeout status or quiet-run evidence.
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
 >   boundary cannot be made deterministic, accept the mutant with a written

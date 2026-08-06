@@ -75,6 +75,22 @@ class HardeningExecutionSupportTest {
     val fresh = HardeningCommandLines.pitest(spec.copy(mutateOnly = null, historyActive = false))
     assertTrue("--targetClasses=example.*" in fresh)
     assertFalse(fresh.any { it.startsWith("--history") || it == "--features=+arcmutate_history" })
+
+    val isolated = HardeningCommandLines.pitest(
+      spec.copy(historyActive = false, mutationUnitSize = 1)
+    )
+    assertTrue("--mutationUnitSize=1" in isolated)
+    assertFalse(arguments.any { it.startsWith("--mutationUnitSize=") })
+    assertThrows(IllegalArgumentException::class.java) {
+      HardeningCommandLines.pitest(spec.copy(mutationUnitSize = 1))
+    }
+    listOf(null, "   ").forEach { scope ->
+      assertThrows(IllegalArgumentException::class.java) {
+        HardeningCommandLines.pitest(
+          spec.copy(mutateOnly = scope, historyActive = false, mutationUnitSize = 1)
+        )
+      }
+    }
   }
 
   @Test

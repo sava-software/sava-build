@@ -19,6 +19,7 @@ import org.gradle.jvm.toolchain.JavaLauncher
 import org.gradle.process.ExecOperations
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningOperationSession
+import software.sava.build.hardening.HardeningPluginIdentityGuard
 import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.CertificationGitIdentity
 import software.sava.build.hardening.CertificationGitIdentityCapture
@@ -47,6 +48,9 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
   // must inspect the manifest before realizing any of them; marking them @Classpath
   // would resolve PIT before the action and break the N-1 no-manifest path.
   @get:Internal abstract val pluginCode: ConfigurableFileCollection
+  @get:Input abstract val expectedPluginSha256: Property<String>
+  @get:Input abstract val localRepoArtifactPath: Property<String>
+  @get:Input abstract val expectedLocalRepoArtifactSha256: Property<String>
   @get:Internal abstract val sourceFiles: ConfigurableFileCollection
   @get:Internal abstract val classFiles: ConfigurableFileCollection
   @get:Internal abstract val runtimeClasspath: ConfigurableFileCollection
@@ -65,8 +69,13 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
   @get:Input abstract val minionJvmArgs: ListProperty<String>
   @get:Input abstract val timeoutFactor: Property<Double>
   @get:Input abstract val timeoutConst: Property<Long>
+  @get:Input abstract val mutationUnitSize: Property<Int>
   @get:Input abstract val mutationBytecodeRelease: Property<Int>
   @get:Input abstract val recompileExcludes: ListProperty<String>
+
+  init {
+    mutationUnitSize.convention(0)
+  }
 
   fun capture(recorded: PitestEvidence, useRecordedReportHash: Boolean): PitestEvidence {
     val reportDir = selectedReportDirectory()
@@ -131,6 +140,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
     scope: String,
     historyAssisted: Boolean,
   ): PitestEvidence {
+    requirePluginCodeUnchanged()
     val toolchain = captureMutationToolchain()
     return PitestEvidenceSnapshot.capture(PitestEvidenceSnapshotInput(
       suite = suiteName.get(),
@@ -157,7 +167,23 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
       reportSha256 = reportSha256,
       scope = scope,
       historyAssisted = historyAssisted,
-    ), minionJvmArgs.get())
+    ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get())
+  }
+
+  internal fun requirePluginCodeUnchanged() {
+    val code = pluginCode.singleFile
+    try {
+      HardeningPluginIdentityGuard.requireUnchanged(
+        code,
+        expectedPluginSha256.get(),
+        localRepoArtifactPath.get(),
+        expectedLocalRepoArtifactSha256.get(),
+        "mutation evidence validation",
+      )
+    } catch (e: IllegalStateException) {
+      throw GradleException(
+        "${e.message}; refusing evidence from mixed plugin bytes", e)
+    }
   }
 }
 
@@ -368,6 +394,9 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
     objects.domainObjectContainer(PitestEvidenceSpec::class.java)
   @get:Internal abstract val certificationProjectDirectory: DirectoryProperty
   @get:Internal abstract val certificationPluginCode: ConfigurableFileCollection
+  @get:Input abstract val expectedPluginSha256: Property<String>
+  @get:Input abstract val localRepoArtifactPath: Property<String>
+  @get:Input abstract val expectedLocalRepoArtifactSha256: Property<String>
   @get:Internal abstract val certificationRecordFiles: ConfigurableFileCollection
   @get:Input abstract val hardeningProjectPath: Property<String>
 
@@ -393,7 +422,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
         throw GradleException("hardeningCertify: ${e.message}", e)
       }
     }
-    val pluginBeforeSha256 = PitestEvidence.fingerprintTree(certificationPluginCode.singleFile)
+    val pluginBeforeSha256 = currentPluginSha256("before final certification validation")
     val completedProjectSnapshots = mutableListOf<NamedProjectEvidence>()
     val currentProjectSnapshots = mutableListOf<NamedProjectEvidence>()
     suiteEvidence.sortedBy { it.name }.forEach { evidence ->
@@ -451,7 +480,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
         throw GradleException("hardeningCertify: ${e.message}", e)
       }
     }
-    val pluginAfterSha256 = PitestEvidence.fingerprintTree(certificationPluginCode.singleFile)
+    val pluginAfterSha256 = currentPluginSha256("after final certification validation")
     requirePluginIdentity("completed evidence", completedProjectSnapshots, pluginBeforeSha256)
     requirePluginIdentity("current inputs", currentProjectSnapshots, pluginAfterSha256)
     try {
@@ -465,6 +494,24 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
     } catch (e: IllegalStateException) {
       throw GradleException("hardeningCertify: ${e.message}", e)
     }
+  }
+
+  private fun currentPluginSha256(context: String): String {
+    val code = certificationPluginCode.singleFile
+    val expected = expectedPluginSha256.get()
+    try {
+      HardeningPluginIdentityGuard.requireUnchanged(
+        code,
+        expected,
+        localRepoArtifactPath.get(),
+        expectedLocalRepoArtifactSha256.get(),
+        "hardeningCertify: $context",
+      )
+    } catch (e: IllegalStateException) {
+      throw GradleException(
+        "${e.message}; refusing mixed plugin bytes", e)
+    }
+    return expected
   }
 
   /**

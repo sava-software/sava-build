@@ -31,6 +31,7 @@ import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.HardeningOperationSession
+import software.sava.build.hardening.HardeningPluginIdentityGuard
 import software.sava.build.hardening.MutatorAdvice
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
@@ -92,6 +93,10 @@ abstract class PitestExecTask : JavaExec() {
 
   @get:Input
   abstract val timeoutConst: Property<Long>
+
+  /** Zero for normal PIT batching; one only for the scoped contamination diagnostic. */
+  @get:Input
+  abstract val mutationUnitSize: Property<Int>
 
   @get:Input
   abstract val outputFormats: ListProperty<String>
@@ -164,6 +169,16 @@ abstract class PitestExecTask : JavaExec() {
   @get:Classpath
   abstract val evidencePluginCode: ConfigurableFileCollection
 
+  /** SHA captured when the hardening convention was applied, before task execution. */
+  @get:Input
+  abstract val expectedPluginSha256: Property<String>
+
+  @get:Input
+  abstract val localRepoArtifactPath: Property<String>
+
+  @get:Input
+  abstract val expectedLocalRepoArtifactSha256: Property<String>
+
   @get:Input
   abstract val pitestVersion: Property<String>
 
@@ -206,6 +221,7 @@ abstract class PitestExecTask : JavaExec() {
     minionJvmArgs,
     timeoutFactor,
     timeoutConst,
+    mutationUnitSize,
     historyFile,
   )
 
@@ -216,6 +232,7 @@ abstract class PitestExecTask : JavaExec() {
     historyRequested.convention(true)
     historyLicensed.convention(false)
     historyExplicitlyDisabled.convention(false)
+    mutationUnitSize.convention(0)
     enforceExit.convention(true)
     bindSuiteEvidence.convention(true)
     isIgnoreExitValue = true
@@ -252,6 +269,7 @@ abstract class PitestExecTask : JavaExec() {
 
   @TaskAction
   override fun exec() {
+    requirePluginCodeUnchanged("pitest '${suiteName.get()}' before execution")
     // Resolve and validate the effective engine before touching the attempt
     // sentinel. An expired, malformed, or ambiguous certificate must not leave an
     // older report looking like an interrupted current run.
@@ -276,10 +294,14 @@ abstract class PitestExecTask : JavaExec() {
 
     var attempt: PitestAttempt? = null
     var outputSummary: PitestOutputSummary? = null
+    var executionFailure: Throwable? = null
     try {
       attempt = beginAttempt(historyActive, initialToolchain)
       afterAttemptStarted()
       super.exec()
+    } catch (failure: Throwable) {
+      executionFailure = failure
+      throw failure
     } finally {
       standardOutput = originalStandardOutput
       errorOutput = originalErrorOutput
@@ -290,6 +312,15 @@ abstract class PitestExecTask : JavaExec() {
           "pitest: suppressed ${summary.suppressedMinionLines} repeated minion log line(s) — " +
               "first occurrence of each is above"
         )
+      }
+      try {
+        requirePluginCodeUnchanged("pitest '${suiteName.get()}' after execution")
+      } catch (identityFailure: Throwable) {
+        if (executionFailure != null) {
+          executionFailure.addSuppressed(identityFailure)
+        } else {
+          throw identityFailure
+        }
       }
     }
 
@@ -307,6 +338,7 @@ abstract class PitestExecTask : JavaExec() {
       historyRequested.get() &&
       historyLicensed.get() &&
       !historyExplicitlyDisabled.get() &&
+      mutationUnitSize.get() == 0 &&
       operationSession.get().suiteOperation(
         certifyingProjectPath.get(), suiteName.get()
       ) == BaselineWriteOperation.CHECK &&
@@ -459,7 +491,23 @@ abstract class PitestExecTask : JavaExec() {
       reportSha256 = reportSha256,
       scope = scope,
       historyAssisted = historyAssisted,
-    ), minionJvmArgs.get())
+    ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get())
+  }
+
+  private fun requirePluginCodeUnchanged(context: String) {
+    val code = evidencePluginCode.singleFile
+    try {
+      HardeningPluginIdentityGuard.requireUnchanged(
+        code,
+        expectedPluginSha256.get(),
+        localRepoArtifactPath.get(),
+        expectedLocalRepoArtifactSha256.get(),
+        context,
+      )
+    } catch (e: IllegalStateException) {
+      throw GradleException(
+        "${e.message}; refusing evidence from mixed plugin bytes", e)
+    }
   }
 
   private data class PitestAttempt(
@@ -539,6 +587,28 @@ abstract class PitestRunTask : PitestExecTask() {
     adviceSiblingExcludes.convention(emptyMap())
     adviceDeclinedMutators.convention(emptyMap())
     adviceDeclinedExclusions.convention(emptyMap())
+  }
+
+  override fun beforeAttempt() {
+    super.beforeAttempt()
+    val unitSize = mutationUnitSize.get()
+    if (unitSize !in 0..1) {
+      throw GradleException(
+        "pitest '${suiteName.get()}': unsupported diagnostic mutation unit size $unitSize"
+      )
+    }
+    if (unitSize == 1) {
+      val scope = PitestReportDirectories.normalizedScope(mutateOnly.orNull)
+        ?: throw GradleException(
+          "pitest '${suiteName.get()}': -PisolateMutants requires " +
+            "-PmutateOnly=<class-glob>; isolated execution is a scoped diagnostic, " +
+            "not full-population evidence"
+        )
+      logger.lifecycle(
+        "pitest '${suiteName.get()}': one-mutant-per-unit diagnostic for $scope — " +
+          "history disabled; result is scoped and cannot support a record decision"
+      )
+    }
   }
 
   override fun afterAttemptStarted() {
@@ -701,6 +771,7 @@ private class PitestCommandLineProvider(
   private val minionJvmArgs: ListProperty<String>,
   private val timeoutFactor: Property<Double>,
   private val timeoutConst: Property<Long>,
+  private val mutationUnitSize: Property<Int>,
   private val historyFile: RegularFileProperty,
 ) : CommandLineArgumentProvider {
 
@@ -734,6 +805,7 @@ private class PitestCommandLineProvider(
         timeoutConst = timeoutConst.get(),
         historyActive = historyActiveForExecution,
         historyFile = historyFile.get().asFile,
+        mutationUnitSize = mutationUnitSize.get(),
       )
     )
   }

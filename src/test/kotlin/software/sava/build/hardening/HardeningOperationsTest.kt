@@ -10,10 +10,11 @@ class HardeningOperationsTest {
 
   @Test
   fun `the central option inventory separates active and removed properties`() {
-    assertEquals(10, HardeningOptionNames.descriptors.size)
+    assertEquals(11, HardeningOptionNames.descriptors.size)
     assertEquals(
       setOf(
         HardeningOptionNames.ADOPT_LOCAL_CORPUS,
+        HardeningOptionNames.ISOLATE_MUTANTS,
         HardeningOptionNames.LIST_UNKILLED,
         HardeningOptionNames.MAX_FUZZ_TIME,
         HardeningOptionNames.MAX_PARALLEL_FUZZ_TARGETS,

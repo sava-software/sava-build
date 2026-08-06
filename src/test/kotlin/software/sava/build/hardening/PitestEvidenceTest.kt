@@ -110,6 +110,22 @@ class PitestEvidenceTest {
   }
 
   @Test
+  fun `certification projects must share one application-time plugin identity`() {
+    val identities = CertificationPluginIdentities()
+    identities.requireExpected(":legacy", "a".repeat(64))
+    identities.register(":core", "a".repeat(64))
+    identities.register(":core", "a".repeat(64))
+    identities.register(":http", "a".repeat(64))
+
+    val conflict = assertThrows(IllegalStateException::class.java) {
+      identities.register(":google", "b".repeat(64))
+    }
+
+    assertTrue(conflict.message.orEmpty().contains(":google"), conflict.message)
+    assertTrue(conflict.message.orEmpty().contains(":legacy"), conflict.message)
+  }
+
+  @Test
   fun `mutation record fingerprint refuses a linked config tree`() {
     val project = tempDir.resolve("project").apply { mkdirs() }
     val external = tempDir.resolve("external/pitest").apply { mkdirs() }

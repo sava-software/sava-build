@@ -23,6 +23,7 @@ internal object HardeningCommandLines {
     val timeoutConst: Long,
     val historyActive: Boolean,
     val historyFile: File,
+    val mutationUnitSize: Int = 0,
   )
 
   fun pitest(spec: Pitest): List<String> = buildList {
@@ -48,6 +49,16 @@ internal object HardeningCommandLines {
     }
     add("--timeoutFactor=${spec.timeoutFactor}")
     add("--timeoutConst=${spec.timeoutConst}")
+    require(spec.mutationUnitSize >= 0) { "PIT mutation unit size must not be negative" }
+    if (spec.mutationUnitSize > 0) {
+      require(scopedTargets.isNotEmpty()) {
+        "isolated PIT mutation units require a nonblank mutateOnly scope"
+      }
+      require(!spec.historyActive) {
+        "isolated PIT mutation units require history-free execution"
+      }
+      add("--mutationUnitSize=${spec.mutationUnitSize}")
+    }
     if (spec.historyActive) {
       if (spec.historyFile.isFile) {
         add("--historyInputLocation=${spec.historyFile.absolutePath}")

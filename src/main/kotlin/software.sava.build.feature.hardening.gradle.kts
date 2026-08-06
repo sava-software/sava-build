@@ -15,6 +15,8 @@ import software.sava.build.hardening.HardeningOperationCompletionTask
 import software.sava.build.hardening.HardeningOperationRequestTask
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.HardeningOptionNames
+import software.sava.build.hardening.HardeningPluginIdentityGuard
+import software.sava.build.hardening.HardeningPluginIdentityService
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
 import software.sava.build.hardening.HardeningWriteRequest
@@ -100,11 +102,19 @@ val arcMutateProjectLicence = layout.projectDirectory.file("arcmutate-licence.tx
 val arcMutateRootLicence = rootProject.layout.projectDirectory.file("arcmutate-licence.txt")
 val arcMutateLicencePresent = arcMutateProjectLicence.asFile.isFile ||
     arcMutateRootLicence.asFile.isFile
+val isolateMutantsRequested = providers
+    .gradleProperty(HardeningOptionNames.ISOLATE_MUTANTS)
+    .map { true }
+    .orElse(false)
 val mutationHistoryDisabledForExecution = providers
     .gradleProperty(HardeningOptionNames.NO_MUTATION_HISTORY)
     .orElse(providers.gradleProperty(HardeningOptionNames.STRICT_TIMEOUT_AUDIT))
     .map { true }
     .orElse(false)
+val mutationHistoryDisabledForNormalPitest = mutationHistoryDisabledForExecution
+    .zip(isolateMutantsRequested) { explicitlyDisabled, isolated ->
+      explicitlyDisabled || isolated
+    }
 
 val pitest = configurations.create("pitest") {
   isCanBeConsumed = false
@@ -164,11 +174,20 @@ val qualityGate = tasks.register("qualityGate") {
   description = "Unit tests plus every PIT suite with mutation-baseline verification."
   dependsOn(tasks.named("test"))
   val mutateOnly = providers.gradleProperty(HardeningOptionNames.MUTATE_ONLY)
+  val isolateMutants = isolateMutantsRequested
   doFirst {
     if (mutateOnly.isPresent) {
       throw GradleException(
-          "qualityGate cannot certify a scoped mutation population (-PmutateOnly=${mutateOnly.get()}). " +
-              "Run the gate without -PmutateOnly so every registered suite measures its full population."
+          "qualityGate cannot certify a scoped mutation population " +
+              "(-PmutateOnly=${mutateOnly.get()}" +
+              (if (isolateMutants.get()) ", -P${HardeningOptionNames.ISOLATE_MUTANTS}" else "") +
+              "). Run the gate without scoped flags so every registered suite measures its full population."
+      )
+    }
+    if (isolateMutants.get()) {
+      throw GradleException(
+          "qualityGate cannot certify -P${HardeningOptionNames.ISOLATE_MUTANTS}; " +
+              "isolated execution is diagnostic, not full-population evidence."
       )
     }
   }
@@ -196,8 +215,26 @@ tasks.register<HardeningHelpTask>("hardeningHelp") {
 }
 val certificationReceiptFile = layout.buildDirectory.file("hardening/pitest-certification.tsv")
 val certificationReceiptRunning = layout.buildDirectory.file("hardening/pitest-certification.running")
+// Freeze the bytes which applied this convention now. The settings plugin normally
+// registered the shared identity first; this registration is the direct-feature-plugin
+// fallback. The path remains only so execution boundaries can detect replacement.
 val hardeningImplementationCode =
     File(PitestEvidence::class.java.protectionDomain.codeSource.location.toURI())
+val hardeningImplementationSha256AtProjectApplication =
+    PitestEvidence.fingerprintTree(hardeningImplementationCode)
+private val hardeningPluginIdentityService = gradle.sharedServices.registerIfAbsent(
+    HardeningPluginIdentityService.SERVICE_NAME, HardeningPluginIdentityService::class
+) {
+  parameters.applicationPluginSha256.set(hardeningImplementationSha256AtProjectApplication)
+  parameters.localRepoArtifactPath.set(HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
+  parameters.applicationLocalRepoArtifactSha256.set(HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
+}
+val hardeningExpectedPluginSha256: Provider<String> =
+    hardeningPluginIdentityService.map { it.parameters.applicationPluginSha256.get() }
+val hardeningLocalRepoArtifactPath: Provider<String> =
+    hardeningPluginIdentityService.map { it.parameters.localRepoArtifactPath.get() }
+val hardeningExpectedLocalRepoArtifactSha256: Provider<String> =
+    hardeningPluginIdentityService.map { it.parameters.applicationLocalRepoArtifactSha256.get() }
 val hardeningCertifyPreflight = tasks.register("hardeningCertifyPreflight") {
   description = "Internal to hardeningCertify: refuses flags that make the run partial or state-changing."
   // `clean hardeningCertify` is the most useful cold certification. Without an
@@ -212,6 +249,10 @@ val hardeningCertifyPreflight = tasks.register("hardeningCertifyPreflight") {
   val receiptFile = certificationReceiptFile
   val receiptRunning = certificationReceiptRunning
   val certifiedProjectPath = project.path
+  val certificationPluginSha256 = hardeningExpectedPluginSha256
+  val certificationPluginCode = hardeningImplementationCode
+  val localRepoArtifactPath = hardeningLocalRepoArtifactPath
+  val localRepoArtifactSha256 = hardeningExpectedLocalRepoArtifactSha256
   val excludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
   val forbidden = HardeningOptionNames.certificationForbiddenProperties
       .associateWith { providers.gradleProperty(it) }
@@ -234,7 +275,23 @@ val hardeningCertifyPreflight = tasks.register("hardeningCertifyPreflight") {
                 if (excluded.isNotEmpty()) add("task exclusion(s): " + excluded.joinToString(", ") { "-x $it" })
               }.joinToString("; "))
     }
-    val sessionId = certificationSession.get().activate(certifiedProjectPath)
+    val expectedPluginSha256 = certificationPluginSha256.get()
+    try {
+      HardeningPluginIdentityGuard.requireUnchanged(
+          certificationPluginCode,
+          expectedPluginSha256,
+          localRepoArtifactPath.get(),
+          localRepoArtifactSha256.get(),
+          "hardeningCertify: project '$certifiedProjectPath' before preflight",
+      )
+    } catch (e: IllegalStateException) {
+      throw GradleException("${e.message}; refusing mixed plugin bytes before PIT", e)
+    }
+    val sessionId = try {
+      certificationSession.get().activate(certifiedProjectPath, expectedPluginSha256)
+    } catch (e: IllegalStateException) {
+      throw GradleException("hardeningCertify: ${e.message}", e)
+    }
     receiptRunning.get().asFile.writeText("session\t$sessionId\n")
   }
 }
@@ -263,6 +320,9 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   hardeningProjectPath.set(project.path)
   certificationProjectDirectory.set(layout.projectDirectory)
   certificationPluginCode.from(hardeningImplementationCode)
+  expectedPluginSha256.set(hardeningExpectedPluginSha256)
+  localRepoArtifactPath.set(hardeningLocalRepoArtifactPath)
+  expectedLocalRepoArtifactSha256.set(hardeningExpectedLocalRepoArtifactSha256)
   val reportRoot = layout.buildDirectory.dir("reports/pitest")
   val receiptFile = certificationReceiptFile
   val receiptRunning = certificationReceiptRunning
@@ -1805,8 +1865,8 @@ val localFuzzReceiptLock = layout.projectDirectory.file(".pitest-history/local-f
 // successful new one after its sentinel has moved.
 val legacyLocalFuzzReceiptFile = layout.buildDirectory.file("hardening/local-fuzz.tsv")
 val legacyLocalFuzzReceiptRunning = layout.buildDirectory.file("hardening/local-fuzz.running")
-val localFuzzPluginCode = File(PitestEvidence::class.java.protectionDomain.codeSource.location.toURI())
-val localFuzzPluginSha256 = PitestEvidence.fingerprintTree(localFuzzPluginCode)
+val localFuzzPluginCode = hardeningImplementationCode
+val localFuzzPluginSha256 = hardeningExpectedPluginSha256
 val validateFuzzBudget = tasks.register("validateFuzzBudget") {
   description = "Internal to local fuzz tasks: validates time and bounded-parallelism settings."
   val budget = maxFuzzTime
@@ -1850,6 +1910,10 @@ val fuzzAll = tasks.register("fuzzAll") {
   val legacyReceipt = legacyLocalFuzzReceiptFile
   val legacyRunning = legacyLocalFuzzReceiptRunning
   val legacyBuildDirectory = layout.buildDirectory
+  val pluginCode = localFuzzPluginCode
+  val expectedPluginSha256 = localFuzzPluginSha256
+  val localRepoArtifactPath = hardeningLocalRepoArtifactPath
+  val localRepoArtifactSha256 = hardeningExpectedLocalRepoArtifactSha256
   val trustedProjectDirectory = layout.projectDirectory.asFile
   val campaignTargets = fuzzTargetNames
   val campaignProjectPath = project.path
@@ -1884,6 +1948,15 @@ val fuzzAll = tasks.register("fuzzAll") {
       BaselineFiles.deleteIfExists(receiptFile)
       BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
       BaselineFiles.writeAtomically(trustedProjectDirectory, runningFile, "starting\t$sessionId\n")
+
+      val appliedPluginSha256 = expectedPluginSha256.get()
+      HardeningPluginIdentityGuard.requireUnchanged(
+          pluginCode,
+          appliedPluginSha256,
+          localRepoArtifactPath.get(),
+          localRepoArtifactSha256.get(),
+          "fuzzAll before campaign",
+      )
 
       // buildDirectory is configurable and may intentionally live outside the checkout.
       // Confine legacy cleanup to that exact configured root instead of projectDirectory.
@@ -1947,9 +2020,28 @@ val fuzzAllComplete = tasks.register("fuzzAllComplete") {
   val receiptFileProvider = localFuzzReceiptFile
   val receiptRunning = localFuzzReceiptRunning
   val trustedProjectDirectory = layout.projectDirectory.asFile
+  val pluginCode = localFuzzPluginCode
+  val localRepoArtifactPath = hardeningLocalRepoArtifactPath
+  val localRepoArtifactSha256 = hardeningExpectedLocalRepoArtifactSha256
   val fuzzSession = hardeningFuzzSession
   usesService(fuzzSession)
   doLast {
+    val appliedPluginSha256 = pluginSha256.get()
+    try {
+      HardeningPluginIdentityGuard.requireUnchanged(
+          pluginCode,
+          appliedPluginSha256,
+          localRepoArtifactPath.get(),
+          localRepoArtifactSha256.get(),
+          "fuzzAll after campaign",
+      )
+    } catch (e: IllegalStateException) {
+      val receiptFile = receiptFileProvider.asFile
+      BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
+      BaselineFiles.deleteIfExists(receiptFile)
+      throw GradleException(
+          "${e.message}; refusing a mixed-plugin receipt", e)
+    }
     val completed = try {
       fuzzSession.get().requireCompleted(receiptProjectPath, names.get())
     } catch (failure: IllegalStateException) {
@@ -1973,7 +2065,7 @@ val fuzzAllComplete = tasks.register("fuzzAllComplete") {
     val receipt = buildString {
       appendLine("schema\t4")
       appendLine("project\t$receiptProjectPath")
-      appendLine("pluginSha256\t$pluginSha256")
+      appendLine("pluginSha256\t$appliedPluginSha256")
       appendLine("maxFuzzTimeSeconds\t${maxTime.get()}")
       appendLine("maxParallelTargets\t${parallelism.get()}")
       appendLine("totalExecutions\t$totalExecutions")
@@ -4019,6 +4111,8 @@ hardening.mutation.all {
     group = "verification"
     description = "Prints the '$suiteName' unkilled-mutant debt grouped by class, largest first, with the baseline delta."
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
+    val scopedCsvProvider =
+        layout.buildDirectory.file("reports/pitest-scoped/$suiteName/mutations.csv")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
     val debtTimeoutsFile = layout.projectDirectory.file("config/pitest/$suiteName-timeouts.csv").asFile
@@ -4197,8 +4291,14 @@ hardening.mutation.all {
           .filter { it.size >= 4 }
           .map { it[0] to it.last() }
       val csv = csvProvider.get().asFile
+      val scopedCsv = scopedCsvProvider.get().asFile
       BaselineFiles.requireRegularFileOrMissing(csv)
+      BaselineFiles.requireRegularFileOrMissing(scopedCsv)
       val historyAssistedDebt = csv.parentFile.resolve(".history-assisted").isFile
+      val newerScopedDiagnostic = scopedCsv.isFile &&
+          scopedCsv.parentFile.resolve(".scoped").isFile &&
+          !scopedCsv.parentFile.resolve(".running").isFile &&
+          (!csv.isFile || scopedCsv.lastModified() >= csv.lastModified())
       var invalidReport = false
       // scoped and interrupted-run reports both fall back to the baseline: a
       // partial population under-counts debt exactly like a hand-picked one. An
@@ -4224,9 +4324,17 @@ hardening.mutation.all {
         null
       }
       val source = when {
-        reportPairs != null && historyAssistedDebt -> "current [history] report (read-only preview)"
-        reportPairs != null -> "current report"
-        invalidReport -> "baseline (current report invalid)"
+        reportPairs != null && historyAssistedDebt && newerScopedDiagnostic ->
+          "latest full [history] report (read-only preview; newer scoped diagnostic excluded)"
+        reportPairs != null && historyAssistedDebt ->
+          "latest full [history] report (read-only preview)"
+        reportPairs != null && newerScopedDiagnostic ->
+          "latest full report (newer scoped diagnostic excluded)"
+        reportPairs != null -> "latest full report"
+        invalidReport && newerScopedDiagnostic ->
+          "baseline (full report invalid; newer scoped diagnostic excluded)"
+        invalidReport -> "baseline (full report invalid)"
+        newerScopedDiagnostic -> "baseline (no full report present; scoped diagnostic excluded)"
         else -> "baseline (no full report present)"
       }
       val debt = tally(reportPairs ?: baselinePairs)
@@ -4373,6 +4481,9 @@ hardening.mutation.all {
     task.evidenceClassFiles.from(evidenceClassFiles)
     task.evidenceClasspath.from(evidenceClasspathFiles)
     task.evidencePluginCode.from(typedPluginCode)
+    task.expectedPluginSha256.set(hardeningExpectedPluginSha256)
+    task.localRepoArtifactPath.set(hardeningLocalRepoArtifactPath)
+    task.expectedLocalRepoArtifactSha256.set(hardeningExpectedLocalRepoArtifactSha256)
     task.pitestVersion.set(hardening.pitestVersion)
     task.junitPluginVersion.set(hardening.pitestJunit5PluginVersion)
     task.arcMutateBaseVersion.set(hardening.arcmutateBaseVersion)
@@ -4400,6 +4511,8 @@ hardening.mutation.all {
         withHistory = true,
         isolateScopedReport = true,
     )
+    mutationUnitSize.set(isolateMutantsRequested.map { isolated -> if (isolated) 1 else 0 })
+    historyExplicitlyDisabled.set(mutationHistoryDisabledForNormalPitest)
 
     adviceClassesDirectory.from(mutationClassesDir)
     adviceTestSourceDirectories.from(sourceSets.test.get().java.srcDirs)
@@ -4430,6 +4543,9 @@ hardening.mutation.all {
         else evidencePitestTask.reportDirectory)
     spec.mutateOnly.set(typedMutateOnly)
     spec.pluginCode.from(evidencePluginCode)
+    spec.expectedPluginSha256.set(hardeningExpectedPluginSha256)
+    spec.localRepoArtifactPath.set(hardeningLocalRepoArtifactPath)
+    spec.expectedLocalRepoArtifactSha256.set(hardeningExpectedLocalRepoArtifactSha256)
     spec.sourceFiles.from(evidenceSourceFiles)
     spec.classFiles.from(evidenceClassFiles)
     spec.runtimeClasspath.from(evidenceClasspathFiles)
@@ -4447,6 +4563,11 @@ hardening.mutation.all {
     spec.minionJvmArgs.set(suite.minionJvmArgs)
     spec.timeoutFactor.set(suite.timeoutFactor)
     spec.timeoutConst.set(suite.timeoutConst)
+    if (isolateScopedReport) {
+      spec.mutationUnitSize.set(evidencePitestTask.mutationUnitSize)
+    } else {
+      spec.mutationUnitSize.set(0)
+    }
     spec.mutationBytecodeRelease.set(evidenceMutationRelease)
     spec.recompileExcludes.set(evidenceRecompileExcludes)
   }
@@ -4515,7 +4636,10 @@ hardening.mutation.all {
   // poisons the project so `--continue` cannot consume the surviving request. The
   // public completion task and verify's own no-exclusions check additionally make an
   // explicitly excluded preflight a refusal rather than a green no-op or record write.
-  val presentWriterIncompatibleProperties = listOf(HardeningOptionNames.MUTATE_ONLY)
+  val presentWriterIncompatibleProperties = listOf(
+      HardeningOptionNames.ISOLATE_MUTANTS,
+      HardeningOptionNames.MUTATE_ONLY,
+  )
       .filter { providers.gradleProperty(it).isPresent }
   val requestedExcludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
   val writerSuiteName = suiteName

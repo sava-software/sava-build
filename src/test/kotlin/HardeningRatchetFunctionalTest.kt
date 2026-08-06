@@ -1013,7 +1013,7 @@ $fuzzBlock
     val debt = runner("pitestEncodingDebt").build().output
     assertTrue(debt.contains("falling back to the committed baseline"), debt)
     assertTrue(debt.contains("RUN_ERROR x1"), debt)
-    assertTrue(debt.contains("baseline (current report invalid)"), debt)
+    assertTrue(debt.contains("baseline (full report invalid)"), debt)
     assertTrue(debt.contains("1 survived"), debt)
 
     writeReport(
@@ -1093,7 +1093,7 @@ $fuzzBlock
 
     val debt = runner("pitestEncodingDebt").build().output
     assertTrue(
-      debt.contains("current [history] report (read-only preview)") &&
+      debt.contains("latest full [history] report (read-only preview)") &&
           debt.contains("pitestEncoding -PnoMutationHistory before any accepted-baseline or timeout-audit decision"),
       "Debt presented assisted statuses as current decision evidence:\n$debt",
     )

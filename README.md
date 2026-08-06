@@ -376,12 +376,18 @@ resolved against each build's own settings dir, so the builds would read two
 different repos — and the notice reports the dir the build that registered it
 resolved, which need not be the one that served the plugins.
 
+Do not republish the static `0.0.0-test` coordinate while a consumer build is running.
+The plugin freezes both the loaded code SHA-256 and the configured local-repository JAR
+SHA-256 when settings apply, checks them again at evidence boundaries, and refuses PIT,
+fuzz, and certification evidence if either path changes. Start a new consumer invocation
+after every publish.
+
 Every build that resolves plugins from the local repo also says so, once, at the end:
 
 ```
 sava-build: this build resolved every 'software.sava.build*' plugin to 0.0.0-test from
-the local repo /…/build/sava-test-repo (last publish 3 min ago), NOT the versions in
-the plugins block.
+the local repo /…/build/sava-test-repo (last publish 3 min ago; application-time SHA-256
+012345…cdef), NOT the versions in the plugins block.
 ```
 
 That notice comes from the plugin itself (`SavaBuildLocalRepoNoticePlugin`, applied by
@@ -390,7 +396,9 @@ settings script — a settings script is skipped on a configuration cache hit, w
 silenced the warning in exactly the cases worth warning about: a forgotten publish
 changes nothing, so the entry is reused, and switching back into local-repo mode reuses
 an existing entry too. The publish age is read when the action runs, so it is never a
-value cached from an earlier build.
+value cached from an earlier build. The SHA names the bytes loaded when the settings
+plugin applied; a changed local artifact makes the build fail instead of letting later
+projects or receipts silently describe different bytes.
 
 The canonical consumer-side block, for a `settings.gradle.kts` `pluginManagement {}`
 (copy it whole — the property belongs in `~/.gradle/gradle.properties` or on the CLI,

@@ -22,6 +22,7 @@ internal object HardeningOptionNames {
 
   const val ADOPT_LOCAL_CORPUS = "adoptLocalCorpus"
   const val INIT_TIMEOUT_AUDIT = "initTimeoutAudit"
+  const val ISOLATE_MUTANTS = "isolateMutants"
   const val LIST_UNKILLED = "listUnkilled"
   const val MAX_FUZZ_TIME = "maxFuzzTime"
   const val MAX_PARALLEL_FUZZ_TARGETS = "maxParallelFuzzTargets"
@@ -56,6 +57,7 @@ internal object HardeningOptionNames {
   }
 
   val certificationForbiddenProperties = listOf(
+    ISOLATE_MUTANTS,
     MUTATE_ONLY,
     TRIAL_MUTATORS,
     PITEST_MODE,
@@ -65,6 +67,9 @@ internal object HardeningOptionNames {
   val descriptors = listOf(
     Descriptor(ADOPT_LOCAL_CORPUS, null,
         "include build/fuzz local findings when minimizing a committed corpus"),
+    Descriptor(ISOLATE_MUTANTS, null,
+        "run one mutant per PIT unit to diagnose inter-mutant contamination; " +
+            "requires -PmutateOnly and disables history"),
     Descriptor(LIST_UNKILLED, null,
         "print current unkilled mutants with PIT descriptions"),
     Descriptor(MAX_FUZZ_TIME, "seconds",

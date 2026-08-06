@@ -184,6 +184,11 @@ class HardeningOperationsFunctionalTest {
           output.contains("required when an ordinary run supports any accepted-baseline or timeout-audit decision"),
       output,
     )
+    assertTrue(
+      output.contains("-PisolateMutants") &&
+          output.contains("requires -PmutateOnly and disables history"),
+      output,
+    )
 
     val reused = runner("hardeningHelp").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
