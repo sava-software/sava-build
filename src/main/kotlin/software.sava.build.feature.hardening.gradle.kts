@@ -2948,7 +2948,7 @@ hardening.mutation.all {
                 stashEntries.any { (coord, _) -> coord.count { it == ',' } != 2 })
         if (staleFormat) {
           logger.lifecycle(
-              "pitest '$suiteName': status stash predates the current stash format — " +
+              "$advisoryScope: status stash predates the current stash format — " +
                   "fresh-only run-to-run drift comparison resets this run and resumes on the next"
           )
         }
@@ -3224,7 +3224,7 @@ hardening.mutation.all {
           val currentQuietFormat = previousLines.firstOrNull() == quietFormatHeader
           if (previousLines.isNotEmpty() && !currentQuietFormat) {
             logger.lifecycle(
-                "pitest '$suiteName': timeout-retirement stash predates fresh-only evidence — " +
+                "$advisoryScope: timeout-retirement stash predates fresh-only evidence — " +
                     "the quiet-run counter resets this run")
           }
           val sameReport = currentQuietFormat && previousLines.getOrNull(1) == reportFingerprint
@@ -3268,7 +3268,7 @@ hardening.mutation.all {
           val settled = quietRuns.filterValues { it >= 3 }
           if (settled.isNotEmpty()) {
             logger.warn(
-                "pitest '$suiteName': ${settled.size} audited-timeout member(s) have not timed out in 3+ " +
+                "$advisoryScope: ${settled.size} audited-timeout member(s) have not timed out in 3+ " +
                     "consecutive mutation runs — if a member only times out under gate load this is normal " +
                     "on solo streaks; otherwise its tests now detect the mutant outright, and the member " +
                     "(with its README cause) can be retired:\n" +

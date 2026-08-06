@@ -2471,6 +2471,92 @@ $fuzzBlock
   }
 
   @Test
+  fun `timeout retirement notices identify projects when suite names are duplicated`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "duplicate-hardening-suite-smoke-test"
+        include("a", "b")
+      """.trimIndent() + "\n"
+    )
+    val reports = listOf("a", "b").map { projectName ->
+      val projectDir = File(fixtureDir, projectName).apply { mkdirs() }
+      projectDir.resolve("build.gradle.kts").writeText(
+        """
+          plugins {
+            java
+            id("software.sava.build.feature.hardening")
+          }
+
+          repositories {
+            mavenCentral()
+          }
+
+          hardening {
+            mutation.register("dispatch") {
+              targetClasses = listOf("com.example.Codec")
+              targetTests = "com.example.*Test*"
+            }
+          }
+        """.trimIndent() + "\n"
+      )
+      projectDir.resolve("config/pitest/dispatch-timeouts.csv").apply {
+        parentFile.mkdirs()
+        writeText("com.example.Codec,encode,MathMutator\n")
+      }
+      projectDir.resolve(".pitest-history/dispatch.timeout-quiet").apply {
+        parentFile.mkdirs()
+        writeText("com.example.Codec,encode,MathMutator,2\n")
+      }
+      projectDir.resolve(".pitest-history/dispatch.statuses").writeText(
+        "com.example.Codec,encode,12,MathMutator,KILLED\n"
+      )
+      projectDir.resolve("build/reports/pitest/dispatch/mutations.csv").apply {
+        parentFile.mkdirs()
+        writeText(
+          "Codec.java,com.example.Codec," +
+              "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+              "encode,12,KILLED,com.example.CodecTest\n"
+        )
+      }
+    }
+    fun verifyBoth(): String = runner(
+      ":a:pitestDispatchVerify",
+      ":b:pitestDispatchVerify",
+    ).build().output
+
+    val reset = verifyBoth()
+    val resetNotice = "timeout-retirement stash predates fresh-only evidence"
+    val statusResetNotice = "status stash predates the current stash format"
+    assertTrue(
+      reset.contains(":a pitest 'dispatch': $resetNotice") &&
+          reset.contains(":b pitest 'dispatch': $resetNotice") &&
+          reset.contains(":a pitest 'dispatch': $statusResetNotice") &&
+          reset.contains(":b pitest 'dispatch': $statusResetNotice"),
+      "duplicate-suite reset notices were not project-qualified:\n$reset"
+    )
+
+    repeat(2) { observation ->
+      reports.forEach { report ->
+        assertTrue(
+          report.setLastModified(report.lastModified() + 1_000),
+          "could not freshen ${report.path} for observation ${observation + 2}"
+        )
+      }
+      val output = verifyBoth()
+      if (observation == 1) {
+        val quietNotice = "1 audited-timeout member(s) have not timed out in 3+"
+        assertTrue(
+          output.contains(":a pitest 'dispatch': $quietNotice") &&
+              output.contains(":b pitest 'dispatch': $quietNotice"),
+          "duplicate-suite quiet notices were not project-qualified:\n$output"
+        )
+      }
+    }
+  }
+
+  @Test
   fun `a stale interlude drops the quiet streak rather than freezing it`() {
     // A member goes stale only when its mutant left the report — the code moved, or
     // the mutator set changed — so quiet evidence about the old method body is
