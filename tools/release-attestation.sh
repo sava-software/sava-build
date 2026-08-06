@@ -30,10 +30,12 @@ path components are refused. `--adoption` remains as a deprecated alias for
 `--certification-only-adoption`.
 
 The review basis is explicit. `consumer-feature` requires at least one
-`--feature-adoption`; `plugin-only` and `certification-only` refuse feature adoptions.
-Every checkout still contributes the same derived certification evidence; its role
-records only whether the owner reviewed that consumer as exercising the changed
-feature or as exact-byte hardening-certification evidence only.
+`--feature-adoption`; `certification-only` requires at least one
+`--certification-only-adoption`; and `plugin-only` requires no consumer checkout when
+plugin-owned tests carry the changed-feature proof. Both non-feature bases refuse
+feature adoptions. Every supplied checkout contributes the same derived certification
+evidence; its role records whether the owner reviewed that consumer as exercising the
+changed feature or as exact-byte hardening-certification evidence only.
 Commit the generated file to the Release Please PR. Tag creation and publication then
 validate the candidate identity and refuse a rebuilt JAR whose bytes differ from the
 reviewed candidate.
@@ -515,11 +517,6 @@ create_reviewed_attestation() {
     echo "release-attestation: candidate origin is '$candidate_origin', expected '$expected_origin_slug'" >&2
     return 1
   fi
-  if [ "${#review_paths[@]}" -eq 0 ]; then
-    echo "release-attestation: create-reviewed requires at least one consumer adoption checkout" >&2
-    return 1
-  fi
-
   jar=$(absolute_file "$requested_jar") || return 1
   if [ ! -f "$jar" ] || [ -L "$jar" ]; then
     echo "release-attestation: missing or symlinked reviewed plugin JAR: $jar" >&2
@@ -578,9 +575,19 @@ create_reviewed_attestation() {
         return 1
       fi
       ;;
-    plugin-only|certification-only)
+    plugin-only)
       if [ "$feature_count" -ne 0 ]; then
         echo "release-attestation: review basis $review_basis refuses --feature-adoption checkouts" >&2
+        return 1
+      fi
+      ;;
+    certification-only)
+      if [ "${#review_paths[@]}" -eq 0 ]; then
+        echo "release-attestation: review basis certification-only requires at least one --certification-only-adoption checkout" >&2
+        return 1
+      fi
+      if [ "$feature_count" -ne 0 ]; then
+        echo "release-attestation: review basis certification-only refuses --feature-adoption checkouts" >&2
         return 1
       fi
       ;;
@@ -734,7 +741,10 @@ attestation_schema_valid() {
         .review.kind == "classified-local-hardening-certifications" and
         (.review.basis == "consumer-feature" or .review.basis == "plugin-only" or
           .review.basis == "certification-only") and
-        ($repositories | type == "array" and length > 0) and
+        ($repositories | type == "array") and
+        (if .review.basis == "plugin-only" then true else
+           ($repositories | length > 0)
+         end) and
         all($repositories[];
           (. | keys == ["certifications","commit","origin","plugin_jar_sha256",
             "review_role","slug","tree"]) and
@@ -1072,8 +1082,8 @@ self_test() {
   ravina_tree=$(git -C "$consumer_ravina" rev-parse 'HEAD^{tree}')
   valid_sava_receipt=$(<"$consumer_sava/build/hardening/pitest-certification.tsv")
 
-  expect_cli_failure "reviewed attestation without an adoption" \
-    "requires at least one consumer adoption" \
+  expect_cli_failure "reviewed attestation without an explicit basis or adoption" \
+    "requires --review-basis" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar"
   expect_cli_failure "short reviewed candidate" "not a full commit" \
@@ -1318,6 +1328,10 @@ self_test() {
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --review-basis certification-only \
       --feature-adoption "$consumer_sava"
+  expect_cli_failure "certification-only basis without an adoption" \
+    "certification-only requires at least one --certification-only-adoption" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis certification-only
 
   # The deprecated alias is still a positive certification-only creation path.
   "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
@@ -1338,17 +1352,17 @@ self_test() {
   }
   remove_reviewed_record 'remove certification-only alias review'
 
-  # Plugin-only is a release-basis statement; consumer receipts remain exact-byte evidence.
+  # Plugin-only is a release-basis statement: plugin-owned tests carry the proof,
+  # so a consumer checkout is optional rather than a release lock.
   "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-    --plugin-jar "$reviewed_jar" --review-basis plugin-only \
-    --certification-only-adoption "$consumer_sava" >/dev/null
+    --plugin-jar "$reviewed_jar" --review-basis plugin-only >/dev/null
   jq -e '
     .review.basis == "plugin-only" and
-    [.review.repositories[].review_role] == ["certification-only"]
+    .review.repositories == []
   ' "$reviewed_output" >/dev/null
   commit_reviewed_record 'plugin-only review'
   verify_output=$("$reviewed_script" verify 1.0.1)
-  [[ "$verify_output" == *"review basis plugin-only binds 1 consumer repository checkout(s)"* &&
+  [[ "$verify_output" == *"review basis plugin-only binds 0 consumer repository checkout(s)"* &&
       "$verify_output" == *"records 0 owner-reviewed feature-path consumer(s)"* ]] || {
     echo "release-attestation self-test: plugin-only verification summary is unclassified" >&2
     printf '%s\n' "$verify_output" >&2
@@ -1646,10 +1660,6 @@ case "$command_name" in
       shift
     done
     [ -n "$candidate" ] && [ -n "$plugin_jar" ] || { usage >&2; exit 2; }
-    if [ "${#review_paths[@]}" -eq 0 ]; then
-      echo "release-attestation: create-reviewed requires at least one consumer adoption checkout" >&2
-      exit 2
-    fi
     create_reviewed_attestation "$version" "$candidate" "$plugin_jar"
     ;;
   verify)

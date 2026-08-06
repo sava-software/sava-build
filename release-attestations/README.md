@@ -22,10 +22,11 @@ Choose the review basis deliberately:
 
 - `consumer-feature` requires at least one `--feature-adoption`. Use this when a
   consumer exercised the release's changed behavior.
-- `plugin-only` refuses feature adoptions. Use it when plugin-owned tests carry the
-  changed-feature proof and consumers provide exact-byte certification only.
+- `plugin-only` refuses feature adoptions and permits an empty consumer list. Use it
+  when plugin-owned tests carry the changed-feature proof; optional supplied consumers
+  are exact-byte certification only.
 - `certification-only` also refuses feature adoptions. Use it only when exact-byte
-  hardening certification is the intended proof.
+  hardening certification is the intended proof; at least one consumer is required.
 
 For the current consumer-feature shape, Ravina exercised the ArcMutate-history path
 and private idl-src-gen confirmed the exact candidate bytes without ArcMutate history:

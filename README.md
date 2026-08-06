@@ -482,7 +482,9 @@ mixed, or stale receipts, including any suite whose `pluginSha256` differs from 
 JAR. `--adoption` remains a deprecated alias for `--certification-only-adoption`. The required
 review basis is one of `consumer-feature`, `plugin-only`, or `certification-only`.
 `consumer-feature` requires at least one checkout passed as `--feature-adoption`;
-`plugin-only` and `certification-only` allow only `--certification-only-adoption` checkouts.
+`plugin-only` permits no checkouts when plugin-owned tests carry the proof, while
+`certification-only` requires at least one `--certification-only-adoption`. Both
+non-feature bases refuse `--feature-adoption` checkouts.
 The distinction is an owner-reviewed role on otherwise identical derived certification
 evidence: Ravina exercised the history-boundary feature path, while idl-src-gen confirmed
 the exact candidate bytes without ArcMutate history.
