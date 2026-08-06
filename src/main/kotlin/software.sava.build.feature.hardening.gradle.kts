@@ -600,7 +600,13 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
   val snapshotRoot = convergeSnapshotDir
   val names = convergeSuiteNames
   val convergenceProjectPath = project.path
+  val convergenceMutateOnly = providers.gradleProperty(HardeningOptionNames.MUTATE_ONLY)
   doLast {
+    convergenceMutateOnly.orNull?.trim()?.takeIf(String::isNotEmpty)?.let { scope ->
+      throw GradleException(
+          "pitestConverge cannot consume a scoped mutation population " +
+              "(-PmutateOnly=$scope). Re-run without -PmutateOnly.")
+    }
     if (certificationSession.get().isActive(convergenceProjectPath)) {
       throw GradleException(
           "pitestConverge cannot run inside hardeningCertify: convergence's unverified round two would " +
@@ -910,7 +916,13 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
   val snapshotRoot = pitestModesRoot
   val names = convergeSuiteNames
   val mode = pitestModeProperty
+  val snapshotMutateOnly = providers.gradleProperty(HardeningOptionNames.MUTATE_ONLY)
   doLast {
+    snapshotMutateOnly.orNull?.trim()?.takeIf(String::isNotEmpty)?.let { scope ->
+      throw GradleException(
+          "pitestModeSnapshot cannot consume a scoped mutation population " +
+              "(-PmutateOnly=$scope). Re-run without -PmutateOnly.")
+    }
     val label = mode.orNull ?: throw GradleException(
         "pitestModeSnapshot needs -PpitestMode=<label> naming how the suites just ran (e.g. solo, gate)"
     )
@@ -2107,6 +2119,7 @@ hardening.mutation.all {
   // 'pitest<Suite>BaselineUpdate' and documenting the reason (see HARDENING.md).
   val pitestTaskName = "pitest" + suite.name.replaceFirstChar(Char::uppercase)
   val suiteName = suite.name
+  val mutationScopeProperty = providers.gradleProperty(HardeningOptionNames.MUTATE_ONLY)
   val strictTimeoutAuditRequested = providers
       .gradleProperty(HardeningOptionNames.STRICT_TIMEOUT_AUDIT)
       .map { true }
@@ -2173,6 +2186,10 @@ hardening.mutation.all {
   val evidenceCertificationSession = hardeningCertificationSession
   val evidenceReportFile = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
   val evidenceManifestFile = layout.buildDirectory.file("reports/pitest/$suiteName/.evidence.tsv")
+  val scopedEvidenceReportFile =
+      layout.buildDirectory.file("reports/pitest-scoped/$suiteName/mutations.csv")
+  val scopedEvidenceManifestFile =
+      layout.buildDirectory.file("reports/pitest-scoped/$suiteName/.evidence.tsv")
 
   val evidenceMode = pitestModeProperty
   pitestModeSnapshot.configure {
@@ -2183,9 +2200,18 @@ hardening.mutation.all {
     doFirst {
       val label = evidenceMode.orNull ?: return@doFirst
       if (!HardeningNames.isSafeName(label)) return@doFirst
-      val report = evidenceReportFile.get().asFile
+      val requestedMutationScope = mutationScopeProperty.orNull?.trim()?.also { scope ->
+        if (scope.isEmpty()) {
+          throw GradleException(
+              "-PmutateOnly requires a nonblank class glob; omit the property for a " +
+                  "full-population run")
+        }
+      }
+      val scoped = requestedMutationScope != null
+      val report = (if (scoped) scopedEvidenceReportFile else evidenceReportFile).get().asFile
       val reportDir = report.parentFile
-      val manifest = evidenceManifestFile.get().asFile
+      val manifest =
+          (if (scoped) scopedEvidenceManifestFile else evidenceManifestFile).get().asFile
       if (!report.isFile || !manifest.isFile ||
           reportDir.resolve(".running").isFile ||
           reportDir.resolve(".scoped").isFile ||
@@ -2214,8 +2240,12 @@ hardening.mutation.all {
     group = "verification"
     description = "Fails when the '$suiteName' PIT run left unkilled mutants missing from config/pitest/$suiteName-accepted.csv."
     dependsOn(evidenceClasspathFiles)
-    val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
-    val xmlProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.xml")
+    val fullCsvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
+    val scopedCsvProvider =
+        layout.buildDirectory.file("reports/pitest-scoped/$suiteName/mutations.csv")
+    val fullXmlProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.xml")
+    val scopedXmlProvider =
+        layout.buildDirectory.file("reports/pitest-scoped/$suiteName/mutations.xml")
     val baselineFile = layout.projectDirectory.file("config/pitest/$suiteName-accepted.csv").asFile
     val readmeFile = layout.projectDirectory.file("config/pitest/README.md").asFile
     val timeoutsFile = layout.projectDirectory.file("config/pitest/$suiteName-timeouts.csv").asFile
@@ -2256,7 +2286,15 @@ hardening.mutation.all {
       }
       val certificationActive = certificationSession.get().isActive(evidenceProjectPath)
       val strictTimeoutAudit = strictTimeoutAuditRequested.get() || certificationActive || rebase
-      val csv = csvProvider.get().asFile
+      val requestedMutationScope = mutationScopeProperty.orNull?.trim()?.also { scope ->
+        if (scope.isEmpty()) {
+          throw GradleException(
+              "-PmutateOnly requires a nonblank class glob; omit the property for a " +
+                  "full-population run")
+        }
+      }
+      val scoped = requestedMutationScope != null
+      val csv = (if (scoped) scopedCsvProvider else fullCsvProvider).get().asFile
       listOf(
           baselineFile,
           readmeFile,
@@ -2588,15 +2626,18 @@ hardening.mutation.all {
         if (timeoutsFile.isFile) {
           stampProvenance(force = rebase)
         } else {
-          val removedVersion = toolVersionFile.exists()
-          val removedToolchain = toolchainRecordFile.exists()
+          val removedFiles = buildList {
+            if (toolVersionFile.exists()) add(toolVersionFile.name)
+            if (toolchainRecordFile.exists()) add(toolchainRecordFile.name)
+          }
           BaselineFiles.writeAllAtomically(evidenceProjectDir, listOf(
             BaselineFiles.Write(toolVersionFile, null),
             BaselineFiles.Write(toolchainRecordFile, null),
           ))
-          if (removedVersion || removedToolchain) {
-          logger.lifecycle(
-              "pitest baseline '$suiteName': orphan mutation provenance removed with the record it certified")
+          if (removedFiles.isNotEmpty()) {
+            logger.lifecycle(
+                "pitest baseline '$suiteName': removed orphan mutation provenance: " +
+                    removedFiles.joinToString())
           }
         }
       }
@@ -2694,7 +2735,7 @@ hardening.mutation.all {
       // (line-less), with each mutant's line folded into the description text, since
       // the key no longer carries it.
       val descriptions: Map<String, String> by lazy {
-        val xml = xmlProvider.get().asFile
+        val xml = (if (scoped) scopedXmlProvider else fullXmlProvider).get().asFile
         if (!xml.isFile) return@lazy emptyMap()
         val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance()
             .newDocumentBuilder().parse(xml)
@@ -2787,6 +2828,12 @@ hardening.mutation.all {
       val scopedMarkerFile = csv.parentFile.resolve(".scoped")
       if (scopedMarkerFile.isFile) {
         val scope = scopedMarkerFile.readText().trim()
+        if (requestedMutationScope != null && scope != requestedMutationScope) {
+          throw GradleException(
+              "pitest '$suiteName': requested -PmutateOnly=$requestedMutationScope, but the " +
+                  "last scoped report was produced with -PmutateOnly=$scope. Re-run " +
+                  "$pitestTaskName with -PmutateOnly=$requestedMutationScope before verifying it.")
+        }
         // prune and the timeout-audit seed included: the early return below already
         // keeps them from touching anything, but silently no-opping a requested
         // refresh (or seeding an audited set from a hand-picked subset's timeouts)
@@ -3120,7 +3167,11 @@ hardening.mutation.all {
                 "# slowness, not wrongness. This seeded file cannot certify until every row is\n" +
                 "# classified. Replace cause:untriaged with cause:liveness only when the mutated\n" +
                 "# path has no path-owned finite completion guarantee after deterministic seams/\n" +
-                "# budgets are exhausted; a fixture safety exit does not demote liveness. A finite\n" +
+                "# budgets are exhausted. If a fixture bound is the claimed oracle but exceeds PIT's\n" +
+                "# duration * timeoutFactor + timeoutConst, it proves nothing: shorten and re-observe.\n" +
+                "# A later emergency ceiling may coexist with liveness but cannot prove it. A\n" +
+                "# straight-line path without a loop, retry, lock, wait, blocking call, or external\n" +
+                "# completion dependency is not credible liveness evidence. A finite\n" +
                 "# cause:resource mutant needs a contract-first disposition. Treat '# line' tags as\n" +
                 "# diagnostic metadata and write every structural argument in config/pitest/README.md.\n" +
                 seeded + "\n"
@@ -3451,16 +3502,19 @@ hardening.mutation.all {
             writes += baselineWrite
           }
         }
-        val removedProvenance = !recordWillExist &&
-            (toolchainRecordFile.exists() || toolVersionFile.exists())
+        val removedProvenanceFiles = if (recordWillExist) emptyList() else buildList {
+          if (toolVersionFile.exists()) add(toolVersionFile.name)
+          if (toolchainRecordFile.exists()) add(toolchainRecordFile.name)
+        }
         if (!recordWillExist) {
           writes += BaselineFiles.Write(toolchainRecordFile, null)
           writes += BaselineFiles.Write(toolVersionFile, null)
         }
         BaselineFiles.writeAllAtomically(evidenceProjectDir, writes)
-        if (removedProvenance) {
+        if (removedProvenanceFiles.isNotEmpty()) {
           logger.lifecycle(
-              "pitest baseline '$suiteName': orphan mutation provenance removed with the record it certified")
+              "pitest baseline '$suiteName': removed orphan mutation provenance: " +
+                  removedProvenanceFiles.joinToString())
         }
       }
       if (prune) {
@@ -3568,11 +3622,7 @@ hardening.mutation.all {
         // every missing current gated copy as explicit triage debt. Provenance and
         // the safe-superset record are one exception-transactional commit plan.
         val merge = BaselineEngine.rebaseMerge(acceptedRows, current, currentLines)
-        if (merge.added.isEmpty()) {
-          logger.lifecycle(
-              "pitest baseline '$suiteName': provenance rebase retained all ${acceptedRows.size} " +
-                  "accepted row(s); the current population added nothing")
-        } else {
+        if (merge.added.isNotEmpty()) {
           val plan = planBaseline(
               merge.merged.map(BaselineNotes::parse),
               merge.sourceRowIndices,
@@ -3583,9 +3633,22 @@ hardening.mutation.all {
                   "and added ${merge.added.size} current row(s) seeded '# untriaged' " +
                   "(baseline now ${merge.total}):\n" +
                   merge.added.joinToString("\n") { row -> "  $row${describe(row)}" })
+          logger.lifecycle(
+              "pitest baseline '$suiteName': BaselineRebase wrote ${baselineFile.name}, " +
+                  "${toolVersionFile.name}, and ${toolchainRecordFile.name}")
         }
         if (merge.added.isEmpty()) {
           if (baselineFile.isFile) stampProvenance(force = true) else stampOrRetireProvenance()
+          if (baselineFile.isFile || timeoutsFile.isFile) {
+            logger.lifecycle(
+                "pitest baseline '$suiteName': BaselineRebase retained all ${acceptedRows.size} " +
+                    "accepted row(s); ${baselineFile.name} unchanged; wrote " +
+                    "${toolVersionFile.name} and ${toolchainRecordFile.name}")
+          } else {
+            logger.lifecycle(
+                "pitest baseline '$suiteName': BaselineRebase found no accepted or timeout record; " +
+                    "${baselineFile.name} absent and no provenance files written")
+          }
         }
         return@doLast
       }
@@ -4248,7 +4311,7 @@ hardening.mutation.all {
   // Keep the public tasks JavaExec-compatible while moving their complete process
   // lifecycle into typed classes. Configuration here is provider wiring only; task
   // execution no longer reaches through this precompiled script.
-  val typedMutateOnly = providers.gradleProperty(HardeningOptionNames.MUTATE_ONLY)
+  val typedMutateOnly = mutationScopeProperty
   val typedPluginCode = evidencePluginCode
 
   fun configureTypedPitest(
@@ -4258,6 +4321,7 @@ hardening.mutation.all {
       withHistory: Boolean,
       enforceExit: Boolean = true,
       bindSuiteEvidence: Boolean = true,
+      isolateScopedReport: Boolean = false,
   ) {
     task.dependsOn(compileForPitest)
     // Runtime-only project artifacts must be scheduled before the task action
@@ -4289,6 +4353,9 @@ hardening.mutation.all {
     task.applicationClasspath.from(mutationClassesDir, evidenceClasspathFiles)
     task.sourceDirectories.from(layout.projectDirectory.dir("src/main/java"))
     task.reportDirectory.set(layout.buildDirectory.dir("reports/pitest/$reportSubdir"))
+    task.scopedReportDirectory.set(layout.buildDirectory.dir(
+        if (isolateScopedReport) "reports/pitest-scoped/$reportSubdir"
+        else "reports/pitest/$reportSubdir"))
     // ArcMutate's fallback certificate lookup begins at the child JVM's working
     // directory. Pin it so the effective resolver and recorded identity cannot be
     // redirected by an ambient/consumer JavaExec default.
@@ -4326,7 +4393,13 @@ hardening.mutation.all {
         pitestModeCompareUnionPreflight,
         migrateMutationBaselinesPreflight,
         downgradeMutationBaselinesPreflight)
-    configureTypedPitest(this, suiteName, suite.mutators, withHistory = true)
+    configureTypedPitest(
+        this,
+        suiteName,
+        suite.mutators,
+        withHistory = true,
+        isolateScopedReport = true,
+    )
 
     adviceClassesDirectory.from(mutationClassesDir)
     adviceTestSourceDirectories.from(sourceSets.test.get().java.srcDirs)
@@ -4344,11 +4417,18 @@ hardening.mutation.all {
   // stable mirror observes later JavaExec `classpath = ...` customization in place;
   // the launcher property likewise follows a later task-level override.
   val evidencePitestTask = pitestRun.get()
-  fun configureEvidenceSpec(spec: PitestEvidenceSpec) {
+  fun configureEvidenceSpec(
+    spec: PitestEvidenceSpec,
+    isolateScopedReport: Boolean,
+  ) {
     spec.suiteName.set(suiteName)
     spec.projectPath.set(evidenceProjectPath)
     spec.projectDirectory.set(layout.projectDirectory)
-    spec.reportDirectory.set(layout.buildDirectory.dir("reports/pitest/$suiteName"))
+    spec.reportDirectory.set(evidencePitestTask.reportDirectory)
+    spec.scopedReportDirectory.set(
+        if (isolateScopedReport) evidencePitestTask.scopedReportDirectory
+        else evidencePitestTask.reportDirectory)
+    spec.mutateOnly.set(typedMutateOnly)
     spec.pluginCode.from(evidencePluginCode)
     spec.sourceFiles.from(evidenceSourceFiles)
     spec.classFiles.from(evidenceClassFiles)
@@ -4372,17 +4452,17 @@ hardening.mutation.all {
   }
 
   verify.configure {
-    configureEvidenceSpec(finalEvidence)
+    configureEvidenceSpec(finalEvidence, isolateScopedReport = true)
   }
   debtTask.configure {
-    configureEvidenceSpec(currentEvidence)
+    configureEvidenceSpec(currentEvidence, isolateScopedReport = false)
     dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
   }
 
   fun registerEvidenceValidator(name: String, prefix: String) =
     tasks.register<PitestEvidenceValidationTask>(name) {
       description = "Internal: revalidates current completed evidence for PIT suite '$suiteName'."
-      configureEvidenceSpec(evidence)
+      configureEvidenceSpec(evidence, isolateScopedReport = true)
       diagnosticPrefix.set(prefix)
       certificationSession.set(hardeningCertificationSession)
       usesService(hardeningCertificationSession)
@@ -4405,7 +4485,10 @@ hardening.mutation.all {
     it.configure { fullEvidenceOnly.set(true) }
   }
   pitestModeCompareCommit.configure {
-    configureEvidenceSpec(suiteEvidence.maybeCreate(suiteName))
+    configureEvidenceSpec(
+        suiteEvidence.maybeCreate(suiteName),
+        isolateScopedReport = false,
+    )
     dependsOn(compileForPitest, evidenceClasspathFiles)
     dependsOn(tasks.named("processResources"), tasks.named("processTestResources"))
     dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
@@ -4419,7 +4502,10 @@ hardening.mutation.all {
   verify.configure { dependsOn(verifyEvidenceValidation) }
   pitestModeSnapshot.configure { dependsOn(modeSnapshotEvidenceValidation) }
   hardeningCertify.configure {
-    configureEvidenceSpec(suiteEvidence.maybeCreate(suiteName))
+    configureEvidenceSpec(
+        suiteEvidence.maybeCreate(suiteName),
+        isolateScopedReport = false,
+    )
     certificationRecordFiles.from(
         PitestEvidence.mutationRecordFiles(layout.projectDirectory.dir("config/pitest").asFile, suiteName))
   }
@@ -4887,7 +4973,7 @@ tasks.register("hardeningInit") {
           |
           |## Audited timeout causes
           |
-          |For every audited timeout row, replace the seeded `cause:untriaged` comment category. The seeded file is intentionally uncertifiable. Only `cause:liveness` is admissible after deterministic seams or budgets are exhausted: the mutated path has no path-owned finite completion guarantee, and a fixture's emergency exit does not demote that production liveness loss. Finite `cause:resource` work needs a contract-first test/fix or stable SURVIVED equivalence instead of timeout membership. Treat `# line` comments as diagnostic metadata only: formatting, imports, and inserted methods must not invalidate an audited cause. PIT's CSV has no formatting-stable identity finer than class, method, and mutator, so same-key siblings remain a documented limitation that requires report-level review. Name the member's class and method together in the same Markdown heading-delimited section, record any fixture safety bound, and explain the measured structural cause. A global statement that the suite is slow is not evidence for an individual mutant.
+          |For every audited timeout row, replace the seeded `cause:untriaged` comment category. The seeded file is intentionally uncertifiable. Only `cause:liveness` is admissible after deterministic seams or budgets are exhausted: the mutated path has no path-owned finite completion guarantee, and a fixture's emergency exit does not demote that production liveness loss. If a fixture bound is the claimed deterministic oracle, compare it with PIT's `duration * timeoutFactor + timeoutConst`; a bound that cannot fail first contributes no cause evidence, so shorten it and re-observe history-free. A later emergency ceiling may coexist with production liveness but cannot prove it. A straight-line path without a loop, retry, lock, wait, blocking call, or external completion dependency is not credible liveness evidence. Finite `cause:resource` work needs a contract-first test/fix or stable SURVIVED equivalence instead of timeout membership. Treat `# line` comments as diagnostic metadata only: formatting, imports, and inserted methods must not invalidate an audited cause. PIT's CSV has no formatting-stable identity finer than class, method, and mutator, so same-key siblings remain a documented limitation that requires report-level review. Name the member's class and method together in the same Markdown heading-delimited section, record any fixture safety bound, and explain the measured structural cause. A global statement that the suite is slow is not evidence for an individual mutant.
           |""".trimMargin()
       )
       logger.lifecycle("hardeningInit: wrote $readme")

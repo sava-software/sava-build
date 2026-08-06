@@ -372,6 +372,25 @@ class HardeningConvergeFunctionalTest {
     writeFixture()
     writeReport("encoding", "Codec.java,com.example.Codec,$mathMutator,encode,8,KILLED,com.example.CodecTest")
     writeReport("parsing", "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest")
+    val fullEncodingBefore =
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").readText()
+
+    val propertyScoped = runner(
+      "pitestConvergeSnapshot",
+      "-PmutateOnly=com.example.Codec",
+      "-x", "pitestEncoding",
+      "-x", "pitestParsing",
+    ).buildAndFail()
+    assertTrue(
+      propertyScoped.output.contains("cannot consume a scoped mutation population"),
+      propertyScoped.output,
+    )
+    assertEquals(
+      fullEncodingBefore,
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").readText(),
+      "scoped converge refusal consumed the preserved full report",
+    )
+
     File(fixtureDir, "build/reports/pitest/encoding/.scoped").writeText("com.example.Codec\n")
 
     val converge = snapshotRun().buildAndFail()

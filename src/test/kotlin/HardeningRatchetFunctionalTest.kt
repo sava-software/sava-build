@@ -995,7 +995,10 @@ $fuzzBlock
     assertTrue(invalid.contains("not valid completed evidence"), invalid)
     assertTrue(invalid.contains("RUN_ERROR x1"), invalid)
     assertTrue(
-      invalid.contains("reduce suite threads or configure the suite's evidence-bound minionJvmArgs"),
+      invalid.contains("RUN_ERROR alone diagnoses neither load nor memory") &&
+          invalid.contains("does not justify changing suite threads or heap") &&
+          invalid.contains("repeat once on a quiet machine") &&
+          invalid.contains("only when PIT's preceding output explicitly diagnoses"),
       invalid,
     )
     assertTrue(
@@ -2009,6 +2012,13 @@ $fuzzBlock
       "seed summary missing:\n$seeded"
     )
     val written = timeoutsFile.readText()
+    assertTrue(
+      written.contains("duration * timeoutFactor") &&
+          written.contains("+ timeoutConst, it proves nothing") &&
+          written.contains("emergency ceiling may coexist with liveness") &&
+          written.contains("straight-line path without a loop"),
+      "seeded timeout file omitted the pre-classification harness checks:\n$written",
+    )
     // sibling timeouts of one member collapse to one row, both observed lines kept
     assertTrue(
       written.contains("com.example.Codec,encode,MathMutator # cause:untriaged lines 12, 30") &&
@@ -4364,7 +4374,13 @@ $fuzzBlock
     )
     val retired = baselineUpdateRunner().build().output
     assertTrue(retired.contains("nothing unkilled — baseline file removed"), retired)
-    assertTrue(retired.contains("orphan mutation provenance removed with the record it certified"), retired)
+    assertTrue(
+      retired.contains(
+        "removed orphan mutation provenance: encoding-pitest-version, " +
+            "encoding-pitest-toolchain.tsv",
+      ),
+      retired,
+    )
     assertFalse(toolVersionFile.isFile, "orphan stamp left behind an emptied record")
     assertFalse(toolchainFile.isFile, "orphan toolchain stamp left behind an emptied record")
 

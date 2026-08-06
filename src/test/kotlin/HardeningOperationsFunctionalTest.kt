@@ -169,6 +169,7 @@ class HardeningOperationsFunctionalTest {
       "pitestModeCompareUnion",
       "migrateMutationBaselines",
       "downgradeMutationBaselines",
+      "mutationOwnershipAudit",
     ).forEach { task -> assertTrue(output.contains(task), "missing $task:\n$output") }
     assertTrue(
       output.contains("remove schema 1 from substantive baselines; empty placeholders stay absent"),
@@ -311,6 +312,19 @@ class HardeningOperationsFunctionalTest {
 
     assertTrue(output.contains("mutation-provenance sidecar(s) exist without"), output)
     assertTrue(output.contains("pitestEncodingBaselineRebase"), output)
+
+    File(fixtureDir, "fake-pit-status.txt").writeText("KILLED\n")
+    val repaired = runner("pitestEncodingBaselineRebase").build().output
+    assertTrue(
+      repaired.contains(
+        "removed orphan mutation provenance: encoding-pitest-version, " +
+            "encoding-pitest-toolchain.tsv",
+      ),
+      repaired,
+    )
+    assertTrue(repaired.contains("no provenance files written"), repaired)
+    assertFalse(config.resolve("encoding-pitest-version").exists())
+    assertFalse(config.resolve("encoding-pitest-toolchain.tsv").exists())
   }
 
   @Test
@@ -346,6 +360,13 @@ class HardeningOperationsFunctionalTest {
     assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
     assertTrue(cold.output.contains("selected baseline provenance rebase"), cold.output)
     assertTrue(cold.output.contains("provenance rebase preserved 1 old row(s) and added 1"), cold.output)
+    assertTrue(
+      cold.output.contains(
+        "BaselineRebase wrote encoding-accepted.csv, encoding-pitest-version, and " +
+            "encoding-pitest-toolchain.tsv",
+      ),
+      cold.output,
+    )
     val rebound = baseline.readText()
     assertTrue(rebound.contains("# retained argument # line 99"), rebound)
     assertTrue(
@@ -362,6 +383,13 @@ class HardeningOperationsFunctionalTest {
     val reused = runner("pitestEncodingBaselineRebase").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
     assertTrue(reused.contains("retained all 2 accepted row(s)"), reused)
+    assertTrue(
+      reused.contains(
+        "encoding-accepted.csv unchanged; wrote encoding-pitest-version and " +
+            "encoding-pitest-toolchain.tsv",
+      ),
+      reused,
+    )
     assertTrue(before.contentEquals(baseline.readBytes()), "fixed-point rebase rewrote accepted evidence")
     val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
     assertFalse(args.contains("arcmutate_history"), args)
@@ -1006,6 +1034,20 @@ class HardeningOperationsFunctionalTest {
     val generatedTool = File(fixtureDir, "build/fake-pit-tool")
     val generatedClass = File(generatedTool, "com/example/FakePit.class")
     assertTrue(generatedClass.isFile)
+
+    val fullReport = File(fixtureDir, "build/reports/pitest/encoding/mutations.csv")
+    val fullBeforeScopedSnapshot = fullReport.readText()
+    val scopedSnapshot = runner(
+      "pitestModeSnapshot",
+      "-PpitestMode=scoped",
+      "-PmutateOnly=com.example.FakePit",
+    ).buildAndFail().output
+    assertTrue(scopedSnapshot.contains("cannot consume a scoped mutation population"), scopedSnapshot)
+    assertEquals(
+      fullBeforeScopedSnapshot,
+      fullReport.readText(),
+      "scoped mode-snapshot refusal consumed the preserved full report",
+    )
 
     generatedTool.deleteRecursively()
     val verify = runner("pitestEncodingVerify").build().output

@@ -12,6 +12,7 @@ import org.gradle.api.services.ServiceReference
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.UntrackedTask
 import org.gradle.jvm.toolchain.JavaLauncher
@@ -40,6 +41,8 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
   @get:Internal abstract val projectPath: Property<String>
   @get:Internal abstract val projectDirectory: DirectoryProperty
   @get:Internal abstract val reportDirectory: DirectoryProperty
+  @get:Internal abstract val scopedReportDirectory: DirectoryProperty
+  @get:Input @get:Optional abstract val mutateOnly: Property<String>
   // These collections intentionally are not task inputs. The task is untracked and
   // must inspect the manifest before realizing any of them; marking them @Classpath
   // would resolve PIT before the action and break the N-1 no-manifest path.
@@ -66,7 +69,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
   @get:Input abstract val recompileExcludes: ListProperty<String>
 
   fun capture(recorded: PitestEvidence, useRecordedReportHash: Boolean): PitestEvidence {
-    val reportDir = reportDirectory.get().asFile
+    val reportDir = selectedReportDirectory()
     val report = reportDir.resolve("mutations.csv")
     val scope = reportDir.resolve(".scoped").takeIf { it.isFile }
       ?.readText()?.trim().orEmpty().ifEmpty { PitestEvidence.FULL_SCOPE }
@@ -97,10 +100,16 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
     toolClasspath = toolClasspath.files,
     arcMutateBaseVersion = arcMutateBaseVersion.get(),
     arcMutateEnabled = arcMutateLicensed.get(),
-    reportDirectory = reportDirectory.get().asFile,
+    reportDirectory = selectedReportDirectory(),
     projectBaseDirectory = projectDirectory.get().asFile,
     lookupStartDirectory = projectDirectory.get().asFile,
     observationDate = LocalDate.now(Clock.systemUTC()),
+  )
+
+  internal fun selectedReportDirectory(): File = PitestReportDirectories.select(
+    reportDirectory.get().asFile,
+    scopedReportDirectory.get().asFile,
+    mutateOnly.orNull,
   )
 
   private fun capture(
@@ -196,7 +205,7 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
 
   @TaskAction
   fun validate() {
-    val reportDir = evidence.reportDirectory.get().asFile
+    val reportDir = evidence.selectedReportDirectory()
     val report = reportDir.resolve("mutations.csv")
     val manifest = reportDir.resolve(".evidence.tsv")
     if (!report.isFile || !manifest.isFile || reportDir.resolve(".running").isFile) return
@@ -388,7 +397,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
     val completedProjectSnapshots = mutableListOf<NamedProjectEvidence>()
     val currentProjectSnapshots = mutableListOf<NamedProjectEvidence>()
     suiteEvidence.sortedBy { it.name }.forEach { evidence ->
-      val reportDir = evidence.reportDirectory.get().asFile
+      val reportDir = evidence.selectedReportDirectory()
       val report = reportDir.resolve("mutations.csv")
       val manifest = reportDir.resolve(".evidence.tsv")
       if (!report.isFile || !manifest.isFile || reportDir.resolve(".running").isFile ||

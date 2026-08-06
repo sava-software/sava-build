@@ -155,13 +155,18 @@ run cheaper. The cost model is directly optimisable:
   empty by default: a universal heap cap would ignore container limits and suite
   shape. Each list entry must be one JVM option beginning with `-`, without
   whitespace, braces, `#`, quotes, or backslashes; embedded commas are encoded for
-  PIT. Do not infer memory pressure from `RUN_ERROR` alone; use the setting only when
-  PIT's preceding output names a minion start/death or insufficient-memory failure,
-  and reduce `threads` first when aggregate contention is the problem.
+  PIT. Do not infer memory pressure from `RUN_ERROR` or generic minion death; use the
+  setting only when PIT explicitly diagnoses a process-resource or
+  insufficient-memory failure. Change `threads` only for measured aggregate
+  contention.
 - **Scope the iteration loop with `-PmutateOnly=<glob[,glob]>`** — mutate
   only the class under attack while writing its kills, then re-run unscoped
   with `-PnoMutationHistory` once before making any accepted-baseline or
-  timeout-audit decision. The scoped report is stamped `.scoped` and every
+  timeout-audit decision. Scoped output lives separately under
+  `build/reports/pitest-scoped/<suite>` so it cannot replace the last full
+  observation. This is one last-scoped-run slot per suite: verification refuses
+  to read it when its `.scoped` stamp names a different requested glob. The scoped
+  report is stamped `.scoped` and every
   baseline-touching consumer (the ratchet, named writer tasks, mode snapshots)
   refuses it, so the shortcut
   cannot leak into the record. Coverage still runs the full test set.
@@ -761,7 +766,17 @@ invoked it*, and the failure looks exactly like a real regression.
     injected clocks have been exhausted. A fixture's emergency exit — a stub
     process that eventually terminates or a harness watchdog — does not turn
     that production liveness loss into resource work; record the fixture bound
-    in the README so the frame is reviewable. A liveness defect is not thereby
+    in the README so the frame is reviewable. When that fixture bound is offered
+    as the deterministic oracle, first compare it with PIT's effective watchdog
+    (`covering-test duration × timeoutFactor + timeoutConst`). If the claimed
+    oracle cannot fail first, it contributes no cause evidence: shorten it and
+    re-observe history-free. A later emergency ceiling may still coexist with a
+    genuine production liveness loss, but cannot prove one. A straight-line mutated
+    path with no loop, retry, lock, wait,
+    blocking call, or external completion dependency has no credible liveness
+    mechanism; investigate test attribution, harness, and configuration instead
+    of assigning `cause:liveness`.
+    A liveness defect is not thereby
     watchdog-only: first look for a synchronous reader of the mutated state —
     lock ownership or hold count, latch count, executor shutdown, closed state.
     For a reentrant lock, `tryLock()` is not an ownership probe because the owner
@@ -1230,8 +1245,9 @@ production classes and fails when a class is effectively owned by no suite, when
 ownership decline has no reason, or when a decline has gone stale. A deliberate opt-out
 must first sit inside a suite's target universe, be excluded there, and carry
 `declineExclusionAudit(glob, reason)` naming what owns correctness instead. This audit is
-available directly and is mandatory under `hardeningCertify`; ordinary `qualityGate`
-stays compatible with repos while they complete whole-population adoption.
+available directly as `./gradlew mutationOwnershipAudit` and is mandatory under
+`hardeningCertify`; ordinary `qualityGate` stays compatible with repos while they
+complete whole-population adoption.
 
 ## What the ratchet cannot see
 
@@ -1811,9 +1827,12 @@ MINION_DIED, worker EOF, and the daemon log)*:
   back to the committed baseline for its read-only tally. Save that coordinate (or run
   Debt) before a quiet re-run replaces the report; a `RUN_ERROR` that persists at the
   same coordinate is not load and deserves investigation in the mutated bytecode.
-  If PIT's preceding output specifically says a minion failed to start/died or
-  lacked memory, reduce the suite's `threads` or set evidence-bound
-  `minionJvmArgs` (for example `listOf("-Xmx1g")`) rather than blindly re-running.
+  `RUN_ERROR` alone diagnoses neither load nor memory and never justifies retuning
+  the suite. Record system load and PIT/minion RSS as context, then repeat once on
+  a quiet machine. Reduce `threads` for measured aggregate contention or set
+  evidence-bound `minionJvmArgs` only when PIT's preceding output specifically
+  diagnoses a process-resource or insufficient-memory failure; a generic minion
+  death is not that diagnosis.
 
 **The evidence usually survives you discarding it.** The Gradle daemon keeps
 complete build output — including PIT minion stack traces — at
@@ -1965,7 +1984,10 @@ instruction text; the digest still names the canonical quoted source block.
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated
 >   code the change can reach — including suites in dependent modules that
 >   call a changed API, and the owning suite for test-only edits (a weakened
->   test is exactly what the ratchet catches). The full `hardeningCertify` — every
+>   test is exactly what the ratchet catches). When the production-class inventory
+>   changes (add/remove/rename/move), or mutation target/exclusion rules change,
+>   also run the cheap whole-population
+>   `mutationOwnershipAudit` before handoff. The full `hardeningCertify` — every
 >   suite freshly observed, serialized, provenance-bound, diffed against
 >   `config/pitest/`, with strict timeout and ownership audits — is the pre-release
 >   check, owned by CI or by the release checklist (this repo records which); it is
@@ -2040,7 +2062,14 @@ instruction text; the digest still names the canonical quoted source block.
 >   `cause:liveness` is admissible watchdog detection after deterministic
 >   seams/budgets are exhausted: the mutated path has no path-owned finite
 >   completion guarantee. A fixture's emergency exit does not demote that
->   liveness loss to resource work; record the fixture bound in the README. Before
+>   liveness loss to resource work; record the fixture bound in the README. If that
+>   bound is the claimed deterministic oracle, compare it with PIT's
+>   `duration × timeoutFactor + timeoutConst`: a bound that cannot fail first
+>   contributes no cause evidence, so shorten it and re-observe history-free. A
+>   later emergency ceiling may coexist with production liveness but cannot prove it.
+>   A straight-line path with no loop, retry, lock, wait, blocking
+>   call, or external completion dependency is not credible liveness evidence.
+>   Before
 >   admitting liveness, prove the mutated path receives the clock/budget the test
 >   observes, and check for a synchronous state reader that can expose the defect
 >   without waiting. A `TestClock` on a collaborator cannot observe a subject using
@@ -2136,7 +2165,10 @@ instruction text; the digest still names the canonical quoted source block.
 >   shape smaller (load average itself proves nothing; the hardening parser refuses
 >   the report rather than certifying PIT's detected score). The refusal and
 >   `pitest<Suite>Debt` name every offending row; retain the coordinate before a
->   quiet re-run replaces the report. A repeat at the same coordinate is not evidence
+>   quiet re-run replaces the report. `RUN_ERROR` alone diagnoses neither load nor
+>   memory and never justifies changing threads or heap; record load/RSS as context,
+>   retry once quietly, and tune only when PIT explicitly diagnoses a process-resource
+>   failure. A repeat at the same coordinate is not evidence
 >   of load: investigate the mutated bytecode, its covering tests, and the tool failure.
 >   The daemon log
 >   (`~/.gradle/daemon/<version>/daemon-<pid>.out.log`) keeps a failed build's

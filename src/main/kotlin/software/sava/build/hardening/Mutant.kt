@@ -140,10 +140,12 @@ internal data class Mutant(
             .sortedBy { it.key }
             .joinToString(", ") { (status, count) -> "$status x$count" }
         val runErrorHint = if (invalid.any { (_, _, mutant) -> mutant.rawStatus == "RUN_ERROR" }) {
-          "\nFor RUN_ERROR, inspect PIT's preceding output before re-running. If PIT says a " +
-              "minion failed to start/died or reports insufficient memory, that is process " +
-              "failure rather than a mutant verdict; reduce suite threads or configure " +
-              "the suite's evidence-bound minionJvmArgs (for example, -Xmx1g)."
+          "\nRUN_ERROR alone diagnoses neither load nor memory and does not justify changing " +
+              "suite threads or heap. Retain the coordinate, record system load and PIT/minion " +
+              "RSS as context when available, and repeat once on a quiet machine. Tune threads " +
+              "for measured aggregate contention or evidence-bound minionJvmArgs only when " +
+              "PIT's preceding output explicitly diagnoses a process-resource or " +
+              "insufficient-memory failure; generic minion death is not that diagnosis."
         } else ""
         throw IllegalArgumentException(
             "PIT report contains status(es) that are not valid completed evidence: $statuses:\n" +

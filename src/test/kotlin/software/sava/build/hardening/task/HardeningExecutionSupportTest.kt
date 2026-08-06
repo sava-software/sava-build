@@ -14,6 +14,24 @@ import java.nio.file.Files
 
 class HardeningExecutionSupportTest {
 
+  @Test
+  fun `a mutation scope selects the isolated report tree and blank values are refused`() {
+    val full = tempDir.resolve("reports/pitest/encoding")
+    val scoped = tempDir.resolve("reports/pitest-scoped/encoding")
+
+    assertEquals(full, PitestReportDirectories.select(full, scoped, null))
+    listOf("", "   ").forEach { value ->
+      val failure = assertThrows(org.gradle.api.GradleException::class.java) {
+        PitestReportDirectories.select(full, scoped, value)
+      }
+      assertTrue(failure.message.orEmpty().contains("requires a nonblank class glob"))
+    }
+    assertEquals(
+      scoped,
+      PitestReportDirectories.select(full, scoped, " com.example.Codec "),
+    )
+  }
+
   @TempDir
   lateinit var tempDir: File
 

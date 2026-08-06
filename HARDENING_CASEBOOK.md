@@ -72,6 +72,34 @@ so treat multiplicity growth there as a review prompt rather than claiming the r
 proves more than it can*; *load-only KILLED↔TIMED_OUT races are harness debt, not a
 third admissible cause category*.
 
+## The fixture bound that lost the race to PIT
+
+GLAM began a candidate adoption with 83 legacy timeout members. Its five-second
+test-fixture exits were intended to turn stuck work into deterministic assertion
+failures, but PIT's effective watchdog was only about 1.6–2.8 seconds
+(`timeoutConst + covering-test duration × timeoutFactor`). The fixture therefore
+could not reach its own oracle: PIT always reported `TIMED_OUT` first, and the
+cause taxonomy invited the reviewer to classify what was actually broken harness
+timing.
+
+Changing only the fixture bound from five seconds to one second changed an isolated
+`KaminoCacheImpl` observation from 185 KILLED / 21 TIMED_OUT to 203 KILLED / 3
+TIMED_OUT, while its 40 SURVIVED and 6 NO_COVERAGE mutants stayed identical. Across
+the loaded suite the timeout count fell from 134 to roughly 99. The suite-wide number
+is the honest operational result; the isolated result identifies the mechanism but
+overstates its fleet effect.
+
+The diagnostic that found two production bugs was simpler than the taxonomy: why
+would a pure function time out? A ternary with no loop, lock, wait, blocking call, or
+external completion dependency cannot acquire a liveness defect. That contradiction
+led first to the fixture/watchdog arithmetic, then to a missing polling notification
+and unsafe parsing of attacker-controlled counts. Rules: *a fixture bound offered as
+the deterministic oracle must fail before PIT's watchdog*; *repair and re-observe a
+claimed detection bound that loses that race*; *a later emergency ceiling may coexist
+with a production liveness loss but contributes no evidence for it*; *a timeout on straight-line code is a
+harness/configuration clue, not permission to write `cause:liveness`*; *use isolated
+runs to diagnose but suite-wide runs to report the operational improvement*.
+
 ## The liveness loop that raced the heap
 
 Ravina's `LookupTableCacheMap.getOrFetchTables` iterated set bits with a manual

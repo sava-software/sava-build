@@ -582,13 +582,76 @@ $buildTail
     // the verify finalizer read the fake's report as a full, unscoped run
     assertTrue(ok.output.contains("pitest 'encoding': 1/1 detected (100%)"), ok.output)
 
-    val marker = File(fixtureDir, "build/reports/pitest/encoding/.scoped")
+    val fullReportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    fun reportSnapshot(dir: File): Map<String, List<Byte>> = dir.walkTopDown()
+      .filter(File::isFile)
+      .associate { it.relativeTo(dir).invariantSeparatorsPath to it.readBytes().toList() }
+    val fullBeforeScoped = reportSnapshot(fullReportDir)
+
+    val scopedReportDir = File(fixtureDir, "build/reports/pitest-scoped/encoding")
+    val marker = scopedReportDir.resolve(".scoped")
     val scoped = runner("pitestEncoding", "-PmutateOnly=com.example.Codec").build()
     assertEquals("com.example.Codec\n", marker.readText(), "scoped marker not written")
     assertTrue(scoped.output.contains("SCOPED run (-PmutateOnly=com.example.Codec)"), scoped.output)
+    assertTrue(scopedReportDir.resolve("mutations.csv").isFile, "scoped CSV missing")
+    assertTrue(scopedReportDir.resolve(".evidence.tsv").isFile, "scoped evidence missing")
+    assertTrue(scopedReportDir.resolve(".toolchain.tsv").isFile, "scoped toolchain missing")
+    assertEquals(
+      fullBeforeScoped,
+      reportSnapshot(fullReportDir),
+      "a successful scoped run replaced full-population evidence",
+    )
+
+    val wrongScope = runner(
+      "pitestEncodingVerify",
+      "-PmutateOnly=com.example.Other",
+    ).buildAndFail().output
+    assertTrue(
+      wrongScope.contains(
+        "requested -PmutateOnly=com.example.Other, but the last scoped report was produced with " +
+          "-PmutateOnly=com.example.Codec"
+      ),
+      wrongScope,
+    )
+
+    val convergeScoped = runner(
+      "pitestEncodingConvergeRound2",
+      "-PmutateOnly=com.example.Codec",
+    ).buildAndFail().output
+    assertTrue(
+      convergeScoped.contains("pitestConverge cannot run with -PmutateOnly=com.example.Codec"),
+      convergeScoped,
+    )
+    assertEquals(
+      fullBeforeScoped,
+      reportSnapshot(fullReportDir),
+      "a refused scoped convergence round changed full-population evidence",
+    )
+
+    val blankScope = runner("pitestEncoding", "-PmutateOnly=").buildAndFail().output
+    assertTrue(blankScope.contains("-PmutateOnly requires a nonblank class glob"), blankScope)
+    assertEquals(
+      fullBeforeScoped,
+      reportSnapshot(fullReportDir),
+      "a refused blank scope changed full-population evidence",
+    )
+
+    val mode = File(fixtureDir, "fake-pit-mode.txt")
+    mode.writeText("slow-fail")
+    runner("pitestEncoding", "-PmutateOnly=com.example.Codec").buildAndFail()
+    assertEquals(
+      fullBeforeScoped,
+      reportSnapshot(fullReportDir),
+      "a failed scoped run changed full-population evidence",
+    )
+    mode.delete()
 
     runner("pitestEncoding").build()
-    assertFalse(marker.exists(), "an unscoped run must clear the scoped marker")
+    assertFalse(
+      fullReportDir.resolve(".scoped").exists(),
+      "an unscoped report must never carry a scoped marker",
+    )
+    assertTrue(marker.isFile, "an unscoped run need not destroy the separate scoped diagnostic")
   }
 
   @Test
@@ -1624,7 +1687,7 @@ $buildTail
     // leave a scoped marker behind, then fail an unscoped run: the deferred exit must
     // re-raise after the filters close but before the marker update
     runner("pitestEncoding", "-PmutateOnly=com.example.Codec").build()
-    val marker = File(fixtureDir, "build/reports/pitest/encoding/.scoped")
+    val marker = File(fixtureDir, "build/reports/pitest-scoped/encoding/.scoped")
     assertTrue(marker.isFile, "precondition: scoped marker missing")
 
     File(fixtureDir, "fake-pit-mode.txt").writeText("slow-fail")

@@ -132,14 +132,25 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("run `pitest<Suite> -PnoMutationHistory` first") &&
           printed.contains("without") && printed.contains("relying on PIT test order") &&
           printed.contains("prove the mutated path receives the clock/budget") &&
-          printed.contains("check for a synchronous state reader"),
+          printed.contains("check for a synchronous state reader") &&
+          printed.contains("duration × timeoutFactor + timeoutConst") &&
+          printed.contains("bound is the claimed deterministic oracle") &&
+          printed.contains("contributes no cause evidence") &&
+          printed.contains("not credible liveness evidence"),
       "the version-matched template must keep record decisions history-free and timeout evidence observable:\n$printed",
     )
     assertTrue(
       printed.contains("Invalid execution outcomes are not results") &&
+          printed.contains("never justifies changing threads or heap") &&
+          printed.contains("record load/RSS as context") &&
           printed.contains("A repeat at the same coordinate is not evidence") &&
           printed.contains("investigate the mutated bytecode"),
       "the version-matched template must not misclassify a repeatable RUN_ERROR as infrastructure:\n$printed",
+    )
+    assertTrue(
+      printed.contains("mutationOwnershipAudit") &&
+          printed.contains("whole-population"),
+      "the version-matched template must expose the cheap ownership preflight:\n$printed",
     )
     assertFalse(printed.contains("Migration is one-way"), printed)
     assertFalse(printed.contains("pitest ≥"), printed)

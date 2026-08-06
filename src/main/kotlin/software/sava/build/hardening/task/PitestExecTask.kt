@@ -115,6 +115,14 @@ abstract class PitestExecTask : JavaExec() {
   @get:OutputDirectory
   abstract val reportDirectory: DirectoryProperty
 
+  /**
+   * Scoped iteration output is isolated from the suite's full-population evidence.
+   * This remains internal because [reportDirectory] is the compatibility surface
+   * consumers may customize; plugin wiring supplies the isolated location.
+   */
+  @get:Internal
+  abstract val scopedReportDirectory: DirectoryProperty
+
   @get:LocalState
   abstract val historyFile: RegularFileProperty
 
@@ -189,6 +197,7 @@ abstract class PitestExecTask : JavaExec() {
     targetTests,
     sourceDirectories,
     reportDirectory,
+    scopedReportDirectory,
     evidenceProjectDirectory,
     mutators,
     outputFormats,
@@ -308,7 +317,7 @@ abstract class PitestExecTask : JavaExec() {
     toolchain: MutationToolchainRecord,
   ): PitestAttempt {
     val suite = suiteName.get()
-    val reportDir = reportDirectory.get().asFile
+    val reportDir = currentReportDirectory()
     if (historyActive) {
       val history = historyFile.get().asFile
       history.parentFile.mkdirs()
@@ -343,7 +352,7 @@ abstract class PitestExecTask : JavaExec() {
 
   private fun completeAttempt(attempt: PitestAttempt, historyActive: Boolean) {
     val suite = suiteName.get()
-    val reportDir = reportDirectory.get().asFile
+    val reportDir = currentReportDirectory()
     val scope = currentScope()
     val scopedMarker = reportDir.resolve(SCOPED_MARKER)
     var completedEvidence: PitestEvidence? = null
@@ -410,7 +419,13 @@ abstract class PitestExecTask : JavaExec() {
   }
 
   private fun currentScope(): String =
-    mutateOnly.orNull?.trim().orEmpty().ifEmpty { PitestEvidence.FULL_SCOPE }
+    PitestReportDirectories.normalizedScope(mutateOnly.orNull) ?: PitestEvidence.FULL_SCOPE
+
+  protected fun currentReportDirectory(): File = PitestReportDirectories.select(
+    reportDirectory.get().asFile,
+    scopedReportDirectory.get().asFile,
+    mutateOnly.orNull,
+  )
 
   private fun evidenceSnapshot(
     invocationId: String,
@@ -466,7 +481,7 @@ abstract class PitestExecTask : JavaExec() {
       toolClasspath = effectiveToolClasspath.files,
       arcMutateBaseVersion = arcMutateBaseVersion.get(),
       arcMutateEnabled = historyLicensed.get(),
-      reportDirectory = reportDirectory.get().asFile,
+      reportDirectory = currentReportDirectory(),
       projectBaseDirectory = projectDirectory,
       lookupStartDirectory = lookupStart,
       observationDate = LocalDate.now(Clock.systemUTC()),
@@ -630,6 +645,13 @@ abstract class PitestRunTask : PitestExecTask() {
 @UntrackedTask(because = "Convergence compares two fresh observations")
 abstract class PitestConvergeTask : PitestExecTask() {
   override fun beforeAttempt() {
+    PitestReportDirectories.normalizedScope(mutateOnly.orNull)?.let { scope ->
+      throw GradleException(
+        "pitestConverge cannot run with -PmutateOnly=$scope: convergence requires two " +
+          "full-population observations. Run the scoped diagnostic and convergence in separate " +
+          "Gradle invocations."
+      )
+    }
     if (certificationSession.get().isActive(certifyingProjectPath.get())) {
       throw GradleException(
         "pitestConverge cannot run inside hardeningCertify: convergence's unverified round two would " +
@@ -657,7 +679,7 @@ abstract class PitestMutatorTrialTask : PitestExecTask() {
       )
     }
     // A failed trial writes no complete report. Refuse to tabulate an earlier run.
-    val report = reportDirectory.get().asFile
+    val report = currentReportDirectory()
     BaselineFiles.deleteRecursivelyIfExists(report)
   }
 }
@@ -670,6 +692,7 @@ private class PitestCommandLineProvider(
   private val targetTests: Property<String>,
   private val sourceDirectories: ConfigurableFileCollection,
   private val reportDirectory: DirectoryProperty,
+  private val scopedReportDirectory: DirectoryProperty,
   private val projectBaseDirectory: DirectoryProperty,
   private val mutators: Property<String>,
   private val outputFormats: ListProperty<String>,
@@ -696,7 +719,11 @@ private class PitestCommandLineProvider(
         excludedClasses = excludedClasses.get(),
         targetTests = targetTests.get(),
         sourceDirectories = sourceDirectories.files.toList(),
-        reportDirectory = reportDirectory.get().asFile,
+        reportDirectory = PitestReportDirectories.select(
+          reportDirectory.get().asFile,
+          scopedReportDirectory.get().asFile,
+          mutateOnly.orNull,
+        ),
         projectBaseDirectory = projectBaseDirectory.get().asFile,
         mutators = mutators.get(),
         outputFormats = outputFormats.get(),
@@ -710,4 +737,17 @@ private class PitestCommandLineProvider(
       )
     )
   }
+}
+
+internal object PitestReportDirectories {
+  fun normalizedScope(mutateOnly: String?): String? = mutateOnly?.trim()?.also { scope ->
+    if (scope.isEmpty()) {
+      throw GradleException(
+        "-PmutateOnly requires a nonblank class glob; omit the property for a full-population run"
+      )
+    }
+  }
+
+  fun select(full: File, scoped: File, mutateOnly: String?): File =
+    if (normalizedScope(mutateOnly) == null) full else scoped
 }

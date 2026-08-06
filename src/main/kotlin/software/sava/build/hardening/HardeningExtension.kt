@@ -78,7 +78,11 @@ abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
    *  repo whose test module cannot read 'java.logging'. Empty by default. */
   abstract val testSupportExcludes: ListProperty<String>
 
-  /** Each suite adds a 'pitest<Name>' task reporting to 'build/reports/pitest/<name>'. */
+  /**
+   * Each suite adds a `pitest<Name>` task. Full reports use
+   * `build/reports/pitest/<name>`; `-PmutateOnly` uses the isolated
+   * `build/reports/pitest-scoped/<name>` iteration tree.
+   */
   val mutation: NamedDomainObjectContainer<MutationSuite> = objects.domainObjectContainer(MutationSuite::class.java)
 
   /** Each target adds a 'fuzz<Name>' task with its corpus persisted under 'build/fuzz/<name>-corpus'. */

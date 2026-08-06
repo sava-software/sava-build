@@ -51,6 +51,8 @@ class HardeningOperationsTest {
     assertTrue(help.contains("pitestEncodingBaselinePrune"), help)
     assertTrue(help.contains("pitestEncodingTimeoutAuditInit"), help)
     assertTrue(help.contains("pitestModeCompareUnion"), help)
+    assertTrue(help.contains("mutationOwnershipAudit"), help)
+    assertTrue(help.contains("whole-production owner/exclusion preflight"), help)
     assertTrue(help.contains("fuzzWireMinimize"), help)
     assertTrue(help.contains("durable receipt in .pitest-history/"), help)
     assertTrue(help.contains("-PupdateMutationBaseline"), help)

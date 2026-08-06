@@ -83,6 +83,9 @@ class HardeningInitFunctionalTest {
     assertTrue(
       readmeText.contains("Only `cause:liveness` is admissible") &&
           readmeText.contains("seeded file is intentionally uncertifiable") &&
+          readmeText.contains("duration * timeoutFactor + timeoutConst") &&
+          readmeText.contains("a bound that cannot fail first contributes no cause evidence") &&
+          readmeText.contains("not credible liveness evidence") &&
           readmeText.contains("Treat `# line` comments as diagnostic metadata only") &&
           readmeText.contains(
             "Name the member's class and method together in the same Markdown heading-delimited section"

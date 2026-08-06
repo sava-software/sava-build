@@ -600,6 +600,7 @@ internal object HardeningHelpText {
     appendLine("  pitestConverge                    compare two fresh observations")
     appendLine("  pitestModeSnapshot / pitestModeCompare  compare labeled execution modes")
     appendLine("  pitestMutatorTrial                measure candidate mutators")
+    appendLine("  mutationOwnershipAudit            cheap whole-production owner/exclusion preflight")
     appendLine("  hardeningInit / hardeningAgentTemplate  scaffold local evidence and operator rules")
     appendLine()
     appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")
