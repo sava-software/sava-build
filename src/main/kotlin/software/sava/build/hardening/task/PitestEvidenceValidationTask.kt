@@ -19,6 +19,7 @@ import org.gradle.process.ExecOperations
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.BaselineFiles
+import software.sava.build.hardening.CertificationGitIdentity
 import software.sava.build.hardening.CertificationGitIdentityCapture
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
@@ -58,6 +59,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
   @get:Input abstract val targetTests: Property<String>
   @get:Input abstract val mutators: Property<String>
   @get:Input abstract val threads: Property<Int>
+  @get:Input abstract val minionJvmArgs: ListProperty<String>
   @get:Input abstract val timeoutFactor: Property<Double>
   @get:Input abstract val timeoutConst: Property<Long>
   @get:Input abstract val mutationBytecodeRelease: Property<Int>
@@ -146,7 +148,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
       reportSha256 = reportSha256,
       scope = scope,
       historyAssisted = historyAssisted,
-    ))
+    ), minionJvmArgs.get())
   }
 }
 
@@ -357,6 +359,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
     objects.domainObjectContainer(PitestEvidenceSpec::class.java)
   @get:Internal abstract val certificationProjectDirectory: DirectoryProperty
   @get:Internal abstract val certificationPluginCode: ConfigurableFileCollection
+  @get:Internal abstract val certificationRecordFiles: ConfigurableFileCollection
   @get:Input abstract val hardeningProjectPath: Property<String>
 
   @get:ServiceReference("hardeningCertificationSession")
@@ -369,6 +372,18 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
   fun validateFinalInputs() {
     val projectDirectory = certificationProjectDirectory.get().asFile
     val gitBefore = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
+    if (gitBefore.state == CertificationGitIdentity.State.CLEAN) {
+      try {
+        CertificationGitIdentityCapture.requireRecordFilesMatchTree(
+          projectDirectory,
+          gitBefore,
+          certificationRecordFiles.files,
+          execOperations,
+        )
+      } catch (e: IllegalStateException) {
+        throw GradleException("hardeningCertify: ${e.message}", e)
+      }
+    }
     val pluginBeforeSha256 = PitestEvidence.fingerprintTree(certificationPluginCode.singleFile)
     val completedProjectSnapshots = mutableListOf<NamedProjectEvidence>()
     val currentProjectSnapshots = mutableListOf<NamedProjectEvidence>()
@@ -415,6 +430,18 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
     requireOneProjectTree("completed evidence", completedProjectSnapshots)
     requireOneProjectTree("current inputs", currentProjectSnapshots)
     val gitAfter = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
+    if (gitAfter.state == CertificationGitIdentity.State.CLEAN) {
+      try {
+        CertificationGitIdentityCapture.requireRecordFilesMatchTree(
+          projectDirectory,
+          gitAfter,
+          certificationRecordFiles.files,
+          execOperations,
+        )
+      } catch (e: IllegalStateException) {
+        throw GradleException("hardeningCertify: ${e.message}", e)
+      }
+    }
     val pluginAfterSha256 = PitestEvidence.fingerprintTree(certificationPluginCode.singleFile)
     requirePluginIdentity("completed evidence", completedProjectSnapshots, pluginBeforeSha256)
     requirePluginIdentity("current inputs", currentProjectSnapshots, pluginAfterSha256)

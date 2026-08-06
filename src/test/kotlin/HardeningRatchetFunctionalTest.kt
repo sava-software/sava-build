@@ -995,6 +995,10 @@ $fuzzBlock
     assertTrue(invalid.contains("not valid completed evidence"), invalid)
     assertTrue(invalid.contains("RUN_ERROR x1"), invalid)
     assertTrue(
+      invalid.contains("reduce suite threads or configure the suite's evidence-bound minionJvmArgs"),
+      invalid,
+    )
+    assertTrue(
       invalid.contains(
         "line 1: Codec.java,com.example.Codec," +
             "org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,10,RUN_ERROR,none"
@@ -2776,16 +2780,31 @@ $fuzzBlock
           debt.contains("missing cause:liveness/resource/untriaged"),
       "Debt did not share the cause-category audit:\n$debt"
     )
-    val strict = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
+    val strict = runner("pitestEncoding", "-PstrictTimeoutAudit").buildAndFail().output
     assertTrue(
-      strict.contains("3 inadmissible or unfinished cause classification(s)"),
+      strict.contains("3 inadmissible or unfinished cause classification(s)") &&
+          strict.contains("Only cause:liveness may remain in the audited set") &&
+          strict.contains("remove cause:resource rows") &&
+          strict.contains("PIT has not run"),
       "strict audit accepted finite or unfinished timeout causes:\n$strict"
     )
 
     timeoutsFile.writeText(
-      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n" +
-          "com.example.Codec,decode,IncrementsMutator # cause:liveness line 30\n" +
+      "com.example.Codec,decode,IncrementsMutator # cause:liveness line 30\n" +
           "com.example.Codec,wait,VoidMethodCallMutator # cause:liveness line 44\n"
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec causes\n\n" +
+          "`Codec.decode`: the reversed cursor can no longer reach its loop exit.\n" +
+          "`Codec.wait`: the mutant removes the only wake-up signal.\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,30,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,44,TIMED_OUT,none",
+      ),
+      ""
     )
     val classified = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").build().output
     assertFalse(
@@ -2798,8 +2817,8 @@ $fuzzBlock
     // documented key-level limitation must remain non-blocking.
     writeReport(
       listOf(
-        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
-        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,44,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,52,TIMED_OUT,none",
       ),
       "",
     )
@@ -3973,7 +3992,16 @@ $fuzzBlock
   }
 
   @Test
-  fun `the source generators store a configuration cache entry`() {
+  fun `disabled source generators store a configuration cache entry`() {
+    assertSourceGeneratorsStoreConfigurationCache(generateTestSupport = false)
+  }
+
+  @Test
+  fun `enabled source generators store a configuration cache entry`() {
+    assertSourceGeneratorsStoreConfigurationCache(generateTestSupport = true)
+  }
+
+  private fun assertSourceGeneratorsStoreConfigurationCache(generateTestSupport: Boolean) {
     // Consumers run with the configuration cache on, and a task whose execution-time
     // lambda reaches a script-level helper cannot be serialized — the whole build fails
     // with "cannot serialize Gradle script object references", not just the task. It is
@@ -3982,17 +4010,15 @@ $fuzzBlock
     // sources, and stored either way, so a repo that generates nothing still pays for
     // the capture. Both are covered because both have taken this defect: validating a
     // name from a 'doLast'/'doFirst' reads naturally and captures the whole script.
-    listOf(false, true).forEach { enabled ->
-      writeFixture(generateTestSupport = enabled)
-      val tasks = arrayOf("generateHardeningTestSupport", "generateFuzzReplayTests")
-      val stored = runner(*tasks, "--configuration-cache").build().output
-      assertFalse(stored.contains("problems were found storing the configuration cache"), stored)
-      assertFalse(stored.contains("cannot serialize Gradle script object references"), stored)
+    writeFixture(generateTestSupport = generateTestSupport)
+    val tasks = arrayOf("generateHardeningTestSupport", "generateFuzzReplayTests")
+    val stored = runner(*tasks, "--configuration-cache").build().output
+    assertFalse(stored.contains("problems were found storing the configuration cache"), stored)
+    assertFalse(stored.contains("cannot serialize Gradle script object references"), stored)
 
-      // Without reuse the assertion above proves only that one run tolerated the flag.
-      val reused = runner(*tasks, "--configuration-cache").build().output
-      assertTrue(reused.contains("Reusing configuration cache"), reused)
-    }
+    // Without reuse the assertion above proves only that one run tolerated the flag.
+    val reused = runner(*tasks, "--configuration-cache").build().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
   }
 
   @Test

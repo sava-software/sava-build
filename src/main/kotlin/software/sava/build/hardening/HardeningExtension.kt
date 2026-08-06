@@ -109,6 +109,16 @@ abstract class MutationSuite @Inject constructor(private val name: String) : Nam
   abstract val threads: Property<Int>
 
   /**
+   * Arguments passed to PIT's child/minion JVMs, not to the Gradle JavaExec process.
+   * Empty by default. A suite whose PIT log diagnoses minion memory pressure can set,
+   * for example, `minionJvmArgs = listOf("-Xmx1g")`; the ordered values are bound into
+   * the report evidence. Each value must be one JVM option beginning with `-`, without
+   * whitespace, braces, `#`, quotes, or backslashes; commas are encoded for PIT's list
+   * parser.
+   */
+  abstract val minionJvmArgs: ListProperty<String>
+
+  /**
    * PIT per-test timeout: allowed time = recorded test time x [timeoutFactor]
    * + [timeoutConst] milliseconds. Defaults mirror PIT's own (1.25 / 4000).
    * Suites whose slowest tests run in milliseconds can cut the constant

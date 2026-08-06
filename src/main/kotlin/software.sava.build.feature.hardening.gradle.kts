@@ -568,9 +568,11 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
 }
 tasks.register("hardeningAgentTemplate") {
   group = "help"
-  description = "Prints the exact agent-instructions template carried by this plugin version."
+  description = "Prints the unquoted agent-instructions template carried by this plugin version."
   doLast {
-    logger.quiet(HardeningTemplateDigest.TEMPLATE)
+    logger.quiet(
+        HardeningTemplateDigest.TEMPLATE.lineSequence()
+            .joinToString("\n") { it.removePrefix("> ") })
     logger.quiet("<!-- hardening-template sha256:${HardeningTemplateDigest.SHA256_12} -->")
   }
 }
@@ -2068,7 +2070,8 @@ val mutationOwnershipAudit = tasks.register("mutationOwnershipAudit") {
           "mutationOwnershipAudit: the production mutation population is incomplete:\n" +
               problems.joinToString("\n") +
               "\nTarget each class in a suite, or exclude it from a matched target and record " +
-              "declineExclusionAudit with the measured reason/correctness owner.")
+              "declineExclusionAudit with the measured reason/correctness owner. Declines are " +
+              "suite-local; overlapping exclusions are attributed to the first matching glob in list order.")
     }
     logger.lifecycle(
         "mutationOwnershipAudit: ${coverage.owned.size} production class(es) owned, " +
@@ -2083,6 +2086,7 @@ hardening.mutation.all {
   hardeningHelpSuiteNames.add(suite.name)
   suite.mutators.convention("STRONGER")
   suite.threads.convention(4)
+  suite.minionJvmArgs.convention(emptyList())
   // PIT's own defaults; see MutationSuite.timeoutFactor for tuning guidance
   suite.timeoutFactor.convention(1.25)
   suite.timeoutConst.convention(4000L)
@@ -3327,7 +3331,9 @@ hardening.mutation.all {
                   "${malformed.size} malformed membership row(s), ${causeFindings.size} inadmissible or " +
                   "unfinished cause classification(s), and ${undocumented.size} audited member(s) without " +
                   "a README cause; see the warnings above. Paste the printed row(s) into ${timeoutsFile.name}, " +
-                  "classify each cause, and write each structural argument in config/pitest/README.md."
+                  "then resolve each finding: only cause:liveness may remain in the audited set; disposition " +
+                  "and remove cause:resource rows, finish untriaged or missing classifications, and write each " +
+                  "structural argument in config/pitest/README.md."
           )
         }
       } else if (timedOutByAuditKey.isNotEmpty()) {
@@ -4275,6 +4281,7 @@ hardening.mutation.all {
     task.targetTests.set(suite.targetTests)
     task.mutators.set(mutatorsSource)
     task.threads.set(suite.threads)
+    task.minionJvmArgs.set(suite.minionJvmArgs)
     task.timeoutFactor.set(suite.timeoutFactor)
     task.timeoutConst.set(suite.timeoutConst)
     task.mutateOnly.set(typedMutateOnly)
@@ -4357,6 +4364,7 @@ hardening.mutation.all {
     spec.targetTests.set(suite.targetTests)
     spec.mutators.set(suite.mutators)
     spec.threads.set(suite.threads)
+    spec.minionJvmArgs.set(suite.minionJvmArgs)
     spec.timeoutFactor.set(suite.timeoutFactor)
     spec.timeoutConst.set(suite.timeoutConst)
     spec.mutationBytecodeRelease.set(evidenceMutationRelease)
@@ -4412,6 +4420,8 @@ hardening.mutation.all {
   pitestModeSnapshot.configure { dependsOn(modeSnapshotEvidenceValidation) }
   hardeningCertify.configure {
     configureEvidenceSpec(suiteEvidence.maybeCreate(suiteName))
+    certificationRecordFiles.from(
+        PitestEvidence.mutationRecordFiles(layout.projectDirectory.dir("config/pitest").asFile, suiteName))
   }
 
   // Named writer workflows turn the mutually-exclusive baseline transition into

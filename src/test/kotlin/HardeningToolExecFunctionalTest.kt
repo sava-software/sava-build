@@ -310,8 +310,11 @@ $buildTail
     corpus.resolve("seedB").writeText("beta-longer")
   }
 
-  private fun initializeGitFixture(): Pair<String, String> {
-    File(fixtureDir, ".gitignore").writeText(".gradle/\nbuild/\n.pitest-history/\n")
+  private fun initializeGitFixture(extraIgnoreRules: List<String> = emptyList()): Pair<String, String> {
+    File(fixtureDir, ".gitignore").writeText(
+      (listOf(".gradle/", "build/", ".pitest-history/") + extraIgnoreRules)
+        .joinToString("\n", postfix = "\n")
+    )
     val emptyTemplate = File(fixtureDir, ".empty-git-template").apply { mkdirs() }
     git("-c", "init.templateDir=${emptyTemplate.absolutePath}", "init", "--quiet", "--initial-branch=main")
     git("add", "-A")
@@ -1111,6 +1114,78 @@ $buildTail
       receipt,
     )
     assertTrue(certified.output.contains("suite(s) certified"), certified.output)
+  }
+
+  @Test
+  fun `clean certification refuses ignored record inputs absent from the Git tree`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "config/pitest/README.md").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText("# Ignored mutation rationale\n")
+    }
+    initializeGitFixture(listOf("config/pitest/README.md"))
+    assertTrue(
+      git("status", "--porcelain=v1", "--untracked-files=all").isEmpty(),
+      "the ignored record did not reproduce Git's false-clean state",
+    )
+
+    val failed = runner("clean", "hardeningCertify").buildAndFail().output
+    assertTrue(
+      failed.contains("clean Git certification cannot bind mutation-record inputs to its captured tree") &&
+          failed.contains("present locally but absent from captured tree") &&
+          failed.contains("config/pitest/README.md"),
+      failed,
+    )
+    assertFalse(
+      File(fixtureDir, "build/hardening/pitest-certification.tsv").isFile,
+      "a rejected ignored record left a certification receipt",
+    )
+  }
+
+  @Test
+  fun `clean certification detects record changes hidden by Git index flags`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val recordReadme = File(fixtureDir, "config/pitest/README.md").also { file ->
+      file.parentFile.mkdirs()
+      file.writeText("# Reviewed mutation rationale\n")
+    }
+    initializeGitFixture()
+
+    git("update-index", "--assume-unchanged", "config/pitest/README.md")
+    recordReadme.writeText("# Locally changed rationale hidden from porcelain status\n")
+    assertTrue(
+      git("status", "--porcelain=v1", "--untracked-files=all").isEmpty(),
+      "assume-unchanged did not reproduce Git's false-clean content state",
+    )
+    val changed = runner("clean", "hardeningCertify").buildAndFail().output
+    assertTrue(
+      changed.contains("Git-normalized content differs from captured tree") &&
+          changed.contains("config/pitest/README.md"),
+      changed,
+    )
+
+    recordReadme.writeText("# Reviewed mutation rationale\n")
+    git("update-index", "--no-assume-unchanged", "config/pitest/README.md")
+    git("update-index", "--skip-worktree", "config/pitest/README.md")
+    assertTrue(recordReadme.delete(), "failed to delete the skip-worktree record fixture")
+    assertTrue(
+      git("status", "--porcelain=v1", "--untracked-files=all").isEmpty(),
+      "skip-worktree did not reproduce Git's false-clean missing-file state",
+    )
+    val missing = runner("clean", "hardeningCertify").buildAndFail().output
+    assertTrue(
+      missing.contains("missing locally but present in captured tree") &&
+          missing.contains("config/pitest/README.md"),
+      missing,
+    )
+    assertFalse(
+      File(fixtureDir, "build/hardening/pitest-certification.tsv").isFile,
+      "a hidden record change left a certification receipt",
+    )
   }
 
   @Test

@@ -36,6 +36,7 @@ class HardeningExecutionSupportTest {
       outputFormats = listOf("HTML", "XML", "CSV"),
       timestampedReports = false,
       threads = 4,
+      minionJvmArgs = listOf("-Xmx1g", "-Dlabels=alpha,beta"),
       timeoutFactor = "1.25",
       timeoutConst = 4000,
       historyActive = true,
@@ -49,6 +50,7 @@ class HardeningExecutionSupportTest {
     assertTrue("--historyInputLocation=${history.absolutePath}" in arguments)
     assertTrue("--historyOutputLocation=${history.absolutePath}" in arguments)
     assertTrue("--projectBase=${tempDir.absolutePath}" in arguments)
+    assertTrue("--jvmArgs=-Xmx1g,{-Dlabels=alpha,beta}" in arguments)
     assertTrue("--features=+arcmutate_history" in arguments)
     assertFalse(arguments.any { it == "--targetClasses=example.*" })
 
@@ -73,6 +75,7 @@ class HardeningExecutionSupportTest {
         outputFormats = listOf("CSV"),
         timestampedReports = false,
         threads = 1,
+        minionJvmArgs = emptyList(),
         timeoutFactor = "1.25",
         timeoutConst = 4000,
         historyActive = false,
@@ -81,6 +84,48 @@ class HardeningExecutionSupportTest {
     )
 
     assertFalse(arguments.any { it.startsWith("--excludedClasses=") })
+    assertFalse(arguments.any { it.startsWith("--jvmArgs=") })
+  }
+
+  @Test
+  fun `PIT minion JVM arguments reject values its parser and argfile cannot preserve`() {
+    val base = HardeningCommandLines.Pitest(
+      applicationClasspath = emptyList(),
+      targetClasses = listOf("example.Codec"),
+      mutateOnly = null,
+      excludedClasses = emptyList(),
+      targetTests = "example.CodecTest",
+      sourceDirectories = emptyList(),
+      reportDirectory = tempDir.resolve("report"),
+      projectBaseDirectory = tempDir,
+      mutators = "DEFAULTS",
+      outputFormats = listOf("CSV"),
+      timestampedReports = false,
+      threads = 1,
+      minionJvmArgs = emptyList(),
+      timeoutFactor = "1.25",
+      timeoutConst = 4000,
+      historyActive = false,
+      historyFile = tempDir.resolve("history"),
+    )
+
+    fun assertRejected(argument: String, message: String) {
+      val failure = assertThrows(IllegalArgumentException::class.java) {
+        HardeningCommandLines.pitest(base.copy(minionJvmArgs = listOf(argument)))
+      }
+      assertTrue(failure.message.orEmpty().contains(message), failure.message)
+    }
+
+    assertRejected("", "must not be blank")
+    assertRejected("-Dlabel=alpha beta", "cannot contain whitespace")
+    assertRejected("@minion.options", "must be JVM options beginning with '-'")
+    assertRejected("-Dvalue={unsafe", "cannot contain braces")
+    assertRejected("-Dvalue=unsafe}", "cannot contain braces")
+    assertRejected("-Dtag=alpha#beta", "argument files interpret them as syntax")
+    assertRejected("-Dtag='alpha'", "argument files interpret them as syntax")
+    assertRejected("-Dtag=\"alpha\"", "argument files interpret them as syntax")
+    assertRejected("-Dpath=C:\\temp", "argument files interpret them as syntax")
+    assertRejected("-Dvalue=alpha\u0000beta", "must be single-line values")
   }
 
   @Test

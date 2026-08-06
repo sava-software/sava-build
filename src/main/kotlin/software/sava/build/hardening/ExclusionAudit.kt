@@ -291,7 +291,8 @@ object ExclusionAudit {
           "recompileExcludes, or — when the exclusion is a deliberate opt-out (generated " +
           "bindings, vendored code, a live-credential main) — record the argument with " +
           "declineExclusionAudit(\"<glob>\", \"<what these are, and what carries their " +
-          "correctness instead>\")."
+          "correctness instead>\"). Declines are suite-local and attach to the first matching " +
+          "excludedClasses glob; use the suite/glob printed above and order overlapping globs deliberately."
 
   // PIT-glob parsing lives in PitGlobs, shared with MutatorAdvice so the two
   // scans can never disagree on which classes a glob selects.

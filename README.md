@@ -131,6 +131,10 @@ hardening {
   mutation.register("core") {
     targetClasses = listOf("com.acme.product.*")
     targetTests = "com.acme.product.*Test*"
+    // Optional when PIT itself diagnoses child/minion memory pressure:
+    // each entry must begin with '-' and contain no whitespace, braces,
+    // '#', quotes, or backslashes.
+    // minionJvmArgs = listOf("-Xmx1g")
   }
   fuzz.register("parser") {
     targetClass = "com.acme.product.ParserFuzz"

@@ -85,6 +85,9 @@ abstract class PitestExecTask : JavaExec() {
   abstract val threads: Property<Int>
 
   @get:Input
+  abstract val minionJvmArgs: ListProperty<String>
+
+  @get:Input
   abstract val timeoutFactor: Property<Double>
 
   @get:Input
@@ -191,6 +194,7 @@ abstract class PitestExecTask : JavaExec() {
     outputFormats,
     timestampedReports,
     threads,
+    minionJvmArgs,
     timeoutFactor,
     timeoutConst,
     historyFile,
@@ -440,7 +444,7 @@ abstract class PitestExecTask : JavaExec() {
       reportSha256 = reportSha256,
       scope = scope,
       historyAssisted = historyAssisted,
-    ))
+    ), minionJvmArgs.get())
   }
 
   private data class PitestAttempt(
@@ -671,6 +675,7 @@ private class PitestCommandLineProvider(
   private val outputFormats: ListProperty<String>,
   private val timestampedReports: Property<Boolean>,
   private val threads: Property<Int>,
+  private val minionJvmArgs: ListProperty<String>,
   private val timeoutFactor: Property<Double>,
   private val timeoutConst: Property<Long>,
   private val historyFile: RegularFileProperty,
@@ -697,6 +702,7 @@ private class PitestCommandLineProvider(
         outputFormats = outputFormats.get(),
         timestampedReports = timestampedReports.get(),
         threads = threads.get(),
+        minionJvmArgs = minionJvmArgs.get(),
         timeoutFactor = timeoutFactor.get().toString(),
         timeoutConst = timeoutConst.get(),
         historyActive = historyActiveForExecution,

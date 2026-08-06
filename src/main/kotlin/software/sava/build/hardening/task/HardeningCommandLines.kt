@@ -18,6 +18,7 @@ internal object HardeningCommandLines {
     val outputFormats: List<String>,
     val timestampedReports: Boolean,
     val threads: Int,
+    val minionJvmArgs: List<String>,
     val timeoutFactor: String,
     val timeoutConst: Long,
     val historyActive: Boolean,
@@ -42,6 +43,9 @@ internal object HardeningCommandLines {
     add("--outputFormats=${spec.outputFormats.joinToString(",")}")
     add("--timestampedReports=${spec.timestampedReports}")
     add("--threads=${spec.threads}")
+    if (spec.minionJvmArgs.isNotEmpty()) {
+      add("--jvmArgs=" + spec.minionJvmArgs.joinToString(",", transform = ::encodePitestJvmArg))
+    }
     add("--timeoutFactor=${spec.timeoutFactor}")
     add("--timeoutConst=${spec.timeoutConst}")
     if (spec.historyActive) {
@@ -51,6 +55,29 @@ internal object HardeningCommandLines {
       add("--historyOutputLocation=${spec.historyFile.absolutePath}")
       add("--features=+arcmutate_history")
     }
+  }
+
+  /** PIT uses commas as child-argument separators and braces to quote embedded commas. */
+  private fun encodePitestJvmArg(argument: String): String {
+    require(argument.isNotBlank()) { "PIT minion JVM arguments must not be blank" }
+    require(argument.none { it == '\u0000' || it == '\n' || it == '\r' }) {
+      "PIT minion JVM arguments must be single-line values"
+    }
+    require(argument.none(Char::isWhitespace)) {
+      "PIT minion JVM arguments cannot contain whitespace because PIT writes each value " +
+        "unquoted to a Java argument file: $argument"
+    }
+    require(argument.startsWith('-')) {
+      "PIT minion JVM arguments must be JVM options beginning with '-': $argument"
+    }
+    require('{' !in argument && '}' !in argument) {
+      "PIT minion JVM arguments cannot contain braces (reserved by PIT's comma parser): $argument"
+    }
+    require(argument.none { it == '#' || it == '\'' || it == '"' || it == '\\' }) {
+      "PIT minion JVM arguments cannot contain #, quotes, or backslashes because Java " +
+        "argument files interpret them as syntax: $argument"
+    }
+    return if (',' in argument) "{$argument}" else argument
   }
 
   data class FuzzRun(

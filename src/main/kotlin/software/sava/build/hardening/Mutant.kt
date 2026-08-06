@@ -139,13 +139,19 @@ internal data class Mutant(
         val statuses = invalid.groupingBy { (_, _, mutant) -> mutant.rawStatus }.eachCount().entries
             .sortedBy { it.key }
             .joinToString(", ") { (status, count) -> "$status x$count" }
+        val runErrorHint = if (invalid.any { (_, _, mutant) -> mutant.rawStatus == "RUN_ERROR" }) {
+          "\nFor RUN_ERROR, inspect PIT's preceding output before re-running. If PIT says a " +
+              "minion failed to start/died or reports insufficient memory, that is process " +
+              "failure rather than a mutant verdict; reduce suite threads or configure " +
+              "the suite's evidence-bound minionJvmArgs (for example, -Xmx1g)."
+        } else ""
         throw IllegalArgumentException(
             "PIT report contains status(es) that are not valid completed evidence: $statuses:\n" +
                 invalid.joinToString("\n") { (lineNumber, line, _) ->
                   "  line $lineNumber: $line"
                 } + "\n" +
                 "Runtime errors, unfinished mutations, and unknown PIT statuses cannot certify " +
-                "the ratchet or any record writer."
+                "the ratchet or any record writer." + runErrorHint
         )
       }
       return parsed.map { (_, _, mutant) -> mutant }

@@ -58,6 +58,7 @@ class HardeningFeatureSmokeTest {
             targetTests = "com.example.*Test*"
             timeoutFactor = 2.5
             timeoutConst = 10000L
+            minionJvmArgs = listOf("-Xms256m", "-Xmx1g")
           }
           fuzz.register("codec") {
             targetClass = "com.example.CodecFuzz"
@@ -103,6 +104,7 @@ class HardeningFeatureSmokeTest {
             val tuned = tunedArgs.get()
             check(tuned.any { it == "--timeoutFactor=2.5" }) { "timeoutFactor override: " + tuned }
             check(tuned.any { it == "--timeoutConst=10000" }) { "timeoutConst override: " + tuned }
+            check(tuned.any { it == "--jvmArgs=-Xms256m,-Xmx1g" }) { "minionJvmArgs: " + tuned }
             // a suite's own exclusions come first, harnesses appended after
             check(tuned.any { it == "--excludedClasses=com.example.*Test*,com.example.CodecFuzz,com.example.CodecFuzz$*,com.example.PlainFuzz,com.example.PlainFuzz$*" }) { "own + harness exclusions: " + tuned }
             val fuzz = fuzzArgs.get()

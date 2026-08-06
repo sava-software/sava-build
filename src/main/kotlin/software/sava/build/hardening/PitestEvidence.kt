@@ -138,16 +138,19 @@ data class PitestEvidence(
       else -> error("cannot fingerprint missing path $root")
     }
 
+    /** Stable inventory of files whose extant members decide one suite's gate. */
+    fun mutationRecordFiles(configDir: File, suite: String): List<File> = listOf(
+      configDir.resolve("$suite-accepted.csv"),
+      configDir.resolve("$suite-timeouts.csv"),
+      configDir.resolve("$suite-pitest-version"),
+      configDir.resolve("$suite-pitest-toolchain.tsv"),
+      configDir.resolve("README.md"),
+    )
+
     /** Files whose exact bytes decide whether one suite's mutation gate passes. */
     fun mutationRecordFingerprint(projectDir: File, configDir: File, suite: String): String {
       BaselineFiles.requireDirectoryOrMissing(projectDir, configDir)
-      val recordFiles = listOf(
-        configDir.resolve("$suite-accepted.csv"),
-        configDir.resolve("$suite-timeouts.csv"),
-        configDir.resolve("$suite-pitest-version"),
-        configDir.resolve("$suite-pitest-toolchain.tsv"),
-        configDir.resolve("README.md"),
-      )
+      val recordFiles = mutationRecordFiles(configDir, suite)
       recordFiles.forEach { BaselineFiles.requireRegularFileOrMissing(projectDir, it) }
       return fingerprint(configDir, recordFiles.filter(File::isFile))
     }

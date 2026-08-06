@@ -3,8 +3,9 @@ package software.sava.build.hardening
 import java.io.File
 
 /**
- * All execution-time inputs needed to bind a PIT report to the code, tool and
- * effective mutation configuration that produced it.
+ * Stable, published execution-time inputs used to bind a PIT report to the code,
+ * tool and effective mutation configuration that produced it. Later optional
+ * settings may be supplied by an internal capture overload to preserve this ABI.
  *
  * File iterables are realized by [PitestEvidenceSnapshot.capture]. Callers should
  * therefore invoke it only after producer tasks have completed; in particular, they
@@ -48,18 +49,34 @@ data class PitestEvidenceSnapshotInput(
  */
 object PitestEvidenceSnapshot {
 
-  fun capture(input: PitestEvidenceSnapshotInput): PitestEvidence {
+  /** Preserves the published capture contract and its canonical default configuration text. */
+  fun capture(input: PitestEvidenceSnapshotInput): PitestEvidence = capture(input, emptyList())
+
+  /**
+   * Captures [input] plus the ordered PIT child/minion JVM arguments.
+   *
+   * The arguments remain outside [PitestEvidenceSnapshotInput] so adding this setting does
+   * not break that published data class's constructor, component, copy, or default ABI.
+   */
+  internal fun capture(
+    input: PitestEvidenceSnapshotInput,
+    minionJvmArgs: Iterable<String>,
+  ): PitestEvidence {
     // Realize once at the execution boundary. Apart from avoiding inconsistent views
     // of a mutable FileCollection, this guarantees the order hash and content hash see
     // exactly the same classpath membership.
     val runtimeFiles = input.runtimeClasspath.toList()
     val toolFiles = input.toolClasspath.toList()
+    val minionArgs = minionJvmArgs.toList()
     val configurationText = buildString {
       appendLine("targetClasses=${input.targetClasses.sorted().joinToString(",")}")
       appendLine("excludedClasses=${input.excludedClasses.sorted().joinToString(",")}")
       appendLine("targetTests=${input.targetTests}")
       appendLine("mutators=${input.mutators}")
       appendLine("threads=${input.threads}")
+      if (minionArgs.isNotEmpty()) {
+        appendLine("minionJvmArgs=" + minionArgs.joinToString("") { "${it.length}:$it" })
+      }
       appendLine("timeoutFactor=${input.timeoutFactor}")
       appendLine("timeoutConst=${input.timeoutConst}")
       appendLine("mutationBytecodeRelease=${input.mutationBytecodeRelease}")

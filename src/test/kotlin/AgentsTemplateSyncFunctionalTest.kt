@@ -42,6 +42,8 @@ class AgentsTemplateSyncFunctionalTest {
       .joinToString("") { "%02x".format(it) }
       .take(12)
   }
+  private val expectedPrintedTemplate: String = expectedTemplate.lineSequence()
+    .joinToString("\n") { it.removePrefix("> ") }
 
   private fun writeFixture() {
     File(fixtureDir, "settings.gradle.kts").writeText(
@@ -101,12 +103,16 @@ class AgentsTemplateSyncFunctionalTest {
   }
 
   @Test
-  fun `template task prints the exact version-matched baked template`() {
+  fun `template task prints the version-matched baked template without markdown quote markers`() {
     writeFixture()
 
     val printed = runner("hardeningAgentTemplate").build().output
 
-    assertTrue(printed.contains(expectedTemplate), printed)
+    assertTrue(printed.contains(expectedPrintedTemplate), printed)
+    assertFalse(
+      printed.lineSequence().any { it.startsWith("> -") || it.startsWith(">   ") },
+      printed,
+    )
     assertTrue(printed.contains("<!-- hardening-template sha256:$expectedDigest -->"), printed)
     assertFalse(printed.contains("github.com/sava-software/sava-build/blob/main"), printed)
     assertTrue(
@@ -128,6 +134,12 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("prove the mutated path receives the clock/budget") &&
           printed.contains("check for a synchronous state reader"),
       "the version-matched template must keep record decisions history-free and timeout evidence observable:\n$printed",
+    )
+    assertTrue(
+      printed.contains("Invalid execution outcomes are not results") &&
+          printed.contains("A repeat at the same coordinate is not evidence") &&
+          printed.contains("investigate the mutated bytecode"),
+      "the version-matched template must not misclassify a repeatable RUN_ERROR as infrastructure:\n$printed",
     )
     assertFalse(printed.contains("Migration is one-way"), printed)
     assertFalse(printed.contains("pitest ≥"), printed)

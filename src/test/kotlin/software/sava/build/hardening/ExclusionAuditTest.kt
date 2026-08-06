@@ -170,6 +170,10 @@ class ExclusionAuditTest {
     assertTrue(warning.contains("com.example.RetryTestPolicy (glob 'com.example.*Test*')"), warning)
     assertTrue(warning.contains("com.example.StubResolver (glob 'com.example.Stub*')"), warning)
     assertTrue(warning.contains("recompileExcludes"), warning)
+    assertTrue(
+      warning.contains("suite-local") && warning.contains("first matching excludedClasses glob"),
+      warning,
+    )
   }
 
   @Test

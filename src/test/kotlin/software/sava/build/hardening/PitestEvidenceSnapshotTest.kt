@@ -95,6 +95,26 @@ class PitestEvidenceSnapshotTest {
     assertNotEquals(ordered.configurationSha256, reversed.configurationSha256)
   }
 
+  @Test
+  fun `minion JVM argument order changes configuration identity`() {
+    val pluginCode = file("plugin/sava-build.jar", "sava-build")
+    val input = input(pluginCode = pluginCode)
+    val default = PitestEvidenceSnapshot.capture(input)
+    val explicitEmpty = PitestEvidenceSnapshot.capture(input, emptyList())
+    val first = PitestEvidenceSnapshot.capture(
+      input,
+      listOf("-Xms256m", "-Xmx1g"),
+    )
+    val reversed = PitestEvidenceSnapshot.capture(
+      input,
+      listOf("-Xmx1g", "-Xms256m"),
+    )
+
+    assertEquals(default.configurationSha256, explicitEmpty.configurationSha256)
+    assertNotEquals(default.configurationSha256, first.configurationSha256)
+    assertNotEquals(first.configurationSha256, reversed.configurationSha256)
+  }
+
   private fun input(
     sourceFiles: Iterable<File> = emptyList(),
     classFiles: Iterable<File> = emptyList(),

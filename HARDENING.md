@@ -76,9 +76,11 @@ every suite in that project: legacy unlabeled rows, shared arguments, and cross-
 prose make a generic per-suite Markdown projection unsound. Any README edit therefore
 invalidates the existing project receipts; finish even prose-only cleanup before the
 final certification. A future narrower boundary requires an explicit versioned anchor
-schema rather than inference from today’s free-form document. Its cost
-scales with the repo's total
-mutant population, not with the size of the diff — so running it per change
+schema rather than inference from today’s free-form document. When the receipt records
+`gitState clean`, the optional record inventory and each present file's Git-normalized
+bytes must match the captured `gitTree` in both directions. Ignored/untracked inputs and
+index-hidden modifications or deletions are refused. Certification's cost scales with
+the repo's total mutant population, not with the size of the diff — so running it per change
 spends minutes re-learning results the change could not have moved. A suite
 produces new information only when the change can alter code it mutates or
 tests that cover that code.
@@ -146,6 +148,16 @@ run cheaper. The cost model is directly optimisable:
   were slower than 8. Measure before spending here. On a suite heavy with
   await/signal tests, 8 threads *lost* to the 4-thread default outright:
   oversubscription inflates exactly the tests PIT re-runs most.
+- **Minion memory is explicit when PIT diagnoses it** — `threads` controls how
+  many child JVMs contend for the machine, while
+  `minionJvmArgs = listOf("-Xmx1g")` changes each PIT child/minion JVM. The
+  ordered arguments are part of the report's configuration evidence. They are
+  empty by default: a universal heap cap would ignore container limits and suite
+  shape. Each list entry must be one JVM option beginning with `-`, without
+  whitespace, braces, `#`, quotes, or backslashes; embedded commas are encoded for
+  PIT. Do not infer memory pressure from `RUN_ERROR` alone; use the setting only when
+  PIT's preceding output names a minion start/death or insufficient-memory failure,
+  and reduce `threads` first when aggregate contention is the problem.
 - **Scope the iteration loop with `-PmutateOnly=<glob[,glob]>`** — mutate
   only the class under attack while writing its kills, then re-run unscoped
   with `-PnoMutationHistory` once before making any accepted-baseline or
@@ -1776,9 +1788,9 @@ seam, a suite split): they still match real mutants, so no warning will ever
 fire on them; only re-measuring tells you the insurance now covers nothing
 *(casebook: flip insurance that outlived its cause)*.
 
-### Transient infrastructure failures are not mutation results
+### Invalid execution outcomes are not mutation results
 
-Three recurring signatures have nothing to do with mutants *(casebook:
+Three recurring signatures cannot be treated as mutation results *(casebook:
 MINION_DIED, worker EOF, and the daemon log)*:
 
 - **PIT `MINION_DIED` during coverage generation** — the coverage minion's
@@ -1792,12 +1804,16 @@ MINION_DIED, worker EOF, and the daemon log)*:
   abruptly; no `hs_err` file means killed from outside, not crashed.
   One-shot; re-run.
 - **`RUN_ERROR` on individual mutants** — the same shape per-mutant, observed
-  only under multi-suite load. The report is refused rather than letting PIT's
+  often first under multi-suite load (but a quiet solo occurrence is possible).
+  The report is refused rather than letting PIT's
   detected score turn infrastructure failure into certification. The refusal prints
   every offending CSV row, and `pitest<Suite>Debt` repeats those rows while falling
   back to the committed baseline for its read-only tally. Save that coordinate (or run
   Debt) before a quiet re-run replaces the report; a `RUN_ERROR` that persists at the
   same coordinate is not load and deserves investigation in the mutated bytecode.
+  If PIT's preceding output specifically says a minion failed to start/died or
+  lacked memory, reduce the suite's `threads` or set evidence-bound
+  `minionJvmArgs` (for example `listOf("-Xmx1g")`) rather than blindly re-running.
 
 **The evidence usually survives you discarding it.** The Gradle daemon keeps
 complete build output — including PIT minion stack traces — at
@@ -1940,6 +1956,10 @@ commit will land with or after the published plugin pin it acknowledges; landing
 candidate marker while the older plugin remains selected would wedge ordinary checks.
 A marker-less existing file still fails in local-repo mode; it is unadopted, not
 merely waiting for a release.
+
+The source block below is quoted only so it renders as one unit in this document.
+`hardeningAgentTemplate` removes the leading `> ` markers and prints paste-ready
+instruction text; the digest still names the canonical quoted source block.
 
 > - **Scale verification to the change.** Iterate with the module's `test`
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated
@@ -2109,15 +2129,16 @@ merely waiting for a release.
 >   one usually means the run did less than you think. Read the task's evidence
 >   markers and scope; only a fresh full certification may support a release.
 >   The process itself needs no ArcMutate licence and applies to any Java package.
-> - **Transient infra failures are not results.** PIT `MINION_DIED` fails
+> - **Invalid execution outcomes are not results.** PIT `MINION_DIED` fails
 >   before writing a report, so it cannot corrupt one — re-run the suite; a
 >   Gradle-worker `EOFException` death is the same shape, and a per-mutant
 >   `RUN_ERROR` often first observed in a multi-suite run is the same
 >   shape smaller (load average itself proves nothing; the hardening parser refuses
 >   the report rather than certifying PIT's detected score). The refusal and
 >   `pitest<Suite>Debt` name every offending row; retain the coordinate before a
->   quiet re-run replaces the report, because the same coordinate twice is a defect,
->   not load. The daemon log
+>   quiet re-run replaces the report. A repeat at the same coordinate is not evidence
+>   of load: investigate the mutated bytecode, its covering tests, and the tool failure.
+>   The daemon log
 >   (`~/.gradle/daemon/<version>/daemon-<pid>.out.log`) keeps a failed build's
 >   full output even when the shell discarded it — read it before calling a
 >   failure unexplained.

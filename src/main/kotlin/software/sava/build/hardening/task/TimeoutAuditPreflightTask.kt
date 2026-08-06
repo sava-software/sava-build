@@ -90,9 +90,11 @@ abstract class TimeoutAuditPreflightTask : DefaultTask() {
         "pitest '$suite': committed timeout audit is not ready for a strict mutation run — " +
           "${malformed.size} malformed membership row(s), ${causeFindings.size} inadmissible or " +
           "unfinished cause classification(s), and ${undocumented.size} member(s) without a " +
-          "README cause. Run ${pitestTask}Debt for the same read-only detail; classify and " +
-          "document every committed member, or run $pitestTask -PnoMutationHistory to make a " +
-          "fresh observation that can prove and remove stale rows, before retrying. PIT has not run."
+          "README cause. Run ${pitestTask}Debt for the same read-only detail. Only cause:liveness " +
+          "may remain in the audited set: disposition and remove cause:resource rows, finish " +
+          "untriaged or missing classifications, and document every retained liveness member. " +
+          "Run $pitestTask -PnoMutationHistory when a fresh observation is needed to prove and " +
+          "remove a row before retrying. PIT has not run."
       if (certificationActive || operation == BaselineWriteOperation.REBASE) {
         try {
           operationSession.get().reject(projectPath, reason)
