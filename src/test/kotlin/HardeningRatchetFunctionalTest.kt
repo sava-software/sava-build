@@ -1900,17 +1900,16 @@ $fuzzBlock
   }
 
   @Test
-  fun `the moved-anchor channel reports only disjoint timeout lines`() {
-    // The '# line' comment is the anchor the README cause argues about, and
-    // "re-read the cause when that code changes" was purely social: the key only
-    // goes stale when the method disappears, never when the code moves within one.
-    // The report holds the observed side, so the legacy moved-anchor channel compares
-    // disjointness only. The liveness-authorization channel separately handles a new
-    // sibling line beside a recorded one once the row has an admissible cause.
+  fun `timeout line metadata never turns source movement into a finding`() {
+    // PIT exposes source positions but no formatting-stable per-mutant identity.
+    // A line tag is therefore diagnostic only: imports, an inserted method, or a
+    // reflow inside the method must not fail or warn in an otherwise valid audit.
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # line 12\n")
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # cause:liveness line 12\n")
+    File(fixtureDir, "config/pitest/README.md")
+      .writeText("`Codec.encode` (MathMutator): the mutated cursor cannot advance.\n")
     fun report(vararg lines: Int) = writeReport(
       lines.map {
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,$it,TIMED_OUT,none"
@@ -1919,19 +1918,15 @@ $fuzzBlock
     )
 
     report(99)
-    val drifted = runner("pitestEncodingVerify").build().output
-    assertTrue(
-      drifted.contains("1 audited-timeout member(s) timed out at line(s) their row's comment does not name") &&
-          drifted.contains("  com.example.Codec,encode,MathMutator # line(s) 12 -> observed 99"),
-      "drifted anchor not warned:\n$drifted"
-    )
-    assertTrue(
-      drifted.contains("1 line-drifted audit row(s)"),
-      "drift missing from the advisory summary:\n$drifted"
+    val moved = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").build().output
+    assertFalse(
+      moved.contains("line-drifted") || moved.contains("unreviewed line") ||
+          moved.contains("comment does not name"),
+      "source movement became a timeout-audit finding:\n$moved"
     )
 
-    // A sibling line beside a still-live anchor is not *moved-anchor* drift. This
-    // deliberately cause-less fixture does not enter liveness authorization.
+    // A same-key sibling is the known limitation of the line-less format. Its line
+    // cannot be promoted into identity without making formatting a release gate.
     report(12, 99)
     val sibling = runner("pitestEncodingVerify").build().output
     assertFalse(
@@ -1939,13 +1934,13 @@ $fuzzBlock
       "sibling line next to the recorded anchor read as moved-anchor drift:\n$sibling"
     )
 
-    // a row whose comment names no line recorded no anchor: nothing to drift from
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # removed loop exit\n")
+    // A line-less liveness row is equally admissible.
+    timeoutsFile.writeText("com.example.Codec,encode,MathMutator # cause:liveness removed loop exit\n")
     report(99)
     val anchorless = runner("pitestEncodingVerify").build().output
     assertFalse(
       anchorless.contains("line-drifted") || anchorless.contains("comment does not name"),
-      "anchorless member read as drift:\n$anchorless"
+      "line-less member produced positional churn:\n$anchorless"
     )
   }
 
@@ -2645,9 +2640,9 @@ $fuzzBlock
       "classified liveness rows stayed findings:\n$classified"
     )
 
-    // The membership key remains line-less, but the liveness argument is scoped to
-    // the reviewed line anchors. A same-key sibling at a new line may be finite
-    // resource work, so it must not inherit line 12's liveness classification.
+    // Source lines remain diagnostic. The current format cannot distinguish a
+    // same-key sibling without imposing formatting-sensitive authorization, so the
+    // documented key-level limitation must remain non-blocking.
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
@@ -2655,18 +2650,10 @@ $fuzzBlock
       ),
       "",
     )
-    val sibling = runner("pitestEncodingVerify").build().output
-    assertTrue(
-      sibling.contains("1 cause:liveness member(s) timed out at line(s)") &&
-          sibling.contains("same-key resource or untriaged sibling") &&
-          sibling.contains("authorized line(s) 12 -> unexpected 20"),
-      "same-key timeout sibling inherited liveness silently:\n$sibling",
-    )
-    val strictSibling =
-      runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
-    assertTrue(
-      strictSibling.contains("1 liveness member(s) observed at unreviewed line(s)"),
-      "strict audit accepted a timeout outside the reviewed liveness anchors:\n$strictSibling",
+    val sibling = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").build().output
+    assertFalse(
+      sibling.contains("unreviewed line") || sibling.contains("authorized line(s)"),
+      "diagnostic source lines became strict authorization:\n$sibling",
     )
   }
 

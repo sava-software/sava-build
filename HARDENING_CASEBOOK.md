@@ -49,19 +49,28 @@ that the old word "hang" had hidden:
   completion guarantee, so the row remains liveness and the fixture bound belongs
   in its README argument.
 
-The classification also exposed an identity problem: Ravina held a reviewed
-liveness timeout and an accepted mutant at another line under the same line-less
-`class,method,mutator` key. A key-wide cause would let the liveness argument
-silently authorize the finite sibling whenever that sibling timed out. The repair
-keeps line-less membership identity but scopes `cause:liveness` to required,
-reviewed `# line` anchors. Any observed timeout at another line is a reviewer-stop
-and a strict refusal, even while an old anchor remains live. Rules: *classify by
-whether the mutated path owns a finite completion guarantee, not by a fixture's
-safety escape or by wall-clock practicality*; *a liveness argument authorizes
-observed source-line locations, not every future same-key mutant*; *PIT's CSV cannot
-separate same-coordinate, same-line copies, so a location needing mixed causes is
-not representable as audited liveness*; *load-only KILLED↔TIMED_OUT races are
-harness debt, not a third admissible cause category*.
+The classification also exposed an unresolved identity limitation: Ravina held a
+reviewed liveness timeout and an accepted mutant at another line under the same
+line-less `class,method,mutator` key. A key-wide cause can therefore cover the finite
+sibling whenever that sibling times out. Promoting the row's `# line` tags into an
+authorization boundary appeared to close that hole, but the first consumer reformat
+showed why source position cannot be record identity. Collapsing imports and joining a
+fluent call changed no mutation-site behavior, yet shifted a guard by five lines and
+made certification refuse until a human copied a new number into the record.
+
+The pragmatic repair keeps `# line` as diagnostic metadata only. Adding a method,
+moving imports, changing indentation, or reflowing a multi-line expression must not
+warn, fail, or require re-anchoring. `cause:liveness` remains a key-level judgment,
+and the same-key mixed-cause sibling is a known blind spot until PIT evidence offers a
+stable discriminator independent of source layout. Positive timeout-count drift still
+prints every current line-full candidate so a reviewer can notice widened coverage,
+but the line itself grants and revokes nothing. Rules: *classify by whether the mutated
+path owns a finite completion guarantee, not by a fixture's safety escape or by
+wall-clock practicality*; *do not turn source positions or formatting into behavioral
+identity*; *a line-less cause cannot distinguish mixed-cause siblings at the same key,
+so treat multiplicity growth there as a review prompt rather than claiming the record
+proves more than it can*; *load-only KILLED↔TIMED_OUT races are harness debt, not a
+third admissible cause category*.
 
 ## The liveness loop that raced the heap
 
@@ -105,6 +114,11 @@ the history-free command. Explicit strict audit disables history and refuses an 
 assisted report. Assisted verification no longer writes either local stash, and both
 stash formats advance so pre-fix cached observations reset on the first fresh run.
 `clean` is irrelevant because `.pitest-history/` deliberately survives it.
+
+Freshness also does not make one covering path a disposition. Ravina bounded one
+`ComposedCall` clock, retired the row after one fresh `KILLED` run, and the next
+fresh run resurfaced it through the second clock; only bounding both clocks made the
+kill independent of PIT test order.
 
 Rules: *a cache hit is not an observation even when the report is newly written*;
 *manual accepted/timeout decisions require `-PnoMutationHistory`*; *strict evidence
@@ -1076,12 +1090,11 @@ observations by default. Because the stash cannot identify which duplicate was
 timed out previously, a key that already held a timeout prints **all** current
 candidates rather than guessing which line is new. An audit row can silence the
 missing-membership warning, never the evidence that its timeout population
-grew or the lines a reviewer must inspect. Cause categories later made that
-visibility insufficient as an authorization boundary: a key could hold both a
-liveness and a resource sibling. The audited row now requires reviewed line
-anchors, and an unexpected timed-out line is itself a strict refusal even when
-multiplicity did not change *(casebook: the liveness label that swallowed a
-finite sibling)*.
+grew or the lines a reviewer must inspect. Cause categories later made the
+remaining identity limitation explicit: a key can hold both a liveness and a
+resource sibling. Source-line tags cannot soundly close that gap because ordinary
+formatting moves them, so they remain diagnostic metadata and never an authorization
+boundary *(casebook: the liveness label that swallowed a finite sibling)*.
 
 Rules: *when a key stops identifying one thing, every comparison built on it
 is a multiset comparison — convert them together, not the ones you
@@ -1089,8 +1102,9 @@ remembered*; *an advisory that cannot distinguish "nothing moved" from "the
 dangerous thing happened" is worse than no advisory, because it trains the
 reader to filter the dangerous thing*; *a format migration that silences a
 check for exactly one run hides its own regression from the person doing the
-migration*; *line-less membership names the family, while reviewed line anchors
-bound which siblings its liveness cause actually authorizes*.
+migration*; *line-less membership names the family and cannot distinguish a
+mixed-cause sibling at the same key; source-line metadata may expose that risk for
+review but cannot resolve it*.
 
 ## The trap that never existed
 
@@ -1499,6 +1513,32 @@ the deleted fleet-backed creation path and its dead validator were removed toget
 Rules: *a reviewer name is not artifact evidence*; *derive every claim that existing
 receipts can prove*; *bind the consumer commit and exact loaded bytes together*;
 *preserve shipped old schemas for verification without allowing them for new records*.
+
+## The compatible checkout counted as a feature validator
+
+A later candidate repaired ArcMutate-history decision paths. Ravina exercised that
+behavior directly. Idl-src-gen then certified the exact same JAR cleanly, but its
+private package namespace made ArcMutate history unavailable: the pass proved
+compatibility and receipt transport, not the repaired history behavior. The release
+discussion nevertheless began treating “both repositories healthy” as two independent
+validations because schema 3 represented both with the same repository shape and its
+verifier printed one undifferentiated adoption count.
+
+The receipts were correct; the interpretation was not. A completed certification can
+derive exact bytes, consumer revision, projects, and suites. It cannot derive which
+changed feature a reviewer deliberately exercised.
+
+Schema 4 keeps one derived repository inventory and adds an owner-reviewed role to
+each entry: `feature-path` or `certification-only`. New records must state
+whether their basis is consumer-feature, plugin-only, or deliberately
+certification-only. A consumer-feature record requires at least one feature-path
+checkout; the other bases refuse that role. Verification prints the total certified
+consumer count and its feature-path subset separately. Historical schema-2 and
+schema-3 records retain their original meanings.
+
+Rules: *hardening certification is not changed-feature coverage*; *do not turn one evidence kind
+into another by counting it*; *make a narrower release claim explicit rather than
+silently empty*; *plugin-owned tests do not impersonate consumer validation*.
 
 ## The optional fleet runner that remained mandatory to maintain
 

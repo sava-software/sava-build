@@ -59,15 +59,17 @@ class ReleaseAttestationWorkflowTest {
   }
 
   @Test
-  fun `release owner records reviewed local adoptions before rehearsing the tag gate`() {
+  fun `release owner classifies compatibility and feature evidence before rehearsing the tag gate`() {
     val create = readme.indexOf("tools/release-attestation.sh create-reviewed \"\$version\"")
     val verify = readme.indexOf("tools/release-attestation.sh verify \"\$version\"")
     val pending = readme.indexOf("tools/release-attestation.sh verify-pending-release")
 
     assertTrue(readme.contains("--candidate \"\$candidate\""), readme)
     assertTrue(readme.contains("--plugin-jar \"\$reviewed_jar\""), readme)
-    assertTrue(readme.contains("--adoption \"\$sava_checkout\""), readme)
-    assertTrue(readme.contains("--adoption \"\$http_servers_checkout\""), readme)
+    assertTrue(readme.contains("--review-basis consumer-feature"), readme)
+    assertTrue(readme.contains("--certification-only-adoption \"\$idl_src_gen_checkout\""), readme)
+    assertTrue(readme.contains("--feature-adoption \"\$ravina_checkout\""), readme)
+    assertTrue(readme.contains("never count every certified repository"), readme)
     assertTrue(create >= 0 && verify > create && pending > verify, readme)
   }
 

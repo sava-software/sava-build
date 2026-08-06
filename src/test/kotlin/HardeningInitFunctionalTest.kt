@@ -81,8 +81,9 @@ class HardeningInitFunctionalTest {
     )
     assertTrue(readmeText.contains("## Audited timeout causes"), readmeText)
     assertTrue(
-      readmeText.contains("Only anchored `cause:liveness` is admissible") &&
+      readmeText.contains("Only `cause:liveness` is admissible") &&
           readmeText.contains("seeded file is intentionally uncertifiable") &&
+          readmeText.contains("Treat `# line` comments as diagnostic metadata only") &&
           readmeText.contains(
             "Name the member's class and method together in the same Markdown heading-delimited section"
           ),

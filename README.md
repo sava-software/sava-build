@@ -439,11 +439,13 @@ checkout. When changing dependencies, regenerate the
 
 ### Local adoption and release attestation
 
-The release proof for `sava-build` is the set of deliberate local adoption passes made while
-the candidate is being developed. Those passes exercise real baselines, timeout audits,
-configuration-cache graphs, fuzz targets, and repository-specific conventions as each
-consumer moves to the candidate. Re-running every historical checkout as one final fleet is
-an optional diagnostic, not a tag or publication prerequisite.
+The release proof for `sava-build` combines deliberate local adoption passes with the
+plugin's own functional tests. Across a release, consumer passes can exercise real baselines,
+timeout audits, configuration-cache graphs, fuzz targets, and repository-specific
+conventions. A clean exact-byte hardening certification proves that graph passed; it does not by itself
+prove that consumer exercised the behavior changed in this release. Re-running every
+historical checkout as one final fleet is an
+optional diagnostic, not a tag or publication prerequisite.
 
 Before opening the release, retain the exact `0.0.0-test` JAR used by the reviewed adoption
 passes, keep each consumer's completed `build/hardening/pitest-certification.tsv` receipt,
@@ -454,29 +456,40 @@ A changed hash means the consumer evidence no longer describes the artifact and 
 relevant adoption pass is required.
 
 After Release Please prepares the version metadata, check out its clean branch and create a
-compact owner attestation. Pass the root of each clean consumer checkout whose local candidate
-adoption was actually reviewed:
+compact owner attestation. Pass the root of each clean consumer checkout whose exact-byte
+hardening certification was actually reviewed, then classify the release basis and changed-feature
+evidence explicitly:
 
 ```shell
 version=$(jq -r '.["."]' .release-please-manifest.json)
 candidate=<final-reviewed-main-commit>
 reviewed_jar=<retained-0.0.0-test-jar-used-by-those-passes>
-sava_checkout=<canonical-absolute-path-to-clean-sava-checkout>
-http_servers_checkout=<canonical-absolute-path-to-clean-http-servers-checkout>
+idl_src_gen_checkout=<canonical-absolute-path-to-clean-idl-src-gen-checkout>
+ravina_checkout=<canonical-absolute-path-to-clean-ravina-checkout>
 tools/release-attestation.sh create-reviewed "$version" \
   --candidate "$candidate" \
   --plugin-jar "$reviewed_jar" \
-  --adoption "$sava_checkout" \
-  --adoption "$http_servers_checkout"
+  --review-basis consumer-feature \
+  --certification-only-adoption "$idl_src_gen_checkout" \
+  --feature-adoption "$ravina_checkout"
 git add "release-attestations/$version.json"
 ```
 
 Commit only that generated file alongside Release Please's `CHANGELOG.md` and manifest
-changes. `create-reviewed` derives each consumer's GitHub slug, clean commit/tree, receipt
-hashes, projects, sessions, and suites; it refuses missing, incomplete, malformed, mixed, or
-stale receipts, including any suite whose `pluginSha256` differs from the retained JAR. The
-record contains relative receipt paths but no checkout paths or credentials. The generated
-entry says exactly which relative receipt paths/projects it found. It cannot
+changes. `create-reviewed` derives each consumer's GitHub slug, clean commit/tree,
+receipt hashes, projects, sessions, and suites; it refuses missing, incomplete, malformed,
+mixed, or stale receipts, including any suite whose `pluginSha256` differs from the retained
+JAR. `--adoption` remains a deprecated alias for `--certification-only-adoption`. The required
+review basis is one of `consumer-feature`, `plugin-only`, or `certification-only`.
+`consumer-feature` requires at least one checkout passed as `--feature-adoption`;
+`plugin-only` and `certification-only` allow only `--certification-only-adoption` checkouts.
+The distinction is an owner-reviewed role on otherwise identical derived certification
+evidence: Ravina exercised the history-boundary feature path, while idl-src-gen confirmed
+the exact candidate bytes without ArcMutate history.
+
+The record contains relative receipt paths but no checkout paths or credentials. Each
+repository entry says whether it is a `feature-path` or `certification-only` consumer.
+It cannot
 infer an independent Gradle root that produced no receipt, so compare that list with the
 handoff's intended adoption scope before committing the record. From the clean attestation
 commit, exercise the same gates used by the release workflows:
@@ -490,7 +503,9 @@ The Release Please workflow refuses to create a pending version's tag without th
 record. The tag-triggered workflow verifies it again against the exact tag checkout, builds
 without the Gradle build cache, and refuses publication unless the resulting JAR has the
 reviewed hash. Any non-release source change after the recorded candidate invalidates the
-attestation.
+attestation. Verification prints the number of exact-byte-certified consumer checkouts and
+the subset reviewed as feature-path consumers; never count every certified repository as an
+independent validation of the release's changed behavior.
 
 Each adoption report has two upstream channels. First, report any plugin defect or
 consumer workaround immediately. Second, batch reusable rules, hazards, tempting false leads,

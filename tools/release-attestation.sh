@@ -15,7 +15,7 @@ release_attestation_self_test_cleanup_path=""
 usage() {
   cat <<'EOF'
 Usage:
-  tools/release-attestation.sh create-reviewed <version> --candidate <commit> --plugin-jar <path> --adoption <consumer-checkout> [--adoption <consumer-checkout> ...]
+  tools/release-attestation.sh create-reviewed <version> --candidate <commit> --plugin-jar <path> --review-basis <consumer-feature|plugin-only|certification-only> [--feature-adoption <consumer-checkout> | --certification-only-adoption <consumer-checkout>] [...]
   tools/release-attestation.sh verify <version>
   tools/release-attestation.sh verify-tag <version>
   tools/release-attestation.sh verify-built-jar <version> <jar>
@@ -24,9 +24,16 @@ Usage:
 
 `create-reviewed` reads completed hardening-certification receipts from each clean
 consumer checkout and requires every suite to have loaded the exact candidate JAR.
-Each `--adoption` value must be the canonical, symlink-free absolute path to the
-consumer Git worktree root. Literal `.` or `..`, repeated separators, and empty or
-trailing path components are refused.
+Each adoption value must be the canonical, symlink-free absolute path to the consumer
+Git worktree root. Literal `.` or `..`, repeated separators, and empty or trailing
+path components are refused. `--adoption` remains as a deprecated alias for
+`--certification-only-adoption`.
+
+The review basis is explicit. `consumer-feature` requires at least one
+`--feature-adoption`; `plugin-only` and `certification-only` refuse feature adoptions.
+Every checkout still contributes the same derived certification evidence; its role
+records only whether the owner reviewed that consumer as exercising the changed
+feature or as exact-byte hardening-certification evidence only.
 Commit the generated file to the Release Please PR. Tag creation and publication then
 validate the candidate identity and refuse a rebuilt JAR whose bytes differ from the
 reviewed candidate.
@@ -482,9 +489,8 @@ validate_release_diff() {
 
 create_reviewed_attestation() {
   local version=$1 candidate_commit=$2 requested_jar=$3
-  shift 3
   local output tmp candidate_tree candidate_origin jar before after reviewed='[]' reviewed_after='[]'
-  local adoption summary duplicates
+  local adoption role summary duplicates feature_count index
   require_version "$version"
   if [ "$(manifest_version)" != "$version" ]; then
     echo "release-attestation: release manifest does not name version $version" >&2
@@ -509,8 +515,8 @@ create_reviewed_attestation() {
     echo "release-attestation: candidate origin is '$candidate_origin', expected '$expected_origin_slug'" >&2
     return 1
   fi
-  if [ "$#" -eq 0 ]; then
-    echo "release-attestation: create-reviewed requires at least one --adoption consumer-checkout" >&2
+  if [ "${#review_paths[@]}" -eq 0 ]; then
+    echo "release-attestation: create-reviewed requires at least one consumer adoption checkout" >&2
     return 1
   fi
 
@@ -521,8 +527,12 @@ create_reviewed_attestation() {
   fi
   require_no_symlink_components "$jar" "reviewed plugin JAR" || return 1
   before=$(sha256_file "$jar") || return 1
-  for adoption in "$@"; do
+  for ((index = 0; index < ${#review_paths[@]}; index++)); do
+    adoption=${review_paths[$index]}
+    role=${review_roles[$index]}
     summary=$(reviewed_adoption_summary "$adoption" "$before") || return 1
+    summary=$(jq -cn --argjson item "$summary" --arg role "$role" \
+      '$item + {review_role:$role}') || return 1
     reviewed=$(jq -cn --argjson existing "$reviewed" --argjson item "$summary" \
       '$existing + [$item]') || return 1
   done
@@ -538,8 +548,12 @@ create_reviewed_attestation() {
   # Re-derive all consumer evidence after the first complete pass. This binds the
   # recorded clean HEADs and receipt hashes to one observation window instead of
   # allowing an adoption checkout or ignored build receipt to change mid-command.
-  for adoption in "$@"; do
+  for ((index = 0; index < ${#review_paths[@]}; index++)); do
+    adoption=${review_paths[$index]}
+    role=${review_roles[$index]}
     summary=$(reviewed_adoption_summary "$adoption" "$before") || return 1
+    summary=$(jq -cn --argjson item "$summary" --arg role "$role" \
+      '$item + {review_role:$role}') || return 1
     reviewed_after=$(jq -cn --argjson existing "$reviewed_after" --argjson item "$summary" \
       '$existing + [$item]') || return 1
   done
@@ -555,6 +569,31 @@ create_reviewed_attestation() {
     return 1
   fi
 
+  feature_count=$(jq -r '[.[] | select(.review_role == "feature-path")] | length' \
+    <<< "$reviewed") || return 1
+  case "$review_basis" in
+    consumer-feature)
+      if [ "$feature_count" -eq 0 ]; then
+        echo "release-attestation: review basis consumer-feature requires at least one --feature-adoption checkout" >&2
+        return 1
+      fi
+      ;;
+    plugin-only|certification-only)
+      if [ "$feature_count" -ne 0 ]; then
+        echo "release-attestation: review basis $review_basis refuses --feature-adoption checkouts" >&2
+        return 1
+      fi
+      ;;
+    '')
+      echo "release-attestation: create-reviewed requires --review-basis consumer-feature, plugin-only, or certification-only" >&2
+      return 1
+      ;;
+    *)
+      echo "release-attestation: invalid review basis: '$review_basis'" >&2
+      return 1
+      ;;
+  esac
+
   if [ ! -d "$attestations_dir" ] || [ -L "$attestations_dir" ]; then
     echo "release-attestation: missing regular release-attestations directory" >&2
     return 1
@@ -563,11 +602,12 @@ create_reviewed_attestation() {
   trap 'rm -f "$tmp"' RETURN
   jq -nS \
     --arg version "$version" --arg commit "$candidate_commit" --arg tree "$candidate_tree" \
-    --arg origin "$candidate_origin" --arg plugin_hash "$after" \
+    --arg origin "$candidate_origin" --arg plugin_hash "$after" --arg basis "$review_basis" \
     --argjson repositories "$reviewed" \
-    '{schema:3,kind:"sava-build-release-attestation",version:$version,
+    '{schema:4,kind:"sava-build-release-attestation",version:$version,
       candidate:{commit:$commit,tree:$tree,origin:$origin,plugin_jar_sha256:$plugin_hash},
-      review:{kind:"derived-local-hardening-certifications",repositories:$repositories}}' > "$tmp"
+      review:{kind:"classified-local-hardening-certifications",basis:$basis,
+        repositories:$repositories}}' > "$tmp"
   chmod 0644 "$tmp"
   if [ -e "$output" ] || [ -L "$output" ]; then
     echo "release-attestation: output appeared during creation; refusing overwrite" >&2
@@ -654,12 +694,79 @@ attestation_schema_valid() {
         (.review.repositories == (.review.repositories | sort_by(.slug)))
       ' "$file" >/dev/null
       ;;
+    4)
+      jq -e --arg version "$version" --arg origin "$expected_origin_slug" '
+        def valid_certification:
+          (. | keys == ["git_project_directory","path","project","receipt_sha256",
+            "schema","session","suite_count","suites"]) and
+          .schema == 6 and
+          (.path | type == "string" and
+            test("^(?:[^/]+/)*build/hardening/pitest-certification[.]tsv$") and
+            (startswith("/") | not) and
+            (contains("/../") | not) and
+            (contains("/./") | not) and
+            (split("/") | all(.[]; length > 0 and . != "." and . != ".."))) and
+          (.git_project_directory | type == "string" and
+            (. == "." or
+              (test("^(?:[^/]+/)*[^/]+$") and
+                (split("/") | all(.[]; length > 0 and . != "." and . != ".."))))) and
+          .path == (if .git_project_directory == "." then
+              "build/hardening/pitest-certification.tsv"
+            else .git_project_directory + "/build/hardening/pitest-certification.tsv" end) and
+          (.receipt_sha256 | test("^[0-9a-f]{64}$")) and
+          (.project | type == "string" and length > 0) and
+          (.session | type == "string" and length > 0) and
+          (.suite_count | type == "number" and . >= 0 and floor == .) and
+          (.suites | type == "array") and
+          ((.suites | length) == .suite_count) and
+          (.suites == (.suites | sort)) and
+          ((.suites | unique | length) == (.suites | length)) and
+          all(.suites[]; type == "string" and length > 0);
+        .candidate.plugin_jar_sha256 as $plugin |
+        .review.repositories as $repositories |
+        keys == ["candidate","kind","review","schema","version"] and
+        .schema == 4 and .kind == "sava-build-release-attestation" and .version == $version and
+        (.candidate | keys == ["commit","origin","plugin_jar_sha256","tree"]) and
+        (.candidate.commit | test("^[0-9a-f]{40}$")) and
+        (.candidate.tree | test("^[0-9a-f]{40}$")) and .candidate.origin == $origin and
+        (.candidate.plugin_jar_sha256 | test("^[0-9a-f]{64}$")) and
+        (.review | keys == ["basis","kind","repositories"]) and
+        .review.kind == "classified-local-hardening-certifications" and
+        (.review.basis == "consumer-feature" or .review.basis == "plugin-only" or
+          .review.basis == "certification-only") and
+        ($repositories | type == "array" and length > 0) and
+        all($repositories[];
+          (. | keys == ["certifications","commit","origin","plugin_jar_sha256",
+            "review_role","slug","tree"]) and
+          (.slug | test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")) and
+          .slug == (.slug | ascii_downcase) and
+          .origin == ("https://github.com/" + .slug + ".git") and
+          (.commit | test("^[0-9a-f]{40}$")) and
+          (.tree | test("^[0-9a-f]{40}$")) and
+          .plugin_jar_sha256 == $plugin and
+          (.certifications | type == "array" and length > 0) and
+          (.certifications == (.certifications | sort_by(.path))) and
+          (([.certifications[].path] | unique | length) == (.certifications | length)) and
+          (([.certifications[].suite_count] | add) > 0) and
+          all(.certifications[]; valid_certification) and
+          (.review_role == "feature-path" or
+            .review_role == "certification-only")) and
+        (([$repositories[].slug] | unique | length) == ($repositories | length)) and
+        ($repositories == ($repositories | sort_by(.slug))) and
+        (if .review.basis == "consumer-feature" then
+           any($repositories[]; .review_role == "feature-path")
+         else
+           all($repositories[]; .review_role == "certification-only")
+         end)
+      ' "$file" >/dev/null
+      ;;
     *) return 1 ;;
   esac
 }
 
 verify_attestation() {
-  local version=$1 file relative mode commit tree reviewed_count
+  local version=$1 file relative mode commit tree schema compatibility_count
+  local feature_count review_basis
   require_version "$version"
   require_clean_checkout
   if [ "$(manifest_version)" != "$version" ]; then
@@ -681,13 +788,29 @@ verify_attestation() {
     echo "release-attestation: invalid release record schema: $relative" >&2
     return 1
   fi
-  require_clean_checkout
-  commit=$(jq -r '.candidate.commit' "$file")
-  tree=$(jq -r '.candidate.tree' "$file")
-  validate_candidate "$commit" "$tree"
-  validate_release_diff "$commit" "$version" true
-  reviewed_count=$(jq -r '.review.repositories | length' "$file")
-  echo "release-attestation: version $version binds $reviewed_count reviewed local adoption pass(es) to candidate $commit"
+  require_clean_checkout || return 1
+  commit=$(jq -r '.candidate.commit' "$file") || return 1
+  tree=$(jq -r '.candidate.tree' "$file") || return 1
+  validate_candidate "$commit" "$tree" || return 1
+  validate_release_diff "$commit" "$version" true || return 1
+  schema=$(jq -r '.schema' "$file") || return 1
+  case "$schema" in
+    2)
+      compatibility_count=$(jq -r '.review.repositories | length' "$file") || return 1
+      echo "release-attestation: version $version preserves a historical schema-2 owner claim naming $compatibility_count local adoption pass(es) for candidate $commit"
+      ;;
+    3)
+      compatibility_count=$(jq -r '.review.repositories | length' "$file") || return 1
+      echo "release-attestation: version $version binds $compatibility_count consumer repository checkout(s) with exact-byte hardening certification to candidate $commit"
+      ;;
+    4)
+      compatibility_count=$(jq -r '.review.repositories | length' "$file") || return 1
+      feature_count=$(jq -r \
+        '[.review.repositories[] | select(.review_role == "feature-path")] | length' "$file") || return 1
+      review_basis=$(jq -r '.review.basis' "$file") || return 1
+      echo "release-attestation: version $version review basis $review_basis binds $compatibility_count consumer repository checkout(s) with exact-byte hardening certification and records $feature_count owner-reviewed feature-path consumer(s), to candidate $commit"
+      ;;
+  esac
 }
 
 verify_tag() {
@@ -793,12 +916,34 @@ self_test() {
         ;;
     esac
   }
+  commit_reviewed_record() {
+    local message=$1
+    (
+      cd "$reviewed_fixture"
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        git add release-attestations/1.0.1.json
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        git -c user.name=SelfTest -c user.email=self@test commit -qm "$message"
+    )
+  }
+  remove_reviewed_record() {
+    local message=$1
+    unlink "$reviewed_output"
+    (
+      cd "$reviewed_fixture"
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        git add -u release-attestations/1.0.1.json
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        git -c user.name=SelfTest -c user.email=self@test commit -qm "$message"
+    )
+  }
 
   # The release path derives the reviewed cohort from clean consumer checkouts and
   # their completed certification receipts.
   local reviewed_fixture="$fixture/reviewed" reviewed_script reviewed_candidate reviewed_tree
   local reviewed_divergent
   local reviewed_jar reviewed_output valid_reviewed_attestation historic_reviewed_attestation
+  local historic_schema3_attestation verify_output
   local consumers="$fixture/reviewed-consumers" consumer_sava="$fixture/reviewed-consumers/sava"
   local consumer_ravina="$fixture/reviewed-consumers/ravina"
   local consumer_sava_copy="$fixture/reviewed-consumers/sava-copy"
@@ -928,7 +1073,7 @@ self_test() {
   valid_sava_receipt=$(<"$consumer_sava/build/hardening/pitest-certification.tsv")
 
   expect_cli_failure "reviewed attestation without an adoption" \
-    "requires at least one --adoption" \
+    "requires at least one consumer adoption" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar"
   expect_cli_failure "short reviewed candidate" "not a full commit" \
@@ -1150,20 +1295,86 @@ self_test() {
     "$consumer_ravina/ravina-core/build/hardening/pitest-certification.tsv")
   ravina_server_receipt_sha=$(sha256_file \
     "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv")
+  expect_cli_failure "reviewed attestation without an explicit basis" \
+    "requires --review-basis" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --certification-only-adoption "$consumer_sava"
+  expect_cli_failure "invalid review basis" "invalid review basis" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis other \
+      --certification-only-adoption "$consumer_sava"
+  expect_cli_failure "consumer feature basis without a feature adoption" \
+    "consumer-feature requires at least one --feature-adoption" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis consumer-feature \
+      --certification-only-adoption "$consumer_sava"
+  expect_cli_failure "plugin-only basis with a feature adoption" \
+    "plugin-only refuses --feature-adoption" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis plugin-only \
+      --feature-adoption "$consumer_sava"
+  expect_cli_failure "certification-only basis with a feature adoption" \
+    "certification-only refuses --feature-adoption" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis certification-only \
+      --feature-adoption "$consumer_sava"
+
+  # The deprecated alias is still a positive certification-only creation path.
   "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
-    --plugin-jar "$reviewed_jar" --adoption "$consumer_sava" \
-    --adoption "$consumer_ravina" >/dev/null
+    --plugin-jar "$reviewed_jar" --review-basis certification-only \
+    --adoption "$consumer_sava" >/dev/null
+  jq -e '
+    .schema == 4 and .review.kind == "classified-local-hardening-certifications" and
+    .review.basis == "certification-only" and
+    [.review.repositories[].review_role] == ["certification-only"]
+  ' "$reviewed_output" >/dev/null
+  commit_reviewed_record 'certification-only alias review'
+  verify_output=$("$reviewed_script" verify 1.0.1)
+  [[ "$verify_output" == *"review basis certification-only binds 1 consumer repository checkout(s)"* &&
+      "$verify_output" == *"records 0 owner-reviewed feature-path consumer(s)"* ]] || {
+    echo "release-attestation self-test: certification-only verification summary is unclassified" >&2
+    printf '%s\n' "$verify_output" >&2
+    return 1
+  }
+  remove_reviewed_record 'remove certification-only alias review'
+
+  # Plugin-only is a release-basis statement; consumer receipts remain exact-byte evidence.
+  "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+    --plugin-jar "$reviewed_jar" --review-basis plugin-only \
+    --certification-only-adoption "$consumer_sava" >/dev/null
+  jq -e '
+    .review.basis == "plugin-only" and
+    [.review.repositories[].review_role] == ["certification-only"]
+  ' "$reviewed_output" >/dev/null
+  commit_reviewed_record 'plugin-only review'
+  verify_output=$("$reviewed_script" verify 1.0.1)
+  [[ "$verify_output" == *"review basis plugin-only binds 1 consumer repository checkout(s)"* &&
+      "$verify_output" == *"records 0 owner-reviewed feature-path consumer(s)"* ]] || {
+    echo "release-attestation self-test: plugin-only verification summary is unclassified" >&2
+    printf '%s\n' "$verify_output" >&2
+    return 1
+  }
+  remove_reviewed_record 'remove plugin-only review'
+
+  "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+    --plugin-jar "$reviewed_jar" --review-basis consumer-feature \
+    --certification-only-adoption "$consumer_sava" \
+    --feature-adoption "$consumer_ravina" >/dev/null
   jq -e --arg candidate "$reviewed_candidate" --arg tree "$reviewed_tree" --arg jar "$jar_hash" \
       --arg sava_commit "$sava_commit" --arg sava_tree "$sava_tree" \
       --arg ravina_commit "$ravina_commit" --arg ravina_tree "$ravina_tree" \
       --arg sava_receipt_sha "$sava_receipt_sha" \
       --arg ravina_core_receipt_sha "$ravina_core_receipt_sha" \
       --arg ravina_server_receipt_sha "$ravina_server_receipt_sha" '
-    .schema == 3 and .candidate.commit == $candidate and
+    .schema == 4 and .candidate.commit == $candidate and
     .candidate.tree == $tree and
     .candidate.plugin_jar_sha256 == $jar and
-    .review.kind == "derived-local-hardening-certifications" and
-    [.review.repositories[].slug] == ["sava-software/ravina","sava-software/sava"] and
+    .review.kind == "classified-local-hardening-certifications" and
+    .review.basis == "consumer-feature" and
+    [.review.repositories[].slug] ==
+      ["sava-software/ravina","sava-software/sava"] and
+    [.review.repositories[].review_role] ==
+      ["feature-path","certification-only"] and
     .review.repositories[0].commit == $ravina_commit and
     .review.repositories[0].tree == $ravina_tree and
     .review.repositories[0].plugin_jar_sha256 == $jar and
@@ -1183,24 +1394,40 @@ self_test() {
     .review.repositories[0].certifications[2].suites == [] and
     .review.repositories[1].commit == $sava_commit and
     .review.repositories[1].tree == $sava_tree and
-    .review.repositories[1].origin == "https://github.com/sava-software/sava.git" and
+    .review.repositories[1].origin ==
+      "https://github.com/sava-software/sava.git" and
     .review.repositories[1].plugin_jar_sha256 == $jar and
-    .review.repositories[1].certifications[0].receipt_sha256 == $sava_receipt_sha and
+    .review.repositories[1].certifications[0].receipt_sha256 ==
+      $sava_receipt_sha and
     .review.repositories[1].certifications[0].suites == ["ws"]
   ' "$reviewed_output" >/dev/null
   expect_cli_failure "reviewed attestation overwrite" "refusing to overwrite existing release record" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   valid_reviewed_attestation=$(<"$reviewed_output")
+  commit_reviewed_record 'consumer-feature attestation'
+  verify_output=$("$reviewed_script" verify 1.0.1)
+  [[ "$verify_output" == *"review basis consumer-feature binds 2 consumer repository checkout(s)"* &&
+      "$verify_output" == *"records 1 owner-reviewed feature-path consumer(s)"* ]] || {
+    echo "release-attestation self-test: consumer-feature verification summary is unclassified" >&2
+    printf '%s\n' "$verify_output" >&2
+    return 1
+  }
+  "$reviewed_script" verify-pending-release >/dev/null
+  historic_schema3_attestation=$(jq -cS '
+    {schema:3,kind:.kind,version:.version,candidate:.candidate,
+      review:{kind:"derived-local-hardening-certifications",
+        repositories:(.review.repositories | map(del(.review_role)))}}
+  ' <<< "$valid_reviewed_attestation")
+  printf '%s\n' "$historic_schema3_attestation" > "$reviewed_output"
   (
     cd "$reviewed_fixture"
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
       git add release-attestations/1.0.1.json
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm attestation
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'historical schema 3 review'
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
-  "$reviewed_script" verify-pending-release >/dev/null
   historic_reviewed_attestation=$(jq -nS --arg candidate "$reviewed_candidate" \
     --arg tree "$reviewed_tree" --arg jar "$jar_hash" \
     '{schema:2,kind:"sava-build-release-attestation",version:"1.0.1",
@@ -1223,11 +1450,12 @@ self_test() {
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
       git add release-attestations/1.0.1.json
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore schema 3 review'
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore schema 4 review'
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
   jq '.review.repositories[0].slug = "SAVA-SOFTWARE/RAVINA" |
-      .review.repositories[0].origin = "https://github.com/SAVA-SOFTWARE/RAVINA.git"' \
+      .review.repositories[0].origin =
+        "https://github.com/SAVA-SOFTWARE/RAVINA.git"' \
     "$reviewed_output" > "$reviewed_output.tmp"
   mv "$reviewed_output.tmp" "$reviewed_output"
   (
@@ -1269,7 +1497,8 @@ self_test() {
       git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore reviewed attestation'
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
-  jq '.review.repositories |= reverse' "$reviewed_output" > "$reviewed_output.tmp"
+  jq '.review.repositories |= reverse' \
+    "$reviewed_output" > "$reviewed_output.tmp"
   mv "$reviewed_output.tmp" "$reviewed_output"
   (
     cd "$reviewed_fixture"
@@ -1333,6 +1562,24 @@ self_test() {
       git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore contained review receipt'
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
+  jq '.review.repositories[0].review_role = "unclassified"' \
+    "$reviewed_output" > "$reviewed_output.tmp"
+  mv "$reviewed_output.tmp" "$reviewed_output"
+  commit_reviewed_record 'invalid review role'
+  expect_cli_failure "invalid committed review role" \
+    "invalid release record schema" "$reviewed_script" verify 1.0.1
+  printf '%s\n' "$valid_reviewed_attestation" > "$reviewed_output"
+  commit_reviewed_record 'restore review role'
+  "$reviewed_script" verify 1.0.1 >/dev/null
+  jq '.review.basis = "certification-only"' \
+    "$reviewed_output" > "$reviewed_output.tmp"
+  mv "$reviewed_output.tmp" "$reviewed_output"
+  commit_reviewed_record 'misclassified review basis'
+  expect_cli_failure "certification-only record with feature role" \
+    "invalid release record schema" "$reviewed_script" verify 1.0.1
+  printf '%s\n' "$valid_reviewed_attestation" > "$reviewed_output"
+  commit_reviewed_record 'restore classified review basis'
+  "$reviewed_script" verify 1.0.1 >/dev/null
   printf '%s\n' 'post-review source change' > "$reviewed_fixture/source.txt"
   (
     cd "$reviewed_fixture"
@@ -1370,28 +1617,40 @@ case "$command_name" in
     shift
     candidate=""
     plugin_jar=""
-    adoptions=()
-    adoption_count=0
+    review_basis=""
+    review_paths=()
+    review_roles=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --candidate) shift; [ "$#" -gt 0 ] || { usage >&2; exit 2; }; candidate=$1 ;;
         --plugin-jar) shift; [ "$#" -gt 0 ] || { usage >&2; exit 2; }; plugin_jar=$1 ;;
-        --adoption)
+        --review-basis)
           shift
           [ "$#" -gt 0 ] || { usage >&2; exit 2; }
-          adoptions+=("$1")
-          adoption_count=$((adoption_count + 1))
+          review_basis=$1
+          ;;
+        --feature-adoption)
+          shift
+          [ "$#" -gt 0 ] || { usage >&2; exit 2; }
+          review_paths+=("$1")
+          review_roles+=("feature-path")
+          ;;
+        --certification-only-adoption|--adoption)
+          shift
+          [ "$#" -gt 0 ] || { usage >&2; exit 2; }
+          review_paths+=("$1")
+          review_roles+=("certification-only")
           ;;
         *) echo "release-attestation: unknown create-reviewed option: $1" >&2; usage >&2; exit 2 ;;
       esac
       shift
     done
     [ -n "$candidate" ] && [ -n "$plugin_jar" ] || { usage >&2; exit 2; }
-    if [ "$adoption_count" -eq 0 ]; then
-      echo "release-attestation: create-reviewed requires at least one --adoption consumer-checkout" >&2
+    if [ "${#review_paths[@]}" -eq 0 ]; then
+      echo "release-attestation: create-reviewed requires at least one consumer adoption checkout" >&2
       exit 2
     fi
-    create_reviewed_attestation "$version" "$candidate" "$plugin_jar" "${adoptions[@]}"
+    create_reviewed_attestation "$version" "$candidate" "$plugin_jar"
     ;;
   verify)
     [ "$#" -eq 2 ] || { usage >&2; exit 2; }

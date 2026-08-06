@@ -242,9 +242,9 @@ TestKit tools with neither real PIT/plugin sentinels remain supported.
 The third rule is that **an assisted report may check the current ratchet but cannot
 support a manual record decision**. ArcMutate owns its reuse policy; a changed test has
 been observed alongside a reused `TIMED_OUT` status, so `[history]` is never proof that
-a mutant is still timed out, newly killed, newly surviving, absent, or safe to re-anchor.
-Before adding, removing, relabelling, or re-anchoring an accepted-baseline or timeout-audit
-row, run `pitest<Suite> -PnoMutationHistory`. Explicit `-PstrictTimeoutAudit` disables
+a mutant is still timed out, newly killed, newly surviving, or absent.
+Before adding, removing, or relabelling an accepted-baseline or timeout-audit row, run
+`pitest<Suite> -PnoMutationHistory`. Explicit `-PstrictTimeoutAudit` disables
 history too. Assisted reports do not replace the status-drift stash or advance the
 three-run timeout-retirement counter, and the first fresh run after this rule resets
 older machine-local counters that may already contain assisted observations. `clean`
@@ -648,10 +648,10 @@ invoked it*, and the failure looks exactly like a real regression.
   This default drift detail is independent of audited-set membership: the
   timeout set is intentionally line-less, so an existing membership row can
   cover a key whose timeout count just grew; membership suppresses the
-  unaudited-row warning, but it does not authorize the new line. The anchored
-  liveness check names that sibling independently and strict certification
-  refuses it until reviewed; the drift output additionally retains the changed
-  coordinate, multiplicity, and every line-full candidate. The two
+  unaudited-row warning, while the drift output retains the changed coordinate,
+  multiplicity, and every line-full candidate for review. The line is diagnostic
+  metadata, not an authorization boundary: ordinary formatting, inserted methods,
+  and line reflow must not warn, fail, or require a record edit. The two
   runs are compared as per-coordinate
   **counts**, not as sets of coordinates: the coordinate is line-less, so one
   key routinely holds an accepted survivor *and* an audited timeout at the
@@ -716,7 +716,7 @@ invoked it*, and the failure looks exactly like a real regression.
   per member in `config/pitest/<suite>-timeouts.csv` (line-less so drift
   cannot churn membership; `#` comments allowed, and spacing around fields
   is normalized away, so rows may be aligned for reading), with a required
-  machine-readable comment category, one or more reviewed `# line` anchors,
+  machine-readable comment category, optional `# line` diagnostic metadata,
   and the full structural cause written per member in
   `config/pitest/README.md`:
 
@@ -755,19 +755,20 @@ invoked it*, and the failure looks exactly like a real regression.
   *(casebook: the liveness loop that raced the heap)*
 
   The category makes the disposition explicit; the README still carries the
-  evidence and cannot be replaced by the token. The line anchors scope that
-  disposition: a reviewed liveness mutant at line 10 does not authorize a
-  finite same-key sibling at line 20. PIT's CSV cannot distinguish two mutant
-  copies with the same class, method, mutator, **and line**. If copies at that
-  one location need different cause classifications, the key cannot honestly
-  be audited as liveness; give the copies deterministic dispositions instead.
+  evidence and cannot be replaced by the token. Membership and cause are key-level.
+  A liveness mutant and a finite sibling can share one `class,method,mutator` key,
+  and PIT's CSV supplies no formatting-stable discriminator with which this record
+  can separate them. This is a known limitation: review positive multiplicity drift
+  and its line-full candidates carefully, but do not pretend a source-line number
+  closes the hole. `# line` remains a triage pointer only and changing it never
+  authorizes or invalidates evidence.
   Adoption is seeded, not
   transcribed: a suite whose summary reports timeouts with no set on disk is
   pointed at `pitest<Suite>TimeoutAuditInit`, which writes the membership rows from the
   run's report (observed lines riding in `#` comments) and leaves category
   disposition plus the full cause to a person. Its output is intentionally not
-  certifiable: every seeded `cause:untriaged` row must become an anchored,
-  documented `cause:liveness` row or leave the set through a contract-first
+  certifiable: every seeded `cause:untriaged` row must become a documented
+  `cause:liveness` row or leave the set through a contract-first
   disposition. The nudge also prints the would-be member rows
   paste-ready alongside the task hint: timeouts are load-dependent, so the run
   that prompted the nudge may be the only one holding them — a later
@@ -816,11 +817,11 @@ invoked it*, and the failure looks exactly like a real regression.
   argued from the old method body. The
   line-less key is also the membership check's resolution: a *new* timed-out
   mutant in an already-audited method+mutator draws no **unaudited-member**
-  warning. It is not therefore authorized. The `# line` comments are parsed
-  back, and every timed-out line must be among that member's reviewed
-  `cause:liveness` anchors. A moved anchor or a new same-key sibling at another
-  source line is warned in ordinary runs and refused by strict certification
-  until each unexpected line is triaged; only then may the anchors change.
+  warning. The `# line` comments remain diagnostic pointers only; a moved line
+  does not warn or fail, and no re-anchoring is required after formatting or an
+  inserted method. The same-key sibling limitation is real, so positive
+  multiplicity drift prints all current line-full candidates for human review
+  instead of claiming a positional gate can identify the newcomer.
   Run-to-run multiplicity
   drift still prints every current line-full candidate, because the stash
   cannot identify which copy is new. Advisory only, never a failure, by
@@ -828,7 +829,7 @@ invoked it*, and the failure looks exactly like a real regression.
   completed between ordinary runs. For certifying runs, `-PstrictTimeoutAudit` escalates
   exactly the findings that mean the audit is not being kept — an
   unaudited newcomer, a malformed row, a missing/inadmissible/unfinished cause
-  category, a liveness timeout outside its reviewed line anchors, or a member
+  category, or a member
   whose cause was never written (the doctrine admits a newcomer only with its cause written, so a
   cause-less member is an unfinished admission, not hygiene — row-then-cause
   is a legitimate sequence *between* certifications, not during one), or a
@@ -843,7 +844,7 @@ invoked it*, and the failure looks exactly like a real regression.
   reading as a certification of the suite. Because every audit finding is advisory in the default modes,
   the build ends with a one-line-per-suite summary of the advisory findings
   it printed — a reviewer-stop nobody scrolls back to is not a stop.
-  The audit's static half — row shape, cause category, line anchors, and README
+  The audit's static half — row shape, cause category, and README
   presence — reads committed files only. `hardeningCertify`,
   `pitest<Suite>BaselineRebase`, and explicit `-PstrictTimeoutAudit` run that
   preflight before PIT; a fleet migration therefore fails in seconds rather
@@ -1948,7 +1949,7 @@ merely waiting for a release.
 >   preserves every old row, seeds new rows `# untriaged`, and stamps the reviewed
 >   toolchain only after a successful fresh observation. Perform a schema
 >   migration/rollback only with a fleet pin plan. A `[history]` report may check
->   the ratchet but cannot support adding, removing, relabelling, or re-anchoring
+>   the ratchet but cannot support adding, removing, or relabelling
 >   accepted/timeout records; run `pitest<Suite> -PnoMutationHistory` first.
 > - Consumer hardening notes contain only local ownership, measurements, acceptance
 >   reasons, and provenance. `AGENTS.md` may carry this exact generated,
@@ -1984,7 +1985,7 @@ merely waiting for a release.
 >   assertion — a timeout keeps "detecting" whatever the test asserts — so
 >   each suite's timeouts are an audited set, not a count:
 >   `config/pitest/<suite>-timeouts.csv` holds line-less `class,method,mutator`
->   keys plus a comment category and reviewed `# line` anchors. Only
+>   keys plus a comment category; `# line` tags are diagnostic metadata only. Only
 >   `cause:liveness` is admissible watchdog detection after deterministic
 >   seams/budgets are exhausted: the mutated path has no path-owned finite
 >   completion guarantee. A fixture's emergency exit does not demote that
@@ -2000,11 +2001,12 @@ merely waiting for a release.
 >   `config/pitest/README.md` still holds the
 >   full structural cause per member. The verify warns on any timeout outside
 >   the set — paste the printed row, classify it, then write the cause — and on
->   members matching no mutant. Line-less identity does not widen the cause:
->   every timed-out line must match a reviewed liveness anchor, so a moved mutant
->   or same-key resource sibling at another line is a reviewer-stop. Same-line
->   copies are indistinguishable in PIT's CSV; a location needing mixed cause
->   classifications cannot be admitted as audited liveness. Strict workflows run the
+>   members matching no mutant. Membership and cause are key-level, which leaves a
+>   known blind spot when a liveness mutant and a finite sibling share the same key.
+>   Positive multiplicity drift prints all current line-full candidates for review;
+>   source-line movement itself never warns, fails, or requires re-anchoring. Adding
+>   a method, moving imports, or reflowing an expression is not a hardening record
+>   change. Strict workflows run the
 >   committed-file half before PIT; use `pitest<Suite>Debt` for the same quick
 >   manual preview. `TimeoutAuditInit` deliberately seeds an uncertifiable file —
 >   classify every row before certification. Proving a row can be retired requires

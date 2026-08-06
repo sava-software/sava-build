@@ -627,6 +627,38 @@ $buildTail
   }
 
   @Test
+  fun `fuzzAll invalid parallel width invalidates old evidence and retains its refusal`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv").apply {
+      parentFile.mkdirs()
+      writeText("prior completed campaign\n")
+    }
+    val running = File(fixtureDir, ".pitest-history/local-fuzz.running")
+
+    val failed = runner(
+      "fuzzAll",
+      "-PmaxFuzzTime=1",
+      "-PmaxParallelFuzzTargets=0",
+    ).buildAndFail()
+
+    assertTrue(
+      failed.output.contains(
+        "-PmaxParallelFuzzTargets must be positive whole targets without leading zeros",
+      ),
+      "invalid parallel width was misreported:\n${failed.output}",
+    )
+    assertFalse(receipt.exists(), "invalid settings retained an older successful receipt")
+    assertTrue(running.isFile, "invalid settings did not retain the refusal sentinel")
+    assertTrue(
+      running.readText().startsWith("refused\t") &&
+          running.readText().contains("-PmaxParallelFuzzTargets must be positive whole targets"),
+      "invalid settings retained the wrong campaign state:\n${running.readText()}",
+    )
+  }
+
+  @Test
   fun `fuzzAll refuses missing ambiguous and zero live execution counts`() {
     listOf(
       "missing" to "emitted no terminal",
@@ -812,6 +844,15 @@ $buildTail
     assertTrue(assistedArgs.any { it.startsWith("--historyOutputLocation=") }, assistedArgs.toString())
     assertTrue(assistedEvidence.historyAssisted, assisted.output)
     assertEquals(1, assistedPopulation, "the classpath-sensitive population probe did not activate")
+
+    val assistedDebt = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      assistedDebt.contains("current [history] report (read-only preview)") &&
+          assistedDebt.contains(
+            "pitestEncoding -PnoMutationHistory before any accepted-baseline or timeout-audit decision",
+          ),
+      "Debt presented a real assisted PIT report as decision evidence:\n$assistedDebt",
+    )
 
     val strictAgainstAssisted = runner("pitestEncodingVerify", "-PstrictTimeoutAudit")
       .buildAndFail().output

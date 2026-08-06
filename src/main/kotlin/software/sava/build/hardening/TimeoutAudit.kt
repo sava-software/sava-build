@@ -3,7 +3,7 @@ package software.sava.build.hardening
 /**
  * The single place that knows the audited-timeout membership file's row format
  * (`config/pitest/<suite>-timeouts.csv`: line-less `class,method,mutator` keys with
- * backward-compatible `# cause:<category>` and line-anchor metadata), so the verify
+ * backward-compatible `# cause:<category>` and diagnostic line metadata), so the verify
  * and `pitest<Suite>Debt` can never drift on what parses, what is malformed, which
  * cause classes are admissible, or which README causes resolve.
  *
@@ -17,10 +17,12 @@ package software.sava.build.hardening
  * Only the audit's *static* half lives here — checks that read committed files and
  * nothing else — which is what lets `Debt` answer "does the tool agree with my pasted
  * row and my README cause?" in seconds instead of after the next mutation run. The
- * mutant-facing checks (unaudited newcomers, stale members, quiet streaks, drifted
- * lines) need a report and stay in the verify — though [lineDrift] and
- * [unauthorizedLivenessLines] keep their pure comparisons here so they can be
- * reasoned about without a TestKit fixture.
+ * mutant-facing checks (unaudited newcomers, stale members, and quiet streaks)
+ * need a report and stay in the verify. `# line` comments deliberately do
+ * not authorize or identify a mutant: source formatting and unrelated insertions
+ * must not invalidate an audited cause. PIT's CSV cannot provide a stable finer
+ * identity, so same-key siblings remain an explicit limitation until a separate,
+ * versioned semantic-anchor format exists.
  */
 internal object TimeoutAudit {
 
@@ -119,12 +121,7 @@ internal object TimeoutAudit {
           } else {
             categories[member] = category
             when (category) {
-              CauseCategory.LIVENESS -> if (recordedLines[member].isNullOrEmpty()) {
-                causeFindings += CauseFinding(
-                    member,
-                    "cause:liveness requires at least one '# line' anchor; line-less membership " +
-                        "cannot authorize same-key mutants at every source line")
-              }
+              CauseCategory.LIVENESS -> Unit
               CauseCategory.RESOURCE -> causeFindings += CauseFinding(
                   member,
                   "cause:resource terminates and needs a deterministic contract-first disposition, " +
@@ -172,29 +169,6 @@ internal object TimeoutAudit {
             malformed.joinToString("\n") { "  $it" }
 
   /**
-   * Members whose observed timeout lines all differ from the lines their row's
-   * comment names — the machine half of "re-read the README cause when the code at
-   * that line changes". [recorded] is [Membership.recordedLines]; [observed] maps a
-   * member to the lines it timed out at in this run's report, and only members
-   * present in both take part: a member without a `# line` comment recorded no
-   * anchor, and a member that did not time out this run observed nothing.
-   *
-   * Disjointness, not inequality, on purpose: this older moved-anchor comparison
-   * stays quiet when a new sibling appears beside a recorded line, while
-   * [unauthorizedLivenessLines] reports that sibling separately. Drift fires only
-   * when no observed line matches any recorded one — the anchor the cause argues
-   * about has moved entirely.
-   */
-  fun lineDrift(
-    recorded: Map<String, Set<Int>>,
-    observed: Map<String, Set<Int>>,
-  ): Map<String, Pair<Set<Int>, Set<Int>>> = observed.entries.mapNotNull { (member, observedLines) ->
-    val recordedLines = recorded[member] ?: return@mapNotNull null
-    val unmatched = disjointDrift(recordedLines, observedLines)
-    if (unmatched.isEmpty()) null else member to (recordedLines to unmatched)
-  }.toMap()
-
-  /**
    * The key-level disjointness decision, shared with [BaselineNotes.lineDrift]'s
    * partial-tag/count-skew fallback so the two advisories can never disagree about
    * what "drifted" means at this resolution: the observed lines report only when
@@ -202,63 +176,6 @@ internal object TimeoutAudit {
    */
   fun disjointDrift(recordedLines: Set<Int>, observedLines: Set<Int>): Set<Int> =
       if (observedLines.any { it in recordedLines }) emptySet() else observedLines
-
-  /**
-   * Timed-out lines that a member's reviewed `cause:liveness` anchors do not
-   * authorize. Unlike [lineDrift], this is intentionally an exact set difference:
-   * recorded line 10 remaining live must not let an unrelated same-key line 20
-   * inherit its liveness argument. A declared liveness member without an anchor,
-   * and non-liveness or invalid/conflicting members, are excluded here because
-   * their static cause findings already refuse them before line authorization
-   * matters; reporting both would count one defect twice in the strict summary.
-   * PIT's CSV has no stable discriminator for two copies with the same coordinate
-   * and source line. Such copies share one authorization location; if they need
-   * different cause classifications, the key is not representable as audited
-   * liveness and needs deterministic dispositions instead.
-   */
-  fun unauthorizedLivenessLines(
-    membership: Membership,
-    observed: Map<String, Set<Int>>,
-  ): Map<String, Pair<Set<Int>, Set<Int>>> = observed.entries.mapNotNull { (member, observedLines) ->
-    if (membership.causeCategories[member] != CauseCategory.LIVENESS) return@mapNotNull null
-    val authorizedLines = membership.recordedLines[member] ?: return@mapNotNull null
-    val unauthorizedLines = observedLines - authorizedLines
-    if (unauthorizedLines.isEmpty()) null else member to (authorizedLines to unauthorizedLines)
-  }.toMap()
-
-  /** Warning for non-empty [unauthorized] liveness-line findings. */
-  fun unauthorizedLivenessLineWarning(
-    suiteName: String,
-    fileName: String,
-    unauthorized: Map<String, Pair<Set<Int>, Set<Int>>>,
-  ): String =
-      "pitest '$suiteName': ${unauthorized.size} cause:liveness member(s) timed out at line(s) " +
-          "their reviewed '# line' anchors do not authorize in $fileName — line-less membership " +
-          "must not let a proven liveness mutant hide a same-key resource or untriaged sibling " +
-          "at another source line; " +
-          "triage each unexpected line before changing the anchors:\n" +
-          unauthorized.entries.sortedBy { it.key }.joinToString("\n") { (member, lines) ->
-            val (authorizedLines, unexpectedLines) = lines
-            val authorized = authorizedLines.sorted().joinToString(", ").ifEmpty { "none" }
-            "  $member # authorized line(s) $authorized -> unexpected ${
-              unexpectedLines.sorted().joinToString(", ")
-            }"
-          }
-
-  /** The line-drift warning; callers pass a non-empty [drifted] from [lineDrift]. */
-  fun lineDriftWarning(
-    suiteName: String,
-    fileName: String,
-    drifted: Map<String, Pair<Set<Int>, Set<Int>>>,
-  ): String =
-      "pitest '$suiteName': ${drifted.size} audited-timeout member(s) timed out at line(s) their row's " +
-          "comment does not name — the code the README cause argues about has moved; re-read the cause, " +
-          "then update the '# line' comment in $fileName:\n" +
-          drifted.entries.sortedBy { it.key }.joinToString("\n") { (member, lines) ->
-            val (recordedLines, observedLines) = lines
-            "  $member # line(s) ${recordedLines.sorted().joinToString(", ")} -> " +
-                "observed ${observedLines.sorted().joinToString(", ")}"
-          }
 
   /**
    * The [members] whose structural cause was never written: matched by the simple
