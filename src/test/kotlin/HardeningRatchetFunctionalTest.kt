@@ -1114,18 +1114,25 @@ $fuzzBlock
 
     // without the marker the same report is a full run: ordinary checking is allowed
     File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").delete()
-    val full = runner("pitestEncodingVerify").build().output
-    assertFalse(full.contains(" [history]"), "tag printed without the marker:\n$full")
+    val legacyFull = runner("pitestEncodingVerify").build().output
+    assertFalse(legacyFull.contains(" [history]"), "tag printed without the marker:\n$legacyFull")
     assertTrue(
-      full.contains("status stash predates the current stash format"),
-      "pre-fix status evidence was not reset:\n$full",
+      legacyFull.contains("status stash predates the current stash format"),
+      "pre-fix status evidence was not reset:\n$legacyFull",
     )
+    assertFalse(
+      legacyFull.contains("timeout-retirement stash predates fresh-only evidence"),
+      "legacy evidence advanced or rewrote timeout-retirement state:\n$legacyFull",
+    )
+    assertTrue(quietBefore.contentEquals(quietStash.readBytes()), "legacy evidence rewrote the quiet stash")
+
+    val full = runner("pitestEncoding").build().output
     assertTrue(
       full.contains("timeout-retirement stash predates fresh-only evidence"),
       "pre-fix quiet evidence was not reset:\n$full",
     )
     assertTrue(statusStash.readText().startsWith("# stash format 3\n"), statusStash.readText())
-    assertTrue(quietStash.readText().startsWith("# timeout quiet format 2\n"), quietStash.readText())
+    assertTrue(quietStash.readText().startsWith("# timeout quiet format 3\n"), quietStash.readText())
     assertTrue(
       quietStash.readText().contains("com.example.Codec,encode,MathMutator,1"),
       "the first fresh report inherited two assisted quiet observations:\n${quietStash.readText()}",
@@ -2440,12 +2447,9 @@ $fuzzBlock
 
     report("KILLED")
     val quietNotice = "audited-timeout member(s) have not timed out in 3+"
-    // a fresh PIT run rewrites the report; the content here is identical, so the test
-    // advances the timestamp explicitly rather than racing the filesystem clock
-    val reportCsv = File(fixtureDir, "build/reports/pitest/encoding/mutations.csv")
-    fun freshen() = reportCsv.setLastModified(reportCsv.lastModified() + 1_000)
+    runner("pitestEncoding").build()
 
-    // the counter is keyed to the report's fingerprint: standalone verify re-runs of
+    // the counter is keyed to the evidence invocation: standalone verify re-runs of
     // one unchanged report are one observation, not manufactured quiet evidence
     repeat(3) {
       val rerun = runner("pitestEncodingVerify").build().output
@@ -2453,11 +2457,9 @@ $fuzzBlock
       // a quiet member is not the stale case: its mutant is present, just detected
       assertFalse(rerun.contains("match no mutant"), "quiet member misread as stale:\n$rerun")
     }
-    freshen()
-    val second = runner("pitestEncodingVerify").build().output
+    val second = runner("pitestEncoding").build().output
     assertFalse(second.contains(quietNotice), "notice fired before the third quiet report:\n$second")
-    freshen()
-    val third = runner("pitestEncodingVerify").build().output
+    val third = runner("pitestEncoding").build().output
     assertTrue(
       third.contains(quietNotice) &&
           third.contains(
@@ -2480,11 +2482,64 @@ $fuzzBlock
 
     // a timeout resets the streak — the notice must go quiet again for 3 more runs
     report("TIMED_OUT")
-    val reset = runner("pitestEncodingVerify").build().output
+    val reset = runner("pitestEncoding").build().output
     assertFalse(reset.contains(quietNotice), "timeout did not reset the quiet streak:\n$reset")
     report("KILLED")
-    val afterReset = runner("pitestEncodingVerify").build().output
+    val afterReset = runner("pitestEncoding").build().output
     assertFalse(afterReset.contains(quietNotice), "streak not restarted from zero:\n$afterReset")
+  }
+
+  @Test
+  fun `timeout retirement requires full observations of identical evidence inputs`() {
+    writeFixture()
+    val configDir = File(fixtureDir, "config/pitest").apply { mkdirs() }
+    configDir.resolve("encoding-timeouts.csv").writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n",
+    )
+    configDir.resolve("README.md").writeText(
+      "## `com.example.Codec.encode`\n\nRemoving progress makes the path non-terminating.\n",
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,12,KILLED,com.example.CodecTest",
+      ),
+      "",
+    )
+    val quietStash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet")
+
+    runner("pitestEncoding").build()
+    val afterFirstFull = quietStash.readBytes()
+    assertTrue(
+      quietStash.readText().contains("com.example.Codec,encode,MathMutator,1"),
+      quietStash.readText(),
+    )
+
+    runner("pitestEncoding", "-PmutateOnly=com.example.Codec").build()
+    assertTrue(
+      afterFirstFull.contentEquals(quietStash.readBytes()),
+      "a scoped diagnostic advanced timeout-retirement evidence:\n${quietStash.readText()}",
+    )
+
+    runner("pitestEncoding").build()
+    assertTrue(
+      quietStash.readText().contains("com.example.Codec,encode,MathMutator,2"),
+      quietStash.readText(),
+    )
+
+    File(fixtureDir, "src/main/java/com/example/FakePit.java")
+      .appendText("\n// changed source inputs\n")
+    val changed = runner("pitestEncoding").build().output
+    assertTrue(
+      changed.contains("timeout-retirement inputs changed") &&
+          !changed.contains("audited-timeout member(s) have not timed out in 3+"),
+      "changed inputs inherited the prior quiet streak:\n$changed",
+    )
+    assertTrue(
+      quietStash.readText().contains("com.example.Codec,encode,MathMutator,1"),
+      "changed inputs did not restart the quiet streak:\n${quietStash.readText()}",
+    )
   }
 
   @Test
@@ -2513,14 +2568,9 @@ $fuzzBlock
           "encode,20,SURVIVED,none",
     )
     writeReport(killedOnly, "")
-    val reportCsv = File(fixtureDir, "build/reports/pitest/encoding/mutations.csv")
 
-    runner("pitestEncodingVerify").build()
-    assertTrue(
-      reportCsv.setLastModified(reportCsv.lastModified() + 1_000),
-      "could not freshen the report for observation 2"
-    )
-    val second = runner("pitestEncodingVerify").build().output
+    runner("pitestEncoding").build()
+    val second = runner("pitestEncoding").build().output
     assertFalse(
       second.contains("audited-timeout member(s) have not timed out in 3+"),
       "notice fired before the third observation:\n$second"
@@ -2533,11 +2583,7 @@ $fuzzBlock
       mixed,
       ""
     )
-    assertTrue(
-      reportCsv.setLastModified(reportCsv.lastModified() + 1_000),
-      "could not freshen the report for observation 3"
-    )
-    val third = runner("pitestEncodingVerify").build().output
+    val third = runner("pitestEncoding").build().output
     assertTrue(
       third.contains(
         "com.example.Codec,encode,MathMutator " +
@@ -2561,7 +2607,7 @@ $fuzzBlock
         include("a", "b")
       """.trimIndent() + "\n"
     )
-    val reports = listOf("a", "b").map { projectName ->
+    listOf("a", "b").forEach { projectName ->
       val projectDir = File(fixtureDir, projectName).apply { mkdirs() }
       projectDir.resolve("build.gradle.kts").writeText(
         """
@@ -2580,12 +2626,28 @@ $fuzzBlock
               targetTests = "com.example.*Test*"
             }
           }
+
+          tasks.named<JavaExec>("pitestDispatch") {
+            classpath = sourceSets.main.get().output
+            mainClass.set("com.example.FakePit")
+            systemProperty(
+              "fixture.pit.report",
+              layout.projectDirectory.dir("fixture-pit-report").asFile.absolutePath,
+            )
+          }
+          tasks.named<JavaCompile>("compileForPitest") {
+            setSource(sourceSets.main.get().java)
+            classpath = files()
+          }
         """.trimIndent() + "\n"
       )
       projectDir.resolve("config/pitest/dispatch-timeouts.csv").apply {
         parentFile.mkdirs()
-        writeText("com.example.Codec,encode,MathMutator\n")
+        writeText("com.example.Codec,encode,MathMutator # cause:liveness line 12\n")
       }
+      projectDir.resolve("config/pitest/README.md").writeText(
+        "## `com.example.Codec.encode`\n\nRemoving progress makes the path non-terminating.\n",
+      )
       projectDir.resolve(".pitest-history/dispatch.timeout-quiet").apply {
         parentFile.mkdirs()
         writeText("com.example.Codec,encode,MathMutator,2\n")
@@ -2593,7 +2655,7 @@ $fuzzBlock
       projectDir.resolve(".pitest-history/dispatch.statuses").writeText(
         "com.example.Codec,encode,12,MathMutator,KILLED\n"
       )
-      projectDir.resolve("build/reports/pitest/dispatch/mutations.csv").apply {
+      projectDir.resolve("fixture-pit-report/mutations.csv").apply {
         parentFile.mkdirs()
         writeText(
           "Codec.java,com.example.Codec," +
@@ -2601,13 +2663,46 @@ $fuzzBlock
               "encode,12,KILLED,com.example.CodecTest\n"
         )
       }
+      projectDir.resolve("fixture-pit-report/mutations.xml").writeText(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mutations>\n</mutations>\n"
+      )
+      projectDir.resolve("src/main/java/com/example/FakePit.java").apply {
+        parentFile.mkdirs()
+        writeText(
+          """
+          package com.example;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.nio.file.StandardCopyOption;
+
+          public final class FakePit {
+            public static void main(String[] args) throws Exception {
+              Path reportDir = null;
+              for (String arg : args) {
+                if (arg.startsWith("--reportDir=")) {
+                  reportDir = Path.of(arg.substring("--reportDir=".length()));
+                }
+              }
+              if (reportDir == null) throw new IllegalArgumentException("missing --reportDir");
+              Files.createDirectories(reportDir);
+              Path staged = Path.of(System.getProperty("fixture.pit.report"));
+              for (String name : new String[] {"mutations.csv", "mutations.xml"}) {
+                Files.copy(staged.resolve(name), reportDir.resolve(name),
+                    StandardCopyOption.REPLACE_EXISTING);
+              }
+            }
+          }
+          """.trimIndent() + "\n"
+        )
+      }
     }
-    fun verifyBoth(): String = runner(
-      ":a:pitestDispatchVerify",
-      ":b:pitestDispatchVerify",
+    fun runBoth(): String = runner(
+      ":a:pitestDispatch",
+      ":b:pitestDispatch",
     ).build().output
 
-    val reset = verifyBoth()
+    val reset = runBoth()
     val resetNotice = "timeout-retirement stash predates fresh-only evidence"
     val statusResetNotice = "status stash predates the current stash format"
     assertTrue(
@@ -2619,13 +2714,7 @@ $fuzzBlock
     )
 
     repeat(2) { observation ->
-      reports.forEach { report ->
-        assertTrue(
-          report.setLastModified(report.lastModified() + 1_000),
-          "could not freshen ${report.path} for observation ${observation + 2}"
-        )
-      }
-      val output = verifyBoth()
+      val output = runBoth()
       if (observation == 1) {
         val quietNotice = "1 audited-timeout member(s) have not timed out in 3+"
         assertTrue(
@@ -2663,16 +2752,16 @@ $fuzzBlock
     )
 
     encodeReport()
-    runner("pitestEncodingVerify").build()
+    runner("pitestEncoding").build()
     encodeReport()
-    runner("pitestEncodingVerify").build()
+    runner("pitestEncoding").build()
 
     staleReport()
-    val stale = runner("pitestEncodingVerify").build().output
+    val stale = runner("pitestEncoding").build().output
     assertTrue(stale.contains("match no mutant"), "stale member not warned:\n$stale")
 
     encodeReport()
-    val returned = runner("pitestEncodingVerify").build().output
+    val returned = runner("pitestEncoding").build().output
     assertFalse(
       returned.contains("audited-timeout member(s) have not timed out in 3+"),
       "streak survived the stale interlude:\n$returned"

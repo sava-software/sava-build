@@ -70,6 +70,15 @@ data class PitestEvidence(
     }
   }
 
+  /**
+   * Identity of the code, tools, classpaths, and suite configuration behind an
+   * observation. Invocation and report bytes are deliberately excluded: successive
+   * fresh runs of identical inputs must share this identity while still carrying
+   * distinct [invocationId] values.
+   */
+  fun inputIdentitySha256(): String = sha256(
+      copy(invocationId = "", reportSha256 = "").render())
+
   companion object {
     const val SCHEMA = "3"
     const val LEGACY_MUTATION_TOOLCHAIN = "legacy-unbound"

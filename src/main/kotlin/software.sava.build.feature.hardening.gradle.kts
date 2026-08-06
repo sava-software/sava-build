@@ -3348,34 +3348,49 @@ hardening.mutation.all {
         // forever. A single-run "did not time out" is exactly the KILLED<->TIMED_OUT
         // load flip the line-less key exists to absorb, so the signal is consecutive
         // quiet runs: the counter persists in .pitest-history/ (machine-local, like
-        // the status stash) and resets whenever the member times out again. Three
+        // the status stash) and resets whenever the member times out or the completed
+        // evidence inputs change. Three
         // quiet runs mirrors the flip-family retirement criterion ("3 quiet
         // modeCompare cycles"); a member that only times out under gate load will be
         // reset by gate runs and nagged only during long solo streaks — the notice
         // says so rather than presuming retirement.
         run {
-          // The same rule as the status stash above: a new report timestamp does not
-          // make reused statuses a fresh quiet observation. In particular it must not
-          // advance the three-run timeout-membership retirement nudge.
+          // The same rule as the status stash above: reused statuses are not a fresh
+          // quiet observation and must not advance the timeout-retirement nudge.
           if (historyAssistedReport) return@run
-          // The counter advances per fresh report, not per invocation: the verify
-          // runs standalone against the existing report ('finalizedBy', not a
-          // dependency), so re-running it to exercise its checks would otherwise
-          // manufacture quiet evidence from a single mutation run. After the format
-          // header, the report line fingerprints the observation; on a match the
-          // stored counts replay untouched. Timestamp over content hash on purpose —
-          // a fresh PIT run with identical results IS a fresh quiet observation.
-          val quietFormatHeader = "# timeout quiet format 2"
-          val reportFingerprint = "# report ${csv.lastModified()},${csv.length()}"
+          val retirementEvidence = verifiedEvidence ?: return@run
+          // A scoped report can diagnose one class, but it cannot prove suite-wide
+          // timeout absence. Legacy reports without a completed evidence manifest are
+          // rejected above by the nullable return: neither shape advances retirement.
+          if (retirementEvidence.scope != PitestEvidence.FULL_SCOPE ||
+              retirementEvidence.historyAssisted) return@run
+          // The counter advances per completed PIT invocation, not per verify task
+          // invocation: verify can run standalone against the existing report
+          // ('finalizedBy', not a dependency), so re-running it would otherwise
+          // manufacture quiet evidence from a single mutation run. The completed
+          // evidence's invocation id identifies that observation; its stable input
+          // identity prevents quiet reads from old source/tool/configuration bytes
+          // combining with a new run into a false three-run notice.
+          val quietFormatHeader = "# timeout quiet format 3"
+          val inputFingerprint = "# inputs ${retirementEvidence.inputIdentitySha256()}"
+          val observationFingerprint = "# invocation ${retirementEvidence.invocationId}"
           val previousLines = if (timeoutQuietFile.isFile) timeoutQuietFile.readLines() else emptyList()
           val currentQuietFormat = previousLines.firstOrNull() == quietFormatHeader
           if (previousLines.isNotEmpty() && !currentQuietFormat) {
             logger.lifecycle(
-                "$advisoryScope: timeout-retirement stash predates fresh-only evidence — " +
+                "$advisoryScope: timeout-retirement stash predates fresh-only evidence " +
+                    "bound to current inputs — " +
                     "the quiet-run counter resets this run")
           }
-          val sameReport = currentQuietFormat && previousLines.getOrNull(1) == reportFingerprint
-          val previousQuiet = if (currentQuietFormat) {
+          val sameInputs = currentQuietFormat && previousLines.getOrNull(1) == inputFingerprint
+          if (currentQuietFormat && !sameInputs) {
+            logger.lifecycle(
+                "$advisoryScope: timeout-retirement inputs changed — " +
+                    "the quiet-run counter resets this run")
+          }
+          val sameObservation = sameInputs &&
+              previousLines.getOrNull(2) == observationFingerprint
+          val previousQuiet = if (sameInputs) {
             previousLines.filterNot { it.startsWith("#") }.mapNotNull { line ->
               val sep = line.lastIndexOf(',')
               if (sep < 0) null else
@@ -3393,7 +3408,7 @@ hardening.mutation.all {
           val quietRuns = liveMembers.associateWith { member ->
             when {
               member in timedOutByAuditKey -> 0
-              sameReport -> previousQuiet[member] ?: 0
+              sameObservation -> previousQuiet[member] ?: 0
               else -> (previousQuiet[member] ?: 0) + 1
             }
           }
@@ -3402,7 +3417,8 @@ hardening.mutation.all {
               quietRuns.entries.sortedBy { it.key }
                   .joinToString(
                       "\n",
-                      prefix = "$quietFormatHeader\n$reportFingerprint\n",
+                      prefix = "$quietFormatHeader\n$inputFingerprint\n" +
+                          "$observationFingerprint\n",
                       postfix = "\n",
                   ) { "${it.key},${it.value}" }
           )

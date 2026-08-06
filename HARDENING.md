@@ -862,9 +862,11 @@ invoked it*, and the failure looks exactly like a real regression.
   *all* mutants, so a key that exists but never times out — pasted from the
   wrong report, or a timeout the tests since learned to kill outright —
   would otherwise sit accepted forever. The verify keeps a per-member quiet
-  counter in `.pitest-history/`, keyed to the report's fingerprint so
-  standalone verify re-runs of one report are one observation, and notices
-  members with no timeout in 3+ consecutive mutation runs (the flip-family
+  counter in `.pitest-history/`, keyed to the completed evidence invocation so
+  standalone verify re-runs of one report are one observation, and bound to the
+  source, classes, configuration, Java and mutation toolchain so changed inputs
+  restart the streak. It notices members with no timeout in 3+ consecutive fresh
+  full mutation runs over identical inputs (the flip-family
   retirement criterion); a single quiet run is just the
   `KILLED`↔`TIMED_OUT` load flip, and a gate-load-only
   member is reset by gate runs, so the notice presumes nothing; a stale
@@ -910,8 +912,12 @@ invoked it*, and the failure looks exactly like a real regression.
   run. Static validation knows no staleness, so it asks every well-formed
   committed member for its cause. Never remove a timeout member on one
   observation. Wait until the tool emits its **3+ distinct fresh full-run quiet**
-  notice, then confirm the absence under the relevant solo/gate load before editing
-  the record. History-assisted reports are read-only previews:
+  notice for identical evidence inputs, then confirm the absence under the relevant
+  solo/gate load before editing the record. The streak is an intentionally
+  machine-local nomination, not portable evidence: never copy or merge its stash. If
+  the same-input gate confirmation cannot be retained separately or run on
+  that machine, keep the harmless row until a later natural gate. History-assisted
+  reports are read-only previews:
   they neither replace the run-to-run status stash nor advance the three-run quiet
   counter, because cached `TIMED_OUT`/`KILLED` statuses cannot retire evidence.
 - **Flip families do not settle while their cause remains — and "the cause
@@ -2118,8 +2124,11 @@ instruction text; the digest still names the canonical quoted source block.
 >   committed-file half before PIT; use `pitest<Suite>Debt` for the same quick
 >   manual preview. `TimeoutAuditInit` deliberately seeds an uncertifiable file —
 >   classify every row before certification. Do not retire a member until the tool
->   emits its 3+ distinct fresh full-run quiet notice and the absence is confirmed
->   under the relevant solo/gate load. Assisted reports are previews and do not
+>   emits its 3+ distinct fresh full-run quiet notice over identical evidence inputs
+>   and the absence is confirmed under the relevant solo/gate load. The quiet stash
+>   is a machine-local nomination: never copy or merge it, and retain the row when a
+>   same-input gate confirmation is unavailable. Assisted reports are
+>   previews and do not
 >   advance timeout status or quiet-run evidence.
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
 >   boundary cannot be made deterministic, accept the mutant with a written
