@@ -1,0 +1,16 @@
+{
+  "candidate": {
+    "commit": "ddd334cbe91cf1529d2c620e6be85704e60ed423",
+    "origin": "sava-software/sava-build",
+    "plugin_jar_sha256": "ad4bf709b91f24612730ecbdf4d511193c9b2be2fac18f5274bb25d5a413d3f3",
+    "tree": "64242ae23244ea8fc68f14aa5486f743e1c71b7d"
+  },
+  "kind": "sava-build-release-attestation",
+  "review": {
+    "basis": "plugin-only",
+    "kind": "classified-local-hardening-certifications",
+    "repositories": []
+  },
+  "schema": 4,
+  "version": "21.5.24"
+}
