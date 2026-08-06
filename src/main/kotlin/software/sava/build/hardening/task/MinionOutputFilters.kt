@@ -16,6 +16,7 @@ internal class MinionLineFilter(
   private val delegate: OutputStream,
   private val seen: MutableSet<String>,
   private val suppressed: AtomicInteger,
+  private val coverageStats: PitestCoverageStats,
 ) : OutputStream() {
 
   private val buffer = ByteArrayOutputStream()
@@ -49,13 +50,64 @@ internal class MinionLineFilter(
         suppressed.incrementAndGet()
         return
       }
+      delegate.write(line.toByteArray(Charsets.UTF_8))
+      return
     }
+    coverageStats.accept(line)
     delegate.write(line.toByteArray(Charsets.UTF_8))
   }
 
   private companion object {
     const val MINION_PREFIX = "PIT >> INFO : MINION :"
     const val MINION_MARKER = "MINION :"
+  }
+}
+
+internal data class PitestSlowestTest(
+  val name: String,
+  val durationMillis: Long,
+)
+
+internal data class PitestOutputSummary(
+  val suppressedMinionLines: Int,
+  val slowestTest: PitestSlowestTest?,
+)
+
+/**
+ * Reads PIT's coverage-phase summary without retaining the full child-process output.
+ *
+ * PIT can print the same summary line twice (the timestamped live line and its later
+ * `> ...` replay), and stdout/stderr are pumped concurrently. Keeping only the maximum
+ * makes capture idempotent and thread-safe while still tolerating either stream.
+ */
+internal class PitestCoverageStats {
+  private var slowestTest: PitestSlowestTest? = null
+
+  @Synchronized
+  fun accept(line: String) {
+    val match = SLOWEST_TEST.find(line) ?: return
+    val candidate = PitestSlowestTest(
+      name = match.groupValues[1].trim(),
+      durationMillis = match.groupValues[2].toLongOrNull() ?: return,
+    )
+    val current = slowestTest
+    if (current == null || candidate.durationMillis > current.durationMillis ||
+        (candidate.durationMillis == current.durationMillis && candidate.name < current.name)) {
+      slowestTest = candidate
+    }
+  }
+
+  @Synchronized
+  fun snapshot(): PitestSlowestTest? = slowestTest
+
+  private companion object {
+    // Description names can themselves contain parentheses, so the name capture is
+    // deliberately greedy up to PIT's final `) took N ms` delimiter. Restrict the
+    // prefix to PIT's parent INFO line or its later `> ...` stats replay: arbitrary
+    // test/minion output can contain the same words and must not forge an advisory.
+    val SLOWEST_TEST = Regex(
+      """(?:^.*PIT >> INFO : |^\s*>\s*)Slowest test \((.+)\) took (\d+) ms\s*$"""
+    )
   }
 }
 
@@ -66,13 +118,16 @@ internal class MinionOutputFilters(
 ) {
   private val seen = ConcurrentHashMap.newKeySet<String>()
   private val suppressed = AtomicInteger()
+  private val coverageStats = PitestCoverageStats()
 
-  val standardOutput: OutputStream = MinionLineFilter(standardOutput, seen, suppressed)
-  val errorOutput: OutputStream = MinionLineFilter(errorOutput, seen, suppressed)
+  val standardOutput: OutputStream =
+    MinionLineFilter(standardOutput, seen, suppressed, coverageStats)
+  val errorOutput: OutputStream =
+    MinionLineFilter(errorOutput, seen, suppressed, coverageStats)
 
-  fun closeAndCount(): Int {
+  fun closeAndSummarize(): PitestOutputSummary {
     standardOutput.close()
     errorOutput.close()
-    return suppressed.get()
+    return PitestOutputSummary(suppressed.get(), coverageStats.snapshot())
   }
 }

@@ -175,6 +175,15 @@ $buildTail
             String mode = "ok";
             Path modeFile = Path.of("fake-pit-mode.txt");
             if (Files.exists(modeFile)) mode = Files.readString(modeFile).trim();
+            if (mode.equals("below-cost-threshold") || mode.equals("at-cost-threshold") ||
+                mode.equals("slow-fail")) {
+              int millis = mode.equals("below-cost-threshold") ? 249 :
+                  (mode.equals("at-cost-threshold") ? 250 : 416);
+              String slowest = "Slowest test ([engine:junit-jupiter]/" +
+                  "[class:com.example.CodecTest]/[method:roundTrip()]) took " + millis + " ms";
+              System.out.println("12:00:00 PIT >> INFO : " + slowest);
+              System.out.println("> " + slowest);
+            }
             for (int i = 0; i < 3; i++) System.out.println("PIT >> INFO : MINION : common noise");
             System.out.println("PIT >> INFO : MINION : stdout-only detail");
             System.out.println("plain duplicate");
@@ -195,7 +204,7 @@ $buildTail
               Files.writeString(Path.of("src/main/java/com/example/FakePit.java"),
                   "\n// changed while PIT was running\n", StandardOpenOption.APPEND);
             }
-            if (mode.equals("fail")) {
+            if (mode.equals("fail") || mode.equals("slow-fail")) {
               System.err.print("partial tail before crash");
               System.exit(3);
             }
@@ -512,6 +521,11 @@ $buildTail
 
           public final class FakePit {
             public static void main(String[] args) throws Exception {
+              String slowest = "Slowest test ([engine:junit-jupiter]/" +
+                  "[class:com.example.consumer.ConsumerTest]/" +
+                  "[method:roundTrip(java.lang.String)]) took 416 ms";
+              System.out.println("12:00:00 PIT >> INFO : " + slowest);
+              System.out.println("> " + slowest);
               String reportDir = null;
               for (String arg : args) {
                 if (arg.startsWith("--reportDir=")) {
@@ -800,6 +814,39 @@ $buildTail
     assertTrue(
       File(fixtureDir, "consumer/build/reports/pitest/encoding/.evidence.tsv").isFile,
       "PIT execution did not commit evidence:\n${result.output}",
+    )
+    assertTrue(
+      result.output.contains(
+        ":consumer pitest 'encoding': slowest PIT coverage-phase test " +
+            "'[engine:junit-jupiter]/[class:com.example.consumer.ConsumerTest]/" +
+            "[method:roundTrip(java.lang.String)]' took 416 ms",
+      ),
+      "the slow-test advisory was not project-qualified or lost the test identity:\n${result.output}",
+    )
+    assertTrue(
+      result.output.contains("advisory threshold 250 ms") &&
+          result.output.contains("does not prove the test covers a target mutant") &&
+          result.output.contains("or prescribe a remedy") &&
+          result.output.contains("when it does cover mutated code"),
+      "the advisory did not explain the measurement's boundary:\n${result.output}",
+    )
+    assertTrue(
+      result.output.contains("hardening: 1 advisory finding(s) across 1 suite(s)") &&
+          result.output.contains(
+            ":consumer pitest 'encoding': slowest PIT coverage-phase test took 416 ms",
+          ),
+      "duplicate PIT summary lines produced missing or duplicate advisory findings:\n${result.output}",
+    )
+
+    val reused = runner(":consumer:pitestEncoding").build()
+    assertTrue(reused.output.contains("Configuration cache entry reused."), reused.output)
+    assertTrue(
+      reused.output.contains(
+        ":consumer pitest 'encoding': slowest PIT coverage-phase test " +
+            "'[engine:junit-jupiter]/[class:com.example.consumer.ConsumerTest]/" +
+            "[method:roundTrip(java.lang.String)]' took 416 ms",
+      ),
+      "the advisory disappeared after a configuration-cache round trip:\n${reused.output}",
     )
 
     assertTrue(libraryJar.delete(), "could not remove the runtime-only JAR before standalone verify")
@@ -1472,6 +1519,31 @@ $buildTail
   }
 
   @Test
+  fun `coverage-phase cost advice is quiet below its threshold and inclusive at the boundary`() {
+    writeFixture()
+    val mode = File(fixtureDir, "fake-pit-mode.txt")
+
+    mode.writeText("below-cost-threshold\n")
+    val below = runner("pitestEncoding").build().output
+    assertFalse(
+      below.contains("slowest PIT coverage-phase test"),
+      "a 249 ms coverage-phase test crossed the 250 ms advisory threshold:\n$below",
+    )
+
+    mode.writeText("at-cost-threshold\n")
+    val boundary = runner("pitestEncoding").build().output
+    assertTrue(boundary.contains("Configuration cache entry reused."), boundary)
+    assertTrue(
+      boundary.contains(
+        "pitest 'encoding': slowest PIT coverage-phase test " +
+            "'[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:roundTrip()]' " +
+            "took 250 ms",
+      ) && boundary.contains("hardening: 1 advisory finding(s) across 1 suite(s)"),
+      "the inclusive 250 ms boundary did not produce exactly one advisory:\n$boundary",
+    )
+  }
+
+  @Test
   fun `a failing PIT exit still flushes the summary and buffered tail, and cannot rewrite the marker`() {
     writeFixture()
     // leave a scoped marker behind, then fail an unscoped run: the deferred exit must
@@ -1480,7 +1552,7 @@ $buildTail
     val marker = File(fixtureDir, "build/reports/pitest/encoding/.scoped")
     assertTrue(marker.isFile, "precondition: scoped marker missing")
 
-    File(fixtureDir, "fake-pit-mode.txt").writeText("fail")
+    File(fixtureDir, "fake-pit-mode.txt").writeText("slow-fail")
     val failed = runner("pitestEncoding").buildAndFail()
     assertTrue(failed.output.contains("non-zero exit value 3"), failed.output)
     assertTrue(
@@ -1490,6 +1562,10 @@ $buildTail
     assertTrue(
       failed.output.contains("partial tail before crash"),
       "buffered partial line lost on a failing run:\n" + failed.output
+    )
+    assertFalse(
+      failed.output.contains("slowest PIT coverage-phase test"),
+      "a failed PIT attempt emitted cost advice from incomplete evidence:\n${failed.output}",
     )
     assertEquals(
       "com.example.Codec\n", marker.readText(),

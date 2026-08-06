@@ -43,6 +43,11 @@ import java.time.Clock
 import java.time.LocalDate
 import java.util.UUID
 
+internal const val PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS = 250L
+
+internal fun shouldAdvisePitestCoverageTestCost(durationMillis: Long): Boolean =
+  durationMillis >= PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS
+
 /**
  * Common typed PIT process with execution-time lifecycle and evidence ownership.
  *
@@ -226,6 +231,12 @@ abstract class PitestExecTask : JavaExec() {
    */
   protected open fun afterAttemptStarted() = Unit
 
+  /** Advice that is meaningful only after PIT produced a complete successful report. */
+  protected open fun afterSuccessfulAttempt(
+    slowestTestName: String?,
+    slowestTestDurationMillis: Long?,
+  ) = Unit
+
   @TaskAction
   override fun exec() {
     // Resolve and validate the effective engine before touching the attempt
@@ -251,6 +262,7 @@ abstract class PitestExecTask : JavaExec() {
     errorOutput = filters.errorOutput
 
     var attempt: PitestAttempt? = null
+    var outputSummary: PitestOutputSummary? = null
     try {
       attempt = beginAttempt(historyActive, initialToolchain)
       afterAttemptStarted()
@@ -258,10 +270,12 @@ abstract class PitestExecTask : JavaExec() {
     } finally {
       standardOutput = originalStandardOutput
       errorOutput = originalErrorOutput
-      val suppressed = filters.closeAndCount()
-      if (suppressed > 0) {
+      val summary = filters.closeAndSummarize()
+      outputSummary = summary
+      if (summary.suppressedMinionLines > 0) {
         logger.lifecycle(
-          "pitest: suppressed $suppressed repeated minion log line(s) — first occurrence of each is above"
+          "pitest: suppressed ${summary.suppressedMinionLines} repeated minion log line(s) — " +
+              "first occurrence of each is above"
         )
       }
     }
@@ -270,6 +284,10 @@ abstract class PitestExecTask : JavaExec() {
     if (enforceExit.get()) result.assertNormalExitValue()
     if (result.exitValue != 0) return
     completeAttempt(checkNotNull(attempt), historyActive)
+    afterSuccessfulAttempt(
+      outputSummary?.slowestTest?.name,
+      outputSummary?.slowestTest?.durationMillis,
+    )
   }
 
   private fun historyActiveNow(): Boolean =
@@ -579,6 +597,28 @@ abstract class PitestRunTask : PitestExecTask() {
       )
       advisoryLog.get().record(scope, "stale ${stale.mutator} mutator decline")
     }
+  }
+
+  override fun afterSuccessfulAttempt(
+    slowestTestName: String?,
+    slowestTestDurationMillis: Long?,
+  ) {
+    val name = slowestTestName ?: return
+    val durationMillis = slowestTestDurationMillis ?: return
+    if (!shouldAdvisePitestCoverageTestCost(durationMillis)) return
+
+    val scope = adviceAdvisoryScope.get()
+    logger.warn(
+      "$scope: slowest PIT coverage-phase test '$name' took $durationMillis ms " +
+          "(advisory threshold ${PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS} ms) — potential " +
+          "repeated harness cost. This measurement does not prove the test covers a target mutant " +
+          "or prescribe a remedy; when it does cover mutated code, PIT can repay its wall-clock " +
+          "work across those mutants and produce load-dependent TIMED_OUT results."
+    )
+    advisoryLog.get().record(
+      scope,
+      "slowest PIT coverage-phase test took $durationMillis ms",
+    )
   }
 }
 

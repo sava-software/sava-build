@@ -1477,6 +1477,36 @@ while different one-offs remain transient infrastructure evidence. Rules: *load 
 is context, not diagnosis*; *do not turn correlation into an automatic retry*; *identity
 and recurrence decide whether two failures are the same observation*.
 
+## The fake clock that still waited 416ms
+
+Ravina's `EpochInfoServiceImpl.getAndSetEpochInfo` `MathMutator` moved between
+`KILLED` and `TIMED_OUT` across four candidate versions in five days. Two harness
+changes targeted costs that looked suspicious, and each appeared to retire the row
+until a later loaded certification brought it back. The mutant itself was killed by
+an inline assertion in every mode; what raced the watchdog was a covering test's
+wall-clock cost.
+
+PIT had printed the useful measurement on every run: the slowest coverage-phase test,
+`everySampleBeingFilteredOutDoesNotKillTheLoop`, took 416ms. The test filtered every
+performance sample, leaving no slot statistics, so the loop parked for the default
+slot duration even though no assertion observed that delay. Its `NanoClock` was fake,
+but the wait used a real `java.util.concurrent.Condition` and therefore the real AQS
+clock. Driving that one verified path through an existing no-park seam reduced the
+test to 30ms and made the kill stable.
+
+That successful local fix was not a recipe. Applying the same seam mechanically to
+nine other tests immediately broke two: one needed pacing behavior from the real path,
+and another exercised interrupt handling that the seam bypassed. The broad rewrite was
+reverted. The tool can cheaply surface the project, suite, test, and duration; only the
+consumer can decide which harness cost is irrelevant without changing the behavior
+under test.
+
+Rules: *measure harness cost before inventing a timeout cause*; *PIT's slowest
+coverage-phase test is a lead, not proof that it covers a mutant*; *when the test does
+cover mutated code, irrelevant wall-clock work is repaid across those mutants and can
+manufacture load flips*; *report the cost and remeasure a behavior-preserving change,
+never prescribe one mechanical seam for every test*.
+
 ## The ancestry check that never ran
 
 A manual `git merge-base --is-ancestor <reviewed> <tag>` returned non-zero and briefly

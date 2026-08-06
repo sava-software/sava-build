@@ -169,6 +169,16 @@ run cheaper. The cost model is directly optimisable:
   proportion to its own runtime — and if `SURVIVED -> TIMED_OUT` churn
   appears in the ratchet afterwards, raise the constant back before
   suspecting the code.
+- **Use the coverage-phase cost advisory as a lead, not a verdict** — after a
+  successful `pitest<Suite>` execution, the plugin repeats PIT's slowest coverage-phase
+  test when it takes at least 250ms, qualified by project and suite. The line
+  names the test and measured duration; it does not prove that test covers a
+  target mutant. When it does, PIT can repay that wall-clock work across the
+  mutants it covers, making real waits, executors, or spins a source of
+  load-dependent `TIMED_OUT` flips. Preserve the behavior and path the test is
+  meant to exercise, remove only irrelevant harness cost, and remeasure — the
+  advisory is deliberately non-blocking and cannot prescribe a safe mechanical
+  rewrite *(casebook: the fake clock that still waited 416ms)*.
 - **`pitest<Suite>Debt` prints where the debt lives** — survivors and
   no-coverage grouped by class, largest first, with the delta against the
   baseline. Use it to pick the next cluster instead of re-deriving the
@@ -694,6 +704,11 @@ invoked it*, and the failure looks exactly like a real regression.
   is an unargued acceptance. Bulk-adding every `TIMED_OUT` row "to be safe"
   accepts mutants that are reliably detected today and silently stops the
   ratchet noticing if a later edit makes them genuinely survive.
+- **Inspect the named coverage-phase cost before classifying a load flip.** A
+  high duration is neither a timeout cause nor record evidence, but it is a
+  cheap way to find harness work that can lose the race against the watchdog.
+  Fixing that cost may turn the mutant into an ordinary deterministic kill;
+  classification should follow the fresh result, not substitute for it.
 - **Prefer removing the cause**: a fake collaborator that turns a would-be
   infinite loop into a deterministic assertion failure — a call budget, a
   bounded queue — beats leaning on the timeout. A background wait-loop whose

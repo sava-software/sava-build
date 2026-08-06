@@ -125,9 +125,60 @@ class HardeningExecutionSupportTest {
     filters.errorOutput.write("PIT >> INFO : MINION : common\n".toByteArray())
     filters.errorOutput.write("PIT >> INFO : MINION : final tail".toByteArray())
 
-    assertEquals(1, filters.closeAndCount())
+    val summary = filters.closeAndSummarize()
+    assertEquals(1, summary.suppressedMinionLines)
+    assertEquals(null, summary.slowestTest)
     assertEquals("PIT >> INFO : MINION : common\nplain\n", stdout.toString(Charsets.UTF_8))
     assertEquals("PIT >> INFO : MINION : final tail", stderr.toString(Charsets.UTF_8))
+  }
+
+  @Test
+  fun `PIT output captures the slowest coverage-phase test across streams and replay lines`() {
+    val stdout = ByteArrayOutputStream()
+    val stderr = ByteArrayOutputStream()
+    val filters = MinionOutputFilters(stdout, stderr)
+    val slower =
+      "Slowest test ([engine:junit-jupiter]/[class:example.CodecTest]/" +
+          "[method:roundTrip(java.lang.String)]) took 416 ms"
+
+    filters.standardOutput.write(
+      "12:00:00 PIT >> INFO : Slowest test (example.FastTest) took 249 ms\n".toByteArray()
+    )
+    filters.errorOutput.write("12:00:01 PIT >> INFO : ${slower.take(48)}".toByteArray())
+    filters.errorOutput.write("${slower.drop(48)}\n".toByteArray())
+    // PIT replays its coverage statistics later with a `> ` prefix. Capture one
+    // observation rather than treating the replay as a second advisory.
+    filters.standardOutput.write("> $slower\n".toByteArray())
+    filters.standardOutput.write(
+      "PIT >> INFO : MINION : Slowest test (forged.MinionTest) took 9000 ms\n".toByteArray()
+    )
+    filters.standardOutput.write(
+      "12:00:02 PIT >> INFO : Slowest test (overflow.Test) took 999999999999999999999 ms\n"
+        .toByteArray()
+    )
+    filters.standardOutput.write("Slowest test (malformed) took nope ms\n".toByteArray())
+    val unterminated = "12:00:03 PIT >> INFO : ${slower.replace("416 ms", "417 ms")}"
+    filters.errorOutput.write(unterminated.toByteArray())
+
+    val summary = filters.closeAndSummarize()
+
+    assertEquals(0, summary.suppressedMinionLines)
+    assertEquals(
+      PitestSlowestTest(
+        "[engine:junit-jupiter]/[class:example.CodecTest]/" +
+            "[method:roundTrip(java.lang.String)]",
+        417,
+      ),
+      summary.slowestTest,
+    )
+    assertTrue(stdout.toString(Charsets.UTF_8).contains("> $slower"))
+    assertTrue(stderr.toString(Charsets.UTF_8).contains(unterminated))
+  }
+
+  @Test
+  fun `coverage-phase cost advisory threshold is inclusive`() {
+    assertFalse(shouldAdvisePitestCoverageTestCost(249))
+    assertTrue(shouldAdvisePitestCoverageTestCost(250))
   }
 
   @Test
