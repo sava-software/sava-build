@@ -1,5 +1,17 @@
 # Changelog
 
+## [21.5.24](https://github.com/sava-software/sava-build/compare/21.5.23...21.5.24) (2026-08-06)
+
+
+### Bug Fixes
+
+* **hardening:** finalize local release evidence ([a0df2a6](https://github.com/sava-software/sava-build/commit/a0df2a6c16bb950caf67491f672d4b6cd33fc8d6))
+* **hardening:** qualify timeout evidence notices ([f25726f](https://github.com/sava-software/sava-build/commit/f25726fa74665c74e5967b404c0d1280341777d5))
+* **hardening:** require fresh mutation decisions ([aa4d565](https://github.com/sava-software/sava-build/commit/aa4d565670e3ebc02b0867f945c765ce0ae244cc))
+* **hardening:** scope timeout liveness evidence ([2b1c646](https://github.com/sava-software/sava-build/commit/2b1c6467542fb96eed205e450d54f6b15a8470f8))
+* **hardening:** tighten local adoption evidence ([d3cc565](https://github.com/sava-software/sava-build/commit/d3cc565a743c3765a5c55925846f1194c32b93de))
+* **release:** allow plugin-only attestation ([ddd334c](https://github.com/sava-software/sava-build/commit/ddd334cbe91cf1529d2c620e6be85704e60ed423))
+
 ## [21.5.23](https://github.com/sava-software/sava-build/compare/21.5.22...21.5.23) (2026-08-05)
 
 
