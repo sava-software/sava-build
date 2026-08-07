@@ -156,12 +156,13 @@ class HardeningOperationsFunctionalTest {
   }
 
   @Test
-  fun `installed help exposes canonical writers and removed property mappings`() {
+  fun `installed help exposes read-only and writer workflows plus removed property mappings`() {
     writeFixture()
 
     val output = runner("hardeningHelp").build().output
 
     listOf(
+      "pitestEncodingDebt",
       "pitestEncodingBaselineRebase",
       "pitestEncodingBaselineUpdate",
       "pitestEncodingBaselineUnion",
@@ -172,6 +173,14 @@ class HardeningOperationsFunctionalTest {
       "downgradeMutationBaselines",
       "mutationOwnershipAudit",
     ).forEach { task -> assertTrue(output.contains(task), "missing $task:\n$output") }
+    assertEquals(1, Regex("(?m)^[ \\t]+pitestEncodingDebt\\s+").findAll(output).count(), output)
+    assertTrue(
+      output.indexOf("pitestEncodingDebt") >
+          output.indexOf("Read-only and certification workflows:") &&
+          output.indexOf("pitestEncodingDebt") <
+          output.indexOf("Accepted-baseline document lifecycle"),
+      output,
+    )
     assertTrue(
       output.contains("remove schema 1 from substantive baselines; empty placeholders stay absent"),
       output,
@@ -199,6 +208,13 @@ class HardeningOperationsFunctionalTest {
   fun `installed help separates long generated task names from their descriptions`() {
     val output = HardeningHelpText.render(listOf("valuationManager"), emptyList())
 
+    assertTrue(
+      Regex(
+        "(?m)^[ \\t]+pitestValuationManagerDebt\\s{2,}" +
+            "inspect committed records and latest full-report debt without running PIT$"
+      ).containsMatchIn(output),
+      output,
+    )
     assertTrue(
       output.contains("pitestValuationManagerTimeoutAuditInit  seed the suite timeout audit"),
       output,
@@ -377,6 +393,12 @@ class HardeningOperationsFunctionalTest {
     assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
     assertTrue(cold.output.contains("selected baseline provenance rebase"), cold.output)
     assertTrue(cold.output.contains("provenance rebase preserved 1 old row(s) and added 1"), cold.output)
+    assertTrue(
+      cold.output.contains(
+        "com.example.FakePit,main,MathMutator,SURVIVED # untriaged # line 12"
+      ),
+      cold.output,
+    )
     assertTrue(
       cold.output.contains(
         "BaselineRebase wrote encoding-accepted.csv, encoding-pitest-version, and " +
@@ -638,11 +660,18 @@ class HardeningOperationsFunctionalTest {
     assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
     assertTrue(cold.output.contains("selected baseline union"), cold.output)
     assertTrue(cold.output.contains("union added 1 entries"), cold.output)
+    assertTrue(cold.output.contains("seeded '# untriaged'"), cold.output)
+    assertTrue(
+      cold.output.contains(
+        "com.example.FakePit,main,MathMutator,SURVIVED # untriaged # line 12"
+      ),
+      cold.output,
+    )
     assertEquals(
       listOf(
         BaselineDocument.CURRENT_HEADER,
         "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained # line 99",
-        "com.example.FakePit,main,MathMutator,SURVIVED # line 12",
+        "com.example.FakePit,main,MathMutator,SURVIVED # untriaged # line 12",
       ),
       baseline.readLines(),
     )

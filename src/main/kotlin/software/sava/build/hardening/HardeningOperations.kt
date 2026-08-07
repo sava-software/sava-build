@@ -603,10 +603,14 @@ internal object HardeningHelpText {
     val fuzzPrefixes = fuzzTargetNames.sorted().map {
       "fuzz" + it.replaceFirstChar(Char::uppercase)
     }
+    val suiteDebtTasks = suitePrefixes.map { prefix ->
+      "${prefix}Debt" to "inspect committed records and latest full-report debt without running PIT"
+    }
     val optionSpellings = HardeningOptionNames.descriptors.map { option ->
       "-P${option.name}" + (option.value?.let { "=<$it>" } ?: "")
     }
     val generatedNames = buildList {
+      addAll(suiteDebtTasks.map { it.first })
       suitePrefixes.forEach { prefix ->
         add("${prefix}BaselineRebase")
         add("${prefix}BaselineUpdate")
@@ -642,6 +646,7 @@ internal object HardeningHelpText {
     appendLine("  pitestMutatorTrial                measure candidate mutators")
     appendLine("  mutationOwnershipAudit            cheap whole-production owner/exclusion preflight")
     appendLine("  hardeningInit / hardeningAgentTemplate  scaffold local evidence and operator rules")
+    suiteDebtTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     appendLine()
     appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")
     appendLine("  migrateMutationBaselines          stamp substantive accepted baselines; remove empty placeholders")
@@ -653,7 +658,7 @@ internal object HardeningHelpText {
       appendGenerated(
           "${prefix}BaselineUpdate",
           "report rewrite; keep current timeout/flip-insurance evidence")
-      appendGenerated("${prefix}BaselineUnion", "append only newly observed rows")
+      appendGenerated("${prefix}BaselineUnion", "append newly observed rows as untriaged debt")
       appendGenerated("${prefix}BaselinePrune", "apply the reviewed shrink-only candidate set")
       appendGenerated(
           "${prefix}TimeoutAuditInit",

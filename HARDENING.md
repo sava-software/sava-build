@@ -79,7 +79,11 @@ final certification. A future narrower boundary requires an explicit versioned a
 schema rather than inference from today’s free-form document. When the receipt records
 `gitState clean`, the optional record inventory and each present file's Git-normalized
 bytes must match the captured `gitTree` in both directions. Ignored/untracked inputs and
-index-hidden modifications or deletions are refused. Certification's cost scales with
+index-hidden modifications or deletions are refused. The
+`pitest<Suite>Baseline*` and `pitest<Suite>TimeoutAuditInit` writers also warn
+immediately when a file they just wrote is untracked and matched by a Git ignore
+rule; the warning is early remediation guidance, while clean certification remains
+the hard reproducibility boundary. Certification's cost scales with
 the repo's total mutant population, not with the size of the diff — so running it per change
 spends minutes re-learning results the change could not have moved. A suite
 produces new information only when the change can alter code it mutates or
@@ -561,10 +565,12 @@ migration refresh that deleted its evidence)*.
 
 A baseline row may carry a trailing `# note` —
 `# untriaged` is the conventional label for seeded debt, and
-`pitest<Suite>BaselineUpdate` seeds it on **every genuinely new row** it
-writes — a new sibling at an accepted key included, since the twin's
+`pitest<Suite>BaselineUpdate`, direct `pitest<Suite>BaselineUnion`, and
+`pitest<Suite>BaselineRebase` seed it on **every genuinely new row** they write — a
+new sibling at an accepted key included, since the twin's
 argument was written for the mutants it had, not for one more — so no new
-row enters the baseline bare: triage
+row enters the baseline bare. `pitestModeCompareUnion` writes its derived literal
+`# flip insurance` evidence instead of an untriaged marker. Triage
 means replacing that label with a short family label (`# race-guard
 family`, `# capacity-hint`) whose full argument lives in the README. An
 already-unlabeled row is a different thing — it predates seeding (added in
@@ -740,9 +746,10 @@ invoked it*, and the failure looks exactly like a real regression.
   unkilled rows in canonical form without dropping baseline rows that
   happened to be detected this run. Update now protects current timeout budgets
   and literal insurance too, but an *uninsured* mode flip is still indistinguishable
-  from a stable removal in one report and can start refresh ping-pong. Union lands
-  bare rows, so a hand union owes the evidence note by hand or the insurance
-  is an unargued acceptance. Bulk-adding every `TIMED_OUT` row "to be safe"
+  from a stable removal in one report and can start refresh ping-pong. Direct Union
+  seeds every added row `# untriaged`; replace that marker with the witnessed
+  flip-family label and evidence before treating the row as finished. Bulk-adding
+  every `TIMED_OUT` row "to be safe"
   accepts mutants that are reliably detected today and silently stops the
   ratchet noticing if a later edit makes them genuinely survive.
 - **Inspect the named coverage-phase cost before classifying a load flip.** A

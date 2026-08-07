@@ -486,13 +486,14 @@ internal object BaselineEngine {
    * consume observed copies through the same maximum exact-affinity assignment as
    * prune and update; only rows with no possible exact match use the moved-anchor
    * fallback, where rows still naming a live line precede stale rows. Added copies
-   * land bare with the genuinely unclaimed observed lines.
+   * land `# untriaged` with the genuinely unclaimed observed lines, so append-only
+   * union cannot silently turn a newly observed mutant into an argued acceptance.
    */
   fun unionMerge(
     acceptedRows: List<BaselineNotes.Row>,
     current: List<String>,
     currentLines: Map<String, List<String>>,
-  ): UnionMerge = unionMerge(acceptedRows, current, currentLines, null)
+  ): UnionMerge = unionMerge(acceptedRows, current, currentLines, "# untriaged")
 
   /**
    * A provenance transition is deliberately non-destructive: retain every old

@@ -1302,6 +1302,96 @@ $buildTail
   }
 
   @Test
+  fun `rebase warns when Git ignores its provenance and clean certification still refuses`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val configDir = File(fixtureDir, "config/pitest").apply { mkdirs() }
+    File(configDir, "encoding-accepted.csv")
+      .writeText("!sava-hardening-baseline-schema,1\n")
+    initializeGitFixture(listOf(
+      "config/pitest/*-pitest-version",
+      "config/pitest/*-pitest-toolchain.tsv",
+    ))
+
+    val rebase = runner("pitestEncodingBaselineRebase").build().output
+    val pitVersion = File(configDir, "encoding-pitest-version")
+    val toolchain = File(configDir, "encoding-pitest-toolchain.tsv")
+    assertTrue(pitVersion.isFile && toolchain.isFile, rebase)
+    assertTrue(
+      rebase.contains("wrote mutation-record input(s) that Git ignores") &&
+          rebase.contains("ordinary git status can hide them") &&
+          rebase.contains("clean hardeningCertify will refuse") &&
+          rebase.contains("encoding-pitest-version") &&
+          rebase.contains("encoding-pitest-toolchain.tsv"),
+      rebase,
+    )
+    assertTrue(
+      git("status", "--porcelain=v1", "--untracked-files=all").isEmpty(),
+      "ignored provenance did not reproduce the false-clean porcelain state",
+    )
+
+    val refused = runner("clean", "hardeningCertify").buildAndFail().output
+    assertTrue(
+      refused.contains("clean Git certification cannot bind mutation-record inputs to its captured tree") &&
+          refused.contains("present locally but absent from captured tree") &&
+          refused.contains("encoding-pitest-version") &&
+          refused.contains("encoding-pitest-toolchain.tsv"),
+      refused,
+    )
+    assertFalse(
+      File(fixtureDir, "build/hardening/pitest-certification.tsv").isFile,
+      "ignored provenance left a clean certification receipt",
+    )
+
+    git("add", "-f", "config/pitest/encoding-pitest-version",
+      "config/pitest/encoding-pitest-toolchain.tsv")
+    git(
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "user.name=Hardening Fixture",
+      "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "track mutation provenance",
+    )
+    val trackedCommit = git("rev-parse", "HEAD")
+    val trackedRebase = runner("pitestEncodingBaselineRebase").build().output
+    assertFalse(
+      trackedRebase.contains("wrote mutation-record input(s) that Git ignores"),
+      trackedRebase,
+    )
+    val certified = runner("clean", "hardeningCertify").build()
+    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv").readText()
+    assertTrue(certified.output.contains("suite(s) certified"), certified.output)
+    assertTrue(receipt.contains("gitState\tclean\n"), receipt)
+    assertTrue(receipt.contains("gitCommit\t$trackedCommit\n"), receipt)
+  }
+
+  @Test
+  fun `rebase does not warn for provenance exempted by negated ignore rules`() {
+    writeFixture()
+    val configDir = File(fixtureDir, "config/pitest").apply { mkdirs() }
+    File(configDir, "encoding-accepted.csv")
+      .writeText("!sava-hardening-baseline-schema,1\n")
+    initializeGitFixture(listOf(
+      "config/pitest/*-pitest-version",
+      "config/pitest/*-pitest-toolchain.tsv",
+      "!config/pitest/encoding-pitest-version",
+      "!config/pitest/encoding-pitest-toolchain.tsv",
+    ))
+
+    val rebase = runner("pitestEncodingBaselineRebase").build().output
+    assertFalse(rebase.contains("wrote mutation-record input(s) that Git ignores"), rebase)
+    val status = git("status", "--porcelain=v1", "--untracked-files=all")
+    assertTrue(
+      status.contains("config/pitest/encoding-pitest-version"),
+      "the negated rule did not expose the new provenance to Git",
+    )
+    assertTrue(
+      status.contains("config/pitest/encoding-pitest-toolchain.tsv"),
+      "the negated rule did not expose the new toolchain provenance to Git",
+    )
+  }
+
+  @Test
   fun `clean certification detects record changes hidden by Git index flags`() {
     writeFixture()
     writeSeedCorpus()

@@ -40,12 +40,13 @@ class HardeningOperationsTest {
   }
 
   @Test
-  fun `installed help derives discoverable writer and fuzz task names`() {
+  fun `installed help derives discoverable read-only writer and fuzz task names`() {
     val help = HardeningHelpText.render(
       suiteNames = listOf("encoding"),
       fuzzTargetNames = listOf("wire"),
     )
 
+    assertTrue(help.contains("pitestEncodingDebt"), help)
     assertTrue(help.contains("pitestEncodingBaselineRebase"), help)
     assertTrue(help.contains("pitestEncodingBaselineUpdate"), help)
     assertTrue(help.contains("pitestEncodingBaselineUnion"), help)

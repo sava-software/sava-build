@@ -844,6 +844,12 @@ class BaselineEngineTest {
         merge.merged.take(p.acceptedRows.size),
         "seed $seed: union moved an existing row out of its document slot",
       )
+      assertTrue(
+        merge.merged.drop(p.acceptedRows.size)
+            .map(BaselineNotes::parse)
+            .all { it.note == "# untriaged" },
+        "seed $seed: union accepted a new row without an explicit triage marker",
+      )
       // idempotence: union of the union adds nothing
       val again = BaselineEngine.unionMerge(merge.merged.map { BaselineNotes.parse(it) }, current, p.currentLines)
       assertTrue(again.added.isEmpty(), "seed $seed: union not idempotent")
@@ -899,7 +905,7 @@ class BaselineEngineTest {
 
     assertEquals(listOf(key), merge.added)
     assertEquals(
-      accepted.map(BaselineNotes::render) + "$key # line 10",
+      accepted.map(BaselineNotes::render) + "$key # untriaged # line 10",
       merge.merged,
       "20, 30, and 40 all have an exact existing sibling, so only 10 is new",
     )

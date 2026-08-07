@@ -2805,6 +2805,21 @@ hardening.mutation.all {
         }
       }
 
+      fun warnIgnoredMutationRecords(recordFiles: Iterable<File>) {
+        val ignored = (this as PitestVerifyTask).ignoredUntrackedRecordFiles(
+            evidenceProjectDir,
+            recordFiles,
+        )
+        if (ignored.isNotEmpty()) {
+          logger.warn(
+              "pitest baseline '$suiteName': wrote mutation-record input(s) that Git ignores; " +
+                  "ordinary git status can hide them, and a clean hardeningCertify will refuse until " +
+                  "they are tracked or the ignore rule is narrowed. Review the matching rules with " +
+                  "'git check-ignore -v' (or force-add the reviewed files intentionally), then commit:\n" +
+                  ignored.joinToString("\n") { "  $it" })
+        }
+      }
+
       // This helper is used only when no baseline bytes change. Transitions below
       // commit sidecars and record content through one rollback-capable plan, ordered
       // so process interruption can leave only a state readers refuse closed.
@@ -2816,6 +2831,7 @@ hardening.mutation.all {
             BaselineFiles.Write(toolchainRecordFile, toolchain.render()),
             BaselineFiles.Write(toolVersionFile, currentPit + "\n"),
           ))
+          warnIgnoredMutationRecords(listOf(toolchainRecordFile, toolVersionFile))
         }
       }
       fun stampOrRetireProvenance() {
@@ -3694,6 +3710,8 @@ hardening.mutation.all {
           writes += BaselineFiles.Write(toolVersionFile, null)
         }
         BaselineFiles.writeAllAtomically(evidenceProjectDir, writes)
+        warnIgnoredMutationRecords(
+            writes.filter { it.content != null }.map { it.target })
         if (removedProvenanceFiles.isNotEmpty()) {
           logger.lifecycle(
               "pitest baseline '$suiteName': removed orphan mutation provenance: " +
@@ -3811,11 +3829,14 @@ hardening.mutation.all {
               merge.sourceRowIndices,
           )
           commitBaselinePlan(plan, forceProvenance = true)
+          val addedRows = merge.merged.takeLast(merge.added.size)
           logger.lifecycle(
               "pitest baseline '$suiteName': provenance rebase preserved ${acceptedRows.size} old row(s) " +
                   "and added ${merge.added.size} current row(s) seeded '# untriaged' " +
                   "(baseline now ${merge.total}):\n" +
-                  merge.added.joinToString("\n") { row -> "  $row${describe(row)}" })
+                  addedRows.joinToString("\n") { row ->
+                    "  $row${describe(BaselineNotes.parse(row).key)}"
+                  })
           logger.lifecycle(
               "pitest baseline '$suiteName': BaselineRebase wrote ${baselineFile.name}, " +
                   "${toolVersionFile.name}, and ${toolchainRecordFile.name}")
@@ -3945,7 +3966,8 @@ hardening.mutation.all {
         // refresh ping-pong.
         // the merge — per-key max counts, existing rows verbatim after maximum
         // exact-line affinity and the live-anchor/file-order fallback, added copies
-        // bare with the genuinely unclaimed lines — lives in BaselineEngine.unionMerge
+        // seeded '# untriaged' with the genuinely unclaimed lines — lives in
+        // BaselineEngine.unionMerge
         val merge = BaselineEngine.unionMerge(acceptedRows, current, currentLines)
         if (merge.added.isEmpty()) {
           logger.lifecycle("pitest baseline '$suiteName': union added nothing new")
@@ -3955,9 +3977,13 @@ hardening.mutation.all {
               merge.sourceRowIndices,
           )
           commitBaselinePlan(plan)
+          val addedRows = merge.merged.takeLast(merge.added.size)
           logger.lifecycle(
-              "pitest baseline '$suiteName': union added ${merge.added.size} entries (baseline now ${merge.total}):\n" +
-                  merge.added.joinToString("\n") { row -> "  $row${describe(row)}" }
+              "pitest baseline '$suiteName': union added ${merge.added.size} entries seeded '# untriaged' " +
+                  "(baseline now ${merge.total}):\n" +
+                  addedRows.joinToString("\n") { row ->
+                    "  $row${describe(BaselineNotes.parse(row).key)}"
+                  }
           )
         }
         if (merge.added.isEmpty()) {
@@ -4146,7 +4172,7 @@ hardening.mutation.all {
         val content = checkNotNull(pendingTimeoutAuditContent) {
           "pitest '$suiteName': timeout-audit initialization reached commit without staged content"
         }
-        if (!committedRecordExisted) {
+        val writtenRecordFiles = if (!committedRecordExisted) {
           val toolchain = currentToolchain ?: throw GradleException(
               "pitest '$suiteName': current completed mutation-toolchain evidence is required to stamp records")
           // All three files form one logical record. If any rename throws, restore
@@ -4156,14 +4182,17 @@ hardening.mutation.all {
             BaselineFiles.Write(toolVersionFile, currentPit + "\n"),
             BaselineFiles.Write(timeoutsFile, content),
           ))
+          listOf(toolchainRecordFile, toolVersionFile, timeoutsFile)
         } else {
           BaselineFiles.writeAtomically(evidenceProjectDir, timeoutsFile, content)
+          listOf(timeoutsFile)
         }
         logger.lifecycle(
             "pitest '$suiteName': seeded ${timedOutByAuditKey.size} audited-timeout member(s) into " +
                 "${timeoutsFile.name} and bound its mutation provenance — this state is intentionally " +
                 "uncertifiable; replace every cause:untriaged token and write each member's " +
                 "structural argument in config/pitest/README.md")
+        warnIgnoredMutationRecords(writtenRecordFiles)
       }
       if (certificationActive) {
         val evidence = verifiedEvidence ?: throw GradleException(

@@ -236,6 +236,57 @@ internal object CertificationGitIdentityCapture {
     }
   }
 
+  /**
+   * Returns the Git-relative path of each present, untracked record file ignored
+   * by Git.
+   *
+   * This is an early writer diagnostic, not the integrity boundary: clean
+   * certification still compares every record directly with the captured tree.
+   * Git-unavailable workspaces return no findings, and a tracked file is never
+   * warned merely because an ignore pattern would also match its path.
+   */
+  fun ignoredUntrackedRecordFiles(
+    projectDirectory: File,
+    recordFiles: Iterable<File>,
+    execOperations: ExecOperations,
+  ): List<String> {
+    val rootOutput = git(
+      projectDirectory,
+      execOperations,
+      "rev-parse", "--show-toplevel",
+    ) ?: return emptyList()
+    val root = File(rootOutput.toString(Charsets.UTF_8).trimEnd('\n', '\r'))
+    if (!root.isAbsolute || !root.isDirectory) return emptyList()
+    val rootPath = root.toPath().toAbsolutePath().normalize()
+
+    return recordFiles
+        .distinctBy { it.toPath().toAbsolutePath().normalize().toString() }
+        .mapNotNull { candidate ->
+          val path = candidate.toPath().toAbsolutePath().normalize()
+          if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) ||
+              !path.startsWith(rootPath)) return@mapNotNull null
+          val gitPath = rootPath.relativize(path).joinToString("/") { it.toString() }
+          val tracked = git(
+            root,
+            execOperations,
+            "--literal-pathspecs", "ls-files", "--error-unmatch", "--", gitPath,
+          ) != null
+          if (tracked) return@mapNotNull null
+          // Verbose mode also succeeds for a negated rule and prints that rule,
+          // even though the path is not ignored. Quiet mode has the boolean
+          // semantics we need. The warning tells operators how to inspect the
+          // deciding rule without leaking a machine-local global-excludes path.
+          val ignored = git(
+            root,
+            execOperations,
+            "check-ignore", "-q", "--no-index", "--", gitPath,
+          ) != null
+          if (!ignored) return@mapNotNull null
+          gitPath
+        }
+        .sorted()
+  }
+
   private data class TreeEntry(val mode: String, val type: String, val objectId: String) {
     val isRegularBlob: Boolean get() = type == "blob" && (mode == "100644" || mode == "100755")
   }

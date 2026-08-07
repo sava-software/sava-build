@@ -198,6 +198,18 @@ abstract class PitestVerifyTask @Inject constructor(
   @get:Nested
   val finalEvidence: PitestEvidenceSpec =
     objects.newInstance(PitestEvidenceSpec::class.java, "suite")
+
+  @get:Inject
+  protected abstract val execOperations: ExecOperations
+
+  internal fun ignoredUntrackedRecordFiles(
+    projectDirectory: File,
+    recordFiles: Iterable<File>,
+  ): List<String> = CertificationGitIdentityCapture.ignoredUntrackedRecordFiles(
+      projectDirectory,
+      recordFiles,
+      execOperations,
+  )
 }
 
 /** Read-only committed-debt surface with current mutation-toolchain comparison. */

@@ -2417,7 +2417,7 @@ $fuzzBlock
     assertEquals(
       listOf(
         "com.example.Codec,encode,MathMutator,SURVIVED # race guard # line 40",
-        "com.example.Codec,encode,MathMutator,SURVIVED # line 10",
+        "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 10",
       ),
       baselineFile().readLines().filter { it.isNotBlank() },
       "the existing row must consume its own tagged line; the added row takes the unclaimed one"
@@ -2456,7 +2456,7 @@ $fuzzBlock
       listOf(
         "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance (gate=SURVIVED, solo=KILLED) # lines 20, 40",
         "com.example.Codec,encode,MathMutator,SURVIVED # line 20",
-        "com.example.Codec,encode,MathMutator,SURVIVED # line 10",
+        "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 10",
       ),
       baselineFile().readLines().filter { it.isNotBlank() },
       "the appended row must take the genuinely unclaimed line"
@@ -3163,11 +3163,11 @@ $fuzzBlock
 
     val union = baselineUnionRunner().build()
     assertTrue(union.output.contains("union added 1 entries"), union.output)
-    // the rewrite migrates the legacy row; the added row lands bare with its line tag
+    // the rewrite migrates the legacy row; the added row remains explicit triage debt
     assertEquals(
       listOf(
         "com.example.Codec,decode,MathMutator,SURVIVED # retired decoder family # line 5",
-        "com.example.Codec,encode,MathMutator,SURVIVED # line 12"
+        "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 12"
       ),
       baselineFile().readLines(),
       "union must keep the absent row, its note, and append the new row in sorted order"
@@ -3186,7 +3186,7 @@ $fuzzBlock
       "an unrelated removal advertised flip-insurance union:\n${update.output}",
     )
     assertEquals(
-      listOf("com.example.Codec,encode,MathMutator,SURVIVED # line 12"),
+      listOf("com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 12"),
       baselineFile().readLines(),
       "update rewrites from this run only"
     )
