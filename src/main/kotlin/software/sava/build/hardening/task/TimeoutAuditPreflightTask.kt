@@ -91,11 +91,17 @@ abstract class TimeoutAuditPreflightTask : DefaultTask() {
           "${malformed.size} malformed membership row(s), ${causeFindings.size} inadmissible or " +
           "unfinished cause classification(s), and ${undocumented.size} member(s) without a " +
           "README cause. Run ${pitestTask}Debt for the same read-only detail. Only cause:liveness " +
-          "may remain in the audited set: disposition and remove cause:resource rows, finish " +
-          "untriaged or missing classifications, and document every retained liveness member. " +
-          "Run $pitestTask -PnoMutationHistory when a fresh observation is needed to prove and " +
-          "remove a row before retrying. PIT has not run."
-      if (certificationActive || operation == BaselineWriteOperation.REBASE) {
+          "may remain in a certifying audited set. Keep finite resource/harness work explicit " +
+          "and non-certifying while fixing it; do not relabel it as liveness or delete it from " +
+          "one quiet run. Finish missing classifications, document every retained liveness member, " +
+          "then use repeated fresh history-free observations under the relevant solo/gate load " +
+          "to prove a repaired row no longer times out before removing it. Run $pitestTask " +
+          "-PnoMutationHistory for those observations. PIT has not run."
+      // Certification is an aggregate release claim, so one invalid suite poisons
+      // the project's certification session. A rebase is suite-local: fail that
+      // task without poisoning independent suite writers that Gradle may continue
+      // under --continue (ordinary invocations remain normally fail-fast).
+      if (certificationActive) {
         try {
           operationSession.get().reject(projectPath, reason)
         } catch (rejected: IllegalArgumentException) {

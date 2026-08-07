@@ -1706,13 +1706,76 @@ $fuzzBlock
     assertTrue(version.isFile && toolchain.isFile)
 
     assertTrue(toolchain.delete())
-    val torn = runner("pitestEncodingVerify").buildAndFail().output
+    val timeouts = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeouts.writeText(
+      "com.example.Codec,decode,IncrementsMutator # cause:untriaged line 30\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.decode\n\n`Codec.decode`: the reversed cursor never reaches its exit.\n",
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,12,TIMED_OUT,none",
+      ),
+      "",
+    )
+    // A fresh completed report remains valid evidence about its own timeout
+    // population even though the independent committed provenance pair is torn.
+    // Print that reviewer-stop, then retain the provenance refusal.
+    val torn = runner("pitestEncoding").buildAndFail().output
     assertTrue(torn.contains("committed mutation provenance is torn"), torn)
+    assertTrue(
+      torn.contains("current full report contains 1 timed-out mutant(s) outside") &&
+          torn.contains("com.example.Codec,encode,MathMutator # cause:untriaged line 12") &&
+          torn.contains("Retain these candidates for triage") &&
+          torn.contains("do not add or classify them until provenance is repaired/rebased") &&
+          torn.contains("cause:untriaged has not been reviewed") &&
+          torn.contains("do not retire or rewrite them until provenance is repaired/rebased"),
+      "torn provenance hid the fresh report's unaudited timeout:\n$torn",
+    )
+    assertFalse(torn.contains("add the row below"), torn)
     assertTrue(torn.contains("complete record written by a pre-sidecar release"), torn)
     assertTrue(torn.contains("interrupted newer write"), torn)
     assertFalse(torn.contains("failed/incomplete write"), torn)
+
+    val scopedTorn = runner(
+      "pitestEncoding",
+      // Pin the reserved-value collision: a scoped property literally named
+      // "full" is still partial evidence and must not satisfy FULL_SCOPE.
+      "-PmutateOnly=full",
+    ).buildAndFail().output
+    assertTrue(
+      scopedTorn.contains("report-dependent timeout membership findings were not evaluated") &&
+          scopedTorn.contains("this is a scoped mutation report"),
+      "scoped torn provenance did not explain the unavailable report audit:\n$scopedTorn",
+    )
+    assertFalse(
+      scopedTorn.contains("timed-out mutant(s) not in the audited set") ||
+          scopedTorn.contains("current full report contains") ||
+          scopedTorn.contains("audited-timeout row(s) match no mutant"),
+      "a scoped report produced suite-wide timeout membership findings:\n$scopedTorn",
+    )
+
+    // The static committed-file half is even cheaper and has no dependence on the
+    // report or provenance. Debt must print it before the same fatal sidecar check.
+    timeouts.writeText(
+      "com.example.Codec,encode,MathMutator # cause:untriaged line 12\n",
+    )
     val tornDebt = runner("pitestEncodingDebt").buildAndFail().output
     assertTrue(tornDebt.contains("committed mutation provenance is torn"), tornDebt)
+    assertTrue(
+      tornDebt.contains("cause:untriaged has not been reviewed"),
+      "torn provenance hid committed timeout classification debt:\n$tornDebt",
+    )
+
+    timeouts.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: the removed exit cannot make progress.\n",
+    )
     val repairedTorn = runner("pitestEncodingBaselineRebase").build().output
     assertTrue(repairedTorn.contains("will repair the pair"), repairedTorn)
     assertTrue(version.isFile && toolchain.isFile)
@@ -1856,7 +1919,12 @@ $fuzzBlock
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: removing progress strands the loop.\n",
+    )
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
@@ -1882,6 +1950,38 @@ $fuzzBlock
   }
 
   @Test
+  fun `finite harness findings never become liveness retirement nominations`() {
+    writeFixture()
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:harness line 12\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: a finite covering fixture races PIT's watchdog.\n",
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,12,KILLED,com.example.CodecTest",
+      ),
+      "",
+    )
+
+    repeat(3) {
+      val output = runner("pitestEncoding").build().output
+      assertTrue(output.contains("cause:harness is a finite covering-path/watchdog race"), output)
+      assertFalse(
+        output.contains("audited-timeout member(s) have not timed out in 3+"),
+        "non-certifying harness debt became a retirement nomination:\n$output",
+      )
+    }
+    val stash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet").readText()
+    assertFalse(stash.contains("com.example.Codec,encode,MathMutator"), stash)
+  }
+
+  @Test
   fun `the cause check requires the class name next to the method name`() {
     // Method-only matching was trivially satisfied: most dispatch members are named
     // 'handle', which appears in any README that mentions handlers at all — prose
@@ -1889,7 +1989,12 @@ $fuzzBlock
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 10\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: removing progress strands the loop.\n",
+    )
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
@@ -2436,7 +2541,12 @@ $fuzzBlock
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: removing progress strands the loop.\n",
+    )
     fun report(status: String) = writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,$status," +
@@ -2551,7 +2661,12 @@ $fuzzBlock
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 10\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: removing progress strands the loop.\n",
+    )
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText(
       "com.example.Codec,encode,MathMutator,SURVIVED # mixed sibling # line 20\n"
@@ -2736,7 +2851,12 @@ $fuzzBlock
     writeFixture()
     val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
     timeoutsFile.parentFile.mkdirs()
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: removing progress strands the loop.\n",
+    )
     fun encodeReport() = writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,KILLED,com.example.CodecTest",
@@ -2854,18 +2974,21 @@ $fuzzBlock
     timeoutsFile.writeText(
       "com.example.Codec,encode,MathMutator # cause:resource line 12\n" +
           "com.example.Codec,decode,IncrementsMutator # cause:untriaged line 30\n" +
+          "com.example.Codec,slow,MathMutator # cause:harness line 40\n" +
           "com.example.Codec,wait,VoidMethodCallMutator # line 44\n"
     )
     File(fixtureDir, "config/pitest/README.md").writeText(
       "## Codec causes\n\n" +
           "`Codec.encode`: finite excessive allocation.\n" +
           "`Codec.decode`: not reviewed yet.\n" +
+          "`Codec.slow`: a finite covering test races the watchdog under load.\n" +
           "`Codec.wait`: removed loop exit.\n"
     )
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,30,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,slow,40,TIMED_OUT,none",
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,44,TIMED_OUT,none",
       ),
       ""
@@ -2873,17 +2996,19 @@ $fuzzBlock
 
     val debt = runner("pitestEncodingDebt").build().output
     assertTrue(
-      debt.contains("3 audited-timeout member(s) lack an admissible cause classification") &&
+      debt.contains("4 audited-timeout member(s) lack an admissible cause classification") &&
           debt.contains("cause:resource terminates") &&
+          debt.contains("cause:harness is a finite covering-path/watchdog race") &&
           debt.contains("cause:untriaged has not been reviewed") &&
-          debt.contains("missing cause:liveness/resource/untriaged"),
+          debt.contains("missing cause:liveness/resource/harness/untriaged"),
       "Debt did not share the cause-category audit:\n$debt"
     )
     val strict = runner("pitestEncoding", "-PstrictTimeoutAudit").buildAndFail().output
     assertTrue(
-      strict.contains("3 inadmissible or unfinished cause classification(s)") &&
-          strict.contains("Only cause:liveness may remain in the audited set") &&
-          strict.contains("remove cause:resource rows") &&
+      strict.contains("4 inadmissible or unfinished cause classification(s)") &&
+          strict.contains("Only cause:liveness may remain in a certifying audited set") &&
+          strict.contains("Keep finite resource/harness work explicit and non-certifying") &&
+          strict.contains("do not relabel it as liveness or delete it from one quiet run") &&
           strict.contains("PIT has not run"),
       "strict audit accepted finite or unfinished timeout causes:\n$strict"
     )
@@ -4633,12 +4758,15 @@ $fuzzBlock
       "missing cause not named:\n$output"
     )
 
-    timeoutsFile.writeText("com.example.Codec,encode,MathMutator\n")
+    timeoutsFile.writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n",
+    )
     File(fixtureDir, "config/pitest/README.md")
       .writeText("`Codec.encode` (MathMutator): the estimate crawls, never fails.\n")
     val quiet = runner("pitestEncodingDebt").build().output
     assertFalse(
-      quiet.contains("malformed") || quiet.contains("cause?"),
+      quiet.contains("malformed") || quiet.contains("cause?") ||
+          quiet.contains("cause classification"),
       "clean audit still warned:\n$quiet"
     )
   }

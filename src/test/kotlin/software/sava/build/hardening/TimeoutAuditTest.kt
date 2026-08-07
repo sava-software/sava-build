@@ -94,6 +94,7 @@ class TimeoutAuditTest {
     val membership = TimeoutAudit.parse(listOf(
       "com.example.Codec,loop,MathMutator # cause:liveness line 12",
       "com.example.Codec,grow,MathMutator # cause:resource line 20",
+      "com.example.Codec,slow,MathMutator # cause:harness line 25",
       "com.example.Codec,pending,MathMutator # cause:untriaged line 30",
       "com.example.Codec,legacy,MathMutator # line 40",
       "com.example.Codec,typo,MathMutator # cause:nontermination line 50",
@@ -104,13 +105,22 @@ class TimeoutAuditTest {
       membership.causeCategories.getValue("com.example.Codec,loop,MathMutator")
     )
     assertEquals(
+      TimeoutAudit.CauseCategory.HARNESS,
+      membership.causeCategories.getValue("com.example.Codec,slow,MathMutator")
+    )
+    assertEquals(
       setOf(
         "com.example.Codec,grow,MathMutator",
+        "com.example.Codec,slow,MathMutator",
         "com.example.Codec,pending,MathMutator",
         "com.example.Codec,legacy,MathMutator",
         "com.example.Codec,typo,MathMutator",
       ),
       membership.causeFindings.mapTo(linkedSetOf()) { it.member }
+    )
+    assertTrue(
+      membership.causeFindings.single { it.member == "com.example.Codec,slow,MathMutator" }
+          .detail.contains("finite covering-path/watchdog race"),
     )
   }
 
@@ -180,6 +190,38 @@ class TimeoutAuditTest {
       TimeoutAudit.causeFindings(
         membership, listOf("com.example.Codec,live,MathMutator"))
     )
+  }
+
+  @Test
+  fun `report findings share timeout matching across normal and provenance refusal paths`() {
+    val membership = TimeoutAudit.parse(listOf(
+      "com.example.Codec,wait,MathMutator # cause:liveness line 12",
+      "com.example.Codec,gone,IncrementsMutator # cause:untriaged line 30",
+    ))
+    val rows = Mutant.parseReport(listOf(
+      "Codec.java,com.example.Codec,x.MathMutator,wait,12,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.VoidMethodCallMutator,other,44,TIMED_OUT,none",
+    ))
+
+    val findings = TimeoutAudit.reportFindings(rows, membership) {
+      "## Codec.wait\n\n`Codec.wait`: the removed signal strands the waiter.\n"
+    }
+
+    assertEquals(
+      setOf(
+        "com.example.Codec,wait,MathMutator",
+        "com.example.Codec,other,VoidMethodCallMutator",
+      ),
+      findings.timedOutByKey.keys,
+    )
+    assertEquals(
+      listOf("com.example.Codec,other,VoidMethodCallMutator"),
+      findings.unaudited.map { it.coordinate },
+    )
+    assertEquals(setOf("com.example.Codec,gone,IncrementsMutator"), findings.staleMembers)
+    assertEquals(setOf("com.example.Codec,wait,MathMutator"), findings.liveMembers)
+    assertTrue(findings.causeFindings.isEmpty())
+    assertTrue(findings.undocumented.isEmpty())
   }
 
   @Test

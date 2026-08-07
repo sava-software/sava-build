@@ -400,6 +400,13 @@ claim provenance that no run earned. Rebase is the sole transition path:
    interrupted. An existing-record Rebase writes its safe-superset content first,
    so N-1 sees conservative debt while this plugin refuses the still-old provenance.
 
+Run committed-record writers one suite per invocation when you want an unambiguous
+all-or-nothing operator step. A command selecting several independent suite writers
+uses normal Gradle fail-fast behavior: a failed suite may stop later tasks from
+starting. `--continue` lets already-independent suites finish, but the command still
+fails overall and the rejected suite writes nothing; inspect every selected suite
+before committing a partial batch.
+
 This path also adopts old records. A committed baseline or timeout set missing both
 sidecars is reported as the paired `legacy-unversioned` / `legacy-toolchain-unbound`
 state. Ordinary checks and `hardeningCertify` announce both, the certification receipt
@@ -717,7 +724,14 @@ invoked it*, and the failure looks exactly like a real regression.
   watchdog — over the same dead mutant, and no outcome of the race can move
   a verify or hide debt. The claim is earned per suite by the mode
   comparison above, which is what separates it from `SURVIVED -> TIMED_OUT`,
-  where the race is between detection and *no detection*.
+  where the race is between detection and *no detection*. **Benign here is
+  only a statement about accepted-baseline arithmetic.** It does not make a
+  finite `KILLED`↔`TIMED_OUT` flapper admissible timeout evidence or make its
+  harness certifiable. If load decides whether a finite mutant reaches its
+  killing assertion before the watchdog, repair or retime the covering path
+  and re-observe it fresh under the relevant load; `pitestModeCompareUnion`
+  has nothing sound to write because neither status crosses the unkilled
+  boundary.
 - **Union only rows you have observed to flip** — and prefer the
   `pitestModeCompareUnion` path, which writes the observation
   *into* the row as a `# flip insurance (<per-mode statuses>)` note a later
@@ -791,11 +805,19 @@ invoked it*, and the failure looks exactly like a real regression.
     weakening the bound. If the difference is incidental, shrink or retime the
     covering input until the mutant reads reliably `SURVIVED` and argue ordinary
     accepted equivalence.
-    It does not belong in the timeout set either way.
+    It may remain labelled only as explicit non-certifying work while that
+    disposition is in progress; it is not an admissible final timeout member.
+  - `cause:harness` says the mutated path is finite and normally reaches a killing
+    assertion, but a reviewed covering test or fixture costs enough wall-clock time
+    to race PIT's watchdog under load. It is an honest non-certifying holding state,
+    not a third kind of detection. Repair or retime every covering path, then prove
+    the timeout gone with repeated fresh history-free observations under the relevant
+    solo/gate load before removing the row.
   - `cause:untriaged` is what the seeder writes and is deliberately unfinished.
-    Missing, unknown, conflicting, `resource`, and `untriaged` categories warn,
-    and strict certification refuses them. Infrastructure or harness slowness is
-    neither category and must never be admitted.
+    Missing, unknown, conflicting, `resource`, `harness`, and `untriaged` categories
+    warn, and strict certification refuses them. Unexplained infrastructure noise is
+    not `cause:harness`; leave it untriaged until a specific finite covering-path race
+    has been demonstrated.
 
   Cause class and report status are separate claims. `cause:liveness` explains why
   a valid `TIMED_OUT` result can detect that mutant; it never turns `MEMORY_ERROR`
@@ -811,13 +833,17 @@ invoked it*, and the failure looks exactly like a real regression.
   *(casebook: the liveness loop that raced the heap)*
 
   The category makes the disposition explicit; the README still carries the
-  evidence and cannot be replaced by the token. Membership and cause are key-level.
-  A liveness mutant and a finite sibling can share one `class,method,mutator` key,
-  and PIT's CSV supplies no formatting-stable discriminator with which this record
-  can separate them. This is a known limitation: review positive multiplicity drift
-  and its line-full candidates carefully, but do not pretend a source-line number
-  closes the hole. `# line` remains a triage pointer only and changing it never
-  authorizes or invalidates evidence.
+  evidence and cannot be replaced by the token. Membership and cause are key-level,
+  so a `cause:liveness` row claims that cause for every sibling represented by its
+  `class,method,mutator` key. A liveness mutant and a finite sibling can share that
+  key, and PIT's CSV supplies no formatting-stable discriminator with which this
+  record can separate them. Once review proves such mixed causes, the current format
+  cannot represent an honest certifying row: split the behavior into distinct method
+  keys or use a behavior-preserving refactor that eliminates the ambiguous mutation
+  site, then re-observe history-free. Review positive multiplicity drift and its
+  line-full candidates carefully, but do not pretend a source-line number closes the
+  hole. `# line` remains a triage pointer only and changing it never authorizes or
+  invalidates evidence.
   Adoption is seeded, not
   transcribed: a suite whose summary reports timeouts with no set on disk is
   pointed at `pitest<Suite>TimeoutAuditInit`, which writes the membership rows from the
@@ -858,18 +884,21 @@ invoked it*, and the failure looks exactly like a real regression.
   paragraphs false-flagged 41 documented causes in the house style that
   names the class in a section's intro and argues each method in its own
   paragraph below, while sections resolved all 172).
-  Membership must also keep earning itself: a member is validated against
-  *all* mutants, so a key that exists but never times out — pasted from the
-  wrong report, or a timeout the tests since learned to kill outright —
-  would otherwise sit accepted forever. The verify keeps a per-member quiet
-  counter in `.pitest-history/`, keyed to the completed evidence invocation so
-  standalone verify re-runs of one report are one observation, and bound to the
-  source, classes, configuration, Java and mutation toolchain so changed inputs
-  restart the streak. It notices members with no timeout in 3+ consecutive fresh
-  full mutation runs over identical inputs (the flip-family
-  retirement criterion); a single quiet run is just the
-  `KILLED`↔`TIMED_OUT` load flip, and a gate-load-only
-  member is reset by gate runs, so the notice presumes nothing; a stale
+  Admissible liveness membership must also keep earning itself: a documented
+  `cause:liveness` member is validated against *all* mutants, so a key that
+  exists but never times out — pasted from the wrong report, or a timeout the
+  tests since learned to kill outright — would otherwise sit accepted forever.
+  The verify keeps a per-member quiet counter only for those documented
+  `cause:liveness` rows in `.pitest-history/`, keyed to the completed evidence
+  invocation so standalone verify re-runs of one report are one observation,
+  and bound to the source, classes, configuration, Java and mutation toolchain
+  so changed inputs restart the streak. `cause:resource`, `cause:harness`,
+  `cause:untriaged`, and undocumented rows are already non-certifying findings
+  and never enter that retirement counter. It notices admissible liveness
+  members with no timeout in 3+ consecutive fresh full mutation runs over
+  identical inputs (the flip-family retirement criterion); a single quiet run
+  is inconclusive, and a gate-load-only member is reset by gate runs, so the
+  notice presumes nothing; a stale
   interlude drops the counter rather than freezing it — staleness means the
   code moved, so quietness is re-measured once the mutant returns instead of
   argued from the old method body. The
@@ -910,10 +939,15 @@ invoked it*, and the failure looks exactly like a real regression.
   manually (one `TimeoutAudit` implementation, so the tasks cannot disagree):
   paste a row or write a cause and confirm the tool agrees without a mutation
   run. Static validation knows no staleness, so it asks every well-formed
-  committed member for its cause. Never remove a timeout member on one
-  observation. Wait until the tool emits its **3+ distinct fresh full-run quiet**
-  notice for identical evidence inputs, then confirm the absence under the relevant
-  solo/gate load before editing the record. The streak is an intentionally
+  committed member for its cause. For an otherwise admissible `cause:liveness`
+  member, never remove it on one observation. Wait until the tool emits its **3+
+  distinct fresh full-run quiet** notice for identical evidence inputs, then confirm
+  the absence under the relevant solo/gate load before editing the record. That
+  retirement protocol is not a grace period that makes a finite resource or harness
+  flapper admissible: keep the latter as an explicit non-certifying finding while
+  repairing or retiming its covering path, and remove it only after fresh
+  history-free observations under the relevant modes show that the timeout is gone.
+  The streak is an intentionally
   machine-local nomination, not portable evidence: never copy or merge its stash. If
   the same-input gate confirmation cannot be retained separately or run on
   that machine, keep the harmless row until a later natural gate. History-assisted
@@ -2104,9 +2138,12 @@ instruction text; the digest still names the canonical quoted source block.
 >   observes, and check for a synchronous state reader that can expose the defect
 >   without waiting. A `TestClock` on a collaborator cannot observe a subject using
 >   the system clock. Seeded
->   `cause:untriaged`, missing/unknown categories, and finite `cause:resource`
->   work are reviewer-stops. Resource behavior gets a deterministic contract
->   test/fix when promised, otherwise a stable `SURVIVED` equivalence argument —
+>   `cause:untriaged`, missing/unknown categories, finite `cause:resource`, and
+>   `cause:harness` work are reviewer-stops. `cause:harness` is the explicit
+>   non-certifying holding state for a demonstrated finite covering-path/watchdog
+>   race; it never makes the timeout admissible. Resource behavior gets a
+>   deterministic contract test/fix when promised, otherwise a stable `SURVIVED`
+>   equivalence argument —
 >   never silent timeout membership. Liveness authorizes valid `TIMED_OUT`
 >   evidence only, never `MEMORY_ERROR`: if a non-advancing loop races the heap
 >   against the watchdog, make every covering path fail deterministically without
@@ -2115,17 +2152,24 @@ instruction text; the digest still names the canonical quoted source block.
 >   `config/pitest/README.md` still holds the
 >   full structural cause per member. The verify warns on any timeout outside
 >   the set — paste the printed row, classify it, then write the cause — and on
->   members matching no mutant. Membership and cause are key-level, which leaves a
->   known blind spot when a liveness mutant and a finite sibling share the same key.
->   Positive multiplicity drift prints all current line-full candidates for review;
+>   members matching no mutant. Membership and cause are key-level, so a liveness
+>   token claims every sibling under that key. A key proven to mix liveness and
+>   finite causes is not representable as an honest certifying row: split/refactor
+>   it into distinct method keys or eliminate the ambiguous site, then re-observe
+>   history-free. A source-line qualifier cannot fix the identity without making
+>   formatting a release gate. Positive multiplicity drift prints all current
+>   line-full candidates for review;
 >   source-line movement itself never warns, fails, or requires re-anchoring. Adding
 >   a method, moving imports, or reflowing an expression is not a hardening record
 >   change. Strict workflows run the
 >   committed-file half before PIT; use `pitest<Suite>Debt` for the same quick
 >   manual preview. `TimeoutAuditInit` deliberately seeds an uncertifiable file —
->   classify every row before certification. Do not retire a member until the tool
->   emits its 3+ distinct fresh full-run quiet notice over identical evidence inputs
->   and the absence is confirmed under the relevant solo/gate load. The quiet stash
+>   classify every row before certification. For an otherwise admissible liveness
+>   member, do not retire it until the tool emits its 3+ distinct fresh full-run quiet
+>   notice over identical evidence inputs and the absence is confirmed under the
+>   relevant solo/gate load. A finite KILLED↔TIMED_OUT race is benign only to baseline
+>   arithmetic, never certifying evidence; repair/retime its covering path instead of
+>   admitting it or waiting on the liveness-retirement rule. The quiet stash
 >   is a machine-local nomination: never copy or merge it, and retain the row when a
 >   same-input gate confirmation is unavailable. Assisted reports are
 >   previews and do not

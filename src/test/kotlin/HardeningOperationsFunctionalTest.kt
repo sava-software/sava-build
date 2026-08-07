@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.BaselineDocument
+import software.sava.build.hardening.HardeningHelpText
 import software.sava.build.hardening.HardeningOptionNames
 import java.io.File
 import java.nio.file.FileSystems
@@ -192,6 +193,17 @@ class HardeningOperationsFunctionalTest {
 
     val reused = runner("hardeningHelp").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
+  }
+
+  @Test
+  fun `installed help separates long generated task names from their descriptions`() {
+    val output = HardeningHelpText.render(listOf("valuationManager"), emptyList())
+
+    assertTrue(
+      output.contains("pitestValuationManagerTimeoutAuditInit  seed the suite timeout audit"),
+      output,
+    )
+    assertFalse(output.contains("TimeoutAuditInitseed"), output)
   }
 
   @Test
@@ -503,6 +515,79 @@ class HardeningOperationsFunctionalTest {
     val repaired = runner("pitestEncodingBaselineRebase").build()
     assertTrue(repaired.output.contains("selected baseline provenance rebase"), repaired.output)
     assertEquals(listOf("run"), runs.readLines())
+  }
+
+  @Test
+  fun `continued suite writers isolate a timeout preflight failure`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        hardening {
+          mutation.register("decoding") {
+            targetClasses = listOf("com.example.*")
+            targetTests = "com.example.*Test*"
+          }
+        }
+
+        tasks.named<JavaExec>("pitestDecoding") {
+          mainClass = "com.example.FakePit"
+          classpath = sourceSets["main"].output
+        }
+      """.trimIndent() + "\n",
+    )
+    val config = File(fixtureDir, "config/pitest").apply { mkdirs() }
+    val encodingBaseline = config.resolve("encoding-accepted.csv").apply {
+      writeText(
+        BaselineDocument.CURRENT_HEADER + "\n" +
+            "com.example.FakePit,main,MathMutator,SURVIVED # line 12\n",
+      )
+    }
+    config.resolve("encoding-timeouts.csv").writeText(
+      "com.example.FakePit,main,MathMutator # cause:untriaged line 12\n",
+    )
+    val decodingBaseline = config.resolve("decoding-accepted.csv").apply {
+      writeText(
+        BaselineDocument.CURRENT_HEADER + "\n" +
+            "com.example.FakePit,main,MathMutator,SURVIVED # line 12\n",
+      )
+    }
+    val encodingBefore = encodingBaseline.readBytes()
+
+    val output = runner(
+      "pitestEncodingBaselineRebase",
+      "pitestDecodingBaselineRebase",
+      "--continue",
+    ).buildAndFail().output
+
+    assertTrue(output.contains("committed timeout audit is not ready"), output)
+    assertTrue(output.contains("pitest baseline 'decoding': BaselineRebase"), output)
+    assertTrue(
+      config.resolve("decoding-pitest-version").isFile &&
+          config.resolve("decoding-pitest-toolchain.tsv").isFile,
+      "the independent valid rebase did not finish under --continue:\n$output",
+    )
+    assertTrue(decodingBaseline.isFile)
+    assertTrue(encodingBefore.contentEquals(encodingBaseline.readBytes()))
+    assertFalse(config.resolve("encoding-pitest-version").exists())
+    assertFalse(config.resolve("encoding-pitest-toolchain.tsv").exists())
+    assertEquals(listOf("run"), File(fixtureDir, "build/fake-pit/runs.txt").readLines())
+
+    val reused = runner(
+      "pitestEncodingBaselineRebase",
+      "pitestDecodingBaselineRebase",
+      "--continue",
+    ).buildAndFail().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+    assertTrue(reused.contains("committed timeout audit is not ready"), reused)
+    assertTrue(reused.contains("pitest baseline 'decoding': BaselineRebase"), reused)
+    assertEquals(
+      listOf("run", "run"),
+      File(fixtureDir, "build/fake-pit/runs.txt").readLines(),
+      "reused graph did not isolate and rerun the valid suite writer",
+    )
+    assertFalse(config.resolve("encoding-pitest-version").exists())
+    assertFalse(config.resolve("encoding-pitest-toolchain.tsv").exists())
   }
 
   @Test

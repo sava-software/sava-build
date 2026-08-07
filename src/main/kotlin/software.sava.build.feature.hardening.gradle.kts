@@ -2531,6 +2531,109 @@ hardening.mutation.all {
       } else {
         csv.readLines()
       }
+      // One interpretation of the report: every column split, key derivation, and
+      // status semantic lives on Mutant/MutantStatus. Parse before committed-record
+      // provenance so a trustworthy completed report can still name timeout-audit
+      // findings when that independent committed metadata is torn or malformed.
+      val rows = Mutant.parseReport(finalReportLines)
+      val timedOutByAuditKey = rows
+          .filter { it.status == MutantStatus.TIMED_OUT }
+          .groupBy { it.coordinate }
+      val historyAssistedReport = csv.parentFile.resolve(".history-assisted").isFile
+      val historyDecisionCaveat = if (historyAssistedReport) {
+        "\nThis [history] result is check-only. Run $pitestTaskName -PnoMutationHistory " +
+            "before changing any accepted-baseline or timeout-audit record."
+      } else {
+        ""
+      }
+      fun pasteReadyMemberRows(indent: String) =
+          timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
+            val lines = timedOutByAuditKey.getValue(key).map { it.lineText }.distinct()
+            "$indent$key # cause:untriaged line${if (lines.size > 1) "s" else ""} " +
+                lines.joinToString(", ")
+          }
+      fun missingTimeoutAuditHint(): String =
+          "pitest '$suiteName': ${rows.count { it.status == MutantStatus.TIMED_OUT }} " +
+              "timed-out mutant(s) and no audited set — a timeout detects slowness, not " +
+              "wrongness, so the ratchet cannot see a weakened covering assertion behind one. " +
+              "Adopt the audit with ${pitestTaskName}TimeoutAuditInit (seeds " +
+              "config/pitest/${timeoutsFile.name} from this run), or paste the row(s) below — " +
+              "load-dependent timeouts may not reproduce for a later seeding run:\n" +
+              pasteReadyMemberRows("  ") + "\n" +
+              "then replace cause:untriaged and write each member's structural argument in " +
+              "config/pitest/README.md; the seeded state is intentionally uncertifiable." +
+              historyDecisionCaveat
+      fun missingTimeoutAuditProvenancePreview(): String =
+          "pitest '$suiteName': the current full report contains " +
+              "${rows.count { it.status == MutantStatus.TIMED_OUT }} timed-out mutant(s) and no " +
+              "audited set, but committed mutation provenance is invalid. Retain these candidates " +
+              "for triage; do not seed or add them until provenance is repaired/rebased and a " +
+              "fresh full observation confirms them:\n" + pasteReadyMemberRows("  ") +
+              historyDecisionCaveat
+      fun warnTimeoutFindingsBeforeProvenanceRefusal() {
+        val fullPopulation = !scoped &&
+            verifiedEvidence?.scope == PitestEvidence.FULL_SCOPE
+        if (!timeoutsFile.isFile) {
+          if (fullPopulation && timedOutByAuditKey.isNotEmpty()) {
+            logger.warn(missingTimeoutAuditProvenancePreview())
+          } else if (timedOutByAuditKey.isNotEmpty()) {
+            val unavailableBecause = if (verifiedEvidence == null) {
+              "this report has no completed evidence manifest"
+            } else {
+              "this is a scoped mutation report"
+            }
+            logger.warn(
+                "pitest '$suiteName': report-dependent timeout membership findings were not " +
+                    "evaluated before the committed-provenance refusal because $unavailableBecause; " +
+                    "run the full $pitestTaskName after repairing provenance")
+          }
+          return
+        }
+        val membership = TimeoutAudit.parse(timeoutsFile.readLines())
+        TimeoutAudit.malformedWarning(suiteName, timeoutsFile.name, membership.malformed)
+            ?.let { logger.warn(it) }
+        // These are properties of committed bytes, independent of whether the
+        // current population can be compared with them. Report all of them before
+        // provenance refuses, just as Debt does.
+        val staticCauseFindings = TimeoutAudit.causeFindings(membership, membership.members)
+        if (staticCauseFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.causeFindingWarning(
+              suiteName, timeoutsFile.name, staticCauseFindings))
+        }
+        val staticUndocumented = TimeoutAudit.undocumentedCauses(membership.members) {
+          readmeFile.takeIf { it.isFile }?.readText() ?: ""
+        }
+        if (staticUndocumented.isNotEmpty()) {
+          logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, staticUndocumented))
+        }
+        if (!fullPopulation) {
+          val unavailableBecause = if (verifiedEvidence == null) {
+            "this report has no completed evidence manifest"
+          } else {
+            "this is a scoped mutation report"
+          }
+          logger.warn(
+              "pitest '$suiteName': report-dependent timeout membership findings were not " +
+                  "evaluated before the committed-provenance refusal because $unavailableBecause; " +
+                  "run the full $pitestTaskName after repairing provenance")
+          return
+        }
+        val findings = TimeoutAudit.reportFindings(rows, membership) {
+          readmeFile.takeIf { it.isFile }?.readText() ?: ""
+        }
+        if (findings.unaudited.isNotEmpty()) {
+          logger.warn(TimeoutAudit.unauditedProvenancePreview(
+              suiteName, timeoutsFile.name, findings.unaudited, historyDecisionCaveat))
+        }
+        if (findings.staleMembers.isNotEmpty()) {
+          logger.warn(TimeoutAudit.staleProvenancePreview(
+              suiteName, findings.staleMembers, historyDecisionCaveat))
+        }
+      }
+      fun refuseCommittedProvenance(message: String): Nothing {
+        warnTimeoutFindingsBeforeProvenanceRefusal()
+        throw GradleException(message)
+      }
       val completedToolchainFile = csv.parentFile.resolve(".toolchain.tsv")
       BaselineFiles.requireRegularFileOrMissing(completedToolchainFile)
       val currentToolchain = when {
@@ -2576,7 +2679,7 @@ hardening.mutation.all {
       val recordedToolchain = committedProvenance.toolchain
       committedProvenance.malformedPitVersion?.let { detail ->
         if (!rebase) {
-          throw GradleException(
+          refuseCommittedProvenance(
               "pitest '$suiteName': malformed committed PIT-version stamp at " +
                   "$toolVersionFile — $detail; repair it with ${pitestTaskName}BaselineRebase")
         }
@@ -2586,7 +2689,7 @@ hardening.mutation.all {
       }
       committedProvenance.malformedToolchain?.let { detail ->
         if (!rebase) {
-          throw GradleException(
+          refuseCommittedProvenance(
               "pitest '$suiteName': malformed committed mutation-toolchain record at " +
                   "$toolchainRecordFile — $detail; repair it with " +
                   "${pitestTaskName}BaselineRebase")
@@ -2601,7 +2704,8 @@ hardening.mutation.all {
                 "PIT $recordedPit but ${toolchainRecordFile.name} says PIT " +
                 "${checkNotNull(recordedToolchain).pitestVersion}"
         if (!rebase) {
-          throw GradleException("$disagreement; run ${pitestTaskName}BaselineRebase after review")
+          refuseCommittedProvenance(
+              "$disagreement; run ${pitestTaskName}BaselineRebase after review")
         }
         logger.warn("$disagreement; BaselineRebase will replace both after its fresh safe-superset observation")
       }
@@ -2612,7 +2716,7 @@ hardening.mutation.all {
                 "written by a pre-sidecar release and an interrupted newer write are " +
                 "indistinguishable under the current schema"
         if (!rebase) {
-          throw GradleException(
+          refuseCommittedProvenance(
               "$torn; run ${pitestTaskName}BaselineRebase to bind/repair this one-sided record.")
         }
         logger.warn("$torn; BaselineRebase will repair the pair after its fresh safe-superset observation")
@@ -2628,7 +2732,7 @@ hardening.mutation.all {
                 "timeout record; run ${pitestTaskName}BaselineRebase to create a safely widened " +
                 "record or retire the orphan provenance"
         if ((writingRecord || certificationActive) && !rebase) {
-          throw GradleException(orphanMessage)
+          refuseCommittedProvenance(orphanMessage)
         }
         if (!rebase) {
           legacyProvenanceFinding(orphanMessage, "orphan mutation-provenance sidecar(s)")
@@ -2642,7 +2746,7 @@ hardening.mutation.all {
                 "${pitestTaskName}BaselineRebase to bind it.",
             "committed record is legacy-unversioned")
         if (writingRecord && !rebase) {
-          throw GradleException(
+          refuseCommittedProvenance(
               "pitest '$suiteName': existing committed record has no PIT provenance; only " +
                   "${pitestTaskName}BaselineRebase may adopt it")
         }
@@ -2655,14 +2759,14 @@ hardening.mutation.all {
                 "${pitestTaskName}BaselineRebase to bind it.",
             "committed record is legacy-toolchain-unbound")
         if (writingRecord && !rebase) {
-          throw GradleException(
+          refuseCommittedProvenance(
               "pitest '$suiteName': existing committed record has no mutation-toolchain provenance; only " +
                   "${pitestTaskName}BaselineRebase may adopt it")
         }
       }
       if (recordedPit != null && recordedPit != currentPit) {
         if ((writingRecord || certificationActive) && !rebase) {
-          throw GradleException(
+          refuseCommittedProvenance(
               "pitest '$suiteName': the baseline record was written by PIT $recordedPit but this run used " +
                   "PIT $currentPit — refusing to rewrite the record across a tool bump, whose population " +
                   "churn would be indistinguishable from code churn. Run " +
@@ -2683,7 +2787,7 @@ hardening.mutation.all {
       if (recordedToolchain != null && currentToolchain != null &&
           recordedToolchain.identitySha256 != currentToolchain.identitySha256) {
         if ((writingRecord || certificationActive) && !rebase) {
-          throw GradleException(
+          refuseCommittedProvenance(
               "pitest '$suiteName': committed mutation toolchain " +
                   "${recordedToolchain.identitySha256} differs from this run's " +
                   "${currentToolchain.identitySha256}. Review a history-free " +
@@ -2733,12 +2837,6 @@ hardening.mutation.all {
           }
         }
       }
-      // One interpretation of the report: every column split, key derivation, and
-      // status semantic lives on Mutant/MutantStatus — the casebook's recurring
-      // incident class is a mutant read differently at two sites, and a per-site
-      // parts[] index is how that class reproduces.
-      val rows = Mutant.parseReport(finalReportLines)
-
       val byStatus = rows.groupingBy { it.rawStatus }.eachCount()
       val total = rows.size
       // TIMED_OUT counts as detected, the same as PIT's own summary — a mutant that
@@ -2771,18 +2869,11 @@ hardening.mutation.all {
       // invocation's settings in either direction (a '-PnoMutationHistory'
       // rerun after an assisted one, or the reverse), and the tag describes
       // the REPORT.
-      val historyAssistedReport = csv.parentFile.resolve(".history-assisted").isFile
       logger.lifecycle(
           "pitest '$suiteName': $detected/$total detected ($percent%)" +
               (if (split.isEmpty()) "" else " — ${split.joinToString(", ")}") +
               (if (historyAssistedReport) " [history]" else "")
       )
-      val historyDecisionCaveat = if (historyAssistedReport) {
-        "\nThis [history] result is check-only. Run $pitestTaskName -PnoMutationHistory " +
-            "before changing any accepted-baseline or timeout-audit record."
-      } else {
-        ""
-      }
       if (strictTimeoutAudit && historyAssistedReport) {
         throw GradleException(
             "pitest '$suiteName': strict timeout audit refuses a history-assisted report — cached " +
@@ -3207,18 +3298,12 @@ hardening.mutation.all {
       // plus diagnostic source lines for a reviewer's convenience. Lines are not
       // identity or authorization: formatting and unrelated insertions must not
       // invalidate an audited cause.
-      // Only cause:liveness is watchdog detection; a finite cause:resource mutant
-      // needs a contract-first deterministic disposition, while cause:untriaged is
-      // the seeder's explicit unfinished state. The suite README carries the full
-      // structural argument. Absent file, absent check — adoption is per-repo.
-      val timedOutByAuditKey = rows.filter { it.status == MutantStatus.TIMED_OUT }.groupBy { it.coordinate }
-      // One membership row per key, sibling lines collapsed into the '# line' comment —
-      // the shape the seeder writes, the unaudited warning prints, and a hand paste must
-      // satisfy verbatim. Every surface that offers a row to paste renders it here.
-      fun pasteReadyMemberRows(indent: String) = timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
-        val lines = timedOutByAuditKey.getValue(key).map { it.lineText }.distinct()
-        "$indent$key # cause:untriaged line${if (lines.size > 1) "s" else ""} ${lines.joinToString(", ")}"
-      }
+      // Only cause:liveness is watchdog detection. A finite cause:resource mutant
+      // needs a contract-first deterministic disposition; cause:harness honestly
+      // records a reviewed finite covering-path/watchdog race while it is repaired;
+      // cause:untriaged is the seeder's explicit unfinished state. All but liveness
+      // remain non-certifying. The suite README carries the full structural argument.
+      // Absent file, absent check — adoption is per-repo.
       var pendingTimeoutAuditContent: String? = null
       if (initTimeoutAudit) {
         // Seeds the mechanical half of adoption — the membership rows — from this
@@ -3264,7 +3349,9 @@ hardening.mutation.all {
                 "# A later emergency ceiling may coexist with liveness but cannot prove it. A\n" +
                 "# straight-line path without a loop, retry, lock, wait, blocking call, or external\n" +
                 "# completion dependency is not credible liveness evidence. A finite\n" +
-                "# cause:resource mutant needs a contract-first disposition. Treat '# line' tags as\n" +
+                "# cause:resource mutant needs a contract-first disposition. Use cause:harness\n" +
+                "# only for a demonstrated finite covering-path/watchdog race; it remains\n" +
+                "# non-certifying until repaired. Treat '# line' tags as\n" +
                 "# diagnostic metadata and write every structural argument in config/pitest/README.md.\n" +
                 seeded + "\n"
       }
@@ -3292,42 +3379,31 @@ hardening.mutation.all {
             advisoryLog.get().record(advisoryScope, "${malformed.size} malformed audit row(s)")
           }
         }
-        val members = membership.members
-        val unaudited = rows.filter { it.status == MutantStatus.TIMED_OUT && it.coordinate !in members }
+        val timeoutFindings = TimeoutAudit.reportFindings(rows, membership) {
+          readmeFile.takeIf { it.isFile }?.readText() ?: ""
+        }
+        val unaudited = timeoutFindings.unaudited
         if (unaudited.isNotEmpty()) {
           // rows print paste-ready: the membership key verbatim, the line riding in a
           // '#' comment — pasting the printed row into the set must satisfy the check,
           // never trip the stale-member notice
-          logger.warn(
-              "pitest '$suiteName': ${unaudited.size} timed-out mutant(s) not in the audited set " +
-                  "(${timeoutsFile.name}) — a new timeout hides a weakened-assertion blind spot " +
-                  "behind \"detected\"; identify the structural cause (the removed loop exit, the " +
-                  "reversed cursor), add the row below to the set and the cause to " +
-                  "config/pitest/README.md:\n" +
-                  unaudited.joinToString("\n") {
-                    "  ${it.coordinate} # cause:untriaged line ${it.lineText}"
-                  } + historyDecisionCaveat
-          )
+          logger.warn(TimeoutAudit.unauditedWarning(
+              suiteName, timeoutsFile.name, unaudited, historyDecisionCaveat))
           if (!strictTimeoutAudit) {
             advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
           }
         }
-        val allKeys = rows.mapTo(HashSet()) { it.coordinate }
-        val staleMembers = members.filterNot { it in allKeys }
+        val staleMembers = timeoutFindings.staleMembers
         if (staleMembers.isNotEmpty()) {
           // Warn-level like the other membership findings: 'retire or fix' is a
           // reviewer-stop exactly as much as a missing cause, and warn is what feeds
           // the end-of-build advisory summary.
-          logger.warn(
-              "pitest '$suiteName': ${staleMembers.size} audited-timeout row(s) match no mutant in " +
-                  "this run's report — the code moved or the mutator set changed; retire or fix:\n" +
-                  staleMembers.sorted().joinToString("\n") { "  $it" } +
-                  historyDecisionCaveat
-          )
+          logger.warn(TimeoutAudit.staleWarning(
+              suiteName, staleMembers, historyDecisionCaveat))
           advisoryLog.get().record(advisoryScope, "${staleMembers.size} stale audit row(s)")
         }
-        val liveMembers = members - staleMembers.toSet()
-        val causeFindings = TimeoutAudit.causeFindings(membership, liveMembers)
+        val liveMembers = timeoutFindings.liveMembers
+        val causeFindings = timeoutFindings.causeFindings
         if (causeFindings.isNotEmpty()) {
           logger.warn(TimeoutAudit.causeFindingWarning(
               suiteName, timeoutsFile.name, causeFindings))
@@ -3405,7 +3481,15 @@ hardening.mutation.all {
           // zero if the mutant returns, not carried across the change. The cost is
           // two extra runs of patience; the alternative is a retirement nudge argued
           // from code that no longer exists.
-          val quietRuns = liveMembers.associateWith { member ->
+          // Retirement is a hygiene nomination for otherwise valid audited
+          // liveness only. Resource/harness/untriaged rows and liveness rows whose
+          // README argument is missing are unfinished findings, not candidates that
+          // three quiet runs can legitimize or silently erase.
+          val retirementMembers = liveMembers.filterTo(linkedSetOf()) { member ->
+            membership.causeCategories[member] == TimeoutAudit.CauseCategory.LIVENESS &&
+                member !in timeoutFindings.undocumented
+          }
+          val quietRuns = retirementMembers.associateWith { member ->
             when {
               member in timedOutByAuditKey -> 0
               sameObservation -> previousQuiet[member] ?: 0
@@ -3464,9 +3548,7 @@ hardening.mutation.all {
         // Live members only: a stale member is already being told to retire, and
         // asking for the cause of a row that should be deleted is two instructions
         // pulling opposite ways for one row.
-        val undocumented = TimeoutAudit.undocumentedCauses(liveMembers) {
-          readmeFile.takeIf { it.isFile }?.readText() ?: ""
-        }
+        val undocumented = timeoutFindings.undocumented
         if (undocumented.isNotEmpty()) {
           logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, undocumented))
           if (!strictTimeoutAudit) {
@@ -3490,9 +3572,11 @@ hardening.mutation.all {
                   "${malformed.size} malformed membership row(s), ${causeFindings.size} inadmissible or " +
                   "unfinished cause classification(s), and ${undocumented.size} audited member(s) without " +
                   "a README cause; see the warnings above. Paste the printed row(s) into ${timeoutsFile.name}, " +
-                  "then resolve each finding: only cause:liveness may remain in the audited set; disposition " +
-                  "and remove cause:resource rows, finish untriaged or missing classifications, and write each " +
-                  "structural argument in config/pitest/README.md."
+                  "then resolve each finding: only cause:liveness may remain in a certifying audited set. " +
+                  "Keep finite resource/harness work explicit and non-certifying while fixing it; do not " +
+                  "relabel it as liveness or delete it from one quiet run. Finish untriaged or missing " +
+                  "classifications, write each structural argument in config/pitest/README.md, and remove a " +
+                  "repaired row only after repeated fresh history-free observations under the relevant load."
           )
         }
       } else if (timedOutByAuditKey.isNotEmpty()) {
@@ -3505,16 +3589,7 @@ hardening.mutation.all {
         // by the time anyone acts on this nudge the next run may hold a clean report —
         // TimeoutAuditInit then rightly refuses to seed from it, and without the rows
         // here the coordinate that timed out is recoverable only from the daemon log.
-        val hint =
-            "pitest '$suiteName': ${rows.count { it.status == MutantStatus.TIMED_OUT }} timed-out mutant(s) and no audited " +
-                "set — a timeout detects slowness, not wrongness, so the ratchet cannot see a weakened " +
-                "covering assertion behind one. Adopt the audit with ${pitestTaskName}TimeoutAuditInit (seeds " +
-                "config/pitest/${timeoutsFile.name} from this run), or paste the row(s) below — " +
-                "load-dependent timeouts may not reproduce for a later seeding run:\n" +
-                pasteReadyMemberRows("  ") + "\n" +
-                "then replace cause:untriaged and write each " +
-                "member's structural argument in config/pitest/README.md; the seeded state is " +
-                "intentionally uncertifiable." + historyDecisionCaveat
+        val hint = missingTimeoutAuditHint()
         if (strictTimeoutAudit) {
           throw GradleException(hint)
         }
@@ -4152,8 +4227,27 @@ hardening.mutation.all {
           debtToolVersionFile,
           debtToolchainFile,
       ).forEach { BaselineFiles.requireRegularFileOrMissing(debtProjectDirectory, it) }
-      // Committed-files-only, like the audit's static half below — which makes Debt
-      // the quick place a plugin release that bumps PIT surfaces per consumer repo,
+      // This committed-files-only audit is independent of mutation provenance.
+      // Run it first so a torn or malformed sidecar cannot hide a malformed,
+      // unclassified, or undocumented timeout member behind its own refusal.
+      if (debtTimeoutsFile.isFile) {
+        val membership = TimeoutAudit.parse(debtTimeoutsFile.readLines())
+        TimeoutAudit.malformedWarning(suiteName, debtTimeoutsFile.name, membership.malformed)
+            ?.let { logger.warn(it) }
+        val causeFindings = TimeoutAudit.causeFindings(membership, membership.members)
+        if (causeFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.causeFindingWarning(
+              suiteName, debtTimeoutsFile.name, causeFindings))
+        }
+        val undocumented = TimeoutAudit.undocumentedCauses(membership.members) {
+          readmeFile.takeIf { it.isFile }?.readText() ?: ""
+        }
+        if (undocumented.isNotEmpty()) {
+          logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, undocumented))
+        }
+      }
+      // Committed-files-only, like the timeout audit immediately above — which makes
+      // Debt the quick place a plugin release that bumps PIT surfaces per consumer repo,
       // before anyone reads tool churn as code churn.
       val debtHasRecord = baselineFile.isFile || debtTimeoutsFile.isFile
       val debtProvenance = CommittedMutationProvenance.classify(
@@ -4227,33 +4321,6 @@ hardening.mutation.all {
                 "${pitestTaskName}BaselineRebase"
         )
       }
-      // The audited-timeout set's static half, shared with the verify (TimeoutAudit):
-      // row shape and cause presence read committed files only, so a pasted member or
-      // a fresh README cause is confirmed here in seconds instead of after the next
-      // mutation run. The mutant-facing checks (unaudited newcomers, stale members,
-      // quiet streaks) need a report and stay in the verify — which also means no
-      // staleness is known here, so every well-formed member is asked for its cause.
-      // Before the debt tally, not after: a fully-detected suite has no debt to print
-      // (the early return below) but its audited set is exactly as checkable. Plain
-      // warnings, no advisory-log entries: the end-of-build summary exists for the
-      // gate's scroll problem, and these lines end a short interactive run.
-      if (debtTimeoutsFile.isFile) {
-        val membership = TimeoutAudit.parse(debtTimeoutsFile.readLines())
-        TimeoutAudit.malformedWarning(suiteName, debtTimeoutsFile.name, membership.malformed)
-            ?.let { logger.warn(it) }
-        val causeFindings = TimeoutAudit.causeFindings(membership, membership.members)
-        if (causeFindings.isNotEmpty()) {
-          logger.warn(TimeoutAudit.causeFindingWarning(
-              suiteName, debtTimeoutsFile.name, causeFindings))
-        }
-        val undocumented = TimeoutAudit.undocumentedCauses(membership.members) {
-          readmeFile.takeIf { it.isFile }?.readText() ?: ""
-        }
-        if (undocumented.isNotEmpty()) {
-          logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, undocumented))
-        }
-      }
-
       // The exclusion audit's static half, mirroring the timeout audit's: the
       // policy is pure given recompiled classes, so when a prior run left
       // build/mutation-classes behind it is checkable here without a mutation
@@ -5113,7 +5180,7 @@ tasks.register("hardeningInit") {
           |
           |## Audited timeout causes
           |
-          |For every audited timeout row, replace the seeded `cause:untriaged` comment category. The seeded file is intentionally uncertifiable. Only `cause:liveness` is admissible after deterministic seams or budgets are exhausted: the mutated path has no path-owned finite completion guarantee, and a fixture's emergency exit does not demote that production liveness loss. If a fixture bound is the claimed deterministic oracle, compare it with PIT's `duration * timeoutFactor + timeoutConst`; a bound that cannot fail first contributes no cause evidence, so shorten it and re-observe history-free. A later emergency ceiling may coexist with production liveness but cannot prove it. A straight-line path without a loop, retry, lock, wait, blocking call, or external completion dependency is not credible liveness evidence. Finite `cause:resource` work needs a contract-first test/fix or stable SURVIVED equivalence instead of timeout membership. Treat `# line` comments as diagnostic metadata only: formatting, imports, and inserted methods must not invalidate an audited cause. PIT's CSV has no formatting-stable identity finer than class, method, and mutator, so same-key siblings remain a documented limitation that requires report-level review. Name the member's class and method together in the same Markdown heading-delimited section, record any fixture safety bound, and explain the measured structural cause. A global statement that the suite is slow is not evidence for an individual mutant.
+          |For every audited timeout row, replace the seeded `cause:untriaged` comment category. The seeded file is intentionally uncertifiable. Only `cause:liveness` is admissible after deterministic seams or budgets are exhausted: the mutated path has no path-owned finite completion guarantee, and a fixture's emergency exit does not demote that production liveness loss. If a fixture bound is the claimed deterministic oracle, compare it with PIT's `duration * timeoutFactor + timeoutConst`; a bound that cannot fail first contributes no cause evidence, so shorten it and re-observe history-free. A later emergency ceiling may coexist with production liveness but cannot prove it. A straight-line path without a loop, retry, lock, wait, blocking call, or external completion dependency is not credible liveness evidence. Finite `cause:resource` work needs a contract-first test/fix or stable SURVIVED equivalence instead of timeout membership. A demonstrated finite covering-path/watchdog race may be recorded honestly as `cause:harness` while it is repaired, but remains non-certifying. Treat `# line` comments as diagnostic metadata only: formatting, imports, and inserted methods must not invalidate an audited cause. PIT's CSV has no formatting-stable identity finer than class, method, and mutator, so latent same-key siblings require report-level review; once review proves one key mixes liveness and finite causes, it is not honestly certifiable until the behavior is split/refactored into distinct method keys or the ambiguous site is eliminated. Name the member's class and method together in the same Markdown heading-delimited section, record any fixture safety bound, and explain the measured structural cause. A global statement that the suite is slow is not evidence for an individual mutant.
           |""".trimMargin()
       )
       logger.lifecycle("hardeningInit: wrote $readme")

@@ -41,8 +41,11 @@ that the old word "hang" had hidden:
   watchdog detection, even though no mutation run will wait long enough to see it.
 - Three other Ravina mutants were killed deterministically and timed out only
   when a slower covering test lost a load race. They were neither liveness nor
-  acceptable resource evidence; the right disposition is to repair/isolate the
-  harness and remove them from the audited set.
+  acceptable resource evidence. Their `KILLED`↔`TIMED_OUT` movement was benign to
+  accepted-baseline arithmetic because both statuses are detected, but it was not
+  certifying timeout evidence; the right disposition is to repair/isolate the
+  harness and remove them from the audited set only after repeated fresh history-free
+  observations under the relevant load.
 - An idl-src-gen mutant deleted a guard and blocked on an external pipe read. Its
   fixture's child process exits after 30 seconds solely so a broken test cannot
   wedge forever. That emergency event does not give the mutated path its own
@@ -60,17 +63,20 @@ made certification refuse until a human copied a new number into the record.
 
 The pragmatic repair keeps `# line` as diagnostic metadata only. Adding a method,
 moving imports, changing indentation, or reflowing a multi-line expression must not
-warn, fail, or require re-anchoring. `cause:liveness` remains a key-level judgment,
-and the same-key mixed-cause sibling is a known blind spot until PIT evidence offers a
-stable discriminator independent of source layout. Positive timeout-count drift still
-prints every current line-full candidate so a reviewer can notice widened coverage,
-but the line itself grants and revokes nothing. Rules: *classify by whether the mutated
+warn, fail, or require re-anchoring. `cause:liveness` remains a key-level judgment: it
+claims every sibling represented by the key. A key known to contain both liveness and
+finite siblings is therefore unrepresentable as an honest certifying row until the
+behavior is split into distinct method keys or a behavior-preserving refactor removes
+the ambiguous mutation site. Positive timeout-count drift still prints every current
+line-full candidate so a reviewer can notice widened coverage, but the line itself
+grants and revokes nothing. Rules: *classify by whether the mutated
 path owns a finite completion guarantee, not by a fixture's safety escape or by
 wall-clock practicality*; *do not turn source positions or formatting into behavioral
-identity*; *a line-less cause cannot distinguish mixed-cause siblings at the same key,
-so treat multiplicity growth there as a review prompt rather than claiming the record
-proves more than it can*; *load-only KILLED↔TIMED_OUT races are harness debt, not a
-third admissible cause category*.
+identity*; *a source-line qualifier cannot make a mixed-cause key sound without
+turning formatting into a release gate*; *split/refactor a known mixed-cause key rather
+than claiming the record proves more than it can*; *load-only KILLED↔TIMED_OUT races
+are `cause:harness` debt — an honest non-certifying holding category, never admissible
+detection and never a candidate for the liveness quiet-retirement protocol*.
 
 ## The fixture bound that lost the race to PIT
 
@@ -1122,7 +1128,10 @@ grew or the lines a reviewer must inspect. Cause categories later made the
 remaining identity limitation explicit: a key can hold both a liveness and a
 resource sibling. Source-line tags cannot soundly close that gap because ordinary
 formatting moves them, so they remain diagnostic metadata and never an authorization
-boundary *(casebook: the liveness label that swallowed a finite sibling)*.
+boundary. Once review proves the causes are mixed, the key cannot carry an honest
+certifying cause until a behavior-preserving split/refactor gives the siblings distinct
+identities or removes the ambiguous site *(casebook: the liveness label that swallowed
+a finite sibling)*.
 
 Rules: *when a key stops identifying one thing, every comparison built on it
 is a multiset comparison — convert them together, not the ones you
@@ -1132,7 +1141,8 @@ reader to filter the dangerous thing*; *a format migration that silences a
 check for exactly one run hides its own regression from the person doing the
 migration*; *line-less membership names the family and cannot distinguish a
 mixed-cause sibling at the same key; source-line metadata may expose that risk for
-review but cannot resolve it*.
+review but cannot resolve it, so a proven mixed key must be split/refactored rather
+than certified under a key-wide cause*.
 
 ## The trap that never existed
 

@@ -597,6 +597,41 @@ internal abstract class HardeningOperationCompletionTask : DefaultTask() {
 /** Stable text assembly for the installed-version help task. */
 internal object HardeningHelpText {
   fun render(suiteNames: List<String>, fuzzTargetNames: List<String>): String = buildString {
+    val suitePrefixes = suiteNames.sorted().map {
+      "pitest" + it.replaceFirstChar(Char::uppercase)
+    }
+    val fuzzPrefixes = fuzzTargetNames.sorted().map {
+      "fuzz" + it.replaceFirstChar(Char::uppercase)
+    }
+    val optionSpellings = HardeningOptionNames.descriptors.map { option ->
+      "-P${option.name}" + (option.value?.let { "=<$it>" } ?: "")
+    }
+    val generatedNames = buildList {
+      suitePrefixes.forEach { prefix ->
+        add("${prefix}BaselineRebase")
+        add("${prefix}BaselineUpdate")
+        add("${prefix}BaselineUnion")
+        add("${prefix}BaselinePrune")
+        add("${prefix}TimeoutAuditInit")
+      }
+      add("pitestModeCompareUnion")
+      fuzzPrefixes.forEach { prefix ->
+        add(prefix)
+        add("${prefix}Minimize")
+      }
+      addAll(optionSpellings)
+      addAll(HardeningOptionNames.removedWriterTaskByProperty.keys.map { "-P$it" })
+    }
+    val generatedColumnWidth = maxOf(
+        40,
+        (generatedNames.maxOfOrNull { it.length } ?: 0) + 2,
+    )
+    fun appendGenerated(name: String, purpose: String) {
+      append("  ")
+      append(name.padEnd(generatedColumnWidth))
+      appendLine(purpose)
+    }
+
     appendLine("Hardening tasks (installed plugin version)")
     appendLine()
     appendLine("Read-only and certification workflows:")
@@ -611,42 +646,38 @@ internal object HardeningHelpText {
     appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")
     appendLine("  migrateMutationBaselines          stamp substantive accepted baselines; remove empty placeholders")
     appendLine("  downgradeMutationBaselines        remove schema 1 from substantive baselines; empty placeholders stay absent")
-    suiteNames.sorted().forEach { suite ->
-      val prefix = "pitest" + suite.replaceFirstChar(Char::uppercase)
-      appendLine("  ${prefix}BaselineRebase".padEnd(40) + "safely adopt a reviewed PIT/toolchain transition")
-      appendLine(
-          "  ${prefix}BaselineUpdate".padEnd(40) +
-              "report rewrite; keep current timeout/flip-insurance evidence")
-      appendLine("  ${prefix}BaselineUnion".padEnd(40) + "append only newly observed rows")
-      appendLine("  ${prefix}BaselinePrune".padEnd(40) + "apply the reviewed shrink-only candidate set")
-      appendLine(
-          "  ${prefix}TimeoutAuditInit".padEnd(40) +
-              "seed the suite timeout audit (uncertifiable until classified)")
+    suitePrefixes.forEach { prefix ->
+      appendGenerated(
+          "${prefix}BaselineRebase",
+          "safely adopt a reviewed PIT/toolchain transition")
+      appendGenerated(
+          "${prefix}BaselineUpdate",
+          "report rewrite; keep current timeout/flip-insurance evidence")
+      appendGenerated("${prefix}BaselineUnion", "append only newly observed rows")
+      appendGenerated("${prefix}BaselinePrune", "apply the reviewed shrink-only candidate set")
+      appendGenerated(
+          "${prefix}TimeoutAuditInit",
+          "seed the suite timeout audit (uncertifiable until classified)")
     }
-    appendLine("  pitestModeCompareUnion".padEnd(40) + "annotate/write observed mode-flip insurance")
+    appendGenerated("pitestModeCompareUnion", "annotate/write observed mode-flip insurance")
     if (fuzzTargetNames.isNotEmpty()) {
       appendLine()
       appendLine("Fuzz workflows:")
       appendLine("  fuzzAll                           run every registered local target with explicit budget/concurrency; durable receipt in .pitest-history/")
-      fuzzTargetNames.sorted().forEach { target ->
-        val prefix = "fuzz" + target.replaceFirstChar(Char::uppercase)
-        appendLine("  $prefix".padEnd(40) + "run the target")
-        appendLine("  ${prefix}Minimize".padEnd(40) + "minimize its committed corpus")
+      fuzzPrefixes.forEach { prefix ->
+        appendGenerated(prefix, "run the target")
+        appendGenerated("${prefix}Minimize", "minimize its committed corpus")
       }
     }
     appendLine()
     appendLine("Gradle properties:")
-    HardeningOptionNames.descriptors.forEach { option ->
-      val spelling = "-P${option.name}" + (option.value?.let { "=<$it>" } ?: "")
-      append("  ")
-      append(spelling.padEnd(40))
-      append(option.purpose)
-      appendLine()
+    HardeningOptionNames.descriptors.zip(optionSpellings).forEach { (option, spelling) ->
+      appendGenerated(spelling, option.purpose)
     }
     appendLine()
     appendLine("Removed writer properties (refused since sava-build 21.5.22):")
     HardeningOptionNames.removedWriterTaskByProperty.forEach { (property, task) ->
-      appendLine("  ${"-P$property".padEnd(40)}use $task")
+      appendGenerated("-P$property", "use $task")
     }
     appendLine("Named tasks are the only supported committed-file write interface.")
   }
