@@ -1,5 +1,33 @@
 # Changelog
 
+## [21.5.25](https://github.com/sava-software/sava-build/compare/21.5.24...21.5.25) (2026-08-07)
+
+
+### Features
+
+* **hardening:** surface slow PIT coverage costs ([345845b](https://github.com/sava-software/sava-build/commit/345845b183b089b97d2340a4b92cd93c154ab25b))
+
+
+### Bug Fixes
+
+* **hardening:** bind timeout retirement evidence ([8986c56](https://github.com/sava-software/sava-build/commit/8986c5656e0d7f0c6a55eb5fde3f553e63ad0cea))
+* **hardening:** keep mutation records reviewable ([5dad64e](https://github.com/sava-software/sava-build/commit/5dad64ea3ec96cc5570fc709f275c9a4868e4cbd))
+* **hardening:** make timeout debt diagnosable ([ef68cfb](https://github.com/sava-software/sava-build/commit/ef68cfb016bc96655b5d07dffccca12e5e847602))
+* **hardening:** preserve full mutation evidence ([e6fa4f5](https://github.com/sava-software/sava-build/commit/e6fa4f5a617f4556efed8ee808b57826b2ef6398))
+* **hardening:** protect mutation evidence integrity ([0a14b89](https://github.com/sava-software/sava-build/commit/0a14b89ea67cc0e21f1c9d0b67801af5d94139f5))
+* **hardening:** sharpen timeout retirement evidence ([07b9e0c](https://github.com/sava-software/sava-build/commit/07b9e0c04e13fb5c3718b7ecc27a6d560d6d9ee3))
+* **hardening:** strengthen certification evidence ([6043158](https://github.com/sava-software/sava-build/commit/6043158bbb2e491ec8d13c87619794dbc8e160fb))
+
+
+### Build System
+
+* **deps:** bump gradle/actions/setup-gradle from 6.2.0 to 6.3.0 ([#85](https://github.com/sava-software/sava-build/issues/85)) ([226520e](https://github.com/sava-software/sava-build/commit/226520e5a3cac08f14a6a6ebe477d5b8ecee5de3))
+
+
+### Chores
+
+* **build:** update Gradle and verification metadata ([37c363c](https://github.com/sava-software/sava-build/commit/37c363c33ccd1a8e3bee69cb00dd142cb65dbd08))
+
 ## [21.5.24](https://github.com/sava-software/sava-build/compare/21.5.23...21.5.24) (2026-08-06)
 
 
