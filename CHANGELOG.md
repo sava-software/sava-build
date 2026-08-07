@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.26](https://github.com/sava-software/sava-build/compare/21.5.25...21.5.26) (2026-08-07)
+
+
+### Bug Fixes
+
+* **release:** add 21.5.25 attestation ([b15aa4f](https://github.com/sava-software/sava-build/commit/b15aa4fbbb30a5f8708384cb0cd0233787ad917a))
+
 ## [21.5.25](https://github.com/sava-software/sava-build/compare/21.5.24...21.5.25) (2026-08-07)
 
 
