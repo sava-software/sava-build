@@ -36,7 +36,9 @@ plugin-owned tests carry the changed-feature proof. Both non-feature bases refus
 feature adoptions. Every supplied checkout contributes the same derived certification
 evidence; its role records whether the owner reviewed that consumer as exercising the
 changed feature or as exact-byte hardening-certification evidence only.
-Commit the generated file to the Release Please PR. Tag creation and publication then
+Commit the generated file to the still-open Release Please PR, then use Squash and merge.
+A later main commit cannot repair a release target that omitted the record; rebase and
+merge-commit release histories are deliberately refused. Tag creation and publication then
 validate the candidate identity and refuse a rebuilt JAR whose bytes differ from the
 reviewed candidate.
 EOF
@@ -73,6 +75,31 @@ require_version() {
 
 manifest_version() {
   jq -er '.["."] | select(type == "string")' "$release_manifest"
+}
+
+manifest_version_at_commit() {
+  local commit=$1
+  git -C "$sava_build_dir" show "$commit:.release-please-manifest.json" 2>/dev/null |
+    jq -er '.["."] | select(type == "string")'
+}
+
+release_commit_for_version() {
+  local version=$1 commit commit_version parent parent_version
+  while IFS= read -r commit; do
+    commit_version=$(manifest_version_at_commit "$commit" 2>/dev/null) || continue
+    [ "$commit_version" = "$version" ] || continue
+    parent=$(git -C "$sava_build_dir" rev-parse "$commit^" 2>/dev/null || true)
+    parent_version=""
+    if [ -n "$parent" ]; then
+      parent_version=$(manifest_version_at_commit "$parent" 2>/dev/null || true)
+    fi
+    if [ "$parent_version" != "$version" ]; then
+      printf '%s\n' "$commit"
+      return 0
+    fi
+  done < <(git -C "$sava_build_dir" rev-list HEAD -- \
+    .release-please-manifest.json)
+  return 1
 }
 
 origin_slug() {
@@ -836,7 +863,8 @@ verify_tag() {
     echo "release-attestation: tag $version points to $tagged, checkout is $head" >&2
     return 1
   fi
-  verify_attestation "$version"
+  verify_attestation "$version" || return 1
+  verify_release_target "$version"
 }
 
 verify_built_jar() {
@@ -851,7 +879,7 @@ verify_built_jar() {
   # Re-check the exact tagged checkout after the build, then prove that the artifact
   # about to be published is the same deterministic JAR the local adoption passes
   # reviewed. Hash twice so a concurrent replacement cannot pass unnoticed.
-  verify_tag "$version"
+  verify_tag "$version" || return 1
   expected=$(jq -r '.candidate.plugin_jar_sha256' \
     "$attestations_dir/$version.json") || return 1
   after=$(sha256_file "$jar") || return 1
@@ -865,6 +893,58 @@ verify_built_jar() {
     return 1
   fi
   echo "release-attestation: built plugin JAR matches the certified candidate: $after"
+}
+
+verify_release_target() {
+  local version=$1 relative release_commit target_version target_mode
+  local target_blob head_blob candidate release_parent parent_count head
+  relative="release-attestations/$version.json"
+  if ! release_commit=$(release_commit_for_version "$version"); then
+    echo "release-attestation: cannot identify the commit that changed the release manifest to $version" >&2
+    return 1
+  fi
+  target_version=$(git -C "$sava_build_dir" show \
+    "$release_commit:.release-please-manifest.json" | \
+    jq -er '.["."] | select(type == "string")') || return 1
+  if [ "$target_version" != "$version" ]; then
+    echo "release-attestation: release commit $release_commit names version $target_version, expected $version" >&2
+    return 1
+  fi
+  head=$(git -C "$sava_build_dir" rev-parse HEAD) || return 1
+  if [ "$release_commit" != "$head" ]; then
+    echo "release-attestation: manifest-version-changing release commit $release_commit is not checkout HEAD $head" >&2
+    echo "release-attestation: the release must tag that exact squash commit; a later changelog, attestation, or repair commit is not a valid target" >&2
+    return 1
+  fi
+  target_mode=$(git -C "$sava_build_dir" ls-tree "$release_commit" -- "$relative" |
+    awk 'NR == 1 { print $1 }') || return 1
+  if [ "$target_mode" != "100644" ]; then
+    echo "release-attestation: release commit $release_commit does not contain the reviewed record $relative" >&2
+    echo "release-attestation: commit the record to the Release Please branch and use Squash and merge; a later main commit or rebase merge cannot repair the release target" >&2
+    return 1
+  fi
+  target_blob=$(git -C "$sava_build_dir" rev-parse "$release_commit:$relative") || return 1
+  head_blob=$(git -C "$sava_build_dir" rev-parse "HEAD:$relative") || return 1
+  if [ "$target_blob" != "$head_blob" ]; then
+    echo "release-attestation: $relative differs from the record in release commit $release_commit" >&2
+    echo "release-attestation: the exact reviewed record must be merged with the release metadata, not changed afterward" >&2
+    return 1
+  fi
+  candidate=$(jq -r '.candidate.commit' "$attestations_dir/$version.json") || return 1
+  if ! git -C "$sava_build_dir" merge-base --is-ancestor \
+      "$candidate" "$release_commit"; then
+    echo "release-attestation: certified candidate $candidate is not an ancestor of release commit $release_commit" >&2
+    return 1
+  fi
+  parent_count=$(git -C "$sava_build_dir" rev-list --parents -n 1 \
+    "$release_commit" | awk '{ print NF - 1 }') || return 1
+  release_parent=$(git -C "$sava_build_dir" rev-parse "$release_commit^" 2>/dev/null || true)
+  if [ "$parent_count" != "1" ] || [ "$release_parent" != "$candidate" ]; then
+    echo "release-attestation: release commit $release_commit is not one squash commit directly atop certified candidate $candidate" >&2
+    echo "release-attestation: use Squash and merge for the attested Release Please PR; rebase and merge-commit release histories are refused" >&2
+    return 1
+  fi
+  echo "release-attestation: release commit $release_commit is the exact reviewed squash target"
 }
 
 verify_pending_release() {
@@ -882,7 +962,8 @@ verify_pending_release() {
     return 0
   fi
   echo "release-attestation: tag $version is pending; requiring its committed reviewed release attestation"
-  verify_attestation "$version"
+  verify_attestation "$version" || return 1
+  verify_release_target "$version"
 }
 
 self_test() {
@@ -954,6 +1035,7 @@ self_test() {
   local reviewed_divergent
   local reviewed_jar reviewed_output valid_reviewed_attestation historic_reviewed_attestation
   local historic_schema3_attestation verify_output
+  local reviewed_late_commit reviewed_release_tree reviewed_release_commit
   local consumers="$fixture/reviewed-consumers" consumer_sava="$fixture/reviewed-consumers/sava"
   local consumer_ravina="$fixture/reviewed-consumers/ravina"
   local consumer_sava_copy="$fixture/reviewed-consumers/sava-copy"
@@ -1427,7 +1509,63 @@ self_test() {
     printf '%s\n' "$verify_output" >&2
     return 1
   }
+  # A metadata commit followed by an attestation commit is both the 21.5.25 late-main
+  # failure and the shape produced by rebase-merging a two-commit release PR. Git
+  # history cannot distinguish them, so the release path deliberately requires squash.
+  expect_cli_failure "attestation committed after release metadata" \
+    "is not checkout HEAD" \
+    "$reviewed_script" verify-pending-release
+  git -C "$reviewed_fixture" tag 1.0.1
+  expect_cli_failure "tag on late attestation commit" \
+    "is not checkout HEAD" \
+    "$reviewed_script" verify-tag 1.0.1
+  git -C "$reviewed_fixture" tag -d 1.0.1 >/dev/null
+  printf '%s\n' '{ ".": "1.0.1" }' > \
+    "$reviewed_fixture/.release-please-manifest.json"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add .release-please-manifest.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test \
+      commit -qm 'format release manifest after late attestation'
+  )
+  expect_cli_failure "manifest reformat after late attestation" \
+    "is not checkout HEAD" \
+    "$reviewed_script" verify-pending-release
+  reviewed_late_commit=$(git -C "$reviewed_fixture" rev-parse HEAD)
+  reviewed_release_tree=$(git -C "$reviewed_fixture" rev-parse 'HEAD^{tree}')
+  reviewed_release_commit=$(printf '%s\n' 'atomic release metadata and attestation' |
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -C "$reviewed_fixture" -c user.name=SelfTest -c user.email=self@test \
+      commit-tree "$reviewed_release_tree" -p "$reviewed_candidate")
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$reviewed_fixture" update-ref HEAD \
+      "$reviewed_release_commit" "$reviewed_late_commit"
   "$reviewed_script" verify-pending-release >/dev/null
+  printf '%s\n' '# Changelog' '' '## 1.0.1' '' 'Release note follow-up.' > \
+    "$reviewed_fixture/CHANGELOG.md"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add CHANGELOG.md
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test \
+      commit -qm 'late changelog-only commit'
+  )
+  expect_cli_failure "changelog commit after release target" \
+    "is not checkout HEAD" \
+    "$reviewed_script" verify-pending-release
+  git -C "$reviewed_fixture" show \
+    "$reviewed_release_commit:CHANGELOG.md" > "$reviewed_fixture/CHANGELOG.md"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add CHANGELOG.md
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test \
+      commit -qm 'restore release changelog'
+  )
   historic_schema3_attestation=$(jq -cS '
     {schema:3,kind:.kind,version:.version,candidate:.candidate,
       review:{kind:"derived-local-hardening-certifications",
@@ -1442,6 +1580,9 @@ self_test() {
       git -c user.name=SelfTest -c user.email=self@test commit -qm 'historical schema 3 review'
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
+  expect_cli_failure "attestation changed after release merge" \
+    "is not checkout HEAD" \
+    "$reviewed_script" verify-pending-release
   historic_reviewed_attestation=$(jq -nS --arg candidate "$reviewed_candidate" \
     --arg tree "$reviewed_tree" --arg jar "$jar_hash" \
     '{schema:2,kind:"sava-build-release-attestation",version:"1.0.1",
@@ -1611,6 +1752,10 @@ self_test() {
       git -c user.name=SelfTest -c user.email=self@test commit -qm 'remove post-review source'
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
+  reviewed_late_commit=$(git -C "$reviewed_fixture" rev-parse HEAD)
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$reviewed_fixture" update-ref HEAD \
+      "$reviewed_release_commit" "$reviewed_late_commit"
   git -C "$reviewed_fixture" tag 1.0.1
   "$reviewed_script" verify-tag 1.0.1 >/dev/null
   "$reviewed_script" verify-built-jar 1.0.1 "$reviewed_jar" >/dev/null

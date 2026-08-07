@@ -467,8 +467,9 @@ JAR without the Gradle build cache and require its hash to remain equal to that 
 A changed hash means the consumer evidence no longer describes the artifact and another
 relevant adoption pass is required.
 
-After Release Please prepares the version metadata, check out its clean branch and create a
-compact owner attestation. Pass the root of each clean consumer checkout whose exact-byte
+After Release Please prepares the version metadata, do not merge its pull request yet.
+Check out that clean Release Please branch and create a compact owner attestation. Pass the
+root of each clean consumer checkout whose exact-byte
 hardening certification was actually reviewed, then classify the release basis and changed-feature
 evidence explicitly:
 
@@ -487,8 +488,14 @@ tools/release-attestation.sh create-reviewed "$version" \
 git add "release-attestations/$version.json"
 ```
 
-Commit only that generated file alongside Release Please's `CHANGELOG.md` and manifest
-changes. `create-reviewed` derives each consumer's GitHub slug, clean commit/tree,
+Commit only that generated file to the Release Please branch, so its eventual squash merge
+contains `CHANGELOG.md`, the manifest change, and the reviewed record in one release commit.
+Never merge a metadata-only Release Please PR and append the attestation to `main` afterward:
+the release gates accept and publish only the manifest-version-changing squash commit, and a
+later commit cannot repair that target. Use **Squash and merge** for Release Please PRs;
+rebase or merge-commit histories are deliberately refused because Git history alone cannot
+distinguish them from a late repair on `main`.
+`create-reviewed` derives each consumer's GitHub slug, clean commit/tree,
 receipt hashes, projects, sessions, and suites; it refuses missing, incomplete, malformed,
 mixed, or stale receipts, including any suite whose `pluginSha256` differs from the retained
 JAR. `--adoption` remains a deprecated alias for `--certification-only-adoption`. The required
@@ -506,20 +513,23 @@ repository entry says whether it is a `feature-path` or `certification-only` con
 It cannot
 infer an independent Gradle root that produced no receipt, so compare that list with the
 handoff's intended adoption scope before committing the record. From the clean attestation
-commit, exercise the same gates used by the release workflows:
+commit, verify the proposed record:
 
 ```shell
 tools/release-attestation.sh verify "$version"
-tools/release-attestation.sh verify-pending-release
 ```
 
-The Release Please workflow refuses to create a pending version's tag without this committed
-record. The tag-triggered workflow verifies it again against the exact tag checkout, builds
+The Release Please PR check validates the proposed release tree before merge. The post-merge
+workflow then refuses to create a pending version's tag unless the exact commit that changed
+the release manifest already contains the identical reviewed record. The tag-triggered
+workflow verifies it again against the exact tag checkout, builds
 without the Gradle build cache, and refuses publication unless the resulting JAR has the
 reviewed hash. Any non-release source change after the recorded candidate invalidates the
 attestation. Verification prints the number of exact-byte-certified consumer checkouts and
 the subset reviewed as feature-path consumers; never count every certified repository as an
 independent validation of the release's changed behavior.
+`verify-pending-release` is a post-merge workflow gate; it deliberately cannot pass on the
+open two-commit Release Please branch before GitHub creates the required squash commit.
 
 Each adoption report has two upstream channels. First, report any plugin defect or
 consumer workaround immediately. Second, batch reusable rules, hazards, tempting false leads,

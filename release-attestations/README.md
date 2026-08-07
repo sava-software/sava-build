@@ -12,7 +12,12 @@ The historical schema-2 and schema-3 formats remain verifiable.
 Create a record only after the local passes have been reviewed, their completed
 `build/hardening/pitest-certification.tsv` receipts remain in clean consumer
 checkouts, their exact `0.0.0-test` JAR is retained, and the Release Please version
-metadata is present. Multi-project checkouts may contribute multiple receipts; every
+metadata is present on the still-open Release Please branch. Commit the record to that
+branch before merging it. A record appended to `main` after the release PR merges is too
+late: the release gates accept and publish only the manifest-version-changing squash
+commit, and that target must already contain the exact attestation. Release Please PRs
+must therefore use **Squash and merge**; rebase and merge-commit shapes fail closed.
+Multi-project checkouts may contribute multiple receipts; every
 schema-6 receipt must bind a clean Git commit/tree that still equals the checkout,
 and its project-level plugin hash and every suite row must name the retained JAR's
 SHA-256. Zero-suite project receipts are retained, but each repository must contain
@@ -64,8 +69,10 @@ never certified.
 
 The release commit may differ from the certified candidate only by
 `CHANGELOG.md`, `.release-please-manifest.json`, and that version's new
-attestation. The Release Please tag path verifies the pending record; the
-tag-triggered publish path verifies it again against the exact tag checkout.
+attestation. The Release Please PR check verifies the proposed tree; after merge, the tag
+path verifies that the manifest-changing commit contains the same record rather than a
+later repair; the tag-triggered publish path verifies it again against the exact tag
+checkout.
 
 Verification reports the number of exact-byte-certified consumer checkouts and how
 many are owner-reviewed feature-path consumers. These records are a forgetfulness,

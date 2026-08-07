@@ -12,8 +12,11 @@ class ReleaseAttestationWorkflowTest {
   private val readme: String
     get() = projectRoot.resolve("README.md").readText()
 
+  private val attestationScript: String
+    get() = projectRoot.resolve("tools/release-attestation.sh").readText()
+
   @Test
-  fun `tag creation waits for the exact checked commit's release attestation`() {
+  fun `tag creation verifies the actual Release Please target's attestation`() {
     val release = workflow("release-gradle-plugin-please.yml")
     val gate = release.indexOf("tools/release-attestation.sh verify-pending-release")
     val tagCreation = release.indexOf("uses: ./.github/workflows/release-please.yml")
@@ -22,6 +25,58 @@ class ReleaseAttestationWorkflowTest {
     assertTrue(release.contains("fetch-depth: 0"), release)
     assertTrue(release.contains("needs: release-attestation"), release)
     assertTrue(gate >= 0 && tagCreation > gate, release)
+    assertTrue(
+      attestationScript.contains(
+        "rev-list HEAD -- \\\n    .release-please-manifest.json",
+      ),
+      attestationScript,
+    )
+    assertTrue(
+      attestationScript.contains("ls-tree \"\$release_commit\" -- \"\$relative\""),
+      attestationScript,
+    )
+    assertTrue(
+      attestationScript.contains("target_blob") && attestationScript.contains("head_blob"),
+      attestationScript,
+    )
+    assertTrue(
+      attestationScript.contains("if [ \"\$release_commit\" != \"\$head\" ]"),
+      attestationScript,
+    )
+    assertTrue(
+      attestationScript.contains(
+        "verify_attestation \"\$version\" || return 1\n  verify_release_target \"\$version\"",
+      ),
+      attestationScript,
+    )
+    assertTrue(
+      attestationScript.contains("[ \"\$release_parent\" != \"\$candidate\" ]"),
+      attestationScript,
+    )
+  }
+
+  @Test
+  fun `Release Please pull requests require the reviewed record before merge`() {
+    val check = workflow("gradle_plugin_check_pr.yml")
+
+    assertTrue(check.contains("name: Release Attestation"), check)
+    assertTrue(check.contains("contents: read"), check)
+    assertTrue(check.contains("fetch-depth: 0"), check)
+    assertTrue(check.contains("github.event.pull_request.base.sha"), check)
+    assertTrue(check.contains("base=\"\${{ github.event.pull_request.base.sha }}\""), check)
+    assertTrue(check.contains("base_version="), check)
+    assertTrue(check.contains("if [ \"\$version\" = \"\$base_version\" ]"), check)
+    assertTrue(check.contains("relative=\"release-attestations/\$version.json\""), check)
+    listOf("seen_changelog", "seen_manifest", "seen_attestation").forEach { required ->
+      assertTrue(check.contains(required), check)
+    }
+    assertTrue(check.contains("candidate=\$(jq -er '.candidate.commit"), check)
+    assertTrue(check.contains("if [ \"\$candidate\" != \"\$base\" ]"), check)
+    assertTrue(check.contains("Unexpected Release Please PR path"), check)
+    assertTrue(
+      check.contains("tools/release-attestation.sh verify \"\$version\""),
+      check,
+    )
   }
 
   @Test
@@ -59,10 +114,9 @@ class ReleaseAttestationWorkflowTest {
   }
 
   @Test
-  fun `release owner classifies compatibility and feature evidence before rehearsing the tag gate`() {
+  fun `release owner classifies compatibility and feature evidence before merge`() {
     val create = readme.indexOf("tools/release-attestation.sh create-reviewed \"\$version\"")
     val verify = readme.indexOf("tools/release-attestation.sh verify \"\$version\"")
-    val pending = readme.indexOf("tools/release-attestation.sh verify-pending-release")
 
     assertTrue(readme.contains("--candidate \"\$candidate\""), readme)
     assertTrue(readme.contains("--plugin-jar \"\$reviewed_jar\""), readme)
@@ -70,7 +124,8 @@ class ReleaseAttestationWorkflowTest {
     assertTrue(readme.contains("--certification-only-adoption \"\$idl_src_gen_checkout\""), readme)
     assertTrue(readme.contains("--feature-adoption \"\$ravina_checkout\""), readme)
     assertTrue(readme.contains("never count every certified repository"), readme)
-    assertTrue(create >= 0 && verify > create && pending > verify, readme)
+    assertTrue(readme.contains("post-merge workflow gate"), readme)
+    assertTrue(create >= 0 && verify > create, readme)
   }
 
   @Test

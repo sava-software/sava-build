@@ -8,7 +8,57 @@ concurrency:
   group: check-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  release-attestation:
+    name: Release Attestation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Verify reviewed release attestation in proposed release tree
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          base_version=$(git show \
+            "$base:.release-please-manifest.json" | \
+            jq -er '.["."] | select(type == "string")')
+          version=$(jq -er '.["."] | select(type == "string")' .release-please-manifest.json)
+          if [ "$version" = "$base_version" ]; then
+            echo "This pull request does not change the release version."
+            exit 0
+          fi
+          relative="release-attestations/$version.json"
+          seen_changelog=false
+          seen_manifest=false
+          seen_attestation=false
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              CHANGELOG.md) seen_changelog=true ;;
+              .release-please-manifest.json) seen_manifest=true ;;
+              "$relative") seen_attestation=true ;;
+              *)
+                echo "::error::Unexpected Release Please PR path: $path"
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only -z \
+            "$base"...HEAD --)
+          if ! $seen_changelog || ! $seen_manifest || ! $seen_attestation; then
+            echo "::error::The Release Please PR must contain CHANGELOG.md, the manifest update, and $relative before merge."
+            exit 1
+          fi
+          candidate=$(jq -er '.candidate.commit | select(type == "string")' "$relative")
+          if [ "$candidate" != "$base" ]; then
+            echo "::error::The reviewed candidate $candidate is not this pull request's base $base; update the branch and regenerate the attestation."
+            exit 1
+          fi
+          bash -n tools/release-attestation.sh
+          tools/release-attestation.sh verify "$version"
+
   check:
     if: >
       github.event.pull_request.user.login != 'sava-release-please[bot]' &&
