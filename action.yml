@@ -29,7 +29,7 @@ runs:
         echo "::error::sava-build's setup action was invoked from a pull_request_target event: checkout resolves the base branch, so the PR's changes are never built. Trigger on pull_request instead."
         exit 1
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-    - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92
+    - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
     - name: Extract Java version from branch
       id: java-version
