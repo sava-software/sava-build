@@ -840,14 +840,21 @@ invoked it*, and the failure looks exactly like a real regression.
   *(casebook: the liveness loop that raced the heap)*
 
   The category makes the disposition explicit; the README still carries the
-  evidence and cannot be replaced by the token. Membership and cause are key-level,
-  so a `cause:liveness` row claims that cause for every sibling represented by its
-  `class,method,mutator` key. A liveness mutant and a finite sibling can share that
-  key, and PIT's CSV supplies no formatting-stable discriminator with which this
-  record can separate them. Once review proves such mixed causes, the current format
-  cannot represent an honest certifying row: split the behavior into distinct method
-  keys or use a behavior-preserving refactor that eliminates the ambiguous mutation
-  site, then re-observe history-free. Review positive multiplicity drift and its
+  evidence and cannot be replaced by the token. Membership and cause are key-level
+  for timeout evidence: every `TIMED_OUT` observation at a listed
+  `class,method,mutator` key is evaluated under that row's category. A finite
+  same-key sibling observed `KILLED` or another valid non-timeout result does not by
+  itself create mixed timeout causes; that result is not relying on watchdog
+  detection. The key becomes unrepresentable while trustworthy fresh evidence under
+  the current inputs shows distinct same-key siblings actually producing `TIMED_OUT`
+  under different cause categories — for example, liveness at one site and a finite
+  harness race or resource cause at another. One later `KILLED` sample does not erase
+  that conflict. Repair/retime the finite covering path and establish repeated fresh
+  history-free non-timeout observations under the relevant solo/gate load, or
+  split/refactor/eliminate the ambiguous site. PIT's
+  CSV supplies no formatting-stable discriminator with which this record can
+  separate simultaneous timeout causes. `KILLED`↔`TIMED_OUT` movement alone does not
+  prove the conflict. Review positive multiplicity drift and its
   line-full candidates carefully, but do not pretend a source-line number closes the
   hole. `# line` remains a triage pointer only and changing it never authorizes or
   invalidates evidence.
@@ -898,8 +905,12 @@ invoked it*, and the failure looks exactly like a real regression.
   The verify keeps a per-member quiet counter only for those documented
   `cause:liveness` rows in `.pitest-history/`, keyed to the completed evidence
   invocation so standalone verify re-runs of one report are one observation,
-  and bound to the source, classes, configuration, Java and mutation toolchain
-  so changed inputs restart the streak. `cause:resource`, `cause:harness`,
+  and bound to every stable completed-evidence field, including source/classes,
+  runtime and tool classpaths, suite configuration, Java, PIT/JUnit/mutation
+  toolchain, evidence/identity schemas, and the loaded sava-build plugin code-path
+  fingerprint (`pluginSha256`; the JAR SHA-256 for a published plugin). Changing any
+  of those inputs — including a plugin upgrade whose JAR bytes differ — restarts the
+  streak. `cause:resource`, `cause:harness`,
   `cause:untriaged`, and undocumented rows are already non-certifying findings
   and never enter that retirement counter. It notices admissible liveness
   members with no timeout in 3+ consecutive fresh full mutation runs over
@@ -1982,9 +1993,15 @@ Java toolchain, and the generated replay/support sources require Java 17+.
 4. Review the `config/pitest/README.md` written by `hardeningInit`, then record
    accepted-mutant evidence (initially empty) and any seeded untriaged debt there.
 5. Add the agent-instructions block below to the repo's `AGENTS.md` with the
-   `hardening-template` marker. Run `./gradlew hardeningAgentTemplate` to print the
-   exact block and digest carried by the installed plugin; `agentsTemplateInSync`
-   points to the same task when the marker is missing or stale. Then decide who owns the pre-release
+   `hardening-template` marker. Run the task on exactly one project that applies the
+   plugin (`./gradlew :module:hardeningAgentTemplate`, or
+   `./gradlew :hardeningAgentTemplate` when the root project owns hardening) to print
+   the exact bounded block and digest carried by the installed plugin. On later
+   upgrades, run the corresponding project-qualified `hardeningAgentTemplateDiff` to
+   compare that bounded local block with the installed version before moving the
+   digest; an unqualified task name can select every hardening project and duplicate
+   the output. `agentsTemplateInSync` points to the qualified tasks when the marker is
+   missing or stale. Then decide who owns the pre-release
    `hardeningCertify` run: wire it into CI if the runners can afford it, otherwise
    record it as a release-checklist item run locally (see the lifecycle
    section) — and say which in `AGENTS.md`.
@@ -2011,12 +2028,25 @@ Java toolchain, and the generated replay/support sources require Java 17+.
 
 ## Agent instructions template
 
-Copy into the repo's `AGENTS.md` (adjust file names). Run
-`./gradlew hardeningAgentTemplate` to print the exact template baked into the installed
-plugin version; do not copy a possibly newer block from moving `main`. The copies
-drift, and a downstream block is an adapted snapshot, so no tooling can diff
-cross-repo prose semantically. The plugin makes the drift **visible** instead of
-trying: it carries a digest of this template's blockquote lines. When a root
+Copy the generated block exactly into the repo's `AGENTS.md`, retaining its start/end
+boundary comments; put repository-specific facts outside that bounded block. Run the
+task on exactly one project that applies the plugin (for example,
+`./gradlew :module:hardeningAgentTemplate`, or `./gradlew :hardeningAgentTemplate` when
+the root project owns hardening) to print the exact template baked into the installed
+plugin version; do not copy a possibly newer block from moving `main`. An unqualified
+task name can select every hardening project in a multi-project build and duplicate the
+output. The copies
+drift, and some legacy downstream blocks contain deliberate adaptations. Migrate those
+local facts outside the bounded block during normal template sync; newly copied and
+synced blocks stay exact. The plugin provides a textual review aid rather than claiming
+semantic equivalence:
+The corresponding project-qualified `hardeningAgentTemplateDiff` compares the
+explicitly bounded local block with the installed unquoted template, never edits
+`AGENTS.md`, and exits successfully when a reviewable diff exists. It refuses missing
+or ambiguous boundaries rather than guessing
+from headings or marker placement. A person must still decide whether to sync prose or
+act on the changed requirement. The plugin also carries a digest of this template's
+blockquote lines. When a root
 `AGENTS.md` does not exist, `agentsTemplateInSync` (wired into `check`) warns and
 prints the marker because adoption still requires the deliberate copy step above.
 Once `AGENTS.md` exists, a missing or stale marker fails until the file contains
@@ -2039,8 +2069,12 @@ A marker-less existing file still fails in local-repo mode; it is unadopted, not
 merely waiting for a release.
 
 The source block below is quoted only so it renders as one unit in this document.
-`hardeningAgentTemplate` removes the leading `> ` markers and prints paste-ready
-instruction text; the digest still names the canonical quoted source block.
+The project-qualified `hardeningAgentTemplate` removes the leading `> ` markers and
+prints paste-ready instruction text between `<!-- hardening-template block:start -->`
+and `<!-- hardening-template block:end -->`; the digest still names the canonical
+quoted source block. The matching `hardeningAgentTemplateDiff` automatically removes
+one uniform Markdown quote layer from a legacy block and its boundary comments; do not
+edit the block merely to normalize the presentation used by releases before 21.5.25.
 
 > - **Scale verification to the change.** Iterate with the module's `test`
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated
@@ -2087,10 +2121,13 @@ instruction text; the digest still names the canonical quoted source block.
 >   the ratchet but cannot support adding, removing, or relabelling
 >   accepted/timeout records; run `pitest<Suite> -PnoMutationHistory` first.
 > - Consumer hardening notes contain only local ownership, measurements, acceptance
->   reasons, and provenance. `AGENTS.md` may carry this exact generated,
->   digest-pinned template plus those local facts, but no independently maintained
+>   reasons, and provenance. `AGENTS.md` carries this exact generated,
+>   digest-pinned template with repository-specific facts outside its bounded block,
+>   but no independently maintained
 >   copy of plugin task semantics; use `hardeningHelp` and
->   `hardeningAgentTemplate` as the installed-version authorities.
+>   project-qualified `hardeningAgentTemplate` as the installed-version authorities,
+>   and run the matching read-only `hardeningAgentTemplateDiff` against its explicitly
+>   bounded block on every template-digest move before acknowledging the new marker.
 > - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
 >   seconds instead of the full suite — then re-run unscoped with
 >   `-PnoMutationHistory` before any record decision; the tooling refuses to let
@@ -2159,12 +2196,18 @@ instruction text; the digest still names the canonical quoted source block.
 >   `config/pitest/README.md` still holds the
 >   full structural cause per member. The verify warns on any timeout outside
 >   the set — paste the printed row, classify it, then write the cause — and on
->   members matching no mutant. Membership and cause are key-level, so a liveness
->   token claims every sibling under that key. A key proven to mix liveness and
->   finite causes is not representable as an honest certifying row: split/refactor
->   it into distinct method keys or eliminate the ambiguous site, then re-observe
->   history-free. A source-line qualifier cannot fix the identity without making
->   formatting a release gate. Positive multiplicity drift prints all current
+>   members matching no mutant. Membership and cause are key-level for timeout
+>   evidence: every `TIMED_OUT` sibling under the key uses the row's category. A
+>   finite sibling observed `KILLED` or another valid non-timeout result does not
+>   itself create mixed timeout causes. A key is not representable as an honest
+>   certifying row while trustworthy fresh evidence under the current inputs shows
+>   distinct same-key siblings timing out under different cause categories. One later
+>   `KILLED` sample does not erase that conflict, while `KILLED`↔`TIMED_OUT` movement
+>   alone does not prove it. Repair/retime the finite covering path and establish
+>   repeated fresh history-free non-timeout observations under the relevant solo/gate
+>   load, or split/refactor/eliminate the ambiguous site. A source-line qualifier cannot
+>   fix the identity without making formatting a release gate. Positive multiplicity
+>   drift prints all current
 >   line-full candidates for review;
 >   source-line movement itself never warns, fails, or requires re-anchoring. Adding
 >   a method, moving imports, or reflowing an expression is not a hardening record
@@ -2173,10 +2216,12 @@ instruction text; the digest still names the canonical quoted source block.
 >   manual preview. `TimeoutAuditInit` deliberately seeds an uncertifiable file —
 >   classify every row before certification. For an otherwise admissible liveness
 >   member, do not retire it until the tool emits its 3+ distinct fresh full-run quiet
->   notice over identical evidence inputs and the absence is confirmed under the
->   relevant solo/gate load. A finite KILLED↔TIMED_OUT race is benign only to baseline
->   arithmetic, never certifying evidence; repair/retime its covering path instead of
->   admitting it or waiting on the liveness-retirement rule. The quiet stash
+>   notice over identical evidence inputs, including the loaded sava-build plugin
+>   bytes; a plugin upgrade whose JAR bytes differ restarts the streak. Confirm the
+>   absence under the relevant solo/gate load. A finite KILLED↔TIMED_OUT race is
+>   benign only to baseline arithmetic, never certifying evidence; repair/retime its
+>   covering path instead of admitting it or waiting on the liveness-retirement rule.
+>   The quiet stash
 >   is a machine-local nomination: never copy or merge it, and retain the row when a
 >   same-input gate confirmation is unavailable. Assisted reports are
 >   previews and do not

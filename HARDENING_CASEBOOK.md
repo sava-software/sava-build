@@ -30,7 +30,7 @@ closed triage. Rules: *a suite's percentage is not a target*; *allocation and
 timing harnesses are a last resort*; *a thin-margin bound is a flaky harness
 with extra steps*.
 
-## The liveness label that swallowed a finite sibling
+## The liveness label that could swallow a finite timeout
 
 Classifying an existing fleet's timeout rows exposed three different phenomena
 that the old word "hang" had hidden:
@@ -52,10 +52,14 @@ that the old word "hang" had hidden:
   completion guarantee, so the row remains liveness and the fixture bound belongs
   in its README argument.
 
-The classification also exposed an unresolved identity limitation: Ravina held a
-reviewed liveness timeout and an accepted mutant at another line under the same
-line-less `class,method,mutator` key. A key-wide cause can therefore cover the finite
-sibling whenever that sibling times out. Promoting the row's `# line` tags into an
+The classification also exposed a latent identity limitation: Ravina held a reviewed
+liveness timeout and an accepted mutant at another line under the same line-less
+`class,method,mutator` key. The accepted sibling was not itself a mixed timeout cause
+while it remained `SURVIVED`, `KILLED`, or another valid non-timeout result; cause
+categories explain timeout evidence, not every result under the key. But the same
+key-wide cause would cover that finite sibling if fresh evidence later showed it
+timing out. Promoting the row's
+`# line` tags into an
 authorization boundary appeared to close that hole, but the first consumer reformat
 showed why source position cannot be record identity. Collapsing imports and joining a
 fluent call changed no mutation-site behavior, yet shifted a guard by five lines and
@@ -63,18 +67,24 @@ made certification refuse until a human copied a new number into the record.
 
 The pragmatic repair keeps `# line` as diagnostic metadata only. Adding a method,
 moving imports, changing indentation, or reflowing a multi-line expression must not
-warn, fail, or require re-anchoring. `cause:liveness` remains a key-level judgment: it
-claims every sibling represented by the key. A key known to contain both liveness and
-finite siblings is therefore unrepresentable as an honest certifying row until the
-behavior is split into distinct method keys or a behavior-preserving refactor removes
-the ambiguous mutation site. Positive timeout-count drift still prints every current
-line-full candidate so a reviewer can notice widened coverage, but the line itself
+warn, fail, or require re-anchoring. `cause:liveness` remains a key-level authorization
+for timeout evidence. A finite same-key sibling observed only `KILLED`, `SURVIVED`, or
+another valid non-timeout result does not conflict with it. The key becomes
+unrepresentable while trustworthy fresh evidence under the current inputs shows
+distinct siblings actually timing out under different cause categories. One later
+kill does not erase that conflict, and status movement alone does not prove it.
+Repair/retime the finite covering path and establish repeated fresh history-free
+non-timeout observations under the relevant solo/gate load, or split/refactor the
+behavior into distinct method keys or eliminate the ambiguous site. Positive
+timeout-count drift still prints every current line-full candidate so a reviewer can
+notice widened coverage, but the line itself
 grants and revokes nothing. Rules: *classify by whether the mutated
 path owns a finite completion guarantee, not by a fixture's safety escape or by
 wall-clock practicality*; *do not turn source positions or formatting into behavioral
-identity*; *a source-line qualifier cannot make a mixed-cause key sound without
-turning formatting into a release gate*; *split/refactor a known mixed-cause key rather
-than claiming the record proves more than it can*; *load-only KILLED↔TIMED_OUT races
+identity*; *a source-line qualifier cannot make simultaneous mixed timeout causes sound
+without turning formatting into a release gate*; *repair and repeatedly re-observe the
+finite path, or split/refactor/eliminate a key with active mixed timeout evidence,
+rather than claiming the record proves more than it can*; *load-only KILLED↔TIMED_OUT races
 are `cause:harness` debt — an honest non-certifying holding category, never admissible
 detection and never a candidate for the liveness quiet-retirement protocol*.
 
@@ -1125,13 +1135,15 @@ timed out previously, a key that already held a timeout prints **all** current
 candidates rather than guessing which line is new. An audit row can silence the
 missing-membership warning, never the evidence that its timeout population
 grew or the lines a reviewer must inspect. Cause categories later made the
-remaining identity limitation explicit: a key can hold both a liveness and a
-resource sibling. Source-line tags cannot soundly close that gap because ordinary
-formatting moves them, so they remain diagnostic metadata and never an authorization
-boundary. Once review proves the causes are mixed, the key cannot carry an honest
-certifying cause until a behavior-preserving split/refactor gives the siblings distinct
-identities or removes the ambiguous site *(casebook: the liveness label that swallowed
-a finite sibling)*.
+remaining identity limitation explicit: a key can hold siblings that time out under
+different cause categories. Merely co-locating a finite sibling that stays `KILLED` or
+`SURVIVED` is not a mixed timeout. Source-line tags cannot soundly close a real conflict
+because ordinary formatting moves them, so they remain diagnostic metadata and never
+an authorization boundary. While current fresh evidence shows distinct siblings timing
+out under different categories, the key cannot carry an honest certifying cause. Repair
+and repeatedly re-observe the finite path, or give the siblings distinct identities with
+a behavior-preserving split/refactor or remove the ambiguous site *(casebook: the
+liveness label that could swallow a finite timeout)*.
 
 Rules: *when a key stops identifying one thing, every comparison built on it
 is a multiset comparison — convert them together, not the ones you
@@ -1140,9 +1152,9 @@ dangerous thing happened" is worse than no advisory, because it trains the
 reader to filter the dangerous thing*; *a format migration that silences a
 check for exactly one run hides its own regression from the person doing the
 migration*; *line-less membership names the family and cannot distinguish a
-mixed-cause sibling at the same key; source-line metadata may expose that risk for
-review but cannot resolve it, so a proven mixed key must be split/refactored rather
-than certified under a key-wide cause*.
+mixed-timeout sibling at the same key; source-line metadata may expose that risk for
+review but cannot resolve it, so repair and repeatedly re-observe the finite path or
+split/refactor/eliminate a key while conflicting timeout causes remain*.
 
 ## The trap that never existed
 

@@ -9,6 +9,7 @@ import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.services.ServiceReference
+import org.gradle.api.tasks.Classpath
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
@@ -405,7 +406,13 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
   val suiteEvidence: NamedDomainObjectContainer<PitestEvidenceSpec> =
     objects.domainObjectContainer(PitestEvidenceSpec::class.java)
   @get:Internal abstract val certificationProjectDirectory: DirectoryProperty
-  @get:Internal abstract val certificationPluginCode: ConfigurableFileCollection
+  @get:Classpath abstract val certificationPluginCode: ConfigurableFileCollection
+  // PitestEvidenceSpec keeps these collections @Internal so legacy/no-manifest
+  // validators can return without resolving external tools. Certification always
+  // recaptures completed evidence, so aggregate every suite's runtime/tool classpath
+  // here. This declares artifact-transform outputs before the task action queries the
+  // individual specs; Gradle 10 forbids discovering those outputs from the action.
+  @get:Classpath abstract val certificationEvidenceClasspaths: ConfigurableFileCollection
   @get:Input abstract val expectedPluginSha256: Property<String>
   @get:Input abstract val localRepoArtifactPath: Property<String>
   @get:Input abstract val expectedLocalRepoArtifactSha256: Property<String>

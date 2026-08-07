@@ -26,7 +26,10 @@ class HardeningDocumentationBoundaryTest {
     assertTrue(hardening.contains("run `./gradlew hardeningHelp` against the version in use"))
     assertTrue(
       hardening.contains("Consumer hardening notes contain only local ownership") &&
-          hardening.contains("AGENTS.md` may carry this exact generated"),
+          hardening.contains("AGENTS.md` carries this exact generated") &&
+          hardening.contains("repository-specific facts outside its bounded block") &&
+          hardening.contains("./gradlew :module:hardeningAgentTemplate") &&
+          hardening.contains("unqualified task name can select every hardening project"),
       "the generated agent template must distinguish its pinned AGENTS copy from local notes",
     )
     val featureRow = readme.lineSequence()

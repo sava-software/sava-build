@@ -149,10 +149,16 @@ The tool-bytecode releases default to the consuming Java toolchain rather than S
 toolchain; lower `bytecodeRelease` or `mutationBytecodeRelease` only if a bundled tool
 cannot yet read that class-file version. Generated corpus replay and shared-support
 sources require Java 17 or newer. Run `./gradlew hardeningInit`, complete its ownership
-and baseline checklist, then run `./gradlew hardeningAgentTemplate` and copy the exact
-agent-instructions block printed by the installed plugin before treating
+and baseline checklist, then run the template task on exactly one project that applies
+the plugin (for example, `./gradlew :module:hardeningAgentTemplate`, or
+`./gradlew :hardeningAgentTemplate` when the root project owns hardening) and copy the
+exact bounded agent-instructions block printed by the installed plugin before treating
 `hardeningCertify` as a release gate. The task also prints the matching digest marker;
-there is no Git-tag lookup and no dependency on the moving `main` documentation.
+there is no Git-tag lookup and no dependency on the moving `main` documentation. On a
+later plugin upgrade, run the corresponding project-qualified
+`hardeningAgentTemplateDiff`; it prints a read-only textual diff from that bounded local
+block to the newly installed template. An unqualified task name can select every
+hardening project in a multi-project build and duplicate the output.
 
 ### gradle/sava.properties
 

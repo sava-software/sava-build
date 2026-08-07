@@ -567,6 +567,11 @@ $buildTail
     .withProjectDir(fixtureDir)
     .withArguments(*args, "--configuration-cache", "--stacktrace")
 
+  private fun runnerWithoutConfigurationCache(vararg args: String): GradleRunner =
+    GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withArguments(*args, "--no-configuration-cache", "--stacktrace")
+
   private fun occurrences(haystack: String, needle: String) = haystack.split(needle).size - 1
 
   @Test
@@ -888,7 +893,7 @@ $buildTail
     val libraryJar = File(fixtureDir, "library/build/libs/library.jar")
     assertFalse(libraryJar.exists(), "fixture producer JAR unexpectedly existed before the cold build")
 
-    val result = runner(":consumer:pitestEncoding").build()
+    val result = runner(":consumer:pitestEncoding", "--warning-mode=fail").build()
 
     assertTrue(libraryJar.isFile, "producer task did not create the transformed project dependency JAR")
     assertTrue(
@@ -923,7 +928,7 @@ $buildTail
       "duplicate PIT summary lines produced missing or duplicate advisory findings:\n${result.output}",
     )
 
-    val reused = runner(":consumer:pitestEncoding").build()
+    val reused = runner(":consumer:pitestEncoding", "--warning-mode=fail").build()
     assertTrue(reused.output.contains("Configuration cache entry reused."), reused.output)
     assertTrue(
       reused.output.contains(
@@ -935,7 +940,10 @@ $buildTail
     )
 
     assertTrue(libraryJar.delete(), "could not remove the runtime-only JAR before standalone verify")
-    val verify = runner(":consumer:pitestEncodingVerify").build()
+    val verify = runnerWithoutConfigurationCache(
+      ":consumer:pitestEncodingVerify",
+      "--warning-mode=fail",
+    ).build()
     assertTrue(libraryJar.isFile, "standalone verify did not rebuild its runtime-only evidence input")
     assertTrue(
       verify.output.contains("> Task :library:jar"),
@@ -943,9 +951,10 @@ $buildTail
     )
 
     assertTrue(libraryJar.delete(), "could not remove the runtime-only JAR before mode snapshot")
-    val snapshot = runner(
+    val snapshot = runnerWithoutConfigurationCache(
       ":consumer:pitestModeSnapshot",
       "-PpitestMode=standalone",
+      "--warning-mode=fail",
     ).build()
     assertTrue(libraryJar.isFile, "standalone mode snapshot did not rebuild its evidence input")
     assertTrue(
@@ -953,6 +962,38 @@ $buildTail
       "standalone mode snapshot did not schedule the runtime-only JAR producer:\n${snapshot.output}",
     )
     assertTrue(snapshot.output.contains("stashed as 'standalone'"), snapshot.output)
+  }
+
+  @Test
+  fun `certification declares transformed classpaths before its task action`() {
+    writeModularProjectDependencyFixture()
+    val libraryJar = File(fixtureDir, "library/build/libs/library.jar")
+    assertFalse(libraryJar.exists(), "fixture producer JAR unexpectedly existed before certification")
+
+    // Gradle 9.7 still emits this as a deprecation; --warning-mode=fail gives the
+    // fixture Gradle 10's effective fail-closed boundary before a 10.x RC exists.
+    val certified = runnerWithoutConfigurationCache(
+      ":consumer:hardeningCertify",
+      "--warning-mode=fail",
+    ).build()
+    assertTrue(libraryJar.isFile, "certification did not build its transformed runtime input")
+    assertTrue(certified.output.contains("> Task :library:jar"), certified.output)
+    assertTrue(
+      certified.output.contains("> Task :consumer:hardeningCertify"),
+      certified.output,
+    )
+    assertFalse(
+      certified.output.contains(
+        "Querying the output of an artifact transform from a task action without declaring it " +
+          "as a task input has been deprecated.",
+      ),
+      "hardeningCertify resolved an undeclared transform output from its task action:\n" +
+        certified.output,
+    )
+    assertTrue(
+      File(fixtureDir, "consumer/build/hardening/pitest-certification.tsv").isFile,
+      "certification did not publish a receipt:\n${certified.output}",
+    )
   }
 
   @Test

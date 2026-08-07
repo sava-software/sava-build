@@ -71,10 +71,13 @@ data class PitestEvidence(
   }
 
   /**
-   * Identity of the code, tools, classpaths, and suite configuration behind an
-   * observation. Invocation and report bytes are deliberately excluded: successive
-   * fresh runs of identical inputs must share this identity while still carrying
-   * distinct [invocationId] values.
+   * Identity of the code, loaded sava-build plugin bytes, mutation tools, classpaths,
+   * and suite configuration behind an observation. Invocation and report bytes are
+   * deliberately excluded: successive fresh runs of identical inputs must share this
+   * identity while still carrying distinct [invocationId] values. [pluginSha256] is a
+   * stable input because observations interpreted by different verifier code must not
+   * combine into one retirement claim. For a published plugin it is the JAR SHA-256;
+   * development class directories use a deterministic code-path tree fingerprint.
    */
   fun inputIdentitySha256(): String = sha256(
       copy(invocationId = "", reportSha256 = "").render())

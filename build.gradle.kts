@@ -88,12 +88,12 @@ val generateHardeningToolDefaults = tasks.register("generateHardeningToolDefault
 }
 kotlin.sourceSets["main"].kotlin.srcDir(generateHardeningToolDefaults)
 
-// The agent-instructions template in HARDENING.md is copied (adapted) into each
-// consuming repo's AGENTS.md, and prose copies drift silently. Baking a digest of the
-// template block into the plugin lets every consuming build check that its AGENTS.md
-// has acknowledged the current template (see 'agentsTemplateInSync' in the hardening
-// feature plugin). Only the '> ' blockquote lines are hashed, so the surrounding prose
-// can evolve without breaking downstream builds.
+// The agent-instructions template in HARDENING.md is copied exactly into a bounded
+// block in each consuming repo's AGENTS.md, with local facts kept outside it. Baking a
+// digest of the template block into the plugin lets every consuming build check that
+// its AGENTS.md has acknowledged the current template (see 'agentsTemplateInSync' in
+// the hardening feature plugin). Only the '> ' blockquote lines are hashed, so the
+// surrounding prose can evolve without breaking downstream builds.
 val generateHardeningTemplateDigest = tasks.register("generateHardeningTemplateDigest") {
   description = "Generates HardeningTemplateDigest.kt from the agent-instructions template in HARDENING.md"
   val docFile = layout.projectDirectory.file("HARDENING.md").asFile

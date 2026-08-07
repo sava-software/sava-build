@@ -30,6 +30,7 @@ import software.sava.build.hardening.ProjectWriteOperation
 import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
+import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
 import software.sava.build.hardening.task.HardeningCertificationTask
 import software.sava.build.hardening.task.PitestConvergeTask
 import software.sava.build.hardening.task.PitestDebtTask
@@ -551,21 +552,37 @@ val hardeningFuzzExecutionSlots = gradle.sharedServices.registerIfAbsent(
   maxParallelUsages.set(maxParallelFuzzTargets)
 }
 
-// The agent-instructions template in HARDENING.md is copied (adapted) into each
-// consuming repo's AGENTS.md, and prose copies drift silently — a template change is
-// invisible from inside the repos it obligates. The plugin carries a digest of the
+// The agent-instructions template in HARDENING.md is copied exactly into a bounded
+// block in each consuming repo's AGENTS.md; repository-specific facts stay outside.
+// Legacy adapted copies drift silently until their next normal sync. A template change
+// is invisible from inside the repos it obligates. The plugin carries a digest of the
 // current template block; this check fails until the repo's AGENTS.md contains a
 // marker acknowledging that digest. The marker is an acknowledgment, not a checksum
 // of the local block: update it only after re-diffing the block against the template
 // — a changed bullet may mean new code, not just new prose. A repo without an
 // AGENTS.md is warned, not failed: the adoption checklist owns creating the file;
 // this task owns keeping it current.
+val renderedHardeningAgentTemplate = HardeningTemplateDigest.TEMPLATE.lineSequence()
+    .joinToString("\n") { it.removePrefix("> ") }
+val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
+    "hardeningAgentTemplateDiff"
+) {
+  group = "help"
+  description = "Diffs the bounded AGENTS.md hardening block against the installed template."
+  agentsFile.set(rootProject.layout.projectDirectory.file("AGENTS.md"))
+  installedTemplate.set(renderedHardeningAgentTemplate)
+}
 val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   group = "verification"
   description = "Fails when AGENTS.md has not acknowledged the current agent-instructions template in HARDENING.md."
   val agentsDoc = rootProject.layout.projectDirectory.file("AGENTS.md").asFile
   val expected = HardeningTemplateDigest.SHA256_12
   val templateTask = if (project.path == ":") "hardeningAgentTemplate" else "${project.path}:hardeningAgentTemplate"
+  val templateDiffTask = if (project.path == ":") {
+    "hardeningAgentTemplateDiff"
+  } else {
+    "${project.path}:hardeningAgentTemplateDiff"
+  }
   // Set when a build resolves an unreleased sava-build checkout through
   // '-PsavaBuildLocalRepo'. A stale marker under that flag is the expected state,
   // not a defect: the repo acknowledges the digest of a RELEASED plugin, and this
@@ -601,10 +618,12 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
       logger.warn(
           "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.groupValues[1]}; this " +
               "unreleased checkout's is $expected — by default the marker dance lands with the release " +
-              "that ships this digest, not before it. If this is deliberate RC adoption, re-diff the " +
-              "AGENTS.md hardening block now and stage the marker with the new plugin pin, but do not " +
+              "that ships this digest, not before it. If this is deliberate RC adoption, run " +
+              "'./gradlew $templateDiffTask', review or act on the bounded AGENTS.md hardening block, " +
+              "and stage the marker with the new plugin pin, but do not " +
               "land that consumer commit while it still resolves the older published plugin. Otherwise, " +
-              "when bumping past the release, re-diff against './gradlew $templateTask' and update to:\n" +
+              "when bumping past the release, run './gradlew $templateDiffTask', review or act on " +
+              "the diff, and update to:\n" +
               "  <!-- hardening-template sha256:$expected -->"
       )
       advisoryLog.get().record(
@@ -613,13 +632,16 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
     }
     throw GradleException(
         if (stale == null) {
-          "AGENTS.md has no 'hardening-template' marker. Diff its hardening block against " +
-              "the exact template printed by './gradlew $templateTask', sync or act on what " +
+          "AGENTS.md has no 'hardening-template' marker. Bound its hardening block with the " +
+              "comments printed by './gradlew $templateTask', run './gradlew $templateDiffTask', " +
+              "sync or act on what " +
               "differs, then add:\n  <!-- hardening-template sha256:$expected -->"
         } else {
           "The shared agent-instructions template changed since this repo's AGENTS.md last " +
-          "acknowledged it (marker ${stale.groupValues[1]}, current $expected). Re-diff the " +
-              "AGENTS.md hardening block against './gradlew $templateTask' — a " +
+          "acknowledged it (marker ${stale.groupValues[1]}, current $expected). Run " +
+              "'./gradlew $templateDiffTask' to compare its explicitly bounded hardening block " +
+              "with the installed template — add the boundaries printed by './gradlew " +
+              "$templateTask' first when migrating a legacy block. A " +
               "changed bullet may need code, not just prose — then update the marker to:\n" +
               "  <!-- hardening-template sha256:$expected -->"
         }
@@ -628,11 +650,13 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
 }
 tasks.register("hardeningAgentTemplate") {
   group = "help"
-  description = "Prints the unquoted agent-instructions template carried by this plugin version."
+  description = "Prints the bounded, unquoted agent-instructions template carried by this plugin version."
   doLast {
+    logger.quiet(HardeningAgentTemplateDiffTask.BLOCK_START)
     logger.quiet(
         HardeningTemplateDigest.TEMPLATE.lineSequence()
             .joinToString("\n") { it.removePrefix("> ") })
+    logger.quiet(HardeningAgentTemplateDiffTask.BLOCK_END)
     logger.quiet("<!-- hardening-template sha256:${HardeningTemplateDigest.SHA256_12} -->")
   }
 }
@@ -3464,7 +3488,8 @@ hardening.mutation.all {
           // identity prevents quiet reads from old source/tool/configuration bytes
           // combining with a new run into a false three-run notice.
           val quietFormatHeader = "# timeout quiet format 3"
-          val inputFingerprint = "# inputs ${retirementEvidence.inputIdentitySha256()}"
+          val currentInputIdentity = retirementEvidence.inputIdentitySha256()
+          val inputFingerprint = "# inputs $currentInputIdentity"
           val observationFingerprint = "# invocation ${retirementEvidence.invocationId}"
           val previousLines = if (timeoutQuietFile.isFile) timeoutQuietFile.readLines() else emptyList()
           val currentQuietFormat = previousLines.firstOrNull() == quietFormatHeader
@@ -3474,10 +3499,22 @@ hardening.mutation.all {
                     "bound to current inputs — " +
                     "the quiet-run counter resets this run")
           }
-          val sameInputs = currentQuietFormat && previousLines.getOrNull(1) == inputFingerprint
-          if (currentQuietFormat && !sameInputs) {
+          val previousInputIdentity = previousLines.getOrNull(1)
+              ?.takeIf { it.startsWith("# inputs ") }
+              ?.removePrefix("# inputs ")
+              ?.takeIf { Regex("[0-9a-f]{64}").matches(it) }
+          val sameInputs = currentQuietFormat && previousInputIdentity == currentInputIdentity
+          if (currentQuietFormat && previousInputIdentity == null) {
             logger.lifecycle(
-                "$advisoryScope: timeout-retirement inputs changed — " +
+                "$advisoryScope: timeout-retirement format-3 stash has a missing/malformed " +
+                    "input identity — the quiet-run counter resets this run")
+          } else if (currentQuietFormat && !sameInputs) {
+            logger.lifecycle(
+                "$advisoryScope: timeout-retirement inputs changed since this suite's previous " +
+                    "fresh observation (input identity prefixes " +
+                    "${previousInputIdentity!!.take(12)} -> " +
+                    "${currentInputIdentity.take(12)}; the identity includes pluginSha256 — " +
+                    "the published JAR SHA-256 or development code-path fingerprint) — " +
                     "the quiet-run counter resets this run")
           }
           val sameObservation = sameInputs &&
@@ -4739,6 +4776,10 @@ hardening.mutation.all {
         suiteEvidence.maybeCreate(suiteName),
         isolateScopedReport = false,
     )
+    certificationEvidenceClasspaths.from(
+        evidenceClasspathFiles,
+        evidencePitestTask.effectiveToolClasspath,
+    )
     certificationRecordFiles.from(
         PitestEvidence.mutationRecordFiles(layout.projectDirectory.dir("config/pitest").asFile, suiteName))
   }
@@ -5170,6 +5211,16 @@ tasks.register("hardeningInit") {
   val gitignore = rootProject.layout.projectDirectory.file(".gitignore").asFile
   val initRootProjectDirectory = rootProject.layout.projectDirectory.asFile
   val digest = HardeningTemplateDigest.SHA256_12
+  val initTemplateTaskPath = if (project.path == ":") {
+    ":hardeningAgentTemplate"
+  } else {
+    "${project.path}:hardeningAgentTemplate"
+  }
+  val initTemplateDiffTaskPath = if (project.path == ":") {
+    ":hardeningAgentTemplateDiff"
+  } else {
+    "${project.path}:hardeningAgentTemplateDiff"
+  }
   doLast {
     BaselineFiles.requireRegularFileOrMissing(initProjectDirectory, readme)
     BaselineFiles.requireRegularFileOrMissing(initRootProjectDirectory, gitignore)
@@ -5183,7 +5234,7 @@ tasks.register("hardeningInit") {
           |
           |This file contains repository-specific evidence and decisions only. Run
           |`./gradlew hardeningHelp` for the exact mechanics installed in this checkout,
-          |and `./gradlew hardeningAgentTemplate` for the version-matched agent contract.
+          |and `./gradlew $initTemplateTaskPath` for the version-matched agent contract.
           |The portable decision policy lives in sava-build's `HARDENING.md`.
           |
           |The CSV files beside this document are structured evidence. Preserve row
@@ -5209,7 +5260,7 @@ tasks.register("hardeningInit") {
           |
           |## Audited timeout causes
           |
-          |For every audited timeout row, replace the seeded `cause:untriaged` comment category. The seeded file is intentionally uncertifiable. Only `cause:liveness` is admissible after deterministic seams or budgets are exhausted: the mutated path has no path-owned finite completion guarantee, and a fixture's emergency exit does not demote that production liveness loss. If a fixture bound is the claimed deterministic oracle, compare it with PIT's `duration * timeoutFactor + timeoutConst`; a bound that cannot fail first contributes no cause evidence, so shorten it and re-observe history-free. A later emergency ceiling may coexist with production liveness but cannot prove it. A straight-line path without a loop, retry, lock, wait, blocking call, or external completion dependency is not credible liveness evidence. Finite `cause:resource` work needs a contract-first test/fix or stable SURVIVED equivalence instead of timeout membership. A demonstrated finite covering-path/watchdog race may be recorded honestly as `cause:harness` while it is repaired, but remains non-certifying. Treat `# line` comments as diagnostic metadata only: formatting, imports, and inserted methods must not invalidate an audited cause. PIT's CSV has no formatting-stable identity finer than class, method, and mutator, so latent same-key siblings require report-level review; once review proves one key mixes liveness and finite causes, it is not honestly certifiable until the behavior is split/refactored into distinct method keys or the ambiguous site is eliminated. Name the member's class and method together in the same Markdown heading-delimited section, record any fixture safety bound, and explain the measured structural cause. A global statement that the suite is slow is not evidence for an individual mutant.
+          |For every audited timeout row, replace the seeded `cause:untriaged` comment category. The seeded file is intentionally uncertifiable. Only `cause:liveness` is admissible after deterministic seams or budgets are exhausted: the mutated path has no path-owned finite completion guarantee, and a fixture's emergency exit does not demote that production liveness loss. If a fixture bound is the claimed deterministic oracle, compare it with PIT's `duration * timeoutFactor + timeoutConst`; a bound that cannot fail first contributes no cause evidence, so shorten it and re-observe history-free. A later emergency ceiling may coexist with production liveness but cannot prove it. A straight-line path without a loop, retry, lock, wait, blocking call, or external completion dependency is not credible liveness evidence. Finite `cause:resource` work needs a contract-first test/fix or stable SURVIVED equivalence instead of timeout membership. A demonstrated finite covering-path/watchdog race may be recorded honestly as `cause:harness` while it is repaired, but remains non-certifying. Treat `# line` comments as diagnostic metadata only: formatting, imports, and inserted methods must not invalidate an audited cause. Membership and cause authorize timeout evidence at the line-less class, method, and mutator key. A finite same-key sibling observed KILLED or another valid non-timeout result does not itself create mixed timeout causes. The key is not honestly certifiable while trustworthy fresh evidence under the current inputs shows distinct siblings timing out under different cause categories. One later KILLED sample does not erase that conflict, and status movement alone does not prove it. Repair/retime the finite covering path and establish repeated fresh history-free non-timeout observations under the relevant solo/gate load, or split/refactor/eliminate the ambiguous site. Name the member's class and method together in the same Markdown heading-delimited section, record any fixture safety bound, and explain the measured structural cause. A global statement that the suite is slow is not evidence for an individual mutant.
           |""".trimMargin()
       )
       logger.lifecycle("hardeningInit: wrote $readme")
@@ -5238,9 +5289,11 @@ tasks.register("hardeningInit") {
         |       cause:untriaged row and write its structural
         |       argument in config/pitest/README.md; seeding deliberately leaves
         |       certification red (HARDENING.md, audited-timeout bullet)
-        |  5. run ./gradlew hardeningAgentTemplate and copy that exact version-matched
-        |       agent-instructions template into AGENTS.md with:
+        |  5. run ./gradlew $initTemplateTaskPath and copy that exact version-matched
+        |       bounded agent-instructions template into AGENTS.md with:
         |       <!-- hardening-template sha256:$digest -->
+        |       On later upgrades run ./gradlew $initTemplateDiffTaskPath before
+        |       moving the digest; the task prints a review-only diff and never edits AGENTS.md.
         |  6. decide who owns the pre-release hardeningCertify run, and record it in AGENTS.md
         |  7. fuzz targets with a seedCorpus get a generated replay test automatically;
         |       document seed provenance in a README next to (never inside) the corpus dir

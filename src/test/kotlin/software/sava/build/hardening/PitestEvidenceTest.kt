@@ -108,6 +108,7 @@ class PitestEvidenceTest {
       evidence().copy(invocationId = "another-run", reportSha256 = "another-report")
         .inputIdentitySha256(),
     )
+    assertTrue(identity != evidence().copy(pluginSha256 = "changed-plugin").inputIdentitySha256())
     assertTrue(identity != evidence().copy(sourceSha256 = "changed-source").inputIdentitySha256())
     assertTrue(identity != evidence().copy(configurationSha256 = "changed-config").inputIdentitySha256())
     assertTrue(identity != evidence().copy(mutationToolchainSha256 = "changed-toolchain").inputIdentitySha256())

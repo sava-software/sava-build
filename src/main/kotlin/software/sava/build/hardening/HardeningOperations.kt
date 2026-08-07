@@ -645,7 +645,8 @@ internal object HardeningHelpText {
     appendLine("  pitestModeSnapshot / pitestModeCompare  compare labeled execution modes")
     appendLine("  pitestMutatorTrial                measure candidate mutators")
     appendLine("  mutationOwnershipAudit            cheap whole-production owner/exclusion preflight")
-    appendLine("  hardeningInit / hardeningAgentTemplate  scaffold local evidence and operator rules")
+    appendLine("  hardeningInit / hardeningAgentTemplate / hardeningAgentTemplateDiff")
+    appendLine("                                    scaffold and compare local operator rules")
     suiteDebtTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     appendLine()
     appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")

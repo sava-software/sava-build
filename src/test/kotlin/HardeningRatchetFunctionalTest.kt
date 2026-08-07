@@ -2637,18 +2637,48 @@ $fuzzBlock
       quietStash.readText().contains("com.example.Codec,encode,MathMutator,2"),
       quietStash.readText(),
     )
+    val previousInputIdentity = quietStash.readLines()
+      .first { it.startsWith("# inputs ") }
+      .removePrefix("# inputs ")
 
     File(fixtureDir, "src/main/java/com/example/FakePit.java")
       .appendText("\n// changed source inputs\n")
     val changed = runner("pitestEncoding").build().output
+    val currentInputIdentity = quietStash.readLines()
+      .first { it.startsWith("# inputs ") }
+      .removePrefix("# inputs ")
     assertTrue(
       changed.contains("timeout-retirement inputs changed") &&
+          previousInputIdentity != currentInputIdentity &&
+          changed.contains(
+            "input identity prefixes ${previousInputIdentity.take(12)} -> " +
+                currentInputIdentity.take(12)
+          ) &&
+          changed.contains("identity includes pluginSha256") &&
+          changed.contains("published JAR SHA-256 or development code-path fingerprint") &&
           !changed.contains("audited-timeout member(s) have not timed out in 3+"),
       "changed inputs inherited the prior quiet streak:\n$changed",
     )
     assertTrue(
       quietStash.readText().contains("com.example.Codec,encode,MathMutator,1"),
       "changed inputs did not restart the quiet streak:\n${quietStash.readText()}",
+    )
+
+    quietStash.writeText(
+      "# timeout quiet format 3\n" +
+        "# inputs nope\n" +
+        "# invocation old\n" +
+        "com.example.Codec,encode,MathMutator,9\n",
+    )
+    val malformed = runner("pitestEncoding").build().output
+    assertTrue(
+      malformed.contains("format-3 stash has a missing/malformed input identity") &&
+          !malformed.contains("inputs changed since this suite's previous fresh observation"),
+      "a malformed format-3 identity was presented as a valid transition:\n$malformed",
+    )
+    assertTrue(
+      quietStash.readText().contains("com.example.Codec,encode,MathMutator,1"),
+      "a malformed identity did not restart the quiet streak:\n${quietStash.readText()}",
     )
   }
 
@@ -3034,6 +3064,24 @@ $fuzzBlock
     assertFalse(
       classified.contains("cause classification"),
       "classified liveness rows stayed findings:\n$classified"
+    )
+
+    // Cause categories authorize timeout evidence, not every sibling result at the
+    // line-less key. A finite same-key sibling that is deterministically KILLED does
+    // not conflict with the liveness sibling that actually timed out.
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,30,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,44,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,52,KILLED,com.example.CodecTest",
+      ),
+      "",
+    )
+    val killedSibling = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").build().output
+    assertFalse(
+      killedSibling.contains("cause classification") ||
+          killedSibling.contains("unaudited timed-out mutant"),
+      "a valid same-key KILLED sibling was misclassified as a mixed timeout cause:\n$killedSibling",
     )
 
     // Source lines remain diagnostic. The current format cannot distinguish a

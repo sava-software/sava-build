@@ -16,6 +16,11 @@ import java.security.MessageDigest
  */
 class AgentsTemplateSyncFunctionalTest {
 
+  private companion object {
+    const val BLOCK_START = "<!-- hardening-template block:start -->"
+    const val BLOCK_END = "<!-- hardening-template block:end -->"
+  }
+
   @TempDir
   lateinit var fixtureDir: File
 
@@ -100,6 +105,12 @@ class AgentsTemplateSyncFunctionalTest {
       stale.output.contains("marker 000000000000, current $expectedDigest"),
       "expected the stale/current digest pair:\n" + stale.output
     )
+    assertTrue(
+      stale.output.contains("hardeningAgentTemplateDiff") &&
+          stale.output.contains("hardeningAgentTemplate"),
+      "the stale-marker failure must route legacy blocks through the bounded diff migration:\n" +
+        stale.output,
+    )
   }
 
   @Test
@@ -109,6 +120,11 @@ class AgentsTemplateSyncFunctionalTest {
     val printed = runner("hardeningAgentTemplate").build().output
 
     assertTrue(printed.contains(expectedPrintedTemplate), printed)
+    assertTrue(
+      printed.indexOf(BLOCK_START) < printed.indexOf(expectedPrintedTemplate) &&
+          printed.indexOf(expectedPrintedTemplate) < printed.indexOf(BLOCK_END),
+      "the paste-ready template must carry explicit diff boundaries:\n$printed",
+    )
     assertFalse(
       printed.lineSequence().any { it.startsWith("> -") || it.startsWith(">   ") },
       printed,
@@ -117,7 +133,11 @@ class AgentsTemplateSyncFunctionalTest {
     assertFalse(printed.contains("github.com/sava-software/sava-build/blob/main"), printed)
     assertTrue(
       printed.contains("Consumer hardening notes contain only local ownership") &&
-          printed.contains("AGENTS.md` may carry this exact generated"),
+          printed.contains("AGENTS.md` carries this exact generated") &&
+          printed.contains("repository-specific facts outside its bounded block") &&
+          printed.contains("hardeningAgentTemplateDiff") &&
+          printed.contains("against its explicitly") &&
+          printed.contains("bounded block"),
       "the version-matched template must distinguish pinned AGENTS instructions from consumer notes:\n$printed",
     )
     assertTrue(
@@ -136,7 +156,14 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("duration × timeoutFactor + timeoutConst") &&
           printed.contains("bound is the claimed deterministic oracle") &&
           printed.contains("contributes no cause evidence") &&
-          printed.contains("not credible liveness evidence"),
+          printed.contains("not credible liveness evidence") &&
+          printed.contains("finite sibling observed `KILLED`") &&
+          printed.contains("does not") &&
+          printed.contains("itself create mixed timeout causes") &&
+          printed.contains("distinct same-key siblings") &&
+          printed.contains("timing out under different cause categories") &&
+          printed.contains("repeated fresh history-free non-timeout observations") &&
+          printed.contains("plugin upgrade whose JAR bytes differ restarts the streak"),
       "the version-matched template must keep record decisions history-free and timeout evidence observable:\n$printed",
     )
     assertTrue(
@@ -154,6 +181,89 @@ class AgentsTemplateSyncFunctionalTest {
     )
     assertFalse(printed.contains("Migration is one-way"), printed)
     assertFalse(printed.contains("pitest ≥"), printed)
+  }
+
+  @Test
+  fun `template diff accepts bounded quoted or unquoted blocks and never edits AGENTS_md`() {
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+
+    fun assertMatches(body: String, quoteBoundaries: Boolean = false) {
+      val start = if (quoteBoundaries) "> $BLOCK_START" else BLOCK_START
+      val end = if (quoteBoundaries) "> $BLOCK_END" else BLOCK_END
+      agentsDoc.writeText(
+        "$start\n$body\n$end\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n"
+      )
+      val before = agentsDoc.readBytes()
+      val first = runner("hardeningAgentTemplateDiff").build()
+      assertTrue(first.output.contains("matches the installed template"), first.output)
+      assertTrue(before.contentEquals(agentsDoc.readBytes()), "the diff task edited AGENTS.md")
+      val reused = runner("hardeningAgentTemplateDiff").build()
+      assertTrue(reused.output.contains("Reusing configuration cache"), reused.output)
+      assertTrue(reused.output.contains("matches the installed template"), reused.output)
+    }
+
+    assertMatches(expectedPrintedTemplate)
+    val adapted = expectedPrintedTemplate.replaceFirst(
+      "- **Scale verification to the change.**",
+      "1. **Configuration-cache reread.**",
+    )
+    agentsDoc.writeText(
+      "$BLOCK_START\n$adapted\n$BLOCK_END\n" +
+        "<!-- hardening-template sha256:$expectedDigest -->\n"
+    )
+    val reread = runner("hardeningAgentTemplateDiff").build()
+    assertTrue(reread.output.contains("Reusing configuration cache"), reread.output)
+    assertTrue(reread.output.contains("-1. **Configuration-cache reread.**"), reread.output)
+    assertTrue(reread.output.contains("+- **Scale verification to the change.**"), reread.output)
+
+    assertMatches(expectedTemplate, quoteBoundaries = true)
+  }
+
+  @Test
+  fun `template diff prints adapted changes without failing or moving the marker`() {
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+    val adapted = expectedPrintedTemplate.replaceFirst(
+      "- **Scale verification to the change.**",
+      "1. **Local scale verification.**",
+    )
+    agentsDoc.writeText(
+      "<!-- hardening-template sha256:$expectedDigest -->\n" +
+        "$BLOCK_START\n$adapted\n$BLOCK_END\n"
+    )
+    val before = agentsDoc.readBytes()
+
+    val result = runner("hardeningAgentTemplateDiff").build()
+
+    assertTrue(result.output.contains("-1. **Local scale verification.**"), result.output)
+    assertTrue(result.output.contains("+- **Scale verification to the change.**"), result.output)
+    assertTrue(before.contentEquals(agentsDoc.readBytes()), "the diff task edited AGENTS.md")
+  }
+
+  @Test
+  fun `template diff refuses missing ambiguous reversed empty and mixed quote boundaries`() {
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+    val missing = runner("hardeningAgentTemplateDiff").buildAndFail()
+    assertTrue(missing.output.contains("AGENTS.md does not exist"), missing.output)
+    val malformed = listOf(
+      "no boundaries\n",
+      "$BLOCK_START\nbody\n$BLOCK_START\nbody\n$BLOCK_END\n",
+      "$BLOCK_END\nbody\n$BLOCK_START\n",
+      "$BLOCK_START\n\n$BLOCK_END\n",
+      "$BLOCK_START\n> quoted\nunquoted\n$BLOCK_END\n",
+    )
+
+    malformed.forEachIndexed { index, text ->
+      agentsDoc.writeText(text)
+      val failed = runner("hardeningAgentTemplateDiff").buildAndFail()
+      assertTrue(
+        failed.output.contains("hardeningAgentTemplateDiff:"),
+        "malformed case $index did not fail with task context:\n${failed.output}",
+      )
+    }
   }
 
   @Test
@@ -211,12 +321,10 @@ class AgentsTemplateSyncFunctionalTest {
         $savaBuildPluginManagement
 
         rootProject.name = "agents-template-sync-smoke-test"
-        include("lib")
+        include("lib", "other")
       """.trimIndent() + "\n"
     )
-    val lib = File(fixtureDir, "lib")
-    lib.mkdirs()
-    File(lib, "build.gradle.kts").writeText(
+    val moduleBuild =
       """
         plugins {
           java
@@ -227,11 +335,15 @@ class AgentsTemplateSyncFunctionalTest {
           mavenCentral()
         }
       """.trimIndent() + "\n"
-    )
+    val lib = File(fixtureDir, "lib").apply { mkdirs() }
+    File(lib, "build.gradle.kts").writeText(moduleBuild)
+    val other = File(fixtureDir, "other").apply { mkdirs() }
+    File(other, "build.gradle.kts").writeText(moduleBuild)
     // the current acknowledgment lives at the root; the subproject's own AGENTS.md is
     // stale — only reading the root document lets this pass
     File(fixtureDir, "AGENTS.md").writeText(
-      "# Agents\n\n<!-- hardening-template sha256:$expectedDigest -->\n"
+      "# Agents\n\n$BLOCK_START\n$expectedPrintedTemplate\n$BLOCK_END\n" +
+        "<!-- hardening-template sha256:$expectedDigest -->\n"
     )
     File(lib, "AGENTS.md").writeText(
       "# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n"
@@ -240,5 +352,17 @@ class AgentsTemplateSyncFunctionalTest {
     val result = runner(":lib:agentsTemplateInSync").build()
     assertFalse(result.output.contains("no AGENTS.md"), result.output)
     assertFalse(result.output.contains("FAILED"), result.output)
+    val diff = runner(":lib:hardeningAgentTemplateDiff").build()
+    assertTrue(diff.output.contains("matches the installed template"), diff.output)
+    val template = runner(":lib:hardeningAgentTemplate").build()
+    assertTrue(
+      template.output.lineSequence().count { it == BLOCK_START } == 1 &&
+          template.output.lineSequence().count { it == BLOCK_END } == 1,
+      "a project-qualified template task must print exactly one bounded block:\n${template.output}",
+    )
+    assertFalse(
+      template.output.contains(":other:hardeningAgentTemplate"),
+      "the qualified task unexpectedly selected another hardening project:\n${template.output}",
+    )
   }
 }

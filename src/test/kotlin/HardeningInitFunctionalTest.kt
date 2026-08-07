@@ -89,8 +89,11 @@ class HardeningInitFunctionalTest {
           readmeText.contains("a bound that cannot fail first contributes no cause evidence") &&
           readmeText.contains("not credible liveness evidence") &&
           readmeText.contains("Treat `# line` comments as diagnostic metadata only") &&
-          readmeText.contains("once review proves one key mixes liveness and finite causes") &&
-          readmeText.contains("it is not honestly certifiable until the behavior is split/refactored") &&
+          readmeText.contains("A finite same-key sibling observed KILLED") &&
+          readmeText.contains("does not itself create mixed timeout causes") &&
+          readmeText.contains("distinct siblings timing out under different cause categories") &&
+          readmeText.contains("status movement alone does not prove it") &&
+          readmeText.contains("repeated fresh history-free non-timeout observations") &&
           readmeText.contains(
             "Name the member's class and method together in the same Markdown heading-delimited section"
           ),
@@ -110,6 +113,15 @@ class HardeningInitFunctionalTest {
     assertTrue(
       Regex("<!-- hardening-template sha256:[0-9a-f]{12} -->").containsMatchIn(first.output),
       "digest marker missing from the checklist:\n" + first.output
+    )
+    assertTrue(
+      first.output.contains("bounded agent-instructions template") &&
+          first.output.contains("./gradlew :hardeningAgentTemplate") &&
+          first.output.contains("./gradlew :hardeningAgentTemplateDiff") &&
+          first.output.contains("hardeningAgentTemplateDiff") &&
+          first.output.contains("review-only diff") &&
+          first.output.contains("never edits AGENTS.md"),
+      "the checklist did not make the bounded upgrade diff first-class:\n${first.output}",
     )
 
     // a second run changes nothing: same README bytes, no duplicated ignore line
