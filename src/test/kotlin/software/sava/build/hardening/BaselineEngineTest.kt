@@ -1,6 +1,7 @@
 package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import kotlin.random.Random
@@ -409,6 +410,50 @@ class BaselineEngineTest {
       rewrite.written,
     )
     assertEquals(1, rewrite.refreshedLineTags)
+  }
+
+  @Test
+  fun `retag refreshes matched lines and preserves every unmatched row in place`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val absent = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# moved", listOf(10)),
+      BaselineNotes.Row(key, "# stationary sibling", listOf(20)),
+      BaselineNotes.Row(absent, "# licensed subsumption", listOf(50)),
+    )
+
+    val rewrite = BaselineEngine.retagRewrite(
+      accepted,
+      mapOf(key to listOf("20", "12")),
+    )
+
+    assertEquals(
+      listOf(
+        "$key # moved # line 12",
+        "$key # stationary sibling # line 20",
+        "$absent # licensed subsumption # line 50",
+      ),
+      rewrite.written,
+    )
+    assertEquals(1, rewrite.refreshedLineTags)
+    assertEquals(listOf(0, 1, 2), rewrite.sourceRowIndices)
+  }
+
+  @Test
+  fun `retag kernel refuses a new key or an extra sibling`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(BaselineNotes.Row(key, "# family", listOf(10)))
+
+    val sibling = assertThrows(IllegalArgumentException::class.java) {
+      BaselineEngine.retagRewrite(accepted, mapOf(key to listOf("10", "20")))
+    }
+    assertTrue(sibling.message.orEmpty().contains("$key x1"), sibling.message.orEmpty())
+
+    val newKey = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val unknown = assertThrows(IllegalArgumentException::class.java) {
+      BaselineEngine.retagRewrite(accepted, mapOf(newKey to listOf("30")))
+    }
+    assertTrue(unknown.message.orEmpty().contains("$newKey x1"), unknown.message.orEmpty())
   }
 
   @Test

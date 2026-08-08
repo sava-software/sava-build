@@ -110,6 +110,7 @@ internal enum class BaselineWriteOperation {
   REBASE,
   UPDATE,
   UNION,
+  RETAG,
   PRUNE,
   INIT_TIMEOUT_AUDIT,
 }
@@ -141,6 +142,7 @@ internal enum class HardeningWriteRequest(
   BASELINE_REBASE(BaselineWriteOperation.REBASE, null, "baseline provenance rebase"),
   BASELINE_UPDATE(BaselineWriteOperation.UPDATE, null, "baseline update"),
   BASELINE_UNION(BaselineWriteOperation.UNION, null, "baseline union"),
+  BASELINE_RETAG(BaselineWriteOperation.RETAG, null, "baseline line-tag refresh"),
   BASELINE_PRUNE(BaselineWriteOperation.PRUNE, null, "baseline prune"),
   TIMEOUT_AUDIT_INIT(
       BaselineWriteOperation.INIT_TIMEOUT_AUDIT, null, "timeout-audit initialization"),
@@ -615,6 +617,7 @@ internal object HardeningHelpText {
         add("${prefix}BaselineRebase")
         add("${prefix}BaselineUpdate")
         add("${prefix}BaselineUnion")
+        add("${prefix}BaselineRetag")
         add("${prefix}BaselinePrune")
         add("${prefix}TimeoutAuditInit")
       }
@@ -658,8 +661,11 @@ internal object HardeningHelpText {
           "safely adopt a reviewed PIT/toolchain transition")
       appendGenerated(
           "${prefix}BaselineUpdate",
-          "report rewrite; keep current timeout/flip-insurance evidence")
+          "complete report rewrite; may remove unmatched rows; keep current timeout/flip evidence")
       appendGenerated("${prefix}BaselineUnion", "append newly observed rows as untriaged debt")
+      appendGenerated(
+          "${prefix}BaselineRetag",
+          "refresh matched line metadata without adding or removing accepted rows")
       appendGenerated("${prefix}BaselinePrune", "apply the reviewed shrink-only candidate set")
       appendGenerated(
           "${prefix}TimeoutAuditInit",

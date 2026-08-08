@@ -135,6 +135,7 @@ $fuzzBlock
             mustRunAfter(
               "pitestEncodingBaselineUpdate",
               "pitestEncodingBaselineUnion",
+              "pitestEncodingBaselineRetag",
               "pitestEncodingBaselinePrune",
               "pitestEncodingTimeoutAuditInit",
             )
@@ -274,6 +275,11 @@ $fuzzBlock
     return runner("pitestEncodingBaselinePrune", "clearFakePitEvidence", *args)
   }
 
+  private fun baselineRetagRunner(vararg args: String): GradleRunner {
+    bindLegacyFixtureRecord()
+    return runner("pitestEncodingBaselineRetag", "clearFakePitEvidence", *args)
+  }
+
   private fun timeoutAuditInitRunner(vararg args: String): GradleRunner {
     bindLegacyFixtureRecord()
     return runner("pitestEncodingTimeoutAuditInit", "clearFakePitEvidence", *args)
@@ -325,7 +331,8 @@ $fuzzBlock
     assertTrue(moved.contains("pitest 'encoding' unkilled:"), "-PlistUnkilled listing missing:\n$moved")
     assertTrue(
       moved.contains("1 accepted key(s) unkilled at line(s) no row's '# line' tag names") &&
-          moved.contains("# line(s) 10 -> unrecorded 12"),
+          moved.contains("# line(s) 10 -> unrecorded 12") &&
+          moved.contains("1 line-drifted baseline key(s)"),
       "line-drift advisory missing:\n$moved"
     )
     // the XML description carries the line the key no longer does
@@ -333,13 +340,19 @@ $fuzzBlock
     assertFalse(moved.contains("refresh with"), "a line move must not ask for a refresh:\n$moved")
     assertFalse(moved.contains("moved line only"), "the drift-tolerance machinery is retired:\n$moved")
 
-    // Prune remains shrink-only in identity, but refreshes metadata for rows it
-    // matched to this run. That gives the advisory a safe clearing operation even
-    // when its candidate preview is empty.
+    // Prune remains shrink-only in identity, but it is broader than metadata-only
+    // acknowledgement. It must therefore print the evidence it is about to erase;
+    // Retag is the task to prefer when the reviewed transition is only a line move.
     val pruned = baselinePruneRunner().build().output
     assertEquals(
       "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 12\n",
       baselineFile().readText(),
+    )
+    assertTrue(
+      pruned.contains("pre-write signal") &&
+          pruned.contains("# line(s) 10 -> unrecorded 12") &&
+          pruned.contains("pitestEncodingBaselineRetag"),
+      "prune refreshed line metadata without first reporting the drift:\n$pruned",
     )
     assertTrue(pruned.contains("prune dropped nothing and refreshed 1 line tag(s)"), pruned)
     val settled = runner("pitestEncodingVerify").build().output
@@ -378,6 +391,104 @@ $fuzzBlock
       "churn tally missing:\n$output"
     )
     assertTrue(output.contains("line 33: Replaced integer addition with subtraction"), "description missing:\n$output")
+  }
+
+  @Test
+  fun `an unseeded gate names update as the first complete baseline write`() {
+    writeFixture()
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none"
+      ),
+      "",
+    )
+
+    val output = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(
+      output.contains("pitestEncodingBaselineUpdate to seed config/pitest/encoding-accepted.csv") &&
+          output.contains("from this first complete report"),
+      output,
+    )
+    assertFalse(
+      output.contains("after documenting each acceptance run pitestEncodingBaselineUnion"),
+      output,
+    )
+  }
+
+  @Test
+  fun `retag clears reviewed drift without removing unmatched evidence`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val drifted = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val subsumed = "com.example.Codec,decode,MathMutator,SURVIVED"
+    baselineFile().writeText(
+      "$drifted # live family # line 10\n" +
+          "$subsumed # licensed subsumption # line 30\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none"
+      ),
+      ""
+    )
+
+    val before = runner("pitestEncodingVerify").build().output
+    assertTrue(before.contains("# line(s) 10 -> unrecorded 12"), before)
+    assertTrue(
+      before.contains("pitestEncodingBaselinePrune would remove exactly these candidate row(s)") &&
+          before.contains("$subsumed # licensed subsumption # line 30"),
+      before,
+    )
+    assertTrue(before.contains("pitestEncodingBaselineRetag"), before)
+
+    val retagged = baselineRetagRunner().build().output
+    assertTrue(
+      retagged.contains("pre-write signal") &&
+          retagged.contains("# line(s) 10 -> unrecorded 12") &&
+          retagged.contains("retag refreshed 1 matched row line tag(s)") &&
+          retagged.contains("preserved all 2 accepted row(s), including unmatched evidence"),
+      retagged,
+    )
+    assertFalse(
+      retagged.contains("line-drifted baseline key(s)"),
+      "a successful retag was reprinted as unresolved advisory debt:\n$retagged",
+    )
+    assertEquals(
+      "$drifted # live family # line 12\n" +
+          "$subsumed # licensed subsumption # line 30\n",
+      baselineFile().readText(),
+    )
+
+    val settled = runner("pitestEncodingVerify").build().output
+    assertFalse(settled.contains("no row's '# line' tag names"), settled)
+    assertTrue(
+      settled.contains("pitestEncodingBaselinePrune would remove exactly these candidate row(s)") &&
+          settled.contains("$subsumed # licensed subsumption # line 30"),
+      "retag must not remove or hide the unmatched candidate:\n$settled",
+    )
+  }
+
+  @Test
+  fun `retag refuses fresh debt before promising a pre-write drift diff`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val accepted = "com.example.Codec,encode,MathMutator,SURVIVED # family # line 10\n"
+    baselineFile().writeText(accepted)
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,decode,33,SURVIVED,none",
+      ),
+      "",
+    )
+
+    val refused = baselineRetagRunner().buildAndFail().output
+    assertTrue(refused.contains("refusing pitestEncodingBaselineRetag"), refused)
+    assertFalse(
+      refused.contains("pre-write signal") || refused.contains("inspect the resulting diff"),
+      "a refused retag promised a diff it did not write:\n$refused",
+    )
+    assertEquals(accepted, baselineFile().readText())
   }
 
   @Test
@@ -601,7 +712,7 @@ $fuzzBlock
     writeFixture()
     baselineFile().parentFile.mkdirs()
     val before =
-      "com.example.Codec,encode,10,MathMutator,SURVIVED # untriaged\n" +
+      "com.example.Codec,encode,9,MathMutator,SURVIVED # untriaged\n" +
           "com.example.Codec,encode,12,MathMutator,NO_COVERAGE # unreachable claim\n" +
           "com.example.Codec,decode,30,MathMutator,SURVIVED # since killed\n" +
           "com.example.Codec,decode,40,IncrementsMutator,NO_COVERAGE\n"
@@ -619,6 +730,10 @@ $fuzzBlock
     assertTrue(output.contains("refusing pitestEncodingBaselinePrune"), output)
     assertTrue(output.contains("1 gated mutant(s)"), output)
     assertTrue(output.contains("com.example.Codec,decode,IncrementsMutator,SURVIVED"), output)
+    assertFalse(
+      output.contains("pre-write signal"),
+      "a refused prune promised a line-tag rewrite it did not perform:\n$output",
+    )
     assertEquals(before, baselineFile().readText(), "a refused prune changed the baseline")
   }
 
@@ -1178,6 +1293,10 @@ $fuzzBlock
     val refused = baselinePruneRunner().buildAndFail().output
     assertTrue(refused.contains("Fix the row shape first"), refused)
     assertEquals(baselineBefore, baselineFile().readText(), "a refresh dropped the malformed row")
+
+    val refusedRetag = baselineRetagRunner().buildAndFail().output
+    assertTrue(refusedRetag.contains("Fix the row shape first"), refusedRetag)
+    assertEquals(baselineBefore, baselineFile().readText(), "retag dropped the malformed row")
   }
 
   @Test
@@ -1322,6 +1441,14 @@ $fuzzBlock
         "com.example.Codec,decode,MathMutator,SURVIVED # line 41",
       ),
       baselineFile().readLines().filter { it.isNotBlank() }
+    )
+    assertTrue(
+      output.contains("BaselineUpdate is a complete report rewrite") &&
+          output.contains("pre-write signal") &&
+          output.contains("# line(s) 12, 20 -> unrecorded 13, 21") &&
+          output.contains("# line(s) 40 -> unrecorded 41") &&
+          output.contains("pitestEncodingBaselineRetag"),
+      "update refreshed line metadata without first reporting the drift:\n$output",
     )
     assertTrue(output.contains("wrote 3 accepted entries"), output)
     // nothing was dropped, seeded or flipped: a shift is no longer churn at all
@@ -3208,6 +3335,40 @@ $fuzzBlock
       listOf("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none"),
       ""
     )
+
+    val unboundGate = runner("pitestEncoding").buildAndFail().output
+    assertTrue(
+      unboundGate.contains("pitestEncodingBaselineRebase") &&
+          unboundGate.contains("preserves every old row") &&
+          unboundGate.contains("binds the reviewed provenance"),
+      "an unbound record was given a writer that must refuse it:\n$unboundGate",
+    )
+    assertFalse(
+      unboundGate.contains("after documenting each acceptance run pitestEncodingBaselineUnion"),
+      unboundGate,
+    )
+
+    // Bind the old row against the helper's empty gated observation. The next gate
+    // is the ordinary current-provenance path, so its displayed Union command must
+    // execute directly rather than relying on a hidden Rebase in the runner helper.
+    bindLegacyFixtureRecord()
+    val gate = runner("pitestEncoding").buildAndFail().output
+    assertTrue(
+      gate.contains("after documenting each acceptance run pitestEncodingBaselineUnion") &&
+          gate.contains("without removing unmatched evidence") &&
+          gate.contains("BaselineUpdate is a complete report rewrite, not remediation"),
+      "incremental gate did not point at the additive writer:\n$gate",
+    )
+
+    val beforeRetag = baselineFile().readText()
+    val refusedRetag = baselineRetagRunner().buildAndFail().output
+    assertTrue(
+      refusedRetag.contains("refusing pitestEncodingBaselineRetag") &&
+          refusedRetag.contains("1 gated mutant(s)") &&
+          refusedRetag.contains("line metadata cannot hide fresh debt"),
+      refusedRetag,
+    )
+    assertEquals(beforeRetag, baselineFile().readText(), "a refused retag changed accepted identity")
 
     val union = baselineUnionRunner().build()
     assertTrue(union.output.contains("union added 1 entries"), union.output)

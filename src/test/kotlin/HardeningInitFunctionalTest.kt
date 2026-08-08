@@ -66,6 +66,11 @@ class HardeningInitFunctionalTest {
     assertTrue(readmeText.contains("## Untriaged debt"), readmeText)
     assertTrue(readmeText.contains("## Accepted mutants"), readmeText)
     assertTrue(readmeText.contains("exact `# <label>` text"), readmeText)
+    assertTrue(
+      readmeText.contains("A label groups rows; it does not authorize every similar") &&
+          readmeText.contains("Record the property, independent oracle"),
+      readmeText,
+    )
     val normalizedReadme = readmeText.replace(Regex("\\s+"), " ")
     assertTrue(
       normalizedReadme.contains(

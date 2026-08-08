@@ -49,7 +49,12 @@ class HardeningOperationsTest {
     assertTrue(help.contains("pitestEncodingDebt"), help)
     assertTrue(help.contains("pitestEncodingBaselineRebase"), help)
     assertTrue(help.contains("pitestEncodingBaselineUpdate"), help)
+    assertTrue(
+      help.contains("complete report rewrite; may remove unmatched rows"),
+      help,
+    )
     assertTrue(help.contains("pitestEncodingBaselineUnion"), help)
+    assertTrue(help.contains("pitestEncodingBaselineRetag"), help)
     assertTrue(help.contains("pitestEncodingBaselinePrune"), help)
     assertTrue(help.contains("pitestEncodingTimeoutAuditInit"), help)
     assertTrue(help.contains("pitestModeCompareUnion"), help)

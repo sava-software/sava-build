@@ -317,7 +317,11 @@ mutant has exactly three legal outcomes:
    does".
 2. **Refactor** — restructure so the mutant cannot exist.
 3. **Accept it knowingly** — record the reason in the repo's
-   `config/pitest/README.md`, then run `pitest<Suite>BaselineUpdate`. Acceptance
+   `config/pitest/README.md`. For an existing baseline, run
+   `pitest<Suite>BaselineUnion`: it appends the new rows as `# untriaged` without
+   removing evidence absent from this run. Use `pitest<Suite>BaselineUpdate` to
+   seed a first baseline or only when a separately reviewed complete report rewrite
+   — additions **and removals** — is intentional. Acceptance
    may mean observable equivalence, a proved structural `NO_COVERAGE` trap, or
    a specifically named deterministic-harness limit; it never means merely
    "hard to test".
@@ -590,7 +594,12 @@ no `# <label>` mention in `config/pitest/README.md`, so a typo'd label or an
 orphaned argument surfaces instead of silently opening a new bucket — and it
 surfaces in the listing where the counts are read, since a count is exactly
 what makes a mistyped label read as finished triage
-(`# untriaged` is exempt — seeded debt needs no section). Rows parse as an
+(`# untriaged` is exempt — seeded debt needs no section). This check proves only
+that the pointer resolves; it cannot prove the prose is still true. A family label
+never authorizes every superficially similar mutant. Re-read each live family's
+property, oracle, and escape when its code or callers change, and keep historical
+incident prose separate from the current acceptance argument so a stale line or
+retired example cannot masquerade as live evidence. Rows parse as an
 ordered list, so duplicate sibling rows each keep their **own** note — the
 note map keyed by row text that used to collapse them is gone, which is what
 lets two siblings of one key carry two different family labels. All baseline
@@ -616,7 +625,7 @@ the carry apparatus that entry describes is retired; affinity plus the fate list
 is what replaced it)*. Without line evidence the assignment is arbitrary, which is
 the same-key blind spot below, not a bug to police.
 
-The third refresh is mechanically shrink-only, not self-authorizing:
+The shrink transition is mechanically shrink-only, not self-authorizing:
 `pitest<Suite>BaselinePrune` drops baseline rows matching nothing this run and
 adds no rows. One run cannot distinguish a stable removal from an uninsured
 load- or mode-dependent flip, so the ordinary verify prints a **preview of the
@@ -627,10 +636,10 @@ absent; a row proved to flip belongs in persistent `# flip insurance` instead.
 Prune also refreshes the `# line` tag of each retained row matched at its own
 key, using line affinity before file order; unmatched rows kept for
 `TIMED_OUT`, a pending flip, or flip insurance retain their prior tags because
-that run did not observe them at their own key. A line-only rewrite is still
-atomic and occurs even when prune drops nothing, which makes prune safe for
-clearing a reviewed line-drift advisory **when its candidate preview is
-empty**. "Matching" is the
+that run did not observe them at their own key. Before Prune refreshes any drifted
+tag it prints the exact pre-write signal. Use `BaselineRetag` when metadata is the
+only intended change, even if Prune's candidate preview is empty; run Prune only
+when its deletion decision was independently reviewed. "Matching" is the
 verify's own multiset comparison: a key holding more rows than the run's unkilled mutants
 has excess to drop, and which sibling goes is decided by line affinity first
 (a row whose `# line` tag names no live line is preferred as the absent sibling),
@@ -655,6 +664,14 @@ observation supplies the evidence the tool cannot infer from one report.
 Never substitute a hand-rolled cleanup script, which is how the status-blind
 prune happened. The named record transitions are mutually exclusive; the build
 refuses a combination.
+
+`pitest<Suite>BaselineRetag` is the non-destructive acknowledgement for reviewed
+line drift. It refuses while the report contains any gated row the current baseline
+does not accept, adds and removes nothing, preserves notes, comments, row slots, and
+every unmatched licensed-engine/subsumed row, and refreshes only the `# line`
+metadata of rows matched by the fresh history-free report. This is deliberately a
+separate operation: Union invoked to accept unrelated new debt and Update invoked for
+a complete rewrite must not silently erase the same-key-swap signal before it is read.
 
 ### `TIMED_OUT` is detected, and detection is load-dependent
 
@@ -738,18 +755,18 @@ invoked it*, and the failure looks exactly like a real regression.
   and re-observe it fresh under the relevant load; `pitestModeCompareUnion`
   has nothing sound to write because neither status crosses the unkilled
   boundary.
-- **Union only rows you have observed to flip** — and prefer the
-  `pitestModeCompareUnion` path, which writes the observation
-  *into* the row as a `# flip insurance (<per-mode statuses>)` note a later
-  reader can re-measure. The verify-side `pitest<Suite>BaselineUnion` remains
-  as the escape hatch for a directly witnessed flip: it adds the run's
-  unkilled rows in canonical form without dropping baseline rows that
-  happened to be detected this run. Update now protects current timeout budgets
-  and literal insurance too, but an *uninsured* mode flip is still indistinguishable
-  from a stable removal in one report and can start refresh ping-pong. Direct Union
-  seeds every added row `# untriaged`; replace that marker with the witnessed
-  flip-family label and evidence before treating the row as finished. Bulk-adding
-  every `TIMED_OUT` row "to be safe"
+- **Use Union for reviewed incremental acceptance; use the mode union for measured
+  flips.** `pitest<Suite>BaselineUnion` appends the current unkilled rows in canonical
+  form without dropping accepted rows absent from this run. That makes it the safe
+  transition after killing or documenting the fresh rows reported by an existing
+  baseline's gate. It seeds every added row `# untriaged`; replace that marker with
+  the reviewed family label and evidence before treating the row as finished.
+  For a witnessed solo-vs-gate flip, prefer `pitestModeCompareUnion`, which writes
+  the observation *into* the row as a
+  `# flip insurance (<per-mode statuses>)` note a later reader can re-measure.
+  Update now protects current timeout budgets and literal insurance too, but an
+  *uninsured* mode flip is still indistinguishable from a stable removal in one
+  report and can start refresh ping-pong. Bulk-adding every `TIMED_OUT` row "to be safe"
   accepts mutants that are reliably detected today and silently stops the
   ratchet noticing if a later edit makes them genuinely survive.
 - **Inspect the named coverage-phase cost before classifying a load flip.** A
@@ -1018,9 +1035,11 @@ invoked it*, and the failure looks exactly like a real regression.
 - **Hand-edited rows can silently never match.** The canonical mutator name
   strips the `org.pitest.…gregor.mutators.` package *and* the `returns.`
   sub-package; a row spelled `returns.NullReturnValsMutator` matches nothing
-  and reports new forever. Prefer the named `pitest<Suite>BaselineUpdate` after
-  reviewing its complete report-driven rewrite. Use `pitest<Suite>BaselineUnion`
-  or `pitestModeCompareUnion` for measured flips; do not hand-roll a union.
+  and reports new forever. For an existing baseline, use the named
+  `pitest<Suite>BaselineUnion` after reviewing the new rows; it appends without
+  deleting unmatched evidence. Reserve `pitest<Suite>BaselineUpdate` for the first
+  seed or an intentionally reviewed complete report-driven rewrite. Prefer
+  `pitestModeCompareUnion` for measured flips; do not hand-roll a union.
 
 ### Line numbers are metadata, and the one hole that buys
 
@@ -1031,13 +1050,13 @@ pass, the pairing-outlier scan and `-PnoDriftTolerance` are all retired —
 there is no drift left to tolerate. What remains of lines is metadata and one
 advisory: a key unkilled *only* at lines its tags do not name draws a
 **line-drift advisory** — the code the acceptance argues about has moved, or
-a new mutant sits under an old acceptance. Re-read the README argument. If
-the same run's prune-candidate preview is empty, a green
-`pitest<Suite>BaselinePrune` refreshes matched tags without accepting anything;
-otherwise re-measure the candidates before combining a metadata refresh with
-their deletion. The report-driven BaselineUpdate also refreshes tags, preserves
-this run's timeout and flip-insurance budgets, and carries its normal
-baseline-widening risk. Unions preserve existing tags and attach observed
+a new mutant sits under an old acceptance. Re-read the README argument. After
+review, run `pitest<Suite>BaselineRetag`: it refuses fresh debt, preserves every
+accepted row (including unrelated unmatched ArcMutate evidence), and refreshes only
+matched tags. A green `pitest<Suite>BaselinePrune` also refreshes matched tags, but
+its purpose is deletion and it must not be used merely to clear this advisory when
+its candidate preview is non-empty. The report-driven BaselineUpdate also refreshes
+tags and carries its normal full-rewrite risk. Unions preserve existing tags and attach observed
 tags to rows they add; the mode-flip union also preserves an existing row's
 tag when it annotates that row. `migrateMutationBaselines` preserves recorded
 tags because it has no current mutation report. The check is row-level where
@@ -1196,6 +1215,14 @@ family rather than listing rows:
   *(casebook: the copy-on-write family that split)*.
 - **Defensive code unreachable in context** — note *why* it is unreachable;
   that claim is the part that rots.
+- **Log emission only after contract review** — removing an incidental diagnostic
+  beside independently observable behavior can be equivalent, but `# log-removal`
+  is not a blanket family. A log that is the whole body of a branch may still be
+  intentionally diagnostic-only, or it may be the branch's last observable effect.
+  A handler installed by the application can also suppress a library's fallback log,
+  making the application's emission the only remaining failure signal. Decide which
+  contract applies before accepting. When the promise is “failures are never silent,”
+  capture the record and assert its presence, level, and throwable — not exact wording.
 
 A cluster fitting none of these deserves a second look before accepting.
 
@@ -2094,8 +2121,12 @@ edit the block merely to normalize the presentation used by releases before 21.5
 >   written reason in `config/pitest/README.md` **and a short family label on
 >   the row itself** — refreshes seed new rows `# untriaged`, and triage means
 >   replacing that label, so the baseline always says which rows are argued
->   and which are debt. Never run a baseline-update task just to make the build
->   pass.
+>   and which are debt. For an existing baseline, use `BaselineUnion` after
+>   reviewing the fresh rows: it appends them without deleting unmatched evidence.
+>   Reserve `BaselineUpdate` for a first seed or an independently reviewed complete
+>   rewrite; never run it just to make the build pass. A family label groups
+>   individually reviewed instances; it never authorizes the next syntactically
+>   similar mutant.
 > - **A mutant is a question, not a specification.** Before writing a killing
 >   test, state the externally intended property and an oracle independent of the
 >   current implementation: public contract, protocol specification, caller
@@ -2111,8 +2142,11 @@ edit the block merely to normalize the presentation used by releases before 21.5
 >   above a mutated method churns nothing, and `# line` tags are review
 >   metadata. A new mutant replacing a killed one at the same key can inherit
 >   its acceptance, so treat a line-drift advisory whose written argument no
->   longer fits the code as that swap until shown otherwise. Use the installed
->   plugin's named writer tasks and heed their candidate previews; never hand-edit
+>   longer fits the code as that swap until shown otherwise. After review, use
+>   `BaselineRetag` to refresh only matched line metadata while preserving every
+>   accepted row; never use an unrelated acceptance or deletion merely to clear
+>   the advisory. Use the installed plugin's named writer tasks and heed their
+>   candidate previews; never hand-edit
 >   record structure or provenance stamps. A PIT, PIT-plugin/tool-artifact,
 >   ArcMutate-base, or certificate change uses `pitest<Suite>BaselineRebase`: it
 >   preserves every old row, seeds new rows `# untriaged`, and stamps the reviewed
@@ -2159,8 +2193,9 @@ edit the block merely to normalize the presentation used by releases before 21.5
 > - **Do not rely on PIT's timeout to detect a mutant.** `TIMED_OUT` counts as
 >   detected and is not written to the baseline, and it is load-dependent — the
 >   same mutant can report `SURVIVED` alone and `TIMED_OUT` under
->   `qualityGate`. Verify a baseline in both modes; union only rows observed to
->   flip, never every `TIMED_OUT` row.
+>   `qualityGate`. Verify a baseline in both modes; for load-flip insurance,
+>   union only rows observed to flip, never every `TIMED_OUT` row. This does not
+>   restrict additive `BaselineUnion` acceptance of separately reviewed fresh debt.
 > - **A new timed-out mutant is a reviewer-stop, not detection noise.** For
 >   exactly these mutants the ratchet cannot see a weakened covering
 >   assertion — a timeout keeps "detecting" whatever the test asserts — so

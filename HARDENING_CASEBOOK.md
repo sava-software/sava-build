@@ -521,6 +521,33 @@ by tests that pin the funnel output; the acceptance notes name the funnel.
 Rule: *accept a guard's removal only after observing the funnel produce the
 identical response, and write down which funnel*.
 
+## The family label that made a real log contract disappear
+
+A consumer's `# log-removal` family originally said every `logger.log(...)`
+removal was equivalent because logs were not behavioral output. A websocket ping-
+failure row showed why syntax could not decide that. Below the reconnect threshold,
+the warning was the entire branch; above it, the manager closed the connection. Tests
+asserted the counter, no close below threshold, close at threshold, and reset, but
+deliberately silenced and did not assert the warning. More importantly, installing
+the manager's ping-error callback disabled the upstream websocket library's fallback
+warning. Removing the manager warning could therefore leave every intermediate ping
+failure silent. That row was not proven equivalent without an explicit policy that
+intermediate failures may be silent.
+
+A second site supplied the positive oracle. An asynchronous notification failure
+stage had a warning as the only observable application action before returning null.
+Its test captured the application's own logger, drained the executor, and asserted
+one warning carrying the endpoint and throwable. No upstream fallback was involved;
+the local contract itself was “failures are never silent.” That test killed the
+log-removal mutant rather than admitting it under the broad family.
+
+Rules: *a family label groups reviewed instances; it is not blanket authorization for
+the next syntactically similar mutant*; *distinguish a diagnostic beside observable
+effects from the last observable effect of a failure branch*; *when the contract is
+"failures are never silent", assert record presence, level, and throwable rather than
+message wording*; *an installed application callback can replace, rather than merely
+observe, an upstream fallback log*.
+
 ## The check-loop seam that deleted its flip insurance
 
 A websocket client's check loop held the policy's canonical "never settles"
@@ -1247,12 +1274,31 @@ closes the other half of the loop: baseline multiplicity without a literal
 true multiplicity shortfall. The evidence now survives the next killed read
 instead of depending on the operator remembering why a plain row existed.
 
+The same failure class later appeared on the widening side. A licensed consumer's
+gate reported one genuinely new survivor and, in the same run, two old accepted rows
+absent through method-wide ArcMutate subsumption. The final remediation sentence named
+`BaselineUpdate`. Following it would have accepted the new row **and deleted the two
+rows whose unmatched preview had just said one observation could not retire**. The
+safe incremental transition already existed: `BaselineUnion` appends the current rows
+and preserves every old row. The gate now recommends Union for an existing record and
+reserves Update for first seeding or a separately reviewed complete rewrite.
+
+That consumer also exposed a smaller dead end. Its reviewed line-drift advisory could
+not be cleared: Prune would delete the intentionally retained subsumed rows, Update
+would do the same, and Union deliberately preserves existing tags so accepting
+unrelated debt cannot acknowledge a same-key swap. `BaselineRetag` is the dedicated
+metadata transition: it refuses fresh debt, adds and removes nothing, refreshes only
+matched line metadata, and preserves unmatched evidence. A metadata acknowledgement
+no longer has to smuggle in an identity change.
+
 Rules: *two mechanisms that share a definition must share the code that
 computes it — the verify counted stale rows one way and prune matched them
 another, and the gap between them was a recommendation that could not work*;
 *a one-run preview can identify a proposed mutation but cannot authorize it*;
 *when a hint names a flag, a test should hold the hint to it end-to-end,
-through the flag's actual effect on the file*.
+through the flag's actual effect on the file*; *incremental acceptance is an
+additive transition, not permission to perform unrelated removals*; *acknowledging
+diagnostic metadata must not change accepted identity or multiplicity*.
 
 ## The canary that skipped two consumers
 

@@ -254,6 +254,56 @@ internal object BaselineEngine {
     return PruneRewrite(written, refreshedLineTags, sourceRowIndices)
   }
 
+  /** Every accepted row retained in place, with current lines assigned only to matched rows. */
+  data class RetagRewrite(
+    val written: List<String>,
+    val refreshedLineTags: Int,
+    val sourceRowIndices: List<Int>,
+  )
+
+  /**
+   * `pitest<Suite>BaselineRetag`: acknowledge reviewed line drift without changing
+   * baseline identity or multiplicity. Current copies consume accepted rows through
+   * the shared maximum-affinity allocator. A matched row receives the observed line;
+   * every unmatched row keeps its parsed note and recorded lines unchanged. The
+   * caller must first prove that every current gated copy is already accepted; this
+   * kernel repeats that invariant so a future caller cannot silently omit the guard.
+   * The transition can therefore neither accept fresh debt nor hide it behind a
+   * metadata rewrite.
+   */
+  fun retagRewrite(
+    acceptedRows: List<BaselineNotes.Row>,
+    currentLines: Map<String, List<String>>,
+  ): RetagRewrite {
+    val acceptedCounts = acceptedRows.groupingBy { it.key }.eachCount()
+    val excess = currentLines.entries
+        .filter { (key, lines) -> lines.size > (acceptedCounts[key] ?: 0) }
+        .sortedBy { it.key }
+    require(excess.isEmpty()) {
+      "retag cannot rewrite line metadata while the current population contains " +
+          "unaccepted copies: " + excess.joinToString { (key, lines) ->
+            "$key x${lines.size - (acceptedCounts[key] ?: 0)}"
+          }
+    }
+    val refreshedLines = HashMap<Int, List<Int>>()
+    acceptedRows.indices.groupBy { acceptedRows[it].key }.forEach { (key, rowIndices) ->
+      assignObservedCopies(acceptedRows, rowIndices, currentLines[key].orEmpty())
+          .forEach { copy ->
+            copy.rowIndex?.let { rowIndex ->
+              refreshedLines[rowIndex] = copy.line?.let(::listOf).orEmpty()
+            }
+          }
+    }
+    var refreshedLineTags = 0
+    val written = acceptedRows.indices.map { index ->
+      val row = acceptedRows[index]
+      val lines = refreshedLines[index] ?: row.recordedLines
+      if (lines != row.recordedLines) refreshedLineTags++
+      BaselineNotes.render(row.key, row.note, lines)
+    }
+    return RetagRewrite(written, refreshedLineTags, acceptedRows.indices.toList())
+  }
+
   /**
    * The drift comparison's outcome: dangerous flips by origin, and every other
    * timeout-count delta keyed by the line-less coordinate that changed. The maps
@@ -497,8 +547,9 @@ internal object BaselineEngine {
 
   /**
    * A provenance transition is deliberately non-destructive: retain every old
-   * accepted row and seed every missing current copy for review. Unlike the
-   * flip-only union escape hatch, new rows are visibly untriaged.
+   * accepted row and seed every missing current copy for review. Like direct
+   * additive Union, new rows are visibly untriaged; Rebase additionally binds the
+   * reviewed toolchain transition.
    */
   fun rebaseMerge(
     acceptedRows: List<BaselineNotes.Row>,

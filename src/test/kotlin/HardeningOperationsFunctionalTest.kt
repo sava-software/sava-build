@@ -166,6 +166,7 @@ class HardeningOperationsFunctionalTest {
       "pitestEncodingBaselineRebase",
       "pitestEncodingBaselineUpdate",
       "pitestEncodingBaselineUnion",
+      "pitestEncodingBaselineRetag",
       "pitestEncodingBaselinePrune",
       "pitestEncodingTimeoutAuditInit",
       "pitestModeCompareUnion",
@@ -692,6 +693,48 @@ class HardeningOperationsFunctionalTest {
   }
 
   @Test
+  fun `canonical retag runs cold and reused without dropping an absent row`() {
+    writeFixture()
+    val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv").apply {
+      parentFile.mkdirs()
+      writeText(
+        BaselineDocument.CURRENT_HEADER + "\n" +
+            "com.example.FakePit,main,MathMutator,SURVIVED # live family # line 10\n" +
+            "# preserved baseline context\n\n" +
+            "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained # line 99\n",
+      )
+    }
+    adoptExistingRecordWithRebase()
+
+    val cold = runner("pitestEncodingBaselineRetag").build()
+    assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
+    assertTrue(cold.output.contains("selected baseline line-tag refresh"), cold.output)
+    assertTrue(cold.output.contains("retag refreshed 1 matched row line tag(s)"), cold.output)
+    assertTrue(cold.output.contains("including unmatched evidence"), cold.output)
+    assertEquals(
+      BaselineDocument.CURRENT_HEADER + "\n" +
+          "com.example.FakePit,main,MathMutator,SURVIVED # live family # line 12\n" +
+          "# preserved baseline context\n\n" +
+          "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained # line 99\n",
+      baseline.readText(),
+    )
+
+    val before = baseline.readText()
+    val transition = runner("pitestEncodingBaselineRetag").build().output
+    assertTrue(transition.contains("Reusing configuration cache"), transition)
+    assertTrue(transition.contains("retag changed nothing"), transition)
+    val reused = runner("pitestEncodingBaselineRetag").build().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+    assertTrue(reused.contains("retag changed nothing"), reused)
+    assertEquals(before, baseline.readText())
+    assertEquals(3, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
+    val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
+    assertFalse(args.contains("arcmutate_history"), args)
+    assertFalse(args.contains("--historyInputLocation"), args)
+    assertFalse(args.contains("--historyOutputLocation"), args)
+  }
+
+  @Test
   fun `canonical prune runs cold and reused while applying only its reviewed shrink`() {
     writeFixture()
     val (baseline, _) = acceptedBaseline()
@@ -815,6 +858,13 @@ class HardeningOperationsFunctionalTest {
     ).buildAndFail().output
     assertTrue(scoped.contains("requires full, unscoped evidence"), scoped)
     assertFalse(runs.exists(), "scoped writer refusal must run before PIT")
+
+    val scopedRetag = runner(
+      "pitestEncodingBaselineRetag",
+      "-PmutateOnly=com.example.FakePit",
+    ).buildAndFail().output
+    assertTrue(scopedRetag.contains("requires full, unscoped evidence"), scopedRetag)
+    assertFalse(runs.exists(), "scoped retag refusal must run before PIT")
 
     val excluded = runner(
       "pitestEncodingBaselineUpdate",

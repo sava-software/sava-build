@@ -2231,8 +2231,9 @@ hardening.mutation.all {
   // Mutation ratchet: after each 'pitest<Name>' run, diff the unkilled mutants
   // (SURVIVED and NO_COVERAGE) against the checked-in baseline at
   // 'config/pitest/<name>-accepted.csv' and fail on anything new. A fresh
-  // mutant must be killed with a test or knowingly accepted by re-running with
-  // 'pitest<Suite>BaselineUpdate' and documenting the reason (see HARDENING.md).
+  // mutant must be killed with a test or knowingly accepted with a documented
+  // reason. Existing records use the additive 'pitest<Suite>BaselineUnion'; a
+  // first seed or separately reviewed full rewrite uses BaselineUpdate.
   val pitestTaskName = "pitest" + suite.name.replaceFirstChar(Char::uppercase)
   val suiteName = suite.name
   val mutationScopeProperty = providers.gradleProperty(HardeningOptionNames.MUTATE_ONLY)
@@ -2389,6 +2390,7 @@ hardening.mutation.all {
       val rebase = writeOperation == BaselineWriteOperation.REBASE
       val update = writeOperation == BaselineWriteOperation.UPDATE
       val union = writeOperation == BaselineWriteOperation.UNION
+      val retag = writeOperation == BaselineWriteOperation.RETAG
       val prune = writeOperation == BaselineWriteOperation.PRUNE
       val initTimeoutAudit = writeOperation == BaselineWriteOperation.INIT_TIMEOUT_AUDIT
       val writingRecord = writeOperation != BaselineWriteOperation.CHECK
@@ -3057,11 +3059,12 @@ hardening.mutation.all {
                   "last scoped report was produced with -PmutateOnly=$scope. Re-run " +
                   "$pitestTaskName with -PmutateOnly=$requestedMutationScope before verifying it.")
         }
-        // prune and the timeout-audit seed included: the early return below already
-        // keeps them from touching anything, but silently no-opping a requested
-        // refresh (or seeding an audited set from a hand-picked subset's timeouts)
-        // reads as work that happened — refuse them the same way as update and union.
-        if (rebase || update || union || prune || initTimeoutAudit) {
+        // Every writer included: the early return below already keeps them from
+        // touching anything, but silently no-opping a requested rewrite (or seeding
+        // an audited set from a hand-picked subset's timeouts) reads as work that
+        // happened. Key this to the shared operation state so a newly registered
+        // writer cannot bypass the fail-closed guard by omission.
+        if (writingRecord) {
           throw GradleException(
               "pitest '$suiteName': the report was produced with -PmutateOnly=$scope — a partial " +
                   "population cannot refresh the baseline or seed the timeout audit. " +
@@ -3093,7 +3096,7 @@ hardening.mutation.all {
       // path may read it (the summary's '[history]' tag names the reuse), but the
       // record-writing tasks may not: a baseline refresh or an audit seed written
       // from reused results certifies numbers this run never earned.
-      if (historyAssistedReport && (rebase || update || union || prune || initTimeoutAudit)) {
+      if (historyAssistedReport && writingRecord) {
         throw GradleException(
             "pitest '$suiteName': the report is arcmutate-history-assisted — reused results are " +
                 "not observation, and a baseline refresh or audit seed needs a full run. " +
@@ -3128,7 +3131,7 @@ hardening.mutation.all {
         // recorded only when it stays advisory: on a refresh run the same finding
         // becomes the failure below, and the end-of-build summary's "none failed
         // the build" must stay true (the strict-flag sites' own rule)
-        if (!(rebase || update || union || prune)) {
+        if (!writingRecord || initTimeoutAudit) {
           advisoryLog.get().record(advisoryScope, "${malformedBaselineRows.size} malformed baseline row(s)")
         } else {
           throw GradleException(
@@ -3755,6 +3758,36 @@ hardening.mutation.all {
                   removedProvenanceFiles.joinToString())
         }
       }
+
+      // A line-drift signal must be observable before any operation that refreshes
+      // the tags. Update and Prune are broader reviewed transitions, while Retag is
+      // the metadata-only acknowledgement; all three print the pre-write evidence.
+      // Rebase and Union preserve existing tags, so an ordinary check still sees the
+      // signal after either additive transition.
+      val driftedBaselineLines = BaselineNotes.lineDrift(
+          acceptedRows,
+          currentLines.mapValues { (_, lines) -> lines.mapNotNull { it.toIntOrNull() } },
+      )
+      fun reportLineDrift(remediation: String, recordOutstanding: Boolean) {
+        if (driftedBaselineLines.isEmpty()) return
+        logger.warn(
+            "pitest baseline '$suiteName': ${driftedBaselineLines.size} accepted key(s) unkilled " +
+                "at line(s) no row's '# line' tag names — the code the acceptance argues about " +
+                "has moved, or a new mutant sits under an old acceptance (the same-key swap); " +
+                "re-read the README argument. $remediation:\n" +
+                driftedBaselineLines.entries.sortedBy { it.key }.joinToString("\n") { (key, lines) ->
+                  val (recordedLines, observedLines) = lines
+                  "  $key # line(s) ${recordedLines.sorted().joinToString(", ")} -> " +
+                      "unrecorded ${observedLines.sorted().joinToString(", ")}"
+                }
+        )
+        if (recordOutstanding) {
+          advisoryLog.get().record(
+              advisoryScope,
+              "${driftedBaselineLines.size} line-drifted baseline key(s)",
+          )
+        }
+      }
       if (prune) {
         // Mechanically shrink-only identity refresh: drop rows unmatched by this run
         // and add no rows. The check path preview names these exact candidates but
@@ -3798,6 +3831,11 @@ hardening.mutation.all {
                   unacceptedAfterPrune.joinToString("\n") { "  $it" }
           )
         }
+        reportLineDrift(
+            "the selected ${pitestTaskName}BaselinePrune also applies its reviewed removals; " +
+                "this is the pre-write signal. If only metadata should change, use " +
+                "${pitestTaskName}BaselineRetag instead",
+            recordOutstanding = false)
         val pruneRewrite = BaselineEngine.pruneRewrite(acceptedRows, keepPlan, currentLines)
         val rowSpellingsChanged = pruneRewrite.written != baselineRowLines
         val keptDetail = if (keptUnmatched.isEmpty()) "" else
@@ -3854,6 +3892,44 @@ hardening.mutation.all {
         }
         return@doLast
       }
+      if (retag) {
+        // Line metadata is the accepted baseline's same-key-swap review signal, so
+        // an unrelated writer must not silently acknowledge it. Retag is the explicit
+        // acknowledgement path: refuse fresh debt, preserve every accepted row and
+        // non-row slot, refresh only rows this report actually matches, and leave
+        // licensed-engine/subsumed unmatched evidence semantically intact.
+        val unacceptedBeforeRetag = multisetDiff(current, acceptedRows.map { it.key })
+        if (unacceptedBeforeRetag.isNotEmpty()) {
+          throw GradleException(
+              "pitest baseline '$suiteName': refusing ${pitestTaskName}BaselineRetag — the report has " +
+                  "${unacceptedBeforeRetag.size} gated mutant(s) the current baseline does not accept; " +
+                  "line metadata cannot hide fresh debt and no baseline changes were made:\n" +
+                  unacceptedBeforeRetag.joinToString("\n") { "  $it" }
+          )
+        }
+        reportLineDrift(
+            "${pitestTaskName}BaselineRetag is the explicit metadata-only acknowledgement; " +
+                "this is its pre-write signal, so inspect the resulting diff",
+            recordOutstanding = false)
+        val rewrite = BaselineEngine.retagRewrite(acceptedRows, currentLines)
+        if (rewrite.refreshedLineTags == 0) {
+          logger.lifecycle(
+              "pitest baseline '$suiteName': retag changed nothing — every matched row already carries " +
+                  "this run's line metadata; ${acceptedRows.size} accepted row(s) preserved")
+          if (baselineFile.isFile) stampProvenance() else stampOrRetireProvenance()
+        } else {
+          val plan = planBaseline(
+              rewrite.written.map(BaselineNotes::parse),
+              rewrite.sourceRowIndices,
+          )
+          commitBaselinePlan(plan)
+          logger.lifecycle(
+              "pitest baseline '$suiteName': retag refreshed ${rewrite.refreshedLineTags} matched " +
+                  "row line tag(s); preserved all ${acceptedRows.size} accepted row(s), including " +
+                  "unmatched evidence")
+        }
+        return@doLast
+      }
       if (rebase) {
         // A PIT or mutation-toolchain transition is not evidence that any old
         // acceptance disappeared. Preserve the complete existing record and add
@@ -3894,6 +3970,11 @@ hardening.mutation.all {
         return@doLast
       }
       if (update) {
+        reportLineDrift(
+            "the selected ${pitestTaskName}BaselineUpdate is a complete report rewrite; this is " +
+                "the pre-write signal. If only metadata should change, use " +
+                "${pitestTaskName}BaselineRetag instead",
+            recordOutstanding = false)
         // Report-driven rewrite plus this run's timeout/flip-insurance keeps. A
         // dropped row's '# note' must not
         // vanish silently; with line-less keys only one relationship needs a carry:
@@ -3996,11 +4077,11 @@ hardening.mutation.all {
         return@doLast
       }
       if (union) {
-        // Append-only refresh for flip families (HARDENING.md: union only rows observed
-        // to flip). Adds this run's unkilled rows in canonical form without dropping
-        // baseline rows that happened to be detected this run — the report-driven
-        // BaselineUpdate would bake in this run's uninsured coin-flips and start
-        // refresh ping-pong.
+        // Append-only acceptance for an existing record. Adds this run's unkilled
+        // rows in canonical form without dropping baseline rows absent from the run;
+        // mode-flip evidence should normally use pitestModeCompareUnion so the
+        // observed statuses are written into the insurance note. The report-driven
+        // BaselineUpdate remains a separately reviewed complete rewrite.
         // the merge — per-key max counts, existing rows verbatim after maximum
         // exact-line affinity and the live-anchor/file-order fallback, added copies
         // seeded '# untriaged' with the genuinely unclaimed lines — lives in
@@ -4039,29 +4120,14 @@ hardening.mutation.all {
       // audited-timeout sets there is no new-sibling quiet case to preserve, and
       // any unrecorded line under matched counts is worth a re-read. Partial tags
       // or skewed counts fall back to the audit's key-level disjointness. Advisory
-      // only, never a failure: lines are metadata, and a green prune or a full
-      // update rewrites matched tags (BaselineNotes.lineDrift owns the semantics).
-      run {
-        val observed = currentLines
-            .mapValues { (_, lines) -> lines.mapNotNull { it.toIntOrNull() } }
-        val drifted = BaselineNotes.lineDrift(acceptedRows, observed)
-        if (drifted.isNotEmpty()) {
-          logger.warn(
-              "pitest baseline '$suiteName': ${drifted.size} accepted key(s) unkilled at line(s) " +
-                  "no row's '# line' tag names — the code the acceptance argues about has moved, or a " +
-                  "new mutant sits under an old acceptance (the same-key swap); re-read the README " +
-                  "argument. ${pitestTaskName}BaselinePrune can rewrite the matched tag without widening " +
-                  "the baseline only when its removal-candidate preview is empty; otherwise " +
-                  "re-measure those candidates first:\n" +
-                  drifted.entries.sortedBy { it.key }.joinToString("\n") { (key, lines) ->
-                    val (recordedLines, observedLines) = lines
-                    "  $key # line(s) ${recordedLines.sorted().joinToString(", ")} -> " +
-                        "unrecorded ${observedLines.sorted().joinToString(", ")}"
-                  }
-          )
-          advisoryLog.get().record(advisoryScope, "${drifted.size} line-drifted baseline key(s)")
-        }
-      }
+      // only, never a failure: lines are metadata, and the explicit retag writer
+      // acknowledges reviewed drift without touching identity or unmatched evidence
+      // (BaselineNotes.lineDrift owns the semantics).
+      reportLineDrift(
+          "after review, ${pitestTaskName}BaselineRetag rewrites only matched line metadata and " +
+              "preserves every accepted row, including unmatched licensed-engine evidence; it " +
+              "refuses any fresh gated row",
+          recordOutstanding = true)
       // Two situations produce paired stale + "new" rows and are classified rather
       // than lumped, because they call for different responses:
       //
@@ -4191,13 +4257,38 @@ hardening.mutation.all {
             append("accepting")
           }
         }
+        val provenanceRequiresRebase =
+            committedProvenance.orphan ||
+                committedProvenance.legacyUnbound ||
+                (recordedPit != null && recordedPit != currentPit) ||
+                (recordedToolchain != null && currentToolchain != null &&
+                    recordedToolchain.identitySha256 != currentToolchain.identitySha256)
+        val remediation = when {
+          provenanceRequiresRebase ->
+            "\nKill them with tests, or document each acceptance, then review a fresh " +
+                "$pitestTaskName -PnoMutationHistory observation and run " +
+                "${pitestTaskName}BaselineRebase. This record is not bound to the current " +
+                "PIT/toolchain; Rebase preserves every old row, appends current rows as " +
+                "'# untriaged', and binds the reviewed provenance."
+          committedRecordExisted && currentToolchain == null ->
+            "\nKill them with tests, or document each acceptance, then first run " +
+                "$pitestTaskName -PnoMutationHistory so the current toolchain can be compared " +
+                "with the record. If provenance still matches, use " +
+                "${pitestTaskName}BaselineUnion; if it changed, use " +
+                "${pitestTaskName}BaselineRebase. Neither transition removes old rows."
+          baselineExisted ->
+            "\nKill them with tests, or after documenting each acceptance run " +
+                "${pitestTaskName}BaselineUnion; Union appends the current rows as '# untriaged' " +
+                "without removing unmatched evidence. BaselineUpdate is a complete report rewrite, " +
+                "not remediation for this incremental gate failure (see HARDENING.md)."
+          else ->
+            "\nKill them with tests, or accept knowingly by documenting each reason and running " +
+                "${pitestTaskName}BaselineUpdate to seed config/pitest/$suiteName-accepted.csv " +
+                "from this first complete report (see HARDENING.md)."
+        }
         throw GradleException(
             "pitest '$suiteName': ${fresh.size} unkilled mutant(s) not in the accepted baseline:" +
-                detail +
-                "\nKill them with tests, or accept knowingly by running ${pitestTaskName}BaselineUpdate " +
-                "and documenting the reason (see HARDENING.md). If this suite has never been seeded, " +
-                "${pitestTaskName}BaselineUpdate creates config/pitest/$suiteName-accepted.csv." +
-                historyDecisionCaveat
+                detail + remediation + historyDecisionCaveat
         )
       }
       if (initTimeoutAudit) {
@@ -4842,11 +4933,15 @@ hardening.mutation.all {
   registerSuiteWriter(
       "BaselineUpdate",
       HardeningWriteRequest.BASELINE_UPDATE,
-      "Runs '$suiteName' fresh, rewrites from its report, and preserves current timeout/flip-insurance evidence.")
+      "Runs '$suiteName' fresh and performs a complete report rewrite; may remove unmatched rows while preserving current timeout/flip evidence.")
   registerSuiteWriter(
       "BaselineUnion",
       HardeningWriteRequest.BASELINE_UNION,
       "Runs '$suiteName' fresh and appends only newly observed accepted rows.")
+  registerSuiteWriter(
+      "BaselineRetag",
+      HardeningWriteRequest.BASELINE_RETAG,
+      "Runs '$suiteName' fresh and refreshes matched line metadata without adding or removing rows.")
   registerSuiteWriter(
       "BaselinePrune",
       HardeningWriteRequest.BASELINE_PRUNE,
@@ -5256,7 +5351,10 @@ tasks.register("hardeningInit") {
           |
           |For every accepted family, explain the local structural reason and quote the
           |exact `# <label>` text carried by its baseline rows so pointer validation can
-          |find this section.
+          |find this section. A label groups rows; it does not authorize every similar
+          |mutant. Record the property, independent oracle, and the condition that would
+          |make the acceptance invalid, and re-read that live argument when code or callers
+          |change. Keep retired incidents separate from current acceptance evidence.
           |
           |## Audited timeout causes
           |
