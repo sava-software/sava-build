@@ -110,8 +110,18 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
       listOf(legacyReceipt, legacyRunning).forEach {
         BaselineFiles.requireRegularFileOrMissing(legacyRoot, it)
       }
-      BaselineFiles.deleteIfExists(legacyReceipt)
-      BaselineFiles.deleteIfExists(legacyRunning)
+      val removedLegacyState = buildList {
+        if (BaselineFiles.deleteIfExists(legacyReceipt)) add(legacyReceipt)
+        if (BaselineFiles.deleteIfExists(legacyRunning)) add(legacyRunning)
+      }
+      if (removedLegacyState.isNotEmpty()) {
+        logger.lifecycle(
+          "hardeningCertify: removed superseded legacy build-output certification state; " +
+            "replacement evidence is published only after success at " +
+            "${receipt.relativeTo(projectDirectory).invariantSeparatorsPath}:\n" +
+            removedLegacyState.joinToString("\n") { "  removed ${it.absolutePath}" }
+        )
+      }
 
       val forbidden = presentForbiddenProperties.get().sorted()
       val excluded = excludedTaskNames.get().sorted()

@@ -1275,10 +1275,17 @@ $buildTail
       writeText("legacy interruption\n")
     }
 
-    runner("hardeningCertify").build()
+    val migrated = runner("hardeningCertify").build()
 
     val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
     val certifiedBytes = receipt.readBytes()
+    assertTrue(
+      migrated.output.contains("removed superseded legacy build-output certification state") &&
+          migrated.output.contains(".pitest-history/pitest-certification.tsv") &&
+          migrated.output.contains(legacyReceipt.absolutePath) &&
+          migrated.output.contains(legacyRunning.absolutePath),
+      "legacy certification migration was silent:\n${migrated.output}",
+    )
     assertFalse(legacyReceipt.exists(), "legacy build-output receipt survived certification")
     assertFalse(legacyRunning.exists(), "legacy build-output sentinel survived certification")
     assertFalse(

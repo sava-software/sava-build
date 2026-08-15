@@ -54,9 +54,10 @@ abstract class HardeningAgentTemplateDiffTask : DefaultTask() {
     if (starts.size != 1 || ends.size != 1 || starts.single() >= ends.single()) {
       throw GradleException(
         "hardeningAgentTemplateDiff: AGENTS.md must contain exactly one ordered " +
-          "'$BLOCK_START' / '$BLOCK_END' pair around only the hardening template block. " +
-          "Run hardeningAgentTemplate for the exact boundary lines; this task will not " +
-          "guess the block from headings or digest-marker placement."
+          "boundary pair around only the hardening template block. Wrap the existing " +
+          "adapted block between these exact lines:\n  $BLOCK_START\n" +
+          "  ... existing adapted hardening block ...\n  $BLOCK_END\n" +
+          "This task will not guess the block from headings or digest-marker placement."
       )
     }
 

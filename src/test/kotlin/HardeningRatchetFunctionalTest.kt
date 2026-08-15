@@ -2088,6 +2088,7 @@ $fuzzBlock
     assertTrue(
       output.contains("2 timed out (watchdog detection; not a cause diagnosis)") &&
           output.contains("1 unaudited timeout key(s) also have accepted SURVIVED/NO_COVERAGE row(s)") &&
+          output.contains("2 unaudited timeout(s), 1 at accepted baseline key(s)") &&
           output.contains("accepted: com.example.Codec,encode,MathMutator,SURVIVED") &&
           output.contains("timeout candidate: com.example.Codec,encode,12,MathMutator") &&
           output.contains("timeout candidate: com.example.Codec,encode,20,MathMutator") &&
@@ -2102,6 +2103,11 @@ $fuzzBlock
       output.contains("cause still requires audit") ||
           output.contains("the same mutant timed out") || output.contains("proves resource"),
       "line-less evidence was presented as physical identity or cause:\n$output",
+    )
+    val strict = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").buildAndFail().output
+    assertFalse(
+      strict.contains("2 unaudited timeout(s), 1 at accepted baseline key(s)"),
+      "strict-escalated overlap was also recorded as a non-failing advisory:\n$strict",
     )
   }
 

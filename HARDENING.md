@@ -2214,8 +2214,9 @@ edit the block merely to normalize the presentation used by releases before 21.5
 >   budgets, the mutated path has no path-owned finite completion. A fixture's
 >   emergency exit does not demote that loss; record its bound. A bound claimed
 >   as the deterministic oracle must beat PIT's
->   `duration × timeoutFactor + timeoutConst`; otherwise it contributes no cause
->   evidence. A later emergency ceiling cannot prove liveness.
+>   `duration × timeoutFactor + timeoutConst`; otherwise shorten it and re-observe
+>   history-free — it contributes no cause evidence. A later emergency
+>   ceiling cannot prove liveness.
 >   A straight-line path without a loop, retry, lock, wait, blocking call, or external
 >   completion dependency is not credible liveness evidence. Prove the mutated path
 >   receives the test clock/budget and check for a synchronous state reader; a

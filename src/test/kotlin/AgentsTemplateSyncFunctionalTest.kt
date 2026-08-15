@@ -107,7 +107,7 @@ class AgentsTemplateSyncFunctionalTest {
     )
     assertTrue(
       stale.output.contains("hardeningAgentTemplateDiff") &&
-          stale.output.contains("hardeningAgentTemplate"),
+          stale.output.contains(BLOCK_START) && stale.output.contains(BLOCK_END),
       "the stale-marker failure must route legacy blocks through the bounded diff migration:\n" +
         stale.output,
     )
@@ -156,6 +156,8 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("emergency exit does not demote") &&
           printed.contains("bound claimed") && printed.contains("deterministic oracle") &&
           printed.contains("duration × timeoutFactor + timeoutConst") &&
+          printed.contains("otherwise shorten it") &&
+          printed.contains("re-observe") && printed.contains("history-free — it contributes") &&
           printed.contains("contributes no cause") &&
           printed.contains("receives the test clock/budget") &&
           printed.contains("check for a synchronous state reader") &&
@@ -275,6 +277,12 @@ class AgentsTemplateSyncFunctionalTest {
         failed.output.contains("hardeningAgentTemplateDiff:"),
         "malformed case $index did not fail with task context:\n${failed.output}",
       )
+      if (index == 0) {
+        assertTrue(
+          failed.output.contains(BLOCK_START) && failed.output.contains(BLOCK_END),
+          "missing-boundary failure did not print copy-ready boundary lines:\n${failed.output}",
+        )
+      }
     }
   }
 

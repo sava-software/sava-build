@@ -181,6 +181,27 @@ normalized_github_origin() {
   printf '%s\t%s\n' "$slug" "https://github.com/$slug.git"
 }
 
+report_certification_sentinel() {
+  local running=$1 reason
+  if [ -L "$running" ] || [ ! -f "$running" ]; then
+    echo "release-attestation: certification state path is not a regular file: $running" >&2
+    return 0
+  fi
+  if reason=$(awk -F '\t' '
+      NR == 1 && NF == 2 && $1 == "refused" && $2 != "" { reason=$2; next }
+      { invalid=1 }
+      END {
+        if (NR != 1 || invalid || reason == "") exit 1
+        print reason
+      }
+    ' "$running"); then
+    printf 'release-attestation: certification was refused: %s (%s)\n' \
+      "$reason" "$running" >&2
+  else
+    echo "release-attestation: certification is incomplete or still running: $running" >&2
+  fi
+}
+
 certification_receipt_summary() {
   local receipt=$1 relative=$2 expected_plugin_hash=$3 expected_commit=$4 expected_tree=$5
   local before after metadata project session plugin_hash suite_count suites
@@ -192,7 +213,7 @@ certification_receipt_summary() {
   require_no_symlink_components "$receipt" "certification receipt" || return 1
   if [ -e "$(dirname "$receipt")/pitest-certification.running" ] ||
       [ -L "$(dirname "$receipt")/pitest-certification.running" ]; then
-    echo "release-attestation: certification is incomplete or still running beside $receipt" >&2
+    report_certification_sentinel "$(dirname "$receipt")/pitest-certification.running"
     return 1
   fi
   before=$(sha256_file "$receipt") || return 1
@@ -433,7 +454,7 @@ reviewed_adoption_summary() {
     fi
     if [ -e "$running" ] || [ -L "$running" ]; then
       rm -f "$inventory" "$inventory_roots"
-      echo "release-attestation: certification is incomplete or still running: $running" >&2
+      report_certification_sentinel "$running"
       return 1
     fi
     if [ -n "$lock" ] && { [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -f "$lock" ]; }; }; then
@@ -1340,9 +1361,25 @@ self_test() {
   unlink "$consumer_sava/build/hardening/pitest-certification.tsv"
 
   mkdir -p "$consumer_ravina/unfinished/.pitest-history"
-  printf '%s\n' 'session\tunfinished' > \
+  printf 'session\t%s\n' unfinished > \
     "$consumer_ravina/unfinished/.pitest-history/pitest-certification.running"
   expect_cli_failure "running-only certification in a multi-project consumer" \
+    "certification is incomplete or still running" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis consumer-feature \
+      --feature-adoption "$consumer_ravina"
+  unlink "$consumer_ravina/unfinished/.pitest-history/pitest-certification.running"
+  printf 'refused\t%s\n' 'incompatible flag -PmutateOnly' > \
+    "$consumer_ravina/unfinished/.pitest-history/pitest-certification.running"
+  expect_cli_failure "refused certification in a multi-project consumer" \
+    "certification was refused: incompatible flag -PmutateOnly" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis consumer-feature \
+      --feature-adoption "$consumer_ravina"
+  unlink "$consumer_ravina/unfinished/.pitest-history/pitest-certification.running"
+  printf 'refused\tvisible reason\nextra row\n' > \
+    "$consumer_ravina/unfinished/.pitest-history/pitest-certification.running"
+  expect_cli_failure "malformed refused certification sentinel" \
     "certification is incomplete or still running" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --review-basis consumer-feature \
@@ -1507,7 +1544,8 @@ self_test() {
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   unlink "$sava_receipt"
   mv "$sava_receipt.real" "$sava_receipt"
-  printf '%s\n' running > "$(dirname "$sava_receipt")/pitest-certification.running"
+  printf 'session\t%s\n' unfinished > \
+    "$(dirname "$sava_receipt")/pitest-certification.running"
   expect_cli_failure "incomplete certification" "incomplete or still running" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"

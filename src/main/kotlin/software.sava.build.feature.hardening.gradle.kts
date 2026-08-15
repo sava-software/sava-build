@@ -629,12 +629,25 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
     if (doc.contains("hardening-template sha256:$expected")) {
       return@doLast
     }
+    val boundaryStart = HardeningAgentTemplateDiffTask.BLOCK_START
+    val boundaryEnd = HardeningAgentTemplateDiffTask.BLOCK_END
+    val hasOrderedBoundaries = doc.indexOf(boundaryStart).let { start ->
+      start >= 0 && doc.indexOf(boundaryEnd, start + boundaryStart.length) >= 0
+    }
+    val boundaryMigration = if (hasOrderedBoundaries) {
+      ""
+    } else {
+      "Before running the diff, wrap the existing adapted hardening block between these " +
+        "exact lines:\n  $boundaryStart\n  ... existing adapted hardening block ...\n" +
+        "  $boundaryEnd\n"
+    }
     val stale = Regex("hardening-template sha256:([0-9a-f]+)").find(doc)
     if (stale != null && validatingUnreleased) {
       logger.warn(
           "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.groupValues[1]}; this " +
               "unreleased checkout's is $expected — by default the marker dance lands with the release " +
-              "that ships this digest, not before it. If this is deliberate RC adoption, run " +
+              "that ships this digest, not before it. $boundaryMigration" +
+              "If this is deliberate RC adoption, run " +
               "'./gradlew $templateDiffTask', review or act on the bounded AGENTS.md hardening block, " +
               "and stage the marker with the new plugin pin, but do not " +
               "land that consumer commit while it still resolves the older published plugin. Otherwise, " +
@@ -648,16 +661,15 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
     }
     throw GradleException(
         if (stale == null) {
-          "AGENTS.md has no 'hardening-template' marker. Bound its hardening block with the " +
-              "comments printed by './gradlew $templateTask', run './gradlew $templateDiffTask', " +
+          "AGENTS.md has no 'hardening-template' marker. $boundaryMigration" +
+              "Run './gradlew $templateDiffTask', " +
               "sync or act on what " +
               "differs, then add:\n  <!-- hardening-template sha256:$expected -->"
         } else {
           "The shared agent-instructions template changed since this repo's AGENTS.md last " +
-          "acknowledged it (marker ${stale.groupValues[1]}, current $expected). Run " +
-              "'./gradlew $templateDiffTask' to compare its explicitly bounded hardening block " +
-              "with the installed template — add the boundaries printed by './gradlew " +
-              "$templateTask' first when migrating a legacy block. A " +
+          "acknowledged it (marker ${stale.groupValues[1]}, current $expected). $boundaryMigration" +
+              "Run './gradlew $templateDiffTask' to compare its explicitly bounded hardening block " +
+              "with the installed template. A " +
               "changed bullet may need code, not just prose — then update the marker to:\n" +
               "  <!-- hardening-template sha256:$expected -->"
         }
@@ -3462,9 +3474,6 @@ hardening.mutation.all {
           // never trip the stale-member notice
           logger.warn(TimeoutAudit.unauditedWarning(
               suiteName, timeoutsFile.name, unaudited, historyDecisionCaveat))
-          if (!strictTimeoutAudit) {
-            advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
-          }
           val unauditedCoordinates = unaudited.mapTo(linkedSetOf()) { it.coordinate }
           val acceptedAtUnauditedKeys = acceptedRows
               .filter { row ->
@@ -3492,6 +3501,20 @@ hardening.mutation.all {
                               .sortedWith(compareBy<Mutant>({ it.line ?: Int.MAX_VALUE }, { it.lineFullKey }))
                               .joinToString("\n") { "    timeout candidate: ${it.lineFullKey}" }
                     }
+            )
+          }
+          if (!strictTimeoutAudit) {
+            val overlapSummary = if (acceptedAtUnauditedKeys.isEmpty()) {
+              ""
+            } else {
+              val overlapCount = acceptedAtUnauditedKeys
+                  .mapTo(linkedSetOf()) { it.key.substringBeforeLast(',') }
+                  .size
+              ", $overlapCount at accepted baseline key(s)"
+            }
+            advisoryLog.get().record(
+                advisoryScope,
+                "${unaudited.size} unaudited timeout(s)$overlapSummary",
             )
           }
         }
