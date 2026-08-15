@@ -802,6 +802,47 @@ $buildTail
   }
 
   @Test
+  fun `mutator trial follows the normal suite process customization`() {
+    writeFixture(
+      buildTail =
+        """
+          tasks.named<software.sava.build.hardening.task.PitestRunTask>("pitestEncoding") {
+            verbosity.set("NO_SPINNER")
+          }
+        """.trimIndent(),
+    )
+
+    runner(
+      "pitestEncodingMutatorTrial",
+      "-PtrialMutators=EXPERIMENTAL_BIG_INTEGER",
+    ).build()
+
+    val report = File(fixtureDir, "build/reports/pitest/encoding-trial")
+    val arguments = report.resolve("arguments.txt").readLines()
+    assertTrue(
+      "--mutators=EXPERIMENTAL_BIG_INTEGER" in arguments,
+      "trial did not use the candidate mutator set: $arguments",
+    )
+    assertTrue(
+      "--verbosity=NO_SPINNER" in arguments,
+      "trial did not inherit the normal task's evidence-bound verbosity: $arguments",
+    )
+    assertFalse(arguments.any { it.startsWith("--history") })
+    assertTrue(
+      report.resolve("mutations.csv").isFile,
+      "normal-task main/classpath did not reach FakePit",
+    )
+    assertFalse(report.resolve(".evidence.tsv").exists())
+    assertFalse(report.resolve(".toolchain.tsv").exists())
+
+    val repeated = runner(
+      "pitestEncodingMutatorTrial",
+      "-PtrialMutators=EXPERIMENTAL_BIG_INTEGER",
+    ).build()
+    assertTrue(repeated.output.contains("Configuration cache entry reused."), repeated.output)
+  }
+
+  @Test
   fun `diagnostic report paths cannot be redirected onto decision-grade evidence`() {
     writeFixture(
       buildTail =

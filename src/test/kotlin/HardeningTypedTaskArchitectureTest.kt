@@ -34,7 +34,15 @@ class HardeningTypedTaskArchitectureTest {
       script.contains("classpath = evidencePitestTask.effectiveToolClasspath") &&
           script.contains("javaLauncher.set(evidencePitestTask.javaLauncher)") &&
           script.contains("verbosity.set(evidencePitestTask.verbosity)"),
-      "diagnostic/convergence tasks do not follow the normal task's supported process overrides",
+      "diagnostic/convergence/trial tasks do not follow the normal task's supported process overrides",
+    )
+    val trialBlock = script
+      .substringAfter("tasks.register<PitestMutatorTrialTask>(trialTaskName)")
+      .substringBefore("pitestMutatorTrial.configure")
+    assertTrue(
+      trialBlock.contains("mirrorNormalPitestProcess()") &&
+          trialBlock.contains("verbosity.set(evidencePitestTask.verbosity)"),
+      "mutator trials are not pinned to the normal suite's supported process overrides",
     )
     assertFalse(
       script.contains("providers.provider { pitestRun.get().effectiveToolClasspath }"),

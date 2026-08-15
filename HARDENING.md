@@ -1496,9 +1496,13 @@ The plugin scripts the trial: `pitestMutatorTrial
 candidate mutators — no ratchet, no history, reports kept apart under
 `build/reports/pitest/<suite>-trial` so the real reports and baselines are
 untouched — and tabulates generated / killed-by-existing-tests / unkilled
-per suite, closing with "fired in N of M suites". A suite where the
-candidates cannot fire exits PIT with an error by design; the trial reads
-that as zero fired rather than failing the invocation. What was a hand-run
+per suite, closing with "fired in N of M suites". The candidate mutators,
+history, report, evidence, and zero-fire exit semantics are its deliberate
+differences; the trial otherwise follows the normal suite's effective PIT
+launcher, tool classpath, main class, and verbosity, including supported late
+task customization. A suite where the candidates cannot fire exits PIT with an
+error by design; the trial reads that as zero fired rather than failing the
+invocation. What was a hand-run
 campaign per new PIT release (a run per suite, counts diffed by hand) is one
 invocation; recording the numbers in `config/pitest/README.md` is still
 yours. The "fired in N of M suites" tally is per **module**, so a multi-module
@@ -1875,10 +1879,12 @@ Convergence is checkable, and the plugin scripts it: `pitestConverge` runs
 every suite twice in one invocation — snapshotting and clearing the reports
 between rounds, since Gradle would otherwise serve the second run from the
 first — and diffs per-mutant statuses, failing on flips that cross the
-unkilled boundary. With an arcmutate licence active it refuses to run without
-`-PnoMutationHistory` — assisted runs agree by construction. Know what a
-green converge proves: both rounds run in the same serialized mode, so zero
-flips demonstrates run-to-run determinism only — solo-vs-`qualityGate` load
+unkilled boundary. Both rounds follow the normal suite's effective launcher,
+tool classpath, main class, and verbosity; otherwise a process-toolchain delta
+could masquerade as mutant flapping. With an arcmutate licence active it refuses
+to run without `-PnoMutationHistory` — assisted runs agree by construction.
+Know what a green converge proves: both rounds run in the same serialized mode,
+so zero flips demonstrates run-to-run determinism only — solo-vs-`qualityGate` load
 flips are exactly what it cannot see. `TIMED_OUT` flapping appears between a
 quiet run and a loaded one, never between two quiet runs, so two quiet runs
 agreeing proves the weaker thing.

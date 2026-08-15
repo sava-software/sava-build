@@ -219,6 +219,15 @@ populations. Rules: *freshness controls must not change engine identity*;
 *when evidence moves between workflows, bind and compare the toolchain that
 defined its mutant population*.
 
+The same rule later exposed a quieter derived-task defect. Convergence round
+two and candidate-mutator trials were initialized from plugin conventions
+instead of the normal suite task's effective launcher, tool classpath, main
+class, and verbosity. A consumer's supported late customization could therefore
+make convergence compare different processes and call the delta flapping, or
+make a trial record counts for a process the suite never uses. Derived workflows
+now mirror those effective process inputs; only their documented purpose-specific
+inputs differ.
+
 ## Loop-speed measurements
 
 The cost model is `mutants × time to run the covering tests`, and both

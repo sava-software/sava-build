@@ -4897,6 +4897,12 @@ hardening.mutation.all {
   // stable mirror observes later JavaExec `classpath = ...` customization in place;
   // the launcher property likewise follows a later task-level override.
   val evidencePitestTask = pitestRun.get()
+  fun PitestExecTask.mirrorNormalPitestProcess() {
+    javaLauncher.set(evidencePitestTask.javaLauncher)
+    classpath = evidencePitestTask.effectiveToolClasspath
+    mainClass.set(evidencePitestTask.mainClass)
+    dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
+  }
   fun configureEvidenceSpec(
     spec: PitestEvidenceSpec,
     isolateScopedReport: Boolean,
@@ -5096,11 +5102,8 @@ hardening.mutation.all {
       isolateScopedReport = true,
     )
     // Diagnostic output must explain the normal task's actual process, including
-    // the two late JavaExec customizations the evidence model explicitly supports.
-    javaLauncher.set(evidencePitestTask.javaLauncher)
-    classpath = evidencePitestTask.effectiveToolClasspath
-    mainClass.set(evidencePitestTask.mainClass)
-    dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
+    // the late JavaExec customizations the evidence model explicitly supports.
+    mirrorNormalPitestProcess()
     reportDirectory.set(layout.buildDirectory.dir("reports/pitest-diagnostic/$suiteName"))
     scopedReportDirectory.set(
       layout.buildDirectory.dir("reports/pitest-diagnostic-scoped/$suiteName"))
@@ -5124,11 +5127,8 @@ hardening.mutation.all {
     mustRunAfter(pitestConvergeSnapshot)
     round2After?.let { mustRunAfter(it) }
     configureTypedPitest(this, suiteName, suite.mutators, withHistory = true)
-    javaLauncher.set(evidencePitestTask.javaLauncher)
-    classpath = evidencePitestTask.effectiveToolClasspath
-    mainClass.set(evidencePitestTask.mainClass)
+    mirrorNormalPitestProcess()
     verbosity.set(evidencePitestTask.verbosity)
-    dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
   }
   hardeningCertify.configure { mustRunAfter(round2Name) }
   pitestConverge.configure { dependsOn(round2Name) }
@@ -5149,6 +5149,11 @@ hardening.mutation.all {
         enforceExit = false,
         bindSuiteEvidence = false,
     )
+    // A trial changes the candidate mutator set, not the process used to measure it.
+    // Match every supported late suite-task customization so the generated counts
+    // can inform a durable human decision about the suite's real configuration.
+    mirrorNormalPitestProcess()
+    verbosity.set(evidencePitestTask.verbosity)
   }
   pitestMutatorTrial.configure { dependsOn(trialTaskName) }
 }
