@@ -1,16 +1,18 @@
 # Release attestations
 
 Each `<version>.json` file is the release owner's compact, committed attestation
-for one named `sava-build` candidate and exact JAR. Schema 4 gives every derived
+for one named `sava-build` candidate and exact JAR. Schema 5 gives every derived
 consumer certification one of two owner-reviewed roles: `feature-path` or
-`certification-only`.
+`certification-only`, and requires the durable receipt location produced by the
+current plugin.
 
 An exact-byte entry proves that the consumer certified the candidate bytes. It
 does not imply that the consumer exercised every behavior changed in the release.
-The historical schema-2 and schema-3 formats remain verifiable.
+The historical schema-2, schema-3, and schema-4 formats remain verifiable with their
+original path contract.
 
 Create a record only after the local passes have been reviewed, their completed
-`build/hardening/pitest-certification.tsv` receipts remain in clean consumer
+`.pitest-history/pitest-certification.tsv` receipts remain in clean consumer
 checkouts, their exact `0.0.0-test` JAR is retained, and the Release Please version
 metadata is present on the still-open Release Please branch. Commit the record to that
 branch before merging it. A record appended to `main` after the release PR merges is too

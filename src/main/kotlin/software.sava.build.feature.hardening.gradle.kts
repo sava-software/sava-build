@@ -31,6 +31,7 @@ import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
 import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
+import software.sava.build.hardening.task.HardeningCertificationPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationTask
 import software.sava.build.hardening.task.PitestConvergeTask
 import software.sava.build.hardening.task.PitestDebtTask
@@ -214,8 +215,19 @@ tasks.register<HardeningHelpTask>("hardeningHelp") {
   suiteNames.set(hardeningHelpSuiteNames)
   fuzzTargetNames.set(hardeningHelpFuzzTargetNames)
 }
-val certificationReceiptFile = layout.buildDirectory.file("hardening/pitest-certification.tsv")
-val certificationReceiptRunning = layout.buildDirectory.file("hardening/pitest-certification.running")
+val certificationReceiptFile =
+    layout.projectDirectory.file(".pitest-history/pitest-certification.tsv")
+val certificationReceiptRunning =
+    layout.projectDirectory.file(".pitest-history/pitest-certification.running")
+val certificationReceiptLock =
+    layout.projectDirectory.file(".pitest-history/pitest-certification.lock")
+// One-release transition cleanup. A legacy build-output receipt must not remain
+// plausible beside the durable machine-local evidence, including when buildDirectory
+// is configured outside the checkout.
+val legacyCertificationReceiptFile =
+    layout.buildDirectory.file("hardening/pitest-certification.tsv")
+val legacyCertificationReceiptRunning =
+    layout.buildDirectory.file("hardening/pitest-certification.running")
 // Freeze the bytes which applied this convention now. The settings plugin normally
 // registered the shared identity first; this registration is the direct-feature-plugin
 // fallback. The path remains only so execution boundaries can detect replacement.
@@ -236,7 +248,8 @@ val hardeningLocalRepoArtifactPath: Provider<String> =
     hardeningPluginIdentityService.map { it.parameters.localRepoArtifactPath.get() }
 val hardeningExpectedLocalRepoArtifactSha256: Provider<String> =
     hardeningPluginIdentityService.map { it.parameters.applicationLocalRepoArtifactSha256.get() }
-val hardeningCertifyPreflight = tasks.register("hardeningCertifyPreflight") {
+val hardeningCertifyPreflight =
+    tasks.register<HardeningCertificationPreflightTask>("hardeningCertifyPreflight") {
   description = "Internal to hardeningCertify: refuses flags that make the run partial or state-changing."
   // `clean hardeningCertify` is the most useful cold certification. Without an
   // explicit edge Gradle may run this otherwise-independent preflight first and
@@ -244,56 +257,34 @@ val hardeningCertifyPreflight = tasks.register("hardeningCertifyPreflight") {
   mustRunAfter("clean")
   val certificationSession = hardeningCertificationSession
   usesService(certificationSession)
-  // Script-level declarations read from locals, never from the action: a lambda that
-  // touches one captures the precompiled script object, which the configuration cache
-  // cannot serialize.
-  val receiptFile = certificationReceiptFile
-  val receiptRunning = certificationReceiptRunning
-  val certifiedProjectPath = project.path
-  val certificationPluginSha256 = hardeningExpectedPluginSha256
-  val certificationPluginCode = hardeningImplementationCode
-  val localRepoArtifactPath = hardeningLocalRepoArtifactPath
-  val localRepoArtifactSha256 = hardeningExpectedLocalRepoArtifactSha256
-  val excludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
-  val forbidden = HardeningOptionNames.certificationForbiddenProperties
-      .associateWith { providers.gradleProperty(it) }
-  doLast {
-    // Invalidate any prior receipt before this invocation can consume or mutate PIT
-    // evidence. The sentinel deliberately survives every failure/interruption and is
-    // retired only after the new receipt commits atomically.
-    BaselineFiles.deleteIfExists(receiptFile.get().asFile)
-    receiptRunning.get().asFile.also {
-      it.parentFile.mkdirs()
-      it.writeText("starting\n")
-    }
-    val present = forbidden.filterValues { it.isPresent }.keys.sorted()
-    val excluded = excludedTaskNames
-    if (present.isNotEmpty() || excluded.isNotEmpty()) {
-      throw GradleException(
-          "hardeningCertify is observation-only and full-population; remove " +
-              buildList {
-                if (present.isNotEmpty()) add("incompatible flag(s): " + present.joinToString(", ") { "-P$it" })
-                if (excluded.isNotEmpty()) add("task exclusion(s): " + excluded.joinToString(", ") { "-x $it" })
-              }.joinToString("; "))
-    }
-    val expectedPluginSha256 = certificationPluginSha256.get()
-    try {
-      HardeningPluginIdentityGuard.requireUnchanged(
-          certificationPluginCode,
-          expectedPluginSha256,
-          localRepoArtifactPath.get(),
-          localRepoArtifactSha256.get(),
-          "hardeningCertify: project '$certifiedProjectPath' before preflight",
-      )
-    } catch (e: IllegalStateException) {
-      throw GradleException("${e.message}; refusing mixed plugin bytes before PIT", e)
-    }
-    val sessionId = try {
-      certificationSession.get().activate(certifiedProjectPath, expectedPluginSha256)
-    } catch (e: IllegalStateException) {
-      throw GradleException("hardeningCertify: ${e.message}", e)
-    }
-    receiptRunning.get().asFile.writeText("session\t$sessionId\n")
+  this.certificationSession.set(certificationSession)
+  certificationProjectDirectory.set(layout.projectDirectory)
+  receiptFile.set(certificationReceiptFile)
+  runningFile.set(certificationReceiptRunning)
+  lockFile.set(certificationReceiptLock)
+  legacyBuildDirectory.set(layout.buildDirectory)
+  legacyReceiptFile.set(legacyCertificationReceiptFile)
+  legacyRunningFile.set(legacyCertificationReceiptRunning)
+  certificationPluginCode.from(hardeningImplementationCode)
+  expectedPluginSha256.set(hardeningExpectedPluginSha256)
+  localRepoArtifactPath.set(hardeningLocalRepoArtifactPath)
+  expectedLocalRepoArtifactSha256.set(hardeningExpectedLocalRepoArtifactSha256)
+  hardeningProjectPath.set(project.path)
+  presentForbiddenProperties.set(HardeningOptionNames.certificationForbiddenProperties.filter {
+    providers.gradleProperty(it).isPresent
+  })
+  excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
+}
+
+// `hardeningCertify` depends on both this preflight and `qualityGate`; dependency
+// siblings are otherwise unordered, and even `test`'s compile/resource prerequisites
+// could fail before the old durable receipt was invalidated. An ordering rule adds no
+// preflight to ordinary task graphs, but when certification selected it, every task in
+// this project (except the intentionally earlier clean) starts only after ownership and
+// invalidation are established.
+tasks.configureEach {
+  if (name != "clean" && name != "hardeningCertifyPreflight") {
+    mustRunAfter(hardeningCertifyPreflight)
   }
 }
 
@@ -311,7 +302,7 @@ val hardeningCertifyTimeoutAuditPreflight =
 val certificationSuiteNames = mutableListOf<String>()
 val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCertify") {
   group = "verification"
-  description = "Fresh, full, strict mutation certification; writes build/hardening/pitest-certification.tsv."
+  description = "Fresh, full, strict mutation certification; writes .pitest-history/pitest-certification.tsv."
   dependsOn(qualityGate)
   dependsOn(hardeningCertifyPreflight)
   dependsOn(hardeningCertifyTimeoutAuditPreflight)
@@ -333,14 +324,22 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   val pitVersion = hardening.pitestVersion
   val certifiedSuiteNames = certificationSuiteNames
   doFirst {
-    if (!certificationSession.get().isActive(certifiedProjectPath) || !receiptRunning.get().asFile.isFile) {
-      BaselineFiles.deleteIfExists(receiptFile.get().asFile)
-      receiptRunning.get().asFile.also {
-        it.parentFile.mkdirs()
-        if (!it.isFile) it.writeText("invalid\n")
+    val session = certificationSession.get()
+    val sessionId = session.sessionId(certifiedProjectPath)
+    val runningFile = receiptRunning.asFile
+    val expectedSentinel = sessionId?.let { "session\t$it\n" }
+    if (!session.isActive(certifiedProjectPath) ||
+        !session.ownsCertification(certifiedProjectPath) ||
+        expectedSentinel == null || !runningFile.isFile ||
+        runningFile.readText() != expectedSentinel) {
+      if (session.ownsCertification(certifiedProjectPath)) {
+        BaselineFiles.requireRegularFileOrMissing(
+            certifiedProjectDirectory, receiptFile.asFile)
+        BaselineFiles.deleteIfExists(receiptFile.asFile)
       }
       throw GradleException(
-          "hardeningCertify: certification preflight did not run; refusing to reuse an earlier receipt")
+          "hardeningCertify: certification preflight does not own the exact durable " +
+              "session sentinel; refusing to reuse or replace certification evidence")
     }
   }
   doLast {
@@ -513,10 +512,27 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
               "recordMutationToolchainSha256")
       receiptRows.forEach(::appendLine)
     }
-    BaselineFiles.writeAtomically(receiptFile.get().asFile, receipt)
-    BaselineFiles.deleteIfExists(receiptRunning.get().asFile)
+    val runningFile = receiptRunning.asFile
+    val expectedSentinel = "session\t$sessionId\n"
+    if (!certificationSession.get().ownsCertification(certifiedProjectPath) ||
+        !runningFile.isFile || runningFile.readText() != expectedSentinel) {
+      BaselineFiles.requireRegularFileOrMissing(
+          certifiedProjectDirectory, receiptFile.asFile)
+      BaselineFiles.deleteIfExists(receiptFile.asFile)
+      throw GradleException(
+          "hardeningCertify: certification ownership sentinel changed before receipt publication")
+    }
+    BaselineFiles.writeAtomically(
+        certifiedProjectDirectory, receiptFile.asFile, receipt)
+    BaselineFiles.requireRegularFileOrMissing(certifiedProjectDirectory, runningFile)
+    if (!runningFile.isFile || runningFile.readText() != expectedSentinel) {
+      BaselineFiles.deleteIfExists(receiptFile.asFile)
+      throw GradleException(
+          "hardeningCertify: certification ownership sentinel changed during receipt publication")
+    }
+    BaselineFiles.deleteIfExists(runningFile)
     logger.lifecycle(
-        "hardeningCertify: ${certifiedSuiteNames.size} suite(s) certified; receipt: ${receiptFile.get().asFile}")
+        "hardeningCertify: ${certifiedSuiteNames.size} suite(s) certified; receipt: ${receiptFile.asFile}")
   }
 }
 
@@ -2584,7 +2600,7 @@ hardening.mutation.all {
               "wrongness, so the ratchet cannot see a weakened covering assertion behind one. " +
               "Adopt the audit with ${pitestTaskName}TimeoutAuditInit (seeds " +
               "config/pitest/${timeoutsFile.name} from this run), or paste the row(s) below — " +
-              "load-dependent timeouts may not reproduce for a later seeding run:\n" +
+              "timeout observations may not reproduce for a later seeding run:\n" +
               pasteReadyMemberRows("  ") + "\n" +
               "then replace cause:untriaged and write each member's structural argument in " +
               "config/pitest/README.md; the seeded state is intentionally uncertifiable." +
@@ -2882,8 +2898,9 @@ hardening.mutation.all {
       val byStatus = rows.groupingBy { it.rawStatus }.eachCount()
       val total = rows.size
       // TIMED_OUT counts as detected, the same as PIT's own summary — a mutant that
-      // hangs the suite was caught. Reported separately because that detection is
-      // load-dependent: the same row can read SURVIVED when the suite runs alone.
+      // hangs the suite was caught. Reported separately because watchdog detection
+      // establishes neither the mutant's cause nor stable physical identity under a
+      // line-less key; it can also change with execution conditions.
       val timedOut = byStatus["TIMED_OUT"] ?: 0
       val detected = rows.count { it.detected }
       // Rounded down deliberately: a coverage figure should never read better than it
@@ -2894,7 +2911,15 @@ hardening.mutation.all {
         MutantStatus.entries.filter { it.gated }.forEach { s ->
           byStatus[s.name]?.let { add("$it ${s.name.lowercase()}") }
         }
-        if (timedOut > 0) add("$timedOut timed out (load-dependent)")
+        if (timedOut > 0) {
+          add(
+              if (scoped) {
+                "$timedOut timed out (scoped selected population; not comparable to the suite audit)"
+              } else {
+                "$timedOut timed out (watchdog detection; not a cause diagnosis)"
+              }
+          )
+        }
         // Valid terminal outcomes the plugin deliberately does not score as
         // detected (NON_VIABLE and EQUIVALENT) stay visible in the summary.
         // Error, unfinished and unknown statuses were rejected by parseReport:
@@ -3166,11 +3191,9 @@ hardening.mutation.all {
       }
 
       // Timed-out drift vs the previous run. TIMED_OUT counts as detected, but the
-      // benign flavour (KILLED<->TIMED_OUT under load) and the dangerous ones
-      // (SURVIVED->TIMED_OUT: a mutant nobody killed now reads as detected purely
-      // because its tests ran slowly; NO_COVERAGE->TIMED_OUT: a mutant no test had
-      // even reached reads as detected because a newly covering test hangs) look
-      // identical in a single report. Comparing against the last run's statuses
+      // baseline-benign KILLED<->TIMED_OUT arithmetic and dangerous transitions from
+      // SURVIVED/NO_COVERAGE look identical in one report. A line-less key also cannot
+      // prove physical mutant identity or cause. Comparing prior status counts
       // names each newcomer's origin — so the stash must carry every status, not
       // just SURVIVED: an origin the stash omits is an origin the comparison
       // silently misreads (NO_COVERAGE omitted -> dangerous read as benign; KILLED
@@ -3274,8 +3297,10 @@ hardening.mutation.all {
             )
             logger.warn(
                 "pitest '$suiteName': ${fromSurvived.size} coordinate(s) flipped SURVIVED -> TIMED_OUT — " +
-                    "a mutant nobody killed now reads as detected, likely load-slowed tests rather than " +
-                    "new kills; do not refresh them out:\n" +
+                    "a line-less key gained TIMED_OUT while its SURVIVED count fell; physical mutant " +
+                    "identity is unresolved. This can be " +
+                    "resource behavior, a finite harness race, liveness, or a same-key sibling; " +
+                    "reconcile the line-full candidates and do not refresh them out:\n" +
                     details.joinToString("\n")
             )
             advisoryLog.get().record(advisoryScope, "${fromSurvived.size} SURVIVED -> TIMED_OUT flip(s)")
@@ -3287,8 +3312,9 @@ hardening.mutation.all {
             )
             logger.warn(
                 "pitest '$suiteName': ${fromNoCoverage.size} coordinate(s) flipped NO_COVERAGE -> TIMED_OUT — " +
-                    "a mutant no test had reached now reads as detected because a newly covering test " +
-                    "hangs on it; kill it with a fast test or audit the timeout, do not refresh it out:\n" +
+                    "a line-less key gained TIMED_OUT while its NO_COVERAGE count fell. The stash " +
+                    "cannot prove physical mutant identity or cause; reconcile the line-full candidates, " +
+                    "add a fast oracle or audit the timeout, and do not refresh it out:\n" +
                     details.joinToString("\n")
             )
             advisoryLog.get().record(advisoryScope, "${fromNoCoverage.size} NO_COVERAGE -> TIMED_OUT flip(s)")
@@ -3296,7 +3322,7 @@ hardening.mutation.all {
           if (drift.newlyTimedOut > 0 || drift.firstObserved > 0 || drift.resolved > 0) {
             // Membership is deliberately line-less, so an already-audited key can
             // gain another timed-out sibling without entering the unaudited list.
-            // Keep the benign KILLED -> TIMED_OUT classification, but name every
+            // Keep the baseline-benign KILLED -> TIMED_OUT arithmetic, but name every
             // changed coordinate, its multiplicity, and the current line-full
             // TIMED_OUT candidates in the default output. The stash cannot know
             // which prior line held a status, so when a key already had a timeout
@@ -3320,7 +3346,7 @@ hardening.mutation.all {
                 "pitest '$suiteName': timed-out drift vs previous run — " +
                     "${drift.newlyTimedOut} newly timed out (previously detected), " +
                     "${drift.firstObserved} first observed (no prior detected read), " +
-                    "${drift.resolved} no longer; load-dependent\n" + details.joinToString("\n")
+                    "${drift.resolved} no longer; cause unresolved\n" + details.joinToString("\n")
             )
           }
         }
@@ -3334,7 +3360,7 @@ hardening.mutation.all {
 
       // The audited set. For a timed-out mutant the watchdog observed slowness, not
       // wrongness — the ratchet cannot see a weakened covering assertion behind it,
-      // so "N timed out (load-dependent)" in the summary must be an audited
+      // so the summary's watchdog-detected count must be an audited
       // membership rather than a count. 'config/pitest/<suite>-timeouts.csv' holds
       // one 'class,method,mutator' per row — line-less so drift cannot churn
       // membership — and the comment carries a machine-readable cause category
@@ -3366,14 +3392,15 @@ hardening.mutation.all {
         // Also refused with nothing timed out: an empty file would activate the audit
         // while telling its adopter to write causes for zero members, and the task is
         // only ever pointed at by a summary that reported timeouts — a run where they
-        // vanished is the load-dependence the line-less key exists to absorb, not a
+        // vanished is the observation variability the line-less key exists to absorb, not a
         // population to certify. Arming a never-timed-out suite is a different intent
         // with a different mechanism (a hand-committed comments-only file), so the
         // refusal names it instead of reading as "empty sets are forbidden".
         if (timedOutByAuditKey.isEmpty()) {
           throw GradleException(
               "pitest '$suiteName': no timed-out mutants in this run's report — nothing to seed. " +
-                  "Timeouts are load-dependent; re-run $pitestTaskName under the conditions whose " +
+                  "Timeout observations can change with execution conditions; re-run " +
+                  "$pitestTaskName under the conditions whose " +
                   "summary reported them (see HARDENING.md, the audited-timeout bullet). To merely arm " +
                   "the audit for a suite that has never timed out, commit ${timeoutsFile.name} with " +
                   "only '#' comment lines — the suite's first timeout then warns as the reviewer-stop " +
@@ -3425,6 +3452,9 @@ hardening.mutation.all {
         val timeoutFindings = TimeoutAudit.reportFindings(rows, membership) {
           readmeFile.takeIf { it.isFile }?.readText() ?: ""
         }
+        TimeoutAudit.memberPopulationDetail(
+            suiteName, timeoutFindings.multiMutantMembers)
+            ?.let { logger.lifecycle(it) }
         val unaudited = timeoutFindings.unaudited
         if (unaudited.isNotEmpty()) {
           // rows print paste-ready: the membership key verbatim, the line riding in a
@@ -3434,6 +3464,35 @@ hardening.mutation.all {
               suiteName, timeoutsFile.name, unaudited, historyDecisionCaveat))
           if (!strictTimeoutAudit) {
             advisoryLog.get().record(advisoryScope, "${unaudited.size} unaudited timeout(s)")
+          }
+          val unauditedCoordinates = unaudited.mapTo(linkedSetOf()) { it.coordinate }
+          val acceptedAtUnauditedKeys = acceptedRows
+              .filter { row ->
+                val status = row.key.substringAfterLast(',')
+                (status == "SURVIVED" || status == "NO_COVERAGE") &&
+                    row.key.substringBeforeLast(',') in unauditedCoordinates
+              }
+          if (acceptedAtUnauditedKeys.isNotEmpty()) {
+            val overlappingKeys = acceptedAtUnauditedKeys
+                .mapTo(sortedSetOf()) { it.key.substringBeforeLast(',') }
+            logger.warn(
+                "pitest '$suiteName': ${overlappingKeys.size} unaudited timeout key(s) also have " +
+                    "accepted SURVIVED/NO_COVERAGE row(s). The line-less key cannot prove whether " +
+                    "the timeout is the accepted mutant or a sibling, so neither benign load nor " +
+                    "the continued validity of the acceptance argument follows. Reconcile the " +
+                    "accepted line tags with every current TIMED_OUT candidate and investigate " +
+                    "resource behavior, a finite harness race, or liveness before changing either record:\n" +
+                    overlappingKeys.joinToString("\n") { coordinate ->
+                      "  $coordinate\n" +
+                          acceptedAtUnauditedKeys
+                              .filter { it.key.substringBeforeLast(',') == coordinate }
+                              .joinToString("\n") { "    accepted: ${BaselineNotes.render(it)}" } +
+                          "\n" + unaudited
+                              .filter { it.coordinate == coordinate }
+                              .sortedWith(compareBy<Mutant>({ it.line ?: Int.MAX_VALUE }, { it.lineFullKey }))
+                              .joinToString("\n") { "    timeout candidate: ${it.lineFullKey}" }
+                    }
+            )
           }
         }
         val staleMembers = timeoutFindings.staleMembers
@@ -3641,7 +3700,7 @@ hardening.mutation.all {
         // it was discoverable only by reading HARDENING.md. Advisory nudge normally;
         // under the strict flag an unadopted timeout-carrying suite is an unaudited
         // newcomer by definition.
-        // The rows print paste-ready alongside the named task: a timeout is load-dependent, so
+        // The rows print paste-ready alongside the named task: a timeout may not reproduce, so
         // by the time anyone acts on this nudge the next run may hold a clean report —
         // TimeoutAuditInit then rightly refuses to seed from it, and without the rows
         // here the coordinate that timed out is recoverable only from the daemon log.
@@ -3805,7 +3864,9 @@ hardening.mutation.all {
             BaselineEngine.Disposition.MATCHED -> kept.add(row)
             BaselineEngine.Disposition.TIMEOUT -> {
               kept.add(row)
-              keptUnmatched.add(row to "TIMED_OUT this run (load-dependent)")
+              keptUnmatched.add(
+                  row to "preserved by this run's TIMED_OUT budget (not an observed kill; " +
+                      "same-mutant versus sibling identity remains ambiguous)")
             }
             BaselineEngine.Disposition.FLIP -> {
               kept.add(row)
@@ -4172,8 +4233,8 @@ hardening.mutation.all {
         // stable removal from an uninsured load/mode flip. Rows a live flip counterpart
         // explains are neither candidates nor claimed kept: the fresh side's "newly
         // covered" pairing already names them as triage.
-        //   timeout — the load-dependent detection the TIMED_OUT doctrine warns
-        //             about; counting it as a stable removal contradicted the
+        //   timeout — watchdog detection, whose cause and physical same-key sibling
+        //             remain to be reconciled; counting it as a stable removal contradicted the
         //             SURVIVED -> TIMED_OUT warning printed above (casebook: the
         //             limbsLength flapper told to prune itself)
         //   insured — the flap its insurance note records: the mutant reads
@@ -4218,8 +4279,9 @@ hardening.mutation.all {
         if (staleTimedOut.isNotEmpty()) {
           logger.lifecycle(
               "pitest baseline '$suiteName': ${staleTimedOut.size} baseline row(s) read TIMED_OUT this run — " +
-                  "load-dependent detection, not a kill; no refresh needed " +
-                  "(prune and update keep them):\n" +
+                  "preserved by this run's timeout budget, not killed; prune and update keep them. " +
+                  "That preservation does not prove benign load or that the acceptance argument " +
+                  "still holds, because the line-less key may identify this mutant or a sibling:\n" +
                   staleTimedOut.joinToString("\n") {
                     "  ${BaselineNotes.render(acceptedRows[it])}"
                   })
@@ -4358,6 +4420,7 @@ hardening.mutation.all {
   val debtTask = tasks.register<PitestDebtTask>("${pitestTaskName}Debt") {
     group = "verification"
     description = "Prints the '$suiteName' unkilled-mutant debt grouped by class, largest first, with the baseline delta."
+    strictTimeoutAudit.set(strictTimeoutAuditRequested)
     val csvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
     val scopedCsvProvider =
         layout.buildDirectory.file("reports/pitest-scoped/$suiteName/mutations.csv")
@@ -4387,21 +4450,50 @@ hardening.mutation.all {
       // This committed-files-only audit is independent of mutation provenance.
       // Run it first so a torn or malformed sidecar cannot hide a malformed,
       // unclassified, or undocumented timeout member behind its own refusal.
-      if (debtTimeoutsFile.isFile) {
-        val membership = TimeoutAudit.parse(debtTimeoutsFile.readLines())
-        TimeoutAudit.malformedWarning(suiteName, debtTimeoutsFile.name, membership.malformed)
+      val debtTimeoutMembership = debtTimeoutsFile.takeIf { it.isFile }
+          ?.let { TimeoutAudit.parse(it.readLines()) }
+      val debtTimeoutMalformed = debtTimeoutMembership?.malformed.orEmpty()
+      val debtTimeoutCauseFindings = debtTimeoutMembership
+          ?.let { TimeoutAudit.causeFindings(it, it.members) }
+          .orEmpty()
+      val debtTimeoutUndocumented = debtTimeoutMembership
+          ?.let { membership ->
+            TimeoutAudit.undocumentedCauses(membership.members) {
+              readmeFile.takeIf { it.isFile }?.readText() ?: ""
+            }
+          }
+          .orEmpty()
+      debtTimeoutMembership?.let { membership ->
+        TimeoutAudit.malformedWarning(suiteName, debtTimeoutsFile.name, debtTimeoutMalformed)
             ?.let { logger.warn(it) }
-        val causeFindings = TimeoutAudit.causeFindings(membership, membership.members)
-        if (causeFindings.isNotEmpty()) {
+        if (debtTimeoutCauseFindings.isNotEmpty()) {
           logger.warn(TimeoutAudit.causeFindingWarning(
-              suiteName, debtTimeoutsFile.name, causeFindings))
+              suiteName, debtTimeoutsFile.name, debtTimeoutCauseFindings))
         }
-        val undocumented = TimeoutAudit.undocumentedCauses(membership.members) {
-          readmeFile.takeIf { it.isFile }?.readText() ?: ""
+        if (debtTimeoutUndocumented.isNotEmpty()) {
+          logger.warn(TimeoutAudit.undocumentedCauseWarning(
+              suiteName, debtTimeoutUndocumented))
         }
-        if (undocumented.isNotEmpty()) {
-          logger.warn(TimeoutAudit.undocumentedCauseWarning(suiteName, undocumented))
-        }
+      }
+      val strictDebtRequested = (this as PitestDebtTask).strictTimeoutAudit.get()
+      val strictDebtFailure = if (strictDebtRequested &&
+          (debtTimeoutMalformed.isNotEmpty() || debtTimeoutCauseFindings.isNotEmpty() ||
+              debtTimeoutUndocumented.isNotEmpty())) {
+        "pitest '$suiteName' debt: -PstrictTimeoutAudit found " +
+            "${debtTimeoutMalformed.size} malformed membership row(s), " +
+            "${debtTimeoutCauseFindings.size} inadmissible or unfinished cause " +
+            "classification(s), and ${debtTimeoutUndocumented.size} member(s) without a " +
+            "README cause. Debt has checked committed files only; report-dependent strict " +
+            "checks require a full $pitestTaskName -PstrictTimeoutAudit run. This Debt " +
+            "invocation did not run PIT."
+      } else {
+        null
+      }
+      if (strictDebtRequested && strictDebtFailure == null) {
+        logger.lifecycle(
+            "pitest '$suiteName' debt: -PstrictTimeoutAudit committed-file preview is clean. " +
+                "Report-dependent strict checks require a full $pitestTaskName " +
+                "-PstrictTimeoutAudit run; this Debt invocation did not run PIT.")
       }
       // Committed-files-only, like the timeout audit immediately above — which makes
       // Debt the quick place a plugin release that bumps PIT surfaces per consumer repo,
@@ -4546,13 +4638,11 @@ hardening.mutation.all {
       // the read-only triage surface after a failed PIT run: name every offending
       // mutant, then fall back to the committed baseline instead of disabling the
       // next diagnostic the failure calls for.
-      val reportPairs = if (csv.isFile &&
+      val reportRows = if (csv.isFile &&
           !csv.parentFile.resolve(".scoped").isFile &&
           !csv.parentFile.resolve(".running").isFile) {
         try {
           Mutant.parseReport(csv.readLines())
-              .filter { it.gated }
-              .map { it.className to it.rawStatus }
         } catch (e: IllegalArgumentException) {
           invalidReport = true
           logger.warn(
@@ -4563,6 +4653,9 @@ hardening.mutation.all {
       } else {
         null
       }
+      val reportPairs = reportRows
+          ?.filter { it.gated }
+          ?.map { it.className to it.rawStatus }
       val source = when {
         reportPairs != null && historyAssistedDebt && newerScopedDiagnostic ->
           "latest full [history] report (read-only preview; newer scoped diagnostic excluded)"
@@ -4577,6 +4670,14 @@ hardening.mutation.all {
         newerScopedDiagnostic -> "baseline (no full report present; scoped diagnostic excluded)"
         else -> "baseline (no full report present)"
       }
+      if (reportRows != null && debtTimeoutMembership != null) {
+        TimeoutAudit.memberPopulationDetail(
+            suiteName,
+            TimeoutAudit.memberPopulations(reportRows, debtTimeoutMembership.members),
+            "$source. This is an unverified read-only prior-report preview; run " +
+                "$pitestTaskName -PnoMutationHistory before any timeout-cause decision",
+        )?.let { logger.lifecycle(it) }
+      }
       val debt = tally(reportPairs ?: baselinePairs)
       val baselineDebt = tally(baselinePairs)
       if (reportPairs != null && historyAssistedDebt) {
@@ -4587,6 +4688,7 @@ hardening.mutation.all {
       }
       if (debt.isEmpty()) {
         logger.lifecycle("pitest '$suiteName' debt: none — nothing unkilled in the $source")
+        strictDebtFailure?.let { throw GradleException(it) }
         return@doLast
       }
       val lines = debt.entries
@@ -4637,6 +4739,7 @@ hardening.mutation.all {
       if (undocumentedLabels.isNotEmpty()) {
         logger.warn(BaselineNotes.undocumentedLabelWarning(suiteName, undocumentedLabels))
       }
+      strictDebtFailure?.let { throw GradleException(it) }
     }
   }
 
@@ -5337,7 +5440,7 @@ tasks.register("hardeningInit") {
           |tasks printed by `hardeningHelp` for structural changes, and never hand-sort
           |or deduplicate. Human review must replace seeded `# untriaged` notes with a
           |short accepted-family label. When timeout verification prints paste-ready
-          |membership rows for a load-dependent mutant that cannot be reseeded, adding
+          |membership rows for a timeout observation that cannot be reseeded, adding
           |those exact rows to `<suite>-timeouts.csv` is also an intentional manual edit.
           |An ArcMutate `[history]` report is check-only: run
           |`pitest<Suite> -PnoMutationHistory` before either kind of manual record decision.
@@ -5372,7 +5475,7 @@ tasks.register("hardeningInit") {
           initRootProjectDirectory,
           gitignore,
           existingGitignore + (if (existingGitignore.isNotEmpty() && !existingGitignore.endsWith("\n")) "\n" else "") +
-              "\n# machine-local hardening state (PIT history and local fuzz campaign evidence)\n$ignoreLine\n")
+              "\n# machine-local hardening state (PIT history and release evidence)\n$ignoreLine\n")
       logger.lifecycle("hardeningInit: appended $ignoreLine to $gitignore")
     }
     logger.lifecycle(

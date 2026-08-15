@@ -465,7 +465,7 @@ class HardeningOperationsFunctionalTest {
       "# FakePit timeout\n\n`FakePit.main`: the removed exit cannot make progress.\n",
     )
     val runs = File(fixtureDir, "build/fake-pit/runs.txt")
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
 
     val certify = runner("clean", "hardeningCertify").buildAndFail().output
     assertTrue(certify.contains("committed timeout audit is not ready"), certify)
@@ -479,7 +479,7 @@ class HardeningOperationsFunctionalTest {
     )
     assertFalse(receipt.exists(), "failed static preflight retained a certification receipt")
     assertTrue(
-      File(fixtureDir, "build/hardening/pitest-certification.running").isFile,
+      File(fixtureDir, ".pitest-history/pitest-certification.running").isFile,
       "failed static preflight did not leave the invalidation sentinel",
     )
 

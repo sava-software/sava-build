@@ -225,6 +225,57 @@ class TimeoutAuditTest {
   }
 
   @Test
+  fun `member population detail preserves line status and same-line multiplicity`() {
+    val member = "com.example.Codec,wait,MathMutator"
+    val rows = Mutant.parseReport(listOf(
+      "Codec.java,com.example.Codec,x.MathMutator,wait,12,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,12,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,20,KILLED,CodecTest",
+      "Codec.java,com.example.Codec,x.IncrementsMutator,other,30,TIMED_OUT,none",
+    ))
+
+    val populations = TimeoutAudit.memberPopulations(
+      rows,
+      setOf(member, "com.example.Codec,other,IncrementsMutator"),
+    )
+
+    assertEquals(
+      listOf(
+        TimeoutAudit.MemberPopulation(
+          member,
+          3,
+          listOf(
+            TimeoutAudit.PopulationObservation(12, "TIMED_OUT", 2),
+            TimeoutAudit.PopulationObservation(20, "KILLED", 1),
+          ),
+        ),
+      ),
+      populations,
+    )
+    val detail = TimeoutAudit.memberPopulationDetail("encoding", populations)!!
+    assertTrue(detail.contains("$member — 3 mutants"), detail)
+    assertTrue(detail.contains("line 12 TIMED_OUT x2"), detail)
+    assertTrue(detail.contains("line 20 KILLED x1"), detail)
+    assertTrue(detail.contains("non-timeout siblings are context, not proof"), detail)
+  }
+
+  @Test
+  fun `member population detail omits single mutants and multi-mutant keys without a timeout`() {
+    val rows = Mutant.parseReport(listOf(
+      "Codec.java,com.example.Codec,x.MathMutator,one,10,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,done,20,KILLED,CodecTest",
+      "Codec.java,com.example.Codec,x.MathMutator,done,30,SURVIVED,none",
+    ))
+    val members = setOf(
+      "com.example.Codec,one,MathMutator",
+      "com.example.Codec,done,MathMutator",
+    )
+
+    assertTrue(TimeoutAudit.memberPopulations(rows, members).isEmpty())
+    assertNull(TimeoutAudit.memberPopulationDetail("encoding", emptyList()))
+  }
+
+  @Test
   fun `malformedWarning names the file and the offending rows, or is null`() {
     assertNull(TimeoutAudit.malformedWarning("encoding", "encoding-timeouts.csv", emptyList()))
 

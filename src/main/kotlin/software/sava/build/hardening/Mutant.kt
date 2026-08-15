@@ -3,8 +3,9 @@ package software.sava.build.hardening
 /**
  * PIT's status vocabulary with the three independent semantics the ratchet
  * reasons about, encoded ONCE. "Detected" is deliberately NARROWER than PIT's own
- * scoring: only KILLED and TIMED_OUT (a timed-out mutant was caught,
- * load-dependently), where PIT also scores NON_VIABLE and EQUIVALENT as detected.
+ * scoring: only KILLED and TIMED_OUT (the watchdog detected non-completion, without
+ * establishing cause or stable identity under a line-less key), where PIT also scores
+ * NON_VIABLE and EQUIVALENT as detected.
  * This plugin reports those terminal outcomes without scoring them, so its percent
  * can sit below PIT's summary. PIT also scores error statuses, but this plugin
  * refuses them as incomplete evidence instead of calculating a percentage from a

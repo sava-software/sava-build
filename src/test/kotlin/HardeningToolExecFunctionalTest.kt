@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.PitestEvidence
 import java.io.File
+import java.nio.channels.FileChannel
+import java.nio.file.Files
+import java.nio.file.StandardOpenOption
 
 /**
  * Functional test for the execution-time plumbing around the tool JavaExec
@@ -209,6 +212,10 @@ $buildTail
             if (mode.equals("mutate-input")) {
               Files.writeString(Path.of("src/main/java/com/example/FakePit.java"),
                   "\n// changed while PIT was running\n", StandardOpenOption.APPEND);
+            }
+            if (mode.equals("tamper-certification-sentinel")) {
+              Files.writeString(
+                  Path.of(".pitest-history/pitest-certification.running"), "tampered\n");
             }
             if (mode.equals("fail") || mode.equals("slow-fail")) {
               System.err.print("partial tail before crash");
@@ -991,7 +998,7 @@ $buildTail
         certified.output,
     )
     assertTrue(
-      File(fixtureDir, "consumer/build/hardening/pitest-certification.tsv").isFile,
+      File(fixtureDir, "consumer/.pitest-history/pitest-certification.tsv").isFile,
       "certification did not publish a receipt:\n${certified.output}",
     )
   }
@@ -1177,7 +1184,7 @@ $buildTail
     val certified = runner("clean", "hardeningCertify").build()
     val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
     val evidence = reportDir.resolve(".evidence.tsv")
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
     assertTrue(evidence.isFile, "completed PIT evidence missing:\n${certified.output}")
     assertTrue(receipt.isFile, "certification receipt missing:\n${certified.output}")
     val receiptText = receipt.readText()
@@ -1253,6 +1260,154 @@ $buildTail
   }
 
   @Test
+  fun `durable certification survives clean and retires the configured legacy location`() {
+    writeFixture(
+      buildTail =
+        "layout.buildDirectory.set(layout.projectDirectory.dir(\"external-build\"))",
+    )
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val legacyReceipt = File(fixtureDir, "external-build/hardening/pitest-certification.tsv").apply {
+      parentFile.mkdirs()
+      writeText("legacy receipt\n")
+    }
+    val legacyRunning = File(fixtureDir, "external-build/hardening/pitest-certification.running").apply {
+      writeText("legacy interruption\n")
+    }
+
+    runner("hardeningCertify").build()
+
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
+    val certifiedBytes = receipt.readBytes()
+    assertFalse(legacyReceipt.exists(), "legacy build-output receipt survived certification")
+    assertFalse(legacyRunning.exists(), "legacy build-output sentinel survived certification")
+    assertFalse(
+      File(fixtureDir, ".pitest-history/pitest-certification.running").exists(),
+      "successful certification retained its durable sentinel",
+    )
+
+    runner("clean").build()
+
+    assertTrue(receipt.isFile, "clean erased durable certification evidence")
+    assertEquals(certifiedBytes.toList(), receipt.readBytes().toList())
+  }
+
+  @Test
+  fun `ordinary quality gate failure cannot precede certification invalidation`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    runner("hardeningCertify").build()
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
+    assertTrue(receipt.isFile)
+
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+      tasks.named("test") {
+        doLast { throw GradleException("deliberate ordinary test failure") }
+      }
+      """.trimIndent() + "\n",
+    )
+    val failed = runnerWithoutConfigurationCache("hardeningCertify").buildAndFail().output
+
+    assertTrue(failed.contains("deliberate ordinary test failure"), failed)
+    assertFalse(receipt.exists(), "test failed before invalidating the prior certification")
+    assertTrue(
+      File(fixtureDir, ".pitest-history/pitest-certification.running").isFile,
+      "failed certification did not retain its durable invalidation sentinel",
+    )
+  }
+
+  @Test
+  fun `certification refuses an unignored durable state path before PIT`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    initializeGitFixture()
+    File(fixtureDir, ".gitignore").writeText(".gradle/\nbuild/\n")
+    git("add", ".gitignore")
+    git(
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "user.name=Hardening Fixture",
+      "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "remove machine-local ignore",
+    )
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+
+    assertTrue(failed.contains("durable certification state must be machine-local"), failed)
+    assertTrue(failed.contains("is not Git-ignored"), failed)
+    assertFalse(
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").exists(),
+      "PIT ran before ignore refusal",
+    )
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists())
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.running").exists())
+  }
+
+  @Test
+  fun `certification refuses a linked durable state directory before PIT`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val target = File(fixtureDir, "linked-history-target").apply { mkdirs() }
+    Files.createSymbolicLink(
+      File(fixtureDir, ".pitest-history").toPath(),
+      target.toPath(),
+    )
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+
+    assertTrue(failed.contains("symbolic-link component"), failed)
+    assertFalse(
+      File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").exists(),
+      "PIT ran before linked-state refusal",
+    )
+  }
+
+  @Test
+  fun `a non-owner certification cannot replace durable evidence`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val history = File(fixtureDir, ".pitest-history").apply { mkdirs() }
+    val receipt = history.resolve("pitest-certification.tsv").apply {
+      writeText("receipt published by the owning process\n")
+    }
+    val ownerBytes = receipt.readBytes()
+    val lockFile = history.resolve("pitest-certification.lock")
+
+    FileChannel.open(
+      lockFile.toPath(),
+      StandardOpenOption.CREATE,
+      StandardOpenOption.WRITE,
+    ).use { channel ->
+      channel.lock().use {
+        val failed = runner("hardeningCertify").buildAndFail().output
+        assertTrue(failed.contains("another hardeningCertify invocation owns"), failed)
+      }
+    }
+
+    assertEquals(ownerBytes.toList(), receipt.readBytes().toList())
+    assertFalse(history.resolve("pitest-certification.running").exists())
+  }
+
+  @Test
+  fun `certification refuses a changed durable ownership sentinel`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "fake-pit-mode.txt").writeText("tamper-certification-sentinel\n")
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+
+    assertTrue(failed.contains("does not own the exact durable session sentinel"), failed)
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists())
+    assertTrue(File(fixtureDir, ".pitest-history/pitest-certification.running").isFile)
+  }
+
+  @Test
   fun `certification binds a clean Git commit and remains visibly stale after HEAD advances`() {
     writeFixture()
     writeSeedCorpus()
@@ -1260,7 +1415,7 @@ $buildTail
     val (certifiedCommit, certifiedTree) = initializeGitFixture()
 
     val certified = runner("clean", "hardeningCertify").build()
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
     val receiptAtA = receipt.readText()
     val statusAtA = git("status", "--porcelain=v1", "--untracked-files=all")
     assertTrue(receiptAtA.contains("schema\t6\n"), receiptAtA)
@@ -1301,7 +1456,7 @@ $buildTail
     File(fixtureDir, "dirty-marker.txt").writeText("deliberately uncommitted\n")
 
     val certified = runner("clean", "hardeningCertify").build()
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv").readText()
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv").readText()
 
     assertTrue(receipt.contains("gitState\tdirty\n"), receipt)
     assertTrue(receipt.contains("gitCommit\t$commit\n"), receipt)
@@ -1337,7 +1492,7 @@ $buildTail
       failed,
     )
     assertFalse(
-      File(fixtureDir, "build/hardening/pitest-certification.tsv").isFile,
+      File(fixtureDir, ".pitest-history/pitest-certification.tsv").isFile,
       "a rejected ignored record left a certification receipt",
     )
   }
@@ -1381,7 +1536,7 @@ $buildTail
       refused,
     )
     assertFalse(
-      File(fixtureDir, "build/hardening/pitest-certification.tsv").isFile,
+      File(fixtureDir, ".pitest-history/pitest-certification.tsv").isFile,
       "ignored provenance left a clean certification receipt",
     )
 
@@ -1400,7 +1555,7 @@ $buildTail
       trackedRebase,
     )
     val certified = runner("clean", "hardeningCertify").build()
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv").readText()
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv").readText()
     assertTrue(certified.output.contains("suite(s) certified"), certified.output)
     assertTrue(receipt.contains("gitState\tclean\n"), receipt)
     assertTrue(receipt.contains("gitCommit\t$trackedCommit\n"), receipt)
@@ -1471,7 +1626,7 @@ $buildTail
       missing,
     )
     assertFalse(
-      File(fixtureDir, "build/hardening/pitest-certification.tsv").isFile,
+      File(fixtureDir, ".pitest-history/pitest-certification.tsv").isFile,
       "a hidden record change left a certification receipt",
     )
   }
@@ -1496,7 +1651,7 @@ $buildTail
     val (commit, tree) = initializeGitFixture()
 
     val certified = runner("clean", "hardeningCertify").build()
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv").readText()
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv").readText()
 
     assertTrue(receipt.contains("schema\t6\n"), receipt)
     assertTrue(receipt.contains("gitState\tclean\n"), receipt)
@@ -1577,7 +1732,7 @@ $buildTail
     )
 
     val failed = runner("hardeningCertify").buildAndFail().output
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
 
     assertTrue(failed.contains("inputs changed after verification"), failed)
     assertTrue(failed.contains("sourceSha256"), failed)
@@ -1606,7 +1761,7 @@ $buildTail
     File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
 
     val failed = runner("clean", "hardeningCertify").buildAndFail().output
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
 
     assertTrue(failed.contains("suites do not describe one project-wide tree"), failed)
     assertTrue(failed.contains("'encoding'") && failed.contains("'decoding'"), failed)
@@ -1642,7 +1797,7 @@ $buildTail
     )
 
     val failed = runner("hardeningCertify").buildAndFail().output
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
 
     assertTrue(
       failed.contains("committed mutation records changed after successful verification"),
@@ -1710,7 +1865,7 @@ $buildTail
     assertTrue(evidence.readText().contains("historyAssisted\ttrue"), evidence.readText())
 
     val throughAbbreviatedAlias = runner("releaseG").build()
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
     assertTrue(receipt.isFile, "alias did not produce a certification receipt:\n${throughAbbreviatedAlias.output}")
     assertTrue(receipt.readText().contains("session\t"), receipt.readText())
     assertTrue(evidence.readText().contains("historyAssisted\tfalse"), evidence.readText())
@@ -1719,7 +1874,7 @@ $buildTail
     assertTrue(excluded.contains("task exclusion(s): -x pitestEncodingVerify"), excluded)
     assertFalse(receipt.exists(), "a refused certification left its prior receipt looking current")
     assertTrue(
-      File(fixtureDir, "build/hardening/pitest-certification.running").isFile,
+      File(fixtureDir, ".pitest-history/pitest-certification.running").isFile,
       "a refused certification must retain its invalidation sentinel")
 
     File(fixtureDir, "fake-pit-mode.txt").writeText("timeout\n")
@@ -1741,7 +1896,7 @@ $buildTail
     File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
 
     runner("releaseGate").build()
-    val receipt = File(fixtureDir, "build/hardening/pitest-certification.tsv")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
     assertTrue(receipt.isFile)
 
     val skipped = runner("releaseGate", "-PskipPit").buildAndFail().output
@@ -1750,7 +1905,7 @@ $buildTail
           skipped.contains("no PIT execution plus successful verification recorded"),
       skipped)
     assertFalse(receipt.exists(), "failed certification retained a prior receipt")
-    assertTrue(File(fixtureDir, "build/hardening/pitest-certification.running").isFile)
+    assertTrue(File(fixtureDir, ".pitest-history/pitest-certification.running").isFile)
 
     val reused = runner("releaseGate", "-PskipPit").buildAndFail().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
@@ -1766,8 +1921,8 @@ $buildTail
 
     assertTrue(failed.contains("pitestConverge cannot run inside hardeningCertify"), failed)
     assertTrue(failed.contains("separate Gradle invocations"), failed)
-    assertFalse(File(fixtureDir, "build/hardening/pitest-certification.tsv").exists())
-    assertTrue(File(fixtureDir, "build/hardening/pitest-certification.running").isFile)
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists())
+    assertTrue(File(fixtureDir, ".pitest-history/pitest-certification.running").isFile)
   }
 
   @Test
@@ -1779,8 +1934,8 @@ $buildTail
     val failed = runner("hardeningCertify", "pitestEncodingConvergeRound2").buildAndFail().output
 
     assertTrue(failed.contains("pitestConverge cannot run inside hardeningCertify"), failed)
-    assertFalse(File(fixtureDir, "build/hardening/pitest-certification.tsv").exists())
-    assertTrue(File(fixtureDir, "build/hardening/pitest-certification.running").isFile)
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists())
+    assertTrue(File(fixtureDir, ".pitest-history/pitest-certification.running").isFile)
   }
 
   @Test
@@ -1818,8 +1973,8 @@ $buildTail
 
     assertFalse(aEvidence.historyAssisted, result.output)
     assertTrue(bEvidence.historyAssisted, result.output)
-    assertTrue(File(fixtureDir, "a/build/hardening/pitest-certification.tsv").isFile)
-    assertFalse(File(fixtureDir, "b/build/hardening/pitest-certification.tsv").exists())
+    assertTrue(File(fixtureDir, "a/.pitest-history/pitest-certification.tsv").isFile)
+    assertFalse(File(fixtureDir, "b/.pitest-history/pitest-certification.tsv").exists())
   }
 
   @Test
@@ -1874,7 +2029,7 @@ $buildTail
     assertFalse(reportDir.resolve(".evidence.tsv").exists(), "mixed plugin bytes committed evidence")
     assertTrue(reportDir.resolve(".running").isFile, "mixed plugin bytes exposed the report")
     assertFalse(
-      File(fixtureDir, "build/hardening/pitest-certification.tsv").exists(),
+      File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists(),
       "mixed plugin bytes committed a certification receipt",
     )
   }

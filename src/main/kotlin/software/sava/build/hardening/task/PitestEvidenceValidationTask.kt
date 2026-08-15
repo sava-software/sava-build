@@ -6,6 +6,7 @@ import org.gradle.api.Named
 import org.gradle.api.NamedDomainObjectContainer
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.services.ServiceReference
@@ -33,6 +34,130 @@ import java.io.File
 import javax.inject.Inject
 import java.time.Clock
 import java.time.LocalDate
+
+/** Owns and invalidates durable certification state before any expensive PIT task runs. */
+@UntrackedTask(because = "Certification must invalidate prior evidence on every invocation")
+abstract class HardeningCertificationPreflightTask : DefaultTask() {
+  @get:Internal abstract val certificationProjectDirectory: DirectoryProperty
+  @get:Internal abstract val receiptFile: RegularFileProperty
+  @get:Internal abstract val runningFile: RegularFileProperty
+  @get:Internal abstract val lockFile: RegularFileProperty
+  @get:Internal abstract val legacyBuildDirectory: DirectoryProperty
+  @get:Internal abstract val legacyReceiptFile: RegularFileProperty
+  @get:Internal abstract val legacyRunningFile: RegularFileProperty
+  @get:Classpath abstract val certificationPluginCode: ConfigurableFileCollection
+  @get:Input abstract val expectedPluginSha256: Property<String>
+  @get:Input abstract val localRepoArtifactPath: Property<String>
+  @get:Input abstract val expectedLocalRepoArtifactSha256: Property<String>
+  @get:Input abstract val hardeningProjectPath: Property<String>
+  @get:Input abstract val presentForbiddenProperties: ListProperty<String>
+  @get:Input abstract val excludedTaskNames: ListProperty<String>
+
+  @get:ServiceReference("hardeningCertificationSession")
+  abstract val certificationSession: Property<HardeningCertificationSession>
+
+  @get:Inject
+  protected abstract val execOperations: ExecOperations
+
+  @TaskAction
+  fun startCertification() {
+    val projectDirectory = certificationProjectDirectory.get().asFile
+    val receipt = receiptFile.get().asFile
+    val running = runningFile.get().asFile
+    val lock = lockFile.get().asFile
+    val historyDirectory = receipt.parentFile
+    val projectPath = hardeningProjectPath.get()
+
+    try {
+      BaselineFiles.requireDirectoryOrMissing(projectDirectory, historyDirectory)
+      listOf(receipt, running, lock).forEach {
+        BaselineFiles.requireRegularFileOrMissing(projectDirectory, it)
+      }
+      val stateFindings = CertificationGitIdentityCapture.machineLocalStateFindings(
+        projectDirectory,
+        listOf(receipt, running, lock),
+        execOperations,
+      )
+      if (stateFindings.isNotEmpty()) {
+        throw IllegalStateException(
+          "durable certification state must be machine-local before PIT runs:\n" +
+            stateFindings.joinToString("\n") { "  $it" } +
+            "\nRun hardeningInit or add .pitest-history/ to the worktree's Git ignore rules."
+        )
+      }
+      historyDirectory.mkdirs()
+      BaselineFiles.requireDirectoryOrMissing(projectDirectory, historyDirectory)
+      listOf(receipt, running, lock).forEach {
+        BaselineFiles.requireRegularFileOrMissing(projectDirectory, it)
+      }
+
+      val expectedPlugin = expectedPluginSha256.get()
+      val session = certificationSession.get()
+      val sessionId = session.activate(projectPath, expectedPlugin, lock)
+
+      // Ownership comes first. A competing process must not invalidate evidence or
+      // overwrite the sentinel belonging to the process that holds the lock.
+      BaselineFiles.deleteIfExists(receipt)
+      BaselineFiles.writeAtomically(projectDirectory, running, "session\t$sessionId\n")
+
+      // Remove the one-generation build-output location. buildDirectory is
+      // configurable and may intentionally be outside the checkout, so confine this
+      // cleanup to the exact configured root rather than projectDirectory.
+      val legacyRoot = legacyBuildDirectory.get().asFile
+      val legacyReceipt = legacyReceiptFile.get().asFile
+      val legacyRunning = legacyRunningFile.get().asFile
+      BaselineFiles.requireDirectoryOrMissing(legacyRoot)
+      listOf(legacyReceipt, legacyRunning).forEach {
+        BaselineFiles.requireRegularFileOrMissing(legacyRoot, it)
+      }
+      BaselineFiles.deleteIfExists(legacyReceipt)
+      BaselineFiles.deleteIfExists(legacyRunning)
+
+      val forbidden = presentForbiddenProperties.get().sorted()
+      val excluded = excludedTaskNames.get().sorted()
+      if (forbidden.isNotEmpty() || excluded.isNotEmpty()) {
+        throw IllegalStateException(
+          "hardeningCertify is observation-only and full-population; remove " +
+            buildList {
+              if (forbidden.isNotEmpty()) {
+                add("incompatible flag(s): " + forbidden.joinToString(", ") { "-P$it" })
+              }
+              if (excluded.isNotEmpty()) {
+                add("task exclusion(s): " + excluded.joinToString(", ") { "-x $it" })
+              }
+            }.joinToString("; ")
+        )
+      }
+      try {
+        HardeningPluginIdentityGuard.requireUnchanged(
+          certificationPluginCode.singleFile,
+          expectedPlugin,
+          localRepoArtifactPath.get(),
+          expectedLocalRepoArtifactSha256.get(),
+          "hardeningCertify: project '$projectPath' before preflight",
+        )
+      } catch (failure: IllegalStateException) {
+        throw IllegalStateException(
+          "${failure.message}; refusing mixed plugin bytes before PIT", failure)
+      }
+    } catch (failure: Exception) {
+      val session = certificationSession.get()
+      if (session.ownsCertification(projectPath)) {
+        try {
+          BaselineFiles.requireRegularFileOrMissing(projectDirectory, receipt)
+          BaselineFiles.deleteIfExists(receipt)
+          BaselineFiles.requireRegularFileOrMissing(projectDirectory, running)
+          val reason = (failure.message ?: failure::class.java.simpleName)
+            .replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')
+          BaselineFiles.writeAtomically(projectDirectory, running, "refused\t$reason\n")
+        } catch (stateFailure: Exception) {
+          failure.addSuppressed(stateFailure)
+        }
+      }
+      throw GradleException("hardeningCertify: ${failure.message}", failure)
+    }
+  }
+}
 
 /** Managed inputs for execution-time revalidation of one mutation suite. */
 abstract class PitestEvidenceSpec @Inject constructor(private val specName: String) : Named {
@@ -221,6 +346,10 @@ abstract class PitestDebtTask @Inject constructor(
   @get:Nested
   val currentEvidence: PitestEvidenceSpec =
     objects.newInstance(PitestEvidenceSpec::class.java, "suite")
+
+  /** Escalates committed-file timeout findings without turning Debt into a PIT run. */
+  @get:Input
+  abstract val strictTimeoutAudit: Property<Boolean>
 }
 
 /**

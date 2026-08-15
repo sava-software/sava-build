@@ -466,7 +466,7 @@ historical checkout as one final fleet is an
 optional diagnostic, not a tag or publication prerequisite.
 
 Before opening the release, retain the exact `0.0.0-test` JAR used by the reviewed adoption
-passes, keep each consumer's completed `build/hardening/pitest-certification.tsv` receipt,
+passes, keep each consumer's completed `.pitest-history/pitest-certification.tsv` receipt,
 and record the final candidate commit. Multi-project consumers can contribute several such
 receipts. If later commits touch only release tooling, tests, or documentation, rebuild the
 JAR without the Gradle build cache and require its hash to remain equal to that reviewed JAR.

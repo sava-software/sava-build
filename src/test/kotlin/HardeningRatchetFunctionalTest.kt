@@ -633,6 +633,26 @@ $fuzzBlock
     assertTrue(output.contains("SCOPED run"), "scoped notice missing:\n$output")
     assertTrue(output.contains("1 unkilled in scope"), "scoped listing missing:\n$output")
 
+    // The summary is printed before the scoped ratchet short-circuit. Keep the
+    // caveat on the count itself, so it cannot be mistaken for the suite-wide
+    // timeout membership just because the later SCOPED notice scrolled away.
+    val scopedReport = File(fixtureDir, "build/reports/pitest-scoped/encoding")
+    scopedReport.mkdirs()
+    scopedReport.resolve("mutations.csv").writeText(
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,12,TIMED_OUT,none\n",
+    )
+    scopedReport.resolve("mutations.xml").writeText("<mutations/>\n")
+    scopedReport.resolve(".scoped").writeText("com.example.Codec\n")
+    val timedScoped = runner(
+      "pitestEncodingVerify", "-PmutateOnly=com.example.Codec",
+    ).build().output
+    assertTrue(
+      timedScoped.contains(
+        "1 timed out (scoped selected population; not comparable to the suite audit)"),
+      "scoped timeout summary looked suite-wide:\n$timedScoped",
+    )
+
     // the certifying flag is refused too: its checks are skipped entirely on a
     // scoped report, so a green run would certify nothing while reading as a
     // certification of the suite
@@ -927,7 +947,11 @@ $fuzzBlock
     )
     assertTrue(output.contains("prune dropped 1 row(s)"), output)
     assertTrue(output.contains("kept 1 unmatched row(s)"), output)
-    assertTrue(output.contains("TIMED_OUT this run (load-dependent)"), output)
+    assertTrue(
+      output.contains("preserved by this run's TIMED_OUT budget") &&
+          output.contains("same-mutant versus sibling identity remains ambiguous"),
+      output,
+    )
 
     val updated = baselineUpdateRunner().build().output
     assertEquals(
@@ -1060,7 +1084,11 @@ $fuzzBlock
     )
     assertTrue(output.contains("prune dropped nothing"), output)
     assertTrue(output.contains("flip insurance at this key"), output)
-    assertTrue(output.contains("TIMED_OUT this run (load-dependent)"), output)
+    assertTrue(
+      output.contains("preserved by this run's TIMED_OUT budget") &&
+          output.contains("same-mutant versus sibling identity remains ambiguous"),
+      output,
+    )
   }
 
   @Test
@@ -2003,12 +2031,9 @@ $fuzzBlock
 
   @Test
   fun `a stale baseline row that timed out this run is not killed-or-moved`() {
-    // A baseline SURVIVED row whose mutant reads TIMED_OUT this run is the
-    // load-dependent detection the TIMED_OUT doctrine warns about — prune and
-    // update keep it,
-    // so counting it in "stale entries (since killed or moved)" both contradicted
-    // the drift warning and recommended a refresh that is a no-op for it. The
-    // refresh hint must count only rows that are genuinely gone.
+    // A baseline SURVIVED row whose key has a TIMED_OUT copy is protected from
+    // deletion, but that arithmetic proves neither benign load nor physical mutant
+    // identity. The refresh hint must count only rows that are genuinely gone.
     writeFixture()
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText(
@@ -2031,9 +2056,52 @@ $fuzzBlock
     )
     assertTrue(
       output.contains("1 baseline row(s) read TIMED_OUT this run") &&
-          output.contains("no refresh needed (prune and update keep them)") &&
+          output.contains("preserved by this run's timeout budget, not killed") &&
+          output.contains("does not prove benign load or that the acceptance argument still holds") &&
           output.contains("com.example.Codec,encode,MathMutator,SURVIVED"),
       "timed-out flip not reported separately:\n$output"
+    )
+  }
+
+  @Test
+  fun `an unaudited timeout sharing an accepted key is correlated without claiming identity`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # allocation argument # line 12\n" +
+          // Syntactically valid but not an accepted-debt status: the correlation
+          // must not call this an accepted SURVIVED/NO_COVERAGE row.
+          "com.example.Codec,encode,MathMutator,KILLED # stale hand edit # line 30\n",
+    )
+    File(fixtureDir, "config/pitest/encoding-timeouts.csv").writeText(
+      "# Armed audited set; this key is deliberately not a member.\n",
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,20,TIMED_OUT,none",
+      ),
+      "",
+    )
+
+    val output = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      output.contains("2 timed out (watchdog detection; not a cause diagnosis)") &&
+          output.contains("1 unaudited timeout key(s) also have accepted SURVIVED/NO_COVERAGE row(s)") &&
+          output.contains("accepted: com.example.Codec,encode,MathMutator,SURVIVED") &&
+          output.contains("timeout candidate: com.example.Codec,encode,12,MathMutator") &&
+          output.contains("timeout candidate: com.example.Codec,encode,20,MathMutator") &&
+          output.contains("cannot prove whether the timeout is the accepted mutant or a sibling"),
+      "accepted/timeout overlap was not correlated:\n$output",
+    )
+    assertFalse(
+      output.contains("accepted: com.example.Codec,encode,MathMutator,KILLED"),
+      "the correlation presented a non-gated baseline row as accepted debt:\n$output",
+    )
+    assertFalse(
+      output.contains("cause still requires audit") ||
+          output.contains("the same mutant timed out") || output.contains("proves resource"),
+      "line-less evidence was presented as physical identity or cause:\n$output",
     )
   }
 
@@ -3147,6 +3215,8 @@ $fuzzBlock
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator,decode,30,TIMED_OUT,none",
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,slow,40,TIMED_OUT,none",
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,44,TIMED_OUT,none",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator,wait,52,KILLED,com.example.CodecTest",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,other,60,SURVIVED,none",
       ),
       ""
     )
@@ -3159,6 +3229,22 @@ $fuzzBlock
           debt.contains("cause:untriaged has not been reviewed") &&
           debt.contains("missing cause:liveness/resource/harness/untriaged"),
       "Debt did not share the cause-category audit:\n$debt"
+    )
+    val strictDebt = runner(
+      "pitestEncodingDebt", "-PstrictTimeoutAudit",
+    ).buildAndFail().output
+    assertTrue(
+      strictDebt.contains("-PstrictTimeoutAudit found 0 malformed membership row(s), 4 inadmissible") &&
+          strictDebt.contains("Debt has checked committed files only") &&
+          strictDebt.contains("report-dependent strict checks require a full pitestEncoding") &&
+          strictDebt.contains("This Debt invocation did not run PIT") &&
+          strictDebt.contains("audited-timeout key(s) cover multiple mutant copies") &&
+          strictDebt.contains("line 44 TIMED_OUT x1") &&
+          strictDebt.contains("line 52 KILLED x1") &&
+          strictDebt.contains("unverified read-only prior-report preview") &&
+          strictDebt.contains("pitestEncoding -PnoMutationHistory") &&
+          strictDebt.contains("1 survived, 0 no_coverage"),
+      "strict Debt silently remained an advisory-only preview:\n$strictDebt",
     )
     val strict = runner("pitestEncoding", "-PstrictTimeoutAudit").buildAndFail().output
     assertTrue(
@@ -3209,6 +3295,31 @@ $fuzzBlock
       killedSibling.contains("cause classification") ||
           killedSibling.contains("unaudited timed-out mutant"),
       "a valid same-key KILLED sibling was misclassified as a mixed timeout cause:\n$killedSibling",
+    )
+    assertTrue(
+      killedSibling.contains("audited-timeout key(s) cover multiple mutant copies") &&
+          killedSibling.contains("com.example.Codec,wait,VoidMethodCallMutator — 2 mutants") &&
+          killedSibling.contains("line 44 TIMED_OUT x1") &&
+          killedSibling.contains("line 52 KILLED x1") &&
+          killedSibling.contains("non-timeout siblings are context, not proof"),
+      "verify did not expose the key-level mutant population:\n$killedSibling",
+    )
+    val debtPopulation = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      debtPopulation.contains("audited-timeout key(s) cover multiple mutant copies") &&
+          debtPopulation.contains("line 44 TIMED_OUT x1") &&
+          debtPopulation.contains("line 52 KILLED x1"),
+      "Debt did not expose the same key-level mutant population:\n$debtPopulation",
+    )
+
+    val strictDebtClean = runner(
+      "pitestEncodingDebt", "-PstrictTimeoutAudit",
+    ).build().output
+    assertTrue(
+      strictDebtClean.contains("-PstrictTimeoutAudit committed-file preview is clean") &&
+          strictDebtClean.contains("Report-dependent strict checks require a full pitestEncoding") &&
+          strictDebtClean.contains("this Debt invocation did not run PIT"),
+      "clean strict Debt did not state its committed-file-only boundary:\n$strictDebtClean",
     )
 
     // Source lines remain diagnostic. The current format cannot distinguish a

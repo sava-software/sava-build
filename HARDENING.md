@@ -67,7 +67,11 @@ finalized by its baseline verification. `hardeningCertify` is the release form:
 it automatically disables mutation history, rejects scoped and record-changing
 flags before PIT starts, makes timeout drift and whole-production ownership strict,
 requires a provenance-bound report for every suite, and writes
-`build/hardening/pitest-certification.tsv`. Each suite row binds not only the report,
+`.pitest-history/pitest-certification.tsv`. The receipt is machine-local release evidence,
+not a disposable build product: `clean` preserves it, while the next certification owns
+an OS lock, invalidates it before PIT, and leaves a `.running` sentinel on every incomplete
+path. `hardeningCertify` fails before PIT when `.pitest-history/` is not Git-ignored.
+Each suite row binds not only the report,
 compiled code, source, configuration, PIT tool classpath, and loaded plugin binary, but
 also the accepted baseline, audited timeout membership, recorded PIT-version and
 mutation-toolchain sidecars, and the suite's triage README that decided whether the
@@ -93,7 +97,9 @@ tests that cover that code.
 ordered after `clean`, then fingerprints the sources and classes produced by the current
 task graph. It is useful when validating a new plugin's evidence plumbing, but it is not
 an extra release soak requirement; ordinary `hardeningCertify` is already a fresh PIT
-observation.
+observation. A later `clean` does not erase the completed receipt; starting another
+certification does invalidate it, because an incomplete replacement must never leave the
+previous success looking current.
 
 Certification receipts are deliberately **project-scoped**. In a multi-project build,
 the unqualified `hardeningCertify` selector runs each project that exposes that task and
@@ -498,7 +504,7 @@ Every `pitest<Suite>` run prints the split without being asked:
 
 ```
 pitest 'client': 441/498 detected (88%) — 27 survived, 30 no_coverage
-pitest 'vanity': 113/113 detected (100%) — 1 timed out (load-dependent)
+pitest 'vanity': 113/113 detected (100%) — 1 timed out (watchdog detection; not a cause diagnosis)
 ```
 
 and a ratchet failure groups new rows under the same two headings. `TIMED_OUT`
@@ -648,7 +654,7 @@ while duplicate same-line siblings remain inherently ambiguous,
 and the candidate preview names the same row prune would remove *(casebook:
 the stale hint that named the wrong flag)*. Two unmatched classes are kept
 anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
-(load-dependent detection, not a kill), and rows with an *unmatched*
+(watchdog detection, not a kill or a cause diagnosis), and rows with an *unmatched*
 different-status counterpart at their coordinate (a coverage flip the ratchet
 must triage first — a same-status sibling is never that, and neither is a
 mutant already matched by a row of its own key). Both keeps are **budgets,
@@ -673,13 +679,13 @@ metadata of rows matched by the fresh history-free report. This is deliberately 
 separate operation: Union invoked to accept unrelated new debt and Update invoked for
 a complete rewrite must not silently erase the same-key-swap signal before it is read.
 
-### `TIMED_OUT` is detected, and detection is load-dependent
+### `TIMED_OUT` is detected, but does not diagnose its cause
 
 A mutant that makes a loop non-terminating is caught by PIT's timeout and
-counts as **detected** — so it is not written to the baseline. But the same
-mutant can report `SURVIVED` when its suite runs alone and `TIMED_OUT` in a
-multi-suite invocation, so the build fails or passes depending on *how you
-invoked it*, and the failure looks exactly like a real regression.
+counts as **detected** — so it is not written to the baseline. Execution load
+can change whether a candidate reaches its assertion before the watchdog, and
+line-less keys can conflate physical siblings. A `TIMED_OUT` status therefore
+establishes watchdog detection, not benign load, mutant identity, or cause.
 
 - **Verify in both modes** before trusting a baseline — the suite alone, and
   under `qualityGate`. A row that differs between them belongs in the
@@ -697,13 +703,14 @@ invoked it*, and the failure looks exactly like a real regression.
   line-less, so when that key already held a timeout it cannot prove which
   current line is the newcomer; the output says so and prints every current
   `TIMED_OUT` candidate instead of inventing an attribution.
-  `KILLED -> TIMED_OUT` is the benign flavour and gets a one-line count;
-  `SURVIVED -> TIMED_OUT` gets a warning with the rows, because a
-  mutant nobody killed now reads as detected purely through load — do not
+  `KILLED -> TIMED_OUT` is baseline-benign arithmetic and gets a one-line count;
+  `SURVIVED -> TIMED_OUT` gets a warning with the rows: the line-less key gained
+  a timeout while its survivor count fell. Resource behavior,
+  a finite harness race, liveness, and a same-key sibling remain possible — do not
   let a refresh quietly drop it from the baseline on the strength of that.
-  `NO_COVERAGE -> TIMED_OUT` gets the same warning: the mutant was never
-  even reached, and the test that newly covers it hangs instead of killing
-  it. An origin the stash omits is one the comparison silently misreads —
+  `NO_COVERAGE -> TIMED_OUT` gets the same warning: the key gained a timeout while
+  its no-coverage count fell, but the stash cannot prove which physical sibling moved
+  or why. An origin the stash omits is one the comparison silently misreads —
   `NO_COVERAGE` omitted read the dangerous flip as benign, `KILLED` omitted
   read the benign flap as novelty — which is why every status is stashed
   and a stash written by an earlier format (headerless or five-field)
@@ -726,8 +733,8 @@ invoked it*, and the failure looks exactly like a real regression.
   before" answers yes on every run including the ones where nothing moved. A
   flip is a key whose timeout count rose *and* whose unkilled count fell
   *(casebook: the flip that fired forever)*. The verify's candidate preview honours this: a
-  baseline row whose coordinate read `TIMED_OUT` this run is reported as the
-  load flip it is ("no refresh needed"), never included
+  baseline row whose coordinate read `TIMED_OUT` this run is reported as protected
+  by the timeout budget (not as proof of benign load), never included
   among rows prune would remove. A stale-looking
   row at a *flip-insured key* — any row of the key carrying a
   `# flip insurance` note, machine-written by `pitestModeCompareUnion` or riding
@@ -737,8 +744,8 @@ invoked it*, and the failure looks exactly like a real regression.
   names), excluded from the candidate preview, and kept by prune and Update, so the
   explicit action cannot drop a row whose
   absence would fail the next solo run with an unexplained survivor. Both
-  the keep and the hint are key-level, because which member of a flappy
-  family reads killed on a given run is itself load-dependent; the row
+  the keep and the hint are key-level, because a line-less key cannot identify which
+  member moved and execution conditions can change the observed status; the row
   leaves by the union's written removal criterion, never by refresh.
 
   "Benign" is a boundary claim, not a shrug: `KILLED` and `TIMED_OUT` are
@@ -883,14 +890,14 @@ invoked it*, and the failure looks exactly like a real regression.
   certifiable: every seeded `cause:untriaged` row must become a documented
   `cause:liveness` row or leave the set through a contract-first
   disposition. The nudge also prints the would-be member rows
-  paste-ready alongside the task hint: timeouts are load-dependent, so the run
-  that prompted the nudge may be the only one holding them — a later
+  paste-ready alongside the task hint: timeout observations may change with execution
+  conditions, so the run that prompted the nudge may be the only one holding them — a later
   seeding run against a clean report is rightly refused, and without the
   printed rows the coordinate that timed out is recoverable only from the
   daemon log. The seeder refuses to reseed an existing file, refuses a
   `-PmutateOnly` report like every other baseline-touching writer, refuses a
   report with nothing timed out (an empty seed would activate the audit
-  with zero members to write causes for; timeouts are load-dependent, so
+  with zero members to write causes for; the observation may not reproduce, so
   re-run under the conditions whose summary reported them), and, like
   every other writer workflow, combines with none of them. Seeding is not
   the only way in: a suite that has never produced a timeout can *arm* the
@@ -2191,76 +2198,52 @@ edit the block merely to normalize the presentation used by releases before 21.5
 >   deterministic kills, and PIT re-runs the suite per mutant, so one real wait
 >   costs minutes. Exploration belongs to the fuzz targets.
 > - **Do not rely on PIT's timeout to detect a mutant.** `TIMED_OUT` counts as
->   detected and is not written to the baseline, and it is load-dependent — the
->   same mutant can report `SURVIVED` alone and `TIMED_OUT` under
->   `qualityGate`. Verify a baseline in both modes; for load-flip insurance,
+>   detected and is not written to the baseline, but it proves only watchdog
+>   detection. Load can change the observed status and line-less keys can conflate
+>   siblings. Verify a baseline in both modes; for measured load-flip insurance,
 >   union only rows observed to flip, never every `TIMED_OUT` row. This does not
 >   restrict additive `BaselineUnion` acceptance of separately reviewed fresh debt.
-> - **A new timed-out mutant is a reviewer-stop, not detection noise.** For
->   exactly these mutants the ratchet cannot see a weakened covering
->   assertion — a timeout keeps "detecting" whatever the test asserts — so
->   each suite's timeouts are an audited set, not a count:
->   `config/pitest/<suite>-timeouts.csv` holds line-less `class,method,mutator`
->   keys plus a comment category; `# line` tags are diagnostic metadata only. Only
->   `cause:liveness` is admissible watchdog detection after deterministic
->   seams/budgets are exhausted: the mutated path has no path-owned finite
->   completion guarantee. A fixture's emergency exit does not demote that
->   liveness loss to resource work; record the fixture bound in the README. If that
->   bound is the claimed deterministic oracle, compare it with PIT's
->   `duration × timeoutFactor + timeoutConst`: a bound that cannot fail first
->   contributes no cause evidence, so shorten it and re-observe history-free. A
->   later emergency ceiling may coexist with production liveness but cannot prove it.
->   A straight-line path with no loop, retry, lock, wait, blocking
->   call, or external completion dependency is not credible liveness evidence.
->   Before
->   admitting liveness, prove the mutated path receives the clock/budget the test
->   observes, and check for a synchronous state reader that can expose the defect
->   without waiting. A `TestClock` on a collaborator cannot observe a subject using
->   the system clock. Seeded
->   `cause:untriaged`, missing/unknown categories, finite `cause:resource`, and
->   `cause:harness` work are reviewer-stops. `cause:harness` is the explicit
->   non-certifying holding state for a demonstrated finite covering-path/watchdog
->   race; it never makes the timeout admissible. Resource behavior gets a
->   deterministic contract test/fix when promised, otherwise a stable `SURVIVED`
->   equivalence argument —
->   never silent timeout membership. Liveness authorizes valid `TIMED_OUT`
->   evidence only, never `MEMORY_ERROR`: if a non-advancing loop races the heap
->   against the watchdog, make every covering path fail deterministically without
->   relying on PIT test order, or refactor the manual progress mutation site out
->   while preserving the tested contract.
->   `config/pitest/README.md` still holds the
->   full structural cause per member. The verify warns on any timeout outside
->   the set — paste the printed row, classify it, then write the cause — and on
->   members matching no mutant. Membership and cause are key-level for timeout
->   evidence: every `TIMED_OUT` sibling under the key uses the row's category. A
->   finite sibling observed `KILLED` or another valid non-timeout result does not
->   itself create mixed timeout causes. A key is not representable as an honest
->   certifying row while trustworthy fresh evidence under the current inputs shows
->   distinct same-key siblings timing out under different cause categories. One later
->   `KILLED` sample does not erase that conflict, while `KILLED`↔`TIMED_OUT` movement
->   alone does not prove it. Repair/retime the finite covering path and establish
->   repeated fresh history-free non-timeout observations under the relevant solo/gate
->   load, or split/refactor/eliminate the ambiguous site. A source-line qualifier cannot
->   fix the identity without making formatting a release gate. Positive multiplicity
->   drift prints all current
->   line-full candidates for review;
->   source-line movement itself never warns, fails, or requires re-anchoring. Adding
->   a method, moving imports, or reflowing an expression is not a hardening record
->   change. Strict workflows run the
->   committed-file half before PIT; use `pitest<Suite>Debt` for the same quick
->   manual preview. `TimeoutAuditInit` deliberately seeds an uncertifiable file —
->   classify every row before certification. For an otherwise admissible liveness
->   member, do not retire it until the tool emits its 3+ distinct fresh full-run quiet
->   notice over identical evidence inputs, including the loaded sava-build plugin
->   bytes; a plugin upgrade whose JAR bytes differ restarts the streak. Confirm the
->   absence under the relevant solo/gate load. A finite KILLED↔TIMED_OUT race is
->   benign only to baseline arithmetic, never certifying evidence; repair/retime its
->   covering path instead of admitting it or waiting on the liveness-retirement rule.
->   The quiet stash
->   is a machine-local nomination: never copy or merge it, and retain the row when a
->   same-input gate confirmation is unavailable. Assisted reports are
->   previews and do not
->   advance timeout status or quiet-run evidence.
+> - **A new timed-out mutant is a reviewer-stop, not detection noise.** A timeout
+>   can mask a weakened assertion; audit a set, not a count. **Record.**
+>   `config/pitest/<suite>-timeouts.csv` holds line-less
+>   `class,method,mutator` keys and a cause; `# line` is diagnostic, while
+>   `config/pitest/README.md` records the full cause. Verification warns on outside
+>   timeouts and stale members. `pitest<Suite>Debt` previews the pre-PIT
+>   file check. `TimeoutAuditInit` seeds an uncertifiable file: classify every row.
+>   **Classify.** Only `cause:liveness` certifies: after deterministic seams and
+>   budgets, the mutated path has no path-owned finite completion. A fixture's
+>   emergency exit does not demote that loss; record its bound. A bound claimed
+>   as the deterministic oracle must beat PIT's
+>   `duration × timeoutFactor + timeoutConst`; otherwise it contributes no cause
+>   evidence. A later emergency ceiling cannot prove liveness.
+>   A straight-line path without a loop, retry, lock, wait, blocking call, or external
+>   completion dependency is not credible liveness evidence. Prove the mutated path
+>   receives the test clock/budget and check for a synchronous state reader; a
+>   collaborator's `TestClock` cannot observe a system clock.
+>   Missing/unknown causes, `cause:untriaged`, finite `cause:resource`, and
+>   `cause:harness` are reviewer-stops; harness records a finite covering-path/watchdog
+>   race without authorizing it. Resource behavior needs its promised contract test/fix
+>   or a stable `SURVIVED` equivalence argument. Liveness authorizes `TIMED_OUT`, never
+>   `MEMORY_ERROR`: for a non-advancing loop racing the heap, make every covering path
+>   fail deterministically without relying on PIT test order, or refactor out the
+>   mutation site.
+>   **Disambiguate.** A cause covers every `TIMED_OUT` sibling under its key. A finite
+>   sibling observed `KILLED` or another valid non-timeout does not itself create
+>   mixed timeout causes, but a key
+>   cannot certify when trustworthy fresh evidence shows distinct same-key siblings
+>   timing out under different cause categories. One later `KILLED` does not erase that
+>   conflict; `KILLED`↔`TIMED_OUT` movement alone does not prove it. Repair the finite
+>   path and establish repeated fresh history-free non-timeout observations under
+>   solo/gate load, or split/refactor/eliminate the site. Multiplicity drift prints
+>   all current line-full candidates, but lines cannot define identity: moving imports,
+>   adding a method, or reflowing code never warns, fails, or requires re-anchoring.
+>   **Retire.** Remove an admissible liveness member only after the tool reports 3+
+>   distinct fresh full-run quiet observations over identical inputs, confirmed under
+>   solo/gate load. Plugin bytes are an input; a changed JAR restarts the streak. A
+>   finite `KILLED`↔`TIMED_OUT` race never certifies: repair it instead of waiting on
+>   liveness retirement. The quiet stash is a machine-local nomination; never copy or
+>   merge it, and retain the row without same-input gate confirmation. Assisted
+>   reports are previews and advance neither timeout status nor quiet-run evidence.
 > - **A flaky harness is worse than recorded debt.** If an interleaving or a
 >   boundary cannot be made deterministic, accept the mutant with a written
 >   reason rather than chasing it with sleeps or spin-waits.

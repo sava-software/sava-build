@@ -287,6 +287,56 @@ internal object CertificationGitIdentityCapture {
         .sorted()
   }
 
+  /**
+   * Validates that generated durable evidence stays machine-local. Unlike
+   * [ignoredUntrackedRecordFiles], this checks paths which do not exist yet so an
+   * expensive certification cannot finish before discovering that its receipt dirties
+   * the checkout. A non-Git workspace has no clean-tree claim and therefore returns no
+   * findings.
+   */
+  fun machineLocalStateFindings(
+    projectDirectory: File,
+    stateFiles: Iterable<File>,
+    execOperations: ExecOperations,
+  ): List<String> {
+    val rootOutput = git(
+      projectDirectory,
+      execOperations,
+      "rev-parse", "--show-toplevel",
+    ) ?: return emptyList()
+    val root = File(rootOutput.toString(Charsets.UTF_8).trimEnd('\n', '\r'))
+    if (!root.isAbsolute || !root.isDirectory) return emptyList()
+    val rootPath = root.toPath().toAbsolutePath().normalize()
+
+    return buildList {
+      stateFiles
+        .distinctBy { it.toPath().toAbsolutePath().normalize().toString() }
+        .forEach { candidate ->
+          val path = candidate.toPath().toAbsolutePath().normalize()
+          if (!path.startsWith(rootPath)) {
+            add("machine-local certification state is outside the Git worktree: $path")
+            return@forEach
+          }
+          val gitPath = rootPath.relativize(path).joinToString("/") { it.toString() }
+          val tracked = git(
+            root,
+            execOperations,
+            "--literal-pathspecs", "ls-files", "--error-unmatch", "--", gitPath,
+          ) != null
+          if (tracked) {
+            add("machine-local certification state is tracked by Git: $gitPath")
+            return@forEach
+          }
+          val ignored = git(
+            root,
+            execOperations,
+            "check-ignore", "-q", "--no-index", "--", gitPath,
+          ) != null
+          if (!ignored) add("machine-local certification state is not Git-ignored: $gitPath")
+        }
+    }.sorted()
+  }
+
   private data class TreeEntry(val mode: String, val type: String, val objectId: String) {
     val isRegularBlob: Boolean get() = type == "blob" && (mode == "100644" || mode == "100755")
   }

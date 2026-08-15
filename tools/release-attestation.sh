@@ -315,9 +315,9 @@ certification_receipt_summary() {
     return 1
   fi
   case "$git_project_directory" in
-    .) expected_path="build/hardening/pitest-certification.tsv" ;;
+    .) expected_path=".pitest-history/pitest-certification.tsv" ;;
     /*|''|*//*|../*|*/../*|./*|*/./*) expected_path="" ;;
-    *) expected_path="$git_project_directory/build/hardening/pitest-certification.tsv" ;;
+    *) expected_path="$git_project_directory/.pitest-history/pitest-certification.tsv" ;;
   esac
   if [ -z "$expected_path" ] || [ "$relative" != "$expected_path" ]; then
     echo "release-attestation: certification receipt path does not match its Git project directory: $receipt" >&2
@@ -341,7 +341,9 @@ certification_receipt_summary() {
 
 reviewed_adoption_summary() {
   local requested=$1 expected_plugin_hash=$2 checkout git_root status remote origin_pair slug origin
-  local commit tree inventory linked build_dir receipt receipt_root relative summary summary_suite_count
+  local commit tree inventory inventory_roots linked state_dir state_kind receipt running lock receipt_root relative
+  local summary summary_suite_count
+  local summary_project_directory
   local certifications='[]'
   local receipt_count=0 positive_suite_count=0
   checkout=$(absolute_regular_directory "$requested" "consumer checkout") || return 1
@@ -379,7 +381,11 @@ reviewed_adoption_summary() {
   fi
 
   linked=$(find -P "$checkout" -type d -name .git -prune -o \
-    -type d -name build -prune -o -type l -name build -print -quit) || return 1
+    -type d \( -name build -o -name .pitest-history \) -prune -o \
+    -type l \( -name build -o -name hardening -o -name .pitest-history -o \
+      -name pitest-certification.tsv -o -name pitest-certification.running -o \
+      -name pitest-certification.lock \) \
+      -print -quit) || return 1
   if [ -n "$linked" ]; then
     echo "release-attestation: certification evidence path contains a symlink: $linked" >&2
     return 1
@@ -388,20 +394,78 @@ reviewed_adoption_summary() {
     echo "release-attestation: could not allocate certification inventory" >&2
     return 1
   }
-  if ! find -P "$checkout" -type d -name .git -prune -o \
-      -type d -name build -print0 -prune > "$inventory"; then
+  inventory_roots=$(mktemp "${TMPDIR:-/tmp}/release-attestation-roots.XXXXXX") || {
     rm -f "$inventory"
+    echo "release-attestation: could not allocate certification-root inventory" >&2
+    return 1
+  }
+  if ! find -P "$checkout" -type d -name .git -prune -o \
+      -type d \( -name build -o -name .pitest-history \) -print0 -prune \
+      > "$inventory_roots"; then
+    rm -f "$inventory" "$inventory_roots"
     echo "release-attestation: could not inventory certification receipts under $checkout" >&2
     return 1
   fi
-  while IFS= read -r -d '' build_dir; do
-    receipt="$build_dir/hardening/pitest-certification.tsv"
-    if [ -L "$build_dir/hardening" ] || [ -L "$receipt" ]; then
+  : > "$inventory"
+  while IFS= read -r -d '' state_dir; do
+    case "$(basename "$state_dir")" in
+      .pitest-history)
+        state_kind=durable
+        receipt="$state_dir/pitest-certification.tsv"
+        lock="$state_dir/pitest-certification.lock"
+        ;;
+      build)
+        state_kind=legacy
+        receipt="$state_dir/hardening/pitest-certification.tsv"
+        lock=""
+        ;;
+      *)
+        rm -f "$inventory" "$inventory_roots"
+        echo "release-attestation: unexpected certification-state directory: $state_dir" >&2
+        return 1
+        ;;
+    esac
+    running="$(dirname "$receipt")/pitest-certification.running"
+    if [ -L "$(dirname "$receipt")" ] || [ -L "$receipt" ]; then
+      rm -f "$inventory" "$inventory_roots"
+      echo "release-attestation: certification evidence path contains a symlink: $receipt" >&2
+      return 1
+    fi
+    if [ -e "$running" ] || [ -L "$running" ]; then
+      rm -f "$inventory" "$inventory_roots"
+      echo "release-attestation: certification is incomplete or still running: $running" >&2
+      return 1
+    fi
+    if [ -n "$lock" ] && { [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -f "$lock" ]; }; }; then
+      rm -f "$inventory" "$inventory_roots"
+      echo "release-attestation: certification ownership path is not a regular file: $lock" >&2
+      return 1
+    fi
+    if [ -n "$lock" ] && [ -f "$lock" ] && [ ! -f "$receipt" ]; then
+      rm -f "$inventory" "$inventory_roots"
+      echo "release-attestation: certification state is incomplete (ownership lock without receipt or sentinel): $lock" >&2
+      return 1
+    fi
+    if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then
+      rm -f "$inventory" "$inventory_roots"
+      echo "release-attestation: certification receipt path is not a regular file: $receipt" >&2
+      return 1
+    fi
+    if [ "$state_kind" = legacy ] && [ -f "$receipt" ]; then
+      rm -f "$inventory" "$inventory_roots"
+      echo "release-attestation: legacy build-output certification cannot enter a new release record: $receipt" >&2
+      echo "release-attestation: recertify with the current plugin to produce durable .pitest-history evidence" >&2
+      return 1
+    fi
+    [ -f "$receipt" ] && printf '%s\0' "$receipt" >> "$inventory"
+  done < "$inventory_roots"
+  rm -f "$inventory_roots"
+  while IFS= read -r -d '' receipt; do
+    if [ -L "$(dirname "$receipt")" ] || [ -L "$receipt" ]; then
       rm -f "$inventory"
       echo "release-attestation: certification evidence path contains a symlink: $receipt" >&2
       return 1
     fi
-    [ -f "$receipt" ] || continue
     receipt_count=$((receipt_count + 1))
     receipt_root=$(git -C "$(dirname "$receipt")" rev-parse --show-toplevel 2>/dev/null || true)
     if [ -z "$receipt_root" ]; then
@@ -432,6 +496,17 @@ reviewed_adoption_summary() {
       rm -f "$inventory"
       return 1
     }
+    summary_project_directory=$(jq -er '.git_project_directory' <<< "$summary") || {
+      rm -f "$inventory"
+      return 1
+    }
+    if jq -e --arg project_directory "$summary_project_directory" \
+        'any(.[]; .git_project_directory == $project_directory)' \
+        <<< "$certifications" >/dev/null; then
+      rm -f "$inventory"
+      echo "release-attestation: multiple certification receipts claim Git project directory '$summary_project_directory' under $checkout" >&2
+      return 1
+    fi
     positive_suite_count=$((positive_suite_count + summary_suite_count))
     certifications=$(jq -cn --argjson existing "$certifications" --argjson item "$summary" \
       '$existing + [$item]') || { rm -f "$inventory"; return 1; }
@@ -638,7 +713,7 @@ create_reviewed_attestation() {
     --arg version "$version" --arg commit "$candidate_commit" --arg tree "$candidate_tree" \
     --arg origin "$candidate_origin" --arg plugin_hash "$after" --arg basis "$review_basis" \
     --argjson repositories "$reviewed" \
-    '{schema:4,kind:"sava-build-release-attestation",version:$version,
+    '{schema:5,kind:"sava-build-release-attestation",version:$version,
       candidate:{commit:$commit,tree:$tree,origin:$origin,plugin_jar_sha256:$plugin_hash},
       review:{kind:"classified-local-hardening-certifications",basis:$basis,
         repositories:$repositories}}' > "$tmp"
@@ -797,6 +872,77 @@ attestation_schema_valid() {
          end)
       ' "$file" >/dev/null
       ;;
+    5)
+      jq -e --arg version "$version" --arg origin "$expected_origin_slug" '
+        def valid_certification:
+          (. | keys == ["git_project_directory","path","project","receipt_sha256",
+            "schema","session","suite_count","suites"]) and
+          .schema == 6 and
+          (.path | type == "string" and
+            (test("^(?:[^/]+/)*[.]pitest-history/pitest-certification[.]tsv$") and
+            (startswith("/") | not) and
+            (contains("/../") | not) and
+            (contains("/./") | not) and
+            (split("/") | all(.[]; length > 0 and . != "." and . != "..")))) and
+          (.git_project_directory | type == "string" and
+            (. == "." or
+              (test("^(?:[^/]+/)*[^/]+$") and
+                (split("/") | all(.[]; length > 0 and . != "." and . != ".."))))) and
+          .path == (if .git_project_directory == "." then
+              ".pitest-history/pitest-certification.tsv"
+            else .git_project_directory + "/.pitest-history/pitest-certification.tsv" end) and
+          (.receipt_sha256 | test("^[0-9a-f]{64}$")) and
+          (.project | type == "string" and length > 0) and
+          (.session | type == "string" and length > 0) and
+          (.suite_count | type == "number" and . >= 0 and floor == .) and
+          (.suites | type == "array") and
+          ((.suites | length) == .suite_count) and
+          (.suites == (.suites | sort)) and
+          ((.suites | unique | length) == (.suites | length)) and
+          all(.suites[]; type == "string" and length > 0);
+        .candidate.plugin_jar_sha256 as $plugin |
+        .review.repositories as $repositories |
+        keys == ["candidate","kind","review","schema","version"] and
+        .schema == 5 and .kind == "sava-build-release-attestation" and .version == $version and
+        (.candidate | keys == ["commit","origin","plugin_jar_sha256","tree"]) and
+        (.candidate.commit | test("^[0-9a-f]{40}$")) and
+        (.candidate.tree | test("^[0-9a-f]{40}$")) and .candidate.origin == $origin and
+        (.candidate.plugin_jar_sha256 | test("^[0-9a-f]{64}$")) and
+        (.review | keys == ["basis","kind","repositories"]) and
+        .review.kind == "classified-local-hardening-certifications" and
+        (.review.basis == "consumer-feature" or .review.basis == "plugin-only" or
+          .review.basis == "certification-only") and
+        ($repositories | type == "array") and
+        (if .review.basis == "plugin-only" then true else
+           ($repositories | length > 0)
+         end) and
+        all($repositories[];
+          (. | keys == ["certifications","commit","origin","plugin_jar_sha256",
+            "review_role","slug","tree"]) and
+          (.slug | test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")) and
+          .slug == (.slug | ascii_downcase) and
+          .origin == ("https://github.com/" + .slug + ".git") and
+          (.commit | test("^[0-9a-f]{40}$")) and
+          (.tree | test("^[0-9a-f]{40}$")) and
+          .plugin_jar_sha256 == $plugin and
+          (.certifications | type == "array" and length > 0) and
+          (.certifications == (.certifications | sort_by(.path))) and
+          (([.certifications[].path] | unique | length) == (.certifications | length)) and
+          (([.certifications[].git_project_directory] | unique | length) ==
+            (.certifications | length)) and
+          (([.certifications[].suite_count] | add) > 0) and
+          all(.certifications[]; valid_certification) and
+          (.review_role == "feature-path" or
+            .review_role == "certification-only")) and
+        (([$repositories[].slug] | unique | length) == ($repositories | length)) and
+        ($repositories == ($repositories | sort_by(.slug))) and
+        (if .review.basis == "consumer-feature" then
+           any($repositories[]; .review_role == "feature-path")
+         else
+           all($repositories[]; .review_role == "certification-only")
+         end)
+      ' "$file" >/dev/null
+      ;;
     *) return 1 ;;
   esac
 }
@@ -840,7 +986,7 @@ verify_attestation() {
       compatibility_count=$(jq -r '.review.repositories | length' "$file") || return 1
       echo "release-attestation: version $version binds $compatibility_count consumer repository checkout(s) with exact-byte hardening certification to candidate $commit"
       ;;
-    4)
+    4|5)
       compatibility_count=$(jq -r '.review.repositories | length' "$file") || return 1
       feature_count=$(jq -r \
         '[.review.repositories[] | select(.review_role == "feature-path")] | length' "$file") || return 1
@@ -1034,12 +1180,14 @@ self_test() {
   local reviewed_fixture="$fixture/reviewed" reviewed_script reviewed_candidate reviewed_tree
   local reviewed_divergent
   local reviewed_jar reviewed_output valid_reviewed_attestation historic_reviewed_attestation
-  local historic_schema3_attestation verify_output
+  local historic_schema4_attestation historic_schema3_attestation verify_output
   local reviewed_late_commit reviewed_release_tree reviewed_release_commit
   local consumers="$fixture/reviewed-consumers" consumer_sava="$fixture/reviewed-consumers/sava"
   local consumer_ravina="$fixture/reviewed-consumers/ravina"
   local consumer_sava_copy="$fixture/reviewed-consumers/sava-copy"
   local consumer_missing="$fixture/reviewed-consumers/missing"
+  local sava_receipt ravina_root_receipt ravina_core_receipt ravina_server_receipt
+  local sava_copy_receipt sava_copy_legacy_receipt missing_receipt
   local sava_commit sava_tree ravina_commit ravina_tree valid_sava_receipt
   local sava_receipt_sha ravina_core_receipt_sha ravina_server_receipt_sha
   mkdir -p "$reviewed_fixture/tools" "$reviewed_fixture/release-attestations" \
@@ -1127,7 +1275,8 @@ self_test() {
   init_reviewed_consumer() {
     local checkout=$1 remote=$2
     mkdir -p "$checkout"
-    printf '%s\n' 'build/' '*/build/' > "$checkout/.gitignore"
+    printf '%s\n' 'build/' '*/build/' '.pitest-history/' '*/.pitest-history/' \
+      > "$checkout/.gitignore"
     printf '%s\n' 'consumer' > "$checkout/README.md"
     (
       cd "$checkout"
@@ -1144,25 +1293,68 @@ self_test() {
   init_reviewed_consumer "$consumer_ravina" https://github.com/sava-software/ravina.git
   init_reviewed_consumer "$consumer_sava_copy" ssh://git@github.com/SAVA-Software/SAVA.git
   init_reviewed_consumer "$consumer_missing" git@github.com:sava-software/missing.git
+  sava_receipt="$consumer_sava/.pitest-history/pitest-certification.tsv"
+  ravina_root_receipt="$consumer_ravina/.pitest-history/pitest-certification.tsv"
+  ravina_core_receipt="$consumer_ravina/ravina-core/.pitest-history/pitest-certification.tsv"
+  ravina_server_receipt="$consumer_ravina/ravina-server/.pitest-history/pitest-certification.tsv"
+  sava_copy_receipt="$consumer_sava_copy/.pitest-history/pitest-certification.tsv"
+  sava_copy_legacy_receipt="$consumer_sava_copy/build/hardening/pitest-certification.tsv"
+  missing_receipt="$consumer_missing/.pitest-history/pitest-certification.tsv"
   write_reviewed_certification \
-    "$consumer_sava/build/hardening/pitest-certification.tsv" : session.sava "$jar_hash" ws .
+    "$sava_receipt" : session.sava "$jar_hash" ws .
   write_reviewed_certification \
-    "$consumer_ravina/build/hardening/pitest-certification.tsv" \
+    "$ravina_root_receipt" \
     : session.ravina.root "$jar_hash" core .
   write_reviewed_certification \
-    "$consumer_ravina/ravina-core/build/hardening/pitest-certification.tsv" \
+    "$ravina_core_receipt" \
     :ravina-core session.ravina.core "$jar_hash" dispatch ravina-core
   write_empty_reviewed_certification \
-    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv" \
+    "$ravina_server_receipt" \
     :ravina-server session.ravina.server "$jar_hash" ravina-server
   write_reviewed_certification \
-    "$consumer_sava_copy/build/hardening/pitest-certification.tsv" \
+    "$sava_copy_legacy_receipt" \
+    : session.sava.copy "$jar_hash" ws .
+  expect_cli_failure "legacy build-output certification for a new record" \
+    "legacy build-output certification cannot enter a new release record" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis certification-only \
+      --certification-only-adoption "$consumer_sava_copy"
+  unlink "$sava_copy_legacy_receipt"
+  write_reviewed_certification \
+    "$sava_copy_receipt" \
     : session.sava.copy "$jar_hash" ws .
   sava_commit=$(git -C "$consumer_sava" rev-parse HEAD)
   sava_tree=$(git -C "$consumer_sava" rev-parse 'HEAD^{tree}')
   ravina_commit=$(git -C "$consumer_ravina" rev-parse HEAD)
   ravina_tree=$(git -C "$consumer_ravina" rev-parse 'HEAD^{tree}')
-  valid_sava_receipt=$(<"$consumer_sava/build/hardening/pitest-certification.tsv")
+  valid_sava_receipt=$(<"$sava_receipt")
+
+  mkdir -p "$consumer_sava/build/hardening"
+  printf '%s\n' "$valid_sava_receipt" > \
+    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  expect_cli_failure "legacy receipt beside durable certification" \
+    "legacy build-output certification cannot enter a new release record" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis certification-only \
+      --certification-only-adoption "$consumer_sava"
+  unlink "$consumer_sava/build/hardening/pitest-certification.tsv"
+
+  mkdir -p "$consumer_ravina/unfinished/.pitest-history"
+  printf '%s\n' 'session\tunfinished' > \
+    "$consumer_ravina/unfinished/.pitest-history/pitest-certification.running"
+  expect_cli_failure "running-only certification in a multi-project consumer" \
+    "certification is incomplete or still running" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis consumer-feature \
+      --feature-adoption "$consumer_ravina"
+  unlink "$consumer_ravina/unfinished/.pitest-history/pitest-certification.running"
+  : > "$consumer_ravina/unfinished/.pitest-history/pitest-certification.lock"
+  expect_cli_failure "lock-only certification in a multi-project consumer" \
+    "ownership lock without receipt or sentinel" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --review-basis consumer-feature \
+      --feature-adoption "$consumer_ravina"
+  unlink "$consumer_ravina/unfinished/.pitest-history/pitest-certification.lock"
 
   expect_cli_failure "reviewed attestation without an explicit basis or adoption" \
     "requires --review-basis" \
@@ -1195,7 +1387,7 @@ self_test() {
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_missing"
   write_empty_reviewed_certification \
-    "$consumer_missing/build/hardening/pitest-certification.tsv" \
+    "$missing_receipt" \
     : session.missing "$jar_hash" .
   expect_cli_failure "consumer with only zero-suite certification" "contain zero certified suites" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
@@ -1210,48 +1402,42 @@ self_test() {
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   write_reviewed_certification \
-    "$consumer_sava/build/hardening/pitest-certification.tsv" : session.sava "$jar_hash" ws .
+    "$sava_receipt" : session.sava "$jar_hash" ws .
   sava_commit=$(git -C "$consumer_sava" rev-parse HEAD)
   sava_tree=$(git -C "$consumer_sava" rev-parse 'HEAD^{tree}')
-  valid_sava_receipt=$(<"$consumer_sava/build/hardening/pitest-certification.tsv")
+  valid_sava_receipt=$(<"$sava_receipt")
 
   awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "schema" { print "schema", "5"; next }
     $1 ~ /^git/ || $1 == "pluginSha256" { next }
     { print }
-  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  ' "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
   expect_cli_failure "schema-5 consumer certification" "malformed or mixed certification" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
 
   awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "gitState" || $1 == "gitCommit" || $1 == "gitTree" ||
       $1 == "gitStatusSha256" || $1 == "gitProjectDirectory" { $2="unavailable" }
     { print }
-  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  ' "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
   expect_cli_failure "unavailable certification Git identity" "does not bind a clean Git checkout" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
 
   awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "gitState" { $2="dirty" }
     { print }
-  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  ' "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
   expect_cli_failure "dirty identity with clean status digest" "malformed or mixed certification" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
 
   awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "gitState" { $2="dirty" }
@@ -1259,54 +1445,46 @@ self_test() {
       $2="1111111111111111111111111111111111111111111111111111111111111111"
     }
     { print }
-  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  ' "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
   expect_cli_failure "dirty certification Git identity" "does not bind a clean Git checkout" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
 
   awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "gitCommit" { $2="0000000000000000000000000000000000000000" }
     { print }
-  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  ' "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
   expect_cli_failure "mismatched certification Git revision" "different consumer revision" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
 
   awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "gitProjectDirectory" { $2="other" }
     { print }
-  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  ' "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
   expect_cli_failure "mismatched certification project directory" \
     "path does not match its Git project directory" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
 
   awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "pluginSha256" {
       $2="0000000000000000000000000000000000000000000000000000000000000000"
     }
     { print }
-  ' "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv" > \
-    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv"
+  ' "$ravina_server_receipt" > "$ravina_server_receipt.tmp"
+  mv "$ravina_server_receipt.tmp" "$ravina_server_receipt"
   expect_cli_failure "zero-suite stale header plugin" "stale certification receipt" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_ravina"
   write_empty_reviewed_certification \
-    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv" \
+    "$ravina_server_receipt" \
     :ravina-server session.ravina.server "$jar_hash" ravina-server
 
   printf '%s\n' dirty > "$consumer_sava/dirty.txt"
@@ -1320,50 +1498,45 @@ self_test() {
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   git -C "$consumer_sava" remote set-url origin git@github.com:sava-software/sava.git
   printf '%s\n' "$valid_sava_receipt" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.real"
-  unlink "$consumer_sava/build/hardening/pitest-certification.tsv"
+    "$sava_receipt.real"
+  unlink "$sava_receipt"
   ln -s pitest-certification.tsv.real \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+    "$sava_receipt"
   expect_cli_failure "symlinked certification receipt" "evidence path contains a symlink" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  unlink "$consumer_sava/build/hardening/pitest-certification.tsv"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.real" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
-  printf '%s\n' running > "$consumer_sava/build/hardening/pitest-certification.running"
+  unlink "$sava_receipt"
+  mv "$sava_receipt.real" "$sava_receipt"
+  printf '%s\n' running > "$(dirname "$sava_receipt")/pitest-certification.running"
   expect_cli_failure "incomplete certification" "incomplete or still running" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  unlink "$consumer_sava/build/hardening/pitest-certification.running"
+  unlink "$(dirname "$sava_receipt")/pitest-certification.running"
   sed "s/$jar_hash/0000000000000000000000000000000000000000000000000000000000000000/" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+    "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
   expect_cli_failure "stale consumer certification" "stale certification receipt" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
   awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "suite" {
       $9="0000000000000000000000000000000000000000000000000000000000000000"
     }
     { print }
-  ' "$consumer_sava/build/hardening/pitest-certification.tsv" > \
-    "$consumer_sava/build/hardening/pitest-certification.tsv.tmp"
-  mv "$consumer_sava/build/hardening/pitest-certification.tsv.tmp" \
-    "$consumer_sava/build/hardening/pitest-certification.tsv"
+  ' "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
   expect_cli_failure "stale suite-row plugin with current header" \
     "malformed or mixed certification" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
   printf '%b\n' "suite\tsecond\t1111111111111111111111111111111111111111111111111111111111111111\t2222222222222222222222222222222222222222222222222222222222222222\t0000000000000000000000000000000000000000000000000000000000000000\t4444444444444444444444444444444444444444444444444444444444444444\t1111111111111111111111111111111111111111111111111111111111111111\t1.25.9\t$jar_hash\t2222222222222222222222222222222222222222222222222222222222222222\t3333333333333333333333333333333333333333333333333333333333333333\t4444444444444444444444444444444444444444444444444444444444444444\t1.25.9\t3333333333333333333333333333333333333333333333333333333333333333" \
-    >> "$consumer_sava/build/hardening/pitest-certification.tsv"
+    >> "$sava_receipt"
   expect_cli_failure "mixed consumer certification" "malformed or mixed certification" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
-  printf '%s\n' "$valid_sava_receipt" > "$consumer_sava/build/hardening/pitest-certification.tsv"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
   expect_cli_failure "duplicate derived adoption" "duplicate derived adoption slug" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava" \
@@ -1382,11 +1555,11 @@ self_test() {
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   git -C "$reviewed_fixture" remote set-url origin git@github.com:sava-software/sava-build.git
   sava_receipt_sha=$(sha256_file \
-    "$consumer_sava/build/hardening/pitest-certification.tsv")
+    "$sava_receipt")
   ravina_core_receipt_sha=$(sha256_file \
-    "$consumer_ravina/ravina-core/build/hardening/pitest-certification.tsv")
+    "$ravina_core_receipt")
   ravina_server_receipt_sha=$(sha256_file \
-    "$consumer_ravina/ravina-server/build/hardening/pitest-certification.tsv")
+    "$ravina_server_receipt")
   expect_cli_failure "reviewed attestation without an explicit basis" \
     "requires --review-basis" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
@@ -1420,7 +1593,7 @@ self_test() {
     --plugin-jar "$reviewed_jar" --review-basis certification-only \
     --adoption "$consumer_sava" >/dev/null
   jq -e '
-    .schema == 4 and .review.kind == "classified-local-hardening-certifications" and
+    .schema == 5 and .review.kind == "classified-local-hardening-certifications" and
     .review.basis == "certification-only" and
     [.review.repositories[].review_role] == ["certification-only"]
   ' "$reviewed_output" >/dev/null
@@ -1462,7 +1635,7 @@ self_test() {
       --arg sava_receipt_sha "$sava_receipt_sha" \
       --arg ravina_core_receipt_sha "$ravina_core_receipt_sha" \
       --arg ravina_server_receipt_sha "$ravina_server_receipt_sha" '
-    .schema == 4 and .candidate.commit == $candidate and
+    .schema == 5 and .candidate.commit == $candidate and
     .candidate.tree == $tree and
     .candidate.plugin_jar_sha256 == $jar and
     .review.kind == "classified-local-hardening-certifications" and
@@ -1475,9 +1648,9 @@ self_test() {
     .review.repositories[0].tree == $ravina_tree and
     .review.repositories[0].plugin_jar_sha256 == $jar and
     [.review.repositories[0].certifications[].path] ==
-      ["build/hardening/pitest-certification.tsv",
-       "ravina-core/build/hardening/pitest-certification.tsv",
-       "ravina-server/build/hardening/pitest-certification.tsv"] and
+      [".pitest-history/pitest-certification.tsv",
+       "ravina-core/.pitest-history/pitest-certification.tsv",
+       "ravina-server/.pitest-history/pitest-certification.tsv"] and
     all(.review.repositories[0].certifications[];
       .schema == 6 and (.receipt_sha256 | test("^[0-9a-f]{64}$"))) and
     [.review.repositories[0].certifications[].git_project_directory] ==
@@ -1566,10 +1739,31 @@ self_test() {
       git -c user.name=SelfTest -c user.email=self@test \
       commit -qm 'restore release changelog'
   )
+  historic_schema4_attestation=$(jq -cS '
+    .schema = 4 |
+    .review.repositories |= map(
+      .certifications |= map(.path =
+        (if .git_project_directory == "." then
+           "build/hardening/pitest-certification.tsv"
+         else .git_project_directory + "/build/hardening/pitest-certification.tsv" end)))
+  ' <<< "$valid_reviewed_attestation")
+  printf '%s\n' "$historic_schema4_attestation" > "$reviewed_output"
+  (
+    cd "$reviewed_fixture"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git add release-attestations/1.0.1.json
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'historical schema 4 review'
+  )
+  "$reviewed_script" verify 1.0.1 >/dev/null
   historic_schema3_attestation=$(jq -cS '
     {schema:3,kind:.kind,version:.version,candidate:.candidate,
       review:{kind:"derived-local-hardening-certifications",
-        repositories:(.review.repositories | map(del(.review_role)))}}
+        repositories:(.review.repositories | map(del(.review_role) |
+          .certifications |= map(.path =
+            (if .git_project_directory == "." then
+               "build/hardening/pitest-certification.tsv"
+             else .git_project_directory + "/build/hardening/pitest-certification.tsv" end))))}}
   ' <<< "$valid_reviewed_attestation")
   printf '%s\n' "$historic_schema3_attestation" > "$reviewed_output"
   (
@@ -1605,7 +1799,7 @@ self_test() {
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
       git add release-attestations/1.0.1.json
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore schema 4 review'
+      git -c user.name=SelfTest -c user.email=self@test commit -qm 'restore schema 5 review'
   )
   "$reviewed_script" verify 1.0.1 >/dev/null
   jq '.review.repositories[0].slug = "SAVA-SOFTWARE/RAVINA" |

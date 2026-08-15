@@ -399,7 +399,7 @@ internal object BaselineEngine {
    * file order; a dropped row's note carries across a status flip at the same
    * coordinate (consumed once, marked for re-reading); every remaining new copy
    * seeds `# untriaged`. Rows protected by this run's timeout budget or persistent
-   * flip insurance remain verbatim: neither a load-dependent timeout nor the
+   * flip insurance remain verbatim: neither watchdog detection nor the
    * absent/other-status side of an observed mode flip proves that its accepted row
    * has gone away.
    * A pending different-status [Disposition.FLIP] is deliberately not persistent —

@@ -78,6 +78,24 @@ internal object TimeoutAudit {
     val liveMembers: Set<String>,
     val causeFindings: List<CauseFinding>,
     val undocumented: List<String>,
+    val multiMutantMembers: List<MemberPopulation>,
+  )
+
+  /**
+   * One report's observable population under an audited line-less key. [observations]
+   * keeps line, status, and multiplicity separate: two same-line mutants are still two
+   * copies, while a `KILLED` sibling must not be presented as another timeout cause.
+   */
+  data class MemberPopulation(
+    val member: String,
+    val mutantCount: Int,
+    val observations: List<PopulationObservation>,
+  )
+
+  data class PopulationObservation(
+    val line: Int,
+    val status: String,
+    val copies: Int,
   )
 
   // Comma or slash between numbers: the seed writes commas, but hand-written rows
@@ -195,7 +213,60 @@ internal object TimeoutAudit {
         liveMembers = liveMembers,
         causeFindings = causeFindings(membership, liveMembers),
         undocumented = undocumentedCauses(liveMembers, readme),
+        multiMutantMembers = memberPopulations(rows, liveMembers),
     )
+  }
+
+  /**
+   * Audited keys whose current report contains several mutant copies and at least
+   * one timeout. Cause classification is key-level, so these are the populations a
+   * reviewer must inspect for distinct timeout causes. Non-timeout siblings stay in
+   * the projection because their presence is useful context, but do not themselves
+   * prove a mixed timeout cause.
+   */
+  fun memberPopulations(
+    rows: List<Mutant>,
+    members: Collection<String>,
+  ): List<MemberPopulation> {
+    val selected = members.toSet()
+    return rows.asSequence()
+        .filter { it.coordinate in selected }
+        .groupBy { it.coordinate }
+        .entries.asSequence()
+        .filter { (_, mutants) ->
+          mutants.size > 1 && mutants.any { it.status == MutantStatus.TIMED_OUT }
+        }
+        .sortedBy { it.key }
+        .map { (member, mutants) ->
+          val observations = mutants
+              .groupingBy { it.line!! to it.rawStatus }
+              .eachCount()
+              .entries
+              .sortedWith(compareBy({ it.key.first }, { it.key.second }))
+              .map { (lineAndStatus, copies) ->
+                PopulationObservation(lineAndStatus.first, lineAndStatus.second, copies)
+              }
+          MemberPopulation(member, mutants.size, observations)
+        }
+        .toList()
+  }
+
+  /** Shared Debt/verify rendering for [memberPopulations]. */
+  fun memberPopulationDetail(
+    suiteName: String,
+    populations: Collection<MemberPopulation>,
+    reportDescription: String = "current full report",
+  ): String? {
+    if (populations.isEmpty()) return null
+    return "pitest '$suiteName': ${populations.size} audited-timeout key(s) cover multiple " +
+        "mutant copies in the $reportDescription. Cause is key-level: inspect every TIMED_OUT " +
+        "sibling; KILLED and other non-timeout siblings are context, not proof of a mixed " +
+        "timeout cause:\n" + populations.joinToString("\n") { population ->
+          "  ${population.member} — ${population.mutantCount} mutants:\n" +
+              population.observations.joinToString("\n") { observation ->
+                "    line ${observation.line} ${observation.status} x${observation.copies}"
+              }
+        }
   }
 
   /** The report-dependent warning for timeouts outside the committed set. */

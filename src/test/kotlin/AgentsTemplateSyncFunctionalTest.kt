@@ -150,20 +150,32 @@ class AgentsTemplateSyncFunctionalTest {
     assertTrue(
       printed.contains("A `[history]` report may check") &&
           printed.contains("run `pitest<Suite> -PnoMutationHistory` first") &&
-          printed.contains("without") && printed.contains("relying on PIT test order") &&
-          printed.contains("prove the mutated path receives the clock/budget") &&
-          printed.contains("check for a synchronous state reader") &&
+          printed.contains("**Record.**") && printed.contains("**Classify.**") &&
+          printed.contains("**Disambiguate.**") && printed.contains("**Retire.**") &&
+          printed.contains("Only `cause:liveness` certifies") &&
+          printed.contains("emergency exit does not demote") &&
+          printed.contains("bound claimed") && printed.contains("deterministic oracle") &&
           printed.contains("duration × timeoutFactor + timeoutConst") &&
-          printed.contains("bound is the claimed deterministic oracle") &&
-          printed.contains("contributes no cause evidence") &&
+          printed.contains("contributes no cause") &&
+          printed.contains("receives the test clock/budget") &&
+          printed.contains("check for a synchronous state reader") &&
           printed.contains("not credible liveness evidence") &&
-          printed.contains("finite sibling observed `KILLED`") &&
-          printed.contains("does not") &&
-          printed.contains("itself create mixed timeout causes") &&
+          printed.contains("`cause:harness` are reviewer-stops") &&
+          printed.contains("race without authorizing it") &&
+          printed.contains("stable `SURVIVED` equivalence argument") &&
+          printed.contains("`TIMED_OUT`, never") && printed.contains("`MEMORY_ERROR`") &&
+          printed.contains("without relying on PIT test order") &&
+          printed.contains("sibling observed `KILLED`") &&
+          printed.contains("another valid non-timeout") &&
+          printed.contains("does not itself create") && printed.contains("mixed timeout causes") &&
           printed.contains("distinct same-key siblings") &&
           printed.contains("timing out under different cause categories") &&
           printed.contains("repeated fresh history-free non-timeout observations") &&
-          printed.contains("plugin upgrade whose JAR bytes differ restarts the streak"),
+          printed.contains("lines cannot define identity") &&
+          printed.contains("never warns, fails, or requires re-anchoring") &&
+          printed.contains("Plugin bytes are an input") &&
+          printed.contains("a changed JAR restarts the streak") &&
+          printed.contains("reports are previews"),
       "the version-matched template must keep record decisions history-free and timeout evidence observable:\n$printed",
     )
     assertTrue(

@@ -195,8 +195,8 @@ class LocalRepoNoticeFunctionalTest {
       failed.output,
     )
     assertTrue(failed.output.contains("refusing mixed plugin bytes before PIT"), failed.output)
-    assertFalse(fixtureDir.resolve("a/build/hardening/pitest-certification.tsv").exists())
-    assertFalse(fixtureDir.resolve("b/build/hardening/pitest-certification.tsv").exists())
+    assertFalse(fixtureDir.resolve("a/.pitest-history/pitest-certification.tsv").exists())
+    assertFalse(fixtureDir.resolve("b/.pitest-history/pitest-certification.tsv").exists())
   }
 
   @Test

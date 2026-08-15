@@ -1789,3 +1789,24 @@ Rules: *a static development coordinate is mutable input, not artifact identity*
 *capture identity at the earliest common application boundary, then verify it where
 evidence is committed*; *bind all projects in one build to the same bytes*; *print the
 hash operators must compare, not merely the repository it came from*.
+
+## The clean command that erased certification
+
+Certification originally wrote its only receipt under `build/hardening/`. A later
+ordinary `clean` erased a valid release proof, forcing runbooks to say “do not clean
+after certification.” That was the same lifecycle mistake already repaired for local
+fuzz evidence: generated evidence is machine-local, but it is not disposable merely
+because Gradle produced it.
+
+The receipt, in-progress sentinel, and cross-process ownership lock now live together
+under the already-ignored project-local `.pitest-history/` boundary. `clean` preserves
+completed evidence. Starting another certification acquires the OS lock before touching
+state, invalidates the prior receipt, removes the one-generation configured-build-dir
+location, and publishes success before clearing the exact session sentinel. An absent
+Git ignore or a linked state path fails before PIT. Release attestation recognizes the
+durable path while retaining its older schemas' build-path contract.
+
+Rules: *evidence lifetime follows the claim it supports, not Gradle's output layout*;
+*move receipt and incomplete-state marker together*; *a rejected non-owner must not
+invalidate the owner's evidence*; *migration removes legacy success rather than leaving
+two plausible receipts*.

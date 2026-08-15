@@ -2,6 +2,11 @@ package software.sava.build.hardening
 
 import org.gradle.api.services.BuildService
 import org.gradle.api.services.BuildServiceParameters
+import java.io.File
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
+import java.nio.file.StandardOpenOption
 import java.util.UUID
 
 /**
@@ -10,7 +15,8 @@ import java.util.UUID
  * or an aggregate which depends on `hardeningCertify`; this service is activated
  * by the certification preflight after Gradle has resolved the real task graph.
  */
-abstract class HardeningCertificationSession : BuildService<BuildServiceParameters.None> {
+abstract class HardeningCertificationSession :
+  BuildService<BuildServiceParameters.None>, AutoCloseable {
 
   data class VerifiedEvidence(
     val sessionId: String,
@@ -38,6 +44,7 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
   private val revalidated = mutableMapOf<SuiteKey, VerifiedEvidence>()
   private val finalProjectIdentities = mutableMapOf<String, FinalProjectIdentity>()
   private val pluginIdentities = CertificationPluginIdentities()
+  private val fileLocks = CertificationFileLocks()
 
   /** Retains the published service API for non-certifying third-party task wiring. */
   @Synchronized
@@ -48,6 +55,15 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
     pluginIdentities.register(projectPath, pluginSha256)
     return activateSession(projectPath)
   }
+
+  @Synchronized
+  fun activate(projectPath: String, pluginSha256: String, lockFile: File): String {
+    fileLocks.acquire(projectPath, lockFile)
+    pluginIdentities.register(projectPath, pluginSha256)
+    return activateSession(projectPath)
+  }
+
+  fun ownsCertification(projectPath: String): Boolean = fileLocks.isHeld(projectPath)
 
   private fun activateSession(projectPath: String): String {
     val current = activeSessions[projectPath]
@@ -222,4 +238,85 @@ abstract class HardeningCertificationSession : BuildService<BuildServiceParamete
   internal fun requireFinalProjectIdentity(projectPath: String): FinalProjectIdentity =
     finalProjectIdentities[projectPath] ?: throw IllegalStateException(
       "final Git/plugin identity was not captured in this certification invocation")
+
+  override fun close() = fileLocks.close()
+}
+
+/**
+ * Cross-process ownership for a project's durable certification state. Gradle build
+ * services coordinate only one invocation; the OS lock prevents two daemons from
+ * replacing each other's receipt or completion sentinel. The zero-byte lock file is
+ * retained so every opener contends on the same inode.
+ */
+private class CertificationFileLocks : AutoCloseable {
+  private data class HeldLock(
+    val path: String,
+    val channel: FileChannel,
+    val lock: FileLock,
+  )
+
+  private val held = linkedMapOf<String, HeldLock>()
+
+  @Synchronized
+  fun acquire(projectPath: String, lockFile: File) {
+    val normalized = lockFile.toPath().toAbsolutePath().normalize()
+    held[projectPath]?.let { current ->
+      check(current.path == normalized.toString()) {
+        "hardeningCertify for '$projectPath' changed its ownership-lock path"
+      }
+      return
+    }
+    val channel = FileChannel.open(
+      normalized,
+      StandardOpenOption.CREATE,
+      StandardOpenOption.WRITE,
+    )
+    val lock = try {
+      channel.tryLock()
+    } catch (_: OverlappingFileLockException) {
+      null
+    } catch (failure: Throwable) {
+      try {
+        channel.close()
+      } catch (closeFailure: Throwable) {
+        failure.addSuppressed(closeFailure)
+      }
+      throw failure
+    }
+    if (lock == null) {
+      channel.close()
+      throw IllegalStateException(
+        "another hardeningCertify invocation owns '$projectPath' via $normalized; " +
+          "wait for it to finish before replacing its certification evidence"
+      )
+    }
+    held[projectPath] = HeldLock(normalized.toString(), channel, lock)
+  }
+
+  @Synchronized
+  fun isHeld(projectPath: String): Boolean = projectPath in held
+
+  @Synchronized
+  override fun close() {
+    val failures = mutableListOf<Exception>()
+    held.values.toList().asReversed().forEach { entry ->
+      try {
+        entry.lock.release()
+      } catch (failure: Exception) {
+        failures += failure
+      }
+      try {
+        entry.channel.close()
+      } catch (failure: Exception) {
+        failures += failure
+      }
+    }
+    held.clear()
+    if (failures.isNotEmpty()) {
+      val failure = IllegalStateException(
+        "could not release hardeningCertify ownership lock")
+      failures.forEach(failure::addSuppressed)
+      throw failure
+    }
+  }
 }
