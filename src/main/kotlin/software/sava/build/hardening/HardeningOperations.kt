@@ -608,11 +608,16 @@ internal object HardeningHelpText {
     val suiteDebtTasks = suitePrefixes.map { prefix ->
       "${prefix}Debt" to "inspect committed records and latest full-report debt without running PIT"
     }
+    val suiteDiagnosticTasks = suitePrefixes.map { prefix ->
+      "${prefix}Diagnostic" to
+        "verbose history-free diagnosis; isolated output is not mutation evidence"
+    }
     val optionSpellings = HardeningOptionNames.descriptors.map { option ->
       "-P${option.name}" + (option.value?.let { "=<$it>" } ?: "")
     }
     val generatedNames = buildList {
       addAll(suiteDebtTasks.map { it.first })
+      addAll(suiteDiagnosticTasks.map { it.first })
       suitePrefixes.forEach { prefix ->
         add("${prefix}BaselineRebase")
         add("${prefix}BaselineUpdate")
@@ -651,6 +656,7 @@ internal object HardeningHelpText {
     appendLine("  hardeningInit / hardeningAgentTemplate / hardeningAgentTemplateDiff")
     appendLine("                                    scaffold and compare local operator rules")
     suiteDebtTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
+    suiteDiagnosticTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     appendLine()
     appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")
     appendLine("  migrateMutationBaselines          stamp substantive accepted baselines; remove empty placeholders")

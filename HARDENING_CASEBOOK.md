@@ -188,9 +188,13 @@ How the failure *presented* is the transferable part: the second run finished
 in 2.2s against 24.5s — an apparent 11× win. PIT had thrown immediately and
 done nothing, while the previous run's report sat in `build/reports/pitest/`,
 so the verify step read it and printed a full, plausible `58/94 detected
-(61%)`. Only the exit code was honest. Rules: *a suite that got faster
-without getting narrower is a bug report*; *delete report directories when
-comparing runs*.
+(61%)`. Only the exit code was honest. The current task lifecycle closes that
+specific presentation: before launching PIT it clears the known decision-grade
+leaves, writes `.running`, and retains unfiltered stdout/stderr beside the selected
+report. It deliberately does not recursively delete the public report directory,
+so consumer-added diagnostics survive. Rules: *a suite that got faster without
+getting narrower is a bug report*; *trust exit status and the attempt sentinel*;
+*use the retained raw logs to diagnose, never as mutation evidence*.
 
 ## The fresh flag that changed the population
 
@@ -1567,11 +1571,25 @@ story — until certification succeeded at load 280–308, failed at 44, and a b
 rebase succeeded at 102. A quiet solo run even produced a `RUN_ERROR`. The measured
 condition described where an event was first noticed, not what caused it.
 
-The durable discriminator remained coordinate recurrence. Retain the row before a quiet
-rerun overwrites it; the same coordinate recurring is a code/test defect to investigate,
-while different one-offs remain transient infrastructure evidence. Rules: *load average
-is context, not diagnosis*; *do not turn correlation into an automatic retry*; *identity
-and recurrence decide whether two failures are the same observation*.
+That experience initially hardened recurrence into a false binary: a repeated coordinate
+was called a code/test defect rather than infrastructure. Incident-client later disproved
+it. `IncidentIoIncidentClientFactory.provider:20` recurred as `RUN_ERROR` in full-suite
+certification, yet four history-free class-scoped attempts killed it. Four history-free
+full-suite attempts failed once at that same coordinate. PIT's log supplied the missing
+shape: `Minion did not start or died during analysis` about 38 seconds into a population
+with the same nine mutation units. That stable packing was consistent with a repeatable
+point in the analysis stream sampling an aggregate failure repeatedly; recurrence
+identified the observation, not its cause.
+
+The useful comparison keeps bytecode and history mode fixed while changing scope. A
+coordinate that kills reliably in a class-scoped batched run but fails only in the full
+population points away from the mutant alone — without proving load or memory. If scoped
+batching and one-mutant isolation disagree, the unit boundary matters: inspect
+inter-mutant state leaks first, then packing/process and diagnostic-overhead effects.
+Neither diagnostic can certify: the release verdict remains a clean fresh full unscoped
+run. Rules: *load average is context, not diagnosis*; *recurrence localizes an observation,
+not a cause*; *compare full, scoped-batched, and isolated shapes before blaming either the
+mutant or the machine*; *do not turn correlation into an automatic retry*.
 
 ## The fake clock that still waited 416ms
 

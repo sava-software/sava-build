@@ -199,6 +199,11 @@ $buildTail
             }
             Path dir = Path.of(reportDir);
             Files.createDirectories(dir);
+            Files.writeString(dir.resolve("arguments.txt"), String.join("\n", args) + "\n");
+            if (mode.equals("fail-before-report")) {
+              System.err.print("failed before report");
+              System.exit(4);
+            }
             String status = mode.equals("timeout") ? "TIMED_OUT" :
                 (mode.equals("survive") ? "SURVIVED" : "KILLED");
             Files.writeString(dir.resolve("mutations.csv"),
@@ -597,10 +602,20 @@ $buildTail
       ok.output.contains("suppressed 4 repeated minion log line(s)"),
       "suppression summary missing:\n" + ok.output
     )
+    val fullReportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    assertEquals(
+      3,
+      occurrences(fullReportDir.resolve("pitest.stdout.log").readText(), "common noise"),
+      "raw stdout must retain console-deduplicated minion lines",
+    )
+    assertEquals(
+      2,
+      occurrences(fullReportDir.resolve("pitest.stderr.log").readText(), "common noise"),
+      "raw stderr must retain console-deduplicated minion lines",
+    )
     // the verify finalizer read the fake's report as a full, unscoped run
     assertTrue(ok.output.contains("pitest 'encoding': 1/1 detected (100%)"), ok.output)
 
-    val fullReportDir = File(fixtureDir, "build/reports/pitest/encoding")
     fun reportSnapshot(dir: File): Map<String, List<Byte>> = dir.walkTopDown()
       .filter(File::isFile)
       .associate { it.relativeTo(dir).invariantSeparatorsPath to it.readBytes().toList() }
@@ -675,6 +690,11 @@ $buildTail
       reportSnapshot(fullReportDir),
       "a failed scoped run changed full-population evidence",
     )
+    assertFalse(marker.exists(), "a failed scoped attempt retained an older scope marker")
+    assertTrue(
+      scopedReportDir.resolve(".running").isFile,
+      "a failed scoped attempt exposed its older report",
+    )
     mode.delete()
 
     runner("pitestEncoding").build()
@@ -682,7 +702,174 @@ $buildTail
       fullReportDir.resolve(".scoped").exists(),
       "an unscoped report must never carry a scoped marker",
     )
-    assertTrue(marker.isFile, "an unscoped run need not destroy the separate scoped diagnostic")
+    assertFalse(
+      marker.exists(),
+      "a later unscoped run must not revive an invalidated scoped diagnostic",
+    )
+  }
+
+  @Test
+  fun `PIT attempt cleanup removes only decision-grade leaves and truncates retained logs`() {
+    writeFixture()
+    runner("pitestEncoding").build()
+
+    val report = File(fixtureDir, "build/reports/pitest/encoding")
+    report.resolve("mutations.xml").writeText("stale XML")
+    report.resolve("index.html").writeText("stale HTML index")
+    report.resolve("pitest.stdout.log").writeText("stale stdout")
+    report.resolve("pitest.stderr.log").writeText("stale stderr")
+    report.resolve("custom/deep-report.html").apply {
+      parentFile.mkdirs()
+      writeText("consumer-owned")
+    }
+
+    runner("pitestEncoding").build()
+
+    assertFalse(report.resolve("mutations.xml").exists(), "stale decision-grade XML survived")
+    assertFalse(report.resolve("index.html").exists(), "stale decision-grade HTML index survived")
+    assertFalse(report.resolve("pitest.stdout.log").readText().contains("stale stdout"))
+    assertFalse(report.resolve("pitest.stderr.log").readText().contains("stale stderr"))
+    assertEquals("consumer-owned", report.resolve("custom/deep-report.html").readText())
+    assertTrue(report.resolve("mutations.csv").isFile)
+    assertTrue(report.resolve(".evidence.tsv").isFile)
+    assertFalse(report.resolve(".running").exists())
+  }
+
+  @Test
+  fun `a process failure before report creation cannot expose the previous report`() {
+    writeFixture()
+    runner("pitestEncoding").build()
+
+    val report = File(fixtureDir, "build/reports/pitest/encoding")
+    report.resolve("mutations.xml").writeText("stale XML")
+    report.resolve("index.html").writeText("stale HTML index")
+    File(fixtureDir, "fake-pit-mode.txt").writeText("fail-before-report\n")
+
+    val failed = runner("pitestEncoding").buildAndFail().output
+
+    assertTrue(failed.contains("failed attempt raw logs"), failed)
+    assertTrue(report.resolve(".running").isFile, "failed attempt exposed old evidence")
+    listOf("mutations.csv", "mutations.xml", "index.html", ".evidence.tsv", ".toolchain.tsv")
+      .forEach { stale -> assertFalse(report.resolve(stale).exists(), "stale $stale survived") }
+    assertTrue(report.resolve("pitest.stderr.log").readText().endsWith("failed before report"))
+  }
+
+  @Test
+  fun `diagnostic PIT is verbose history-free isolated and cannot replace ordinary evidence`() {
+    writeFixture()
+    runner("pitestEncoding").build()
+    val ordinary = File(fixtureDir, "build/reports/pitest/encoding")
+    fun decisionSnapshot(): Map<String, List<Byte>> =
+      listOf("mutations.csv", ".evidence.tsv", ".toolchain.tsv")
+        .associateWith { ordinary.resolve(it).readBytes().toList() }
+    val before = decisionSnapshot()
+
+    val diagnostic = runner("pitestEncodingDiagnostic").build()
+    val report = File(fixtureDir, "build/reports/pitest-diagnostic/encoding")
+    val arguments = report.resolve("arguments.txt").readLines()
+
+    assertTrue("--verbosity=VERBOSE_NO_SPINNER" in arguments, arguments.toString())
+    assertFalse(arguments.any { it.startsWith("--history") })
+    assertFalse(arguments.contains("--features=+arcmutate_history"))
+    assertTrue(report.resolve("mutations.csv").isFile)
+    assertTrue(report.resolve("pitest.stdout.log").isFile)
+    assertTrue(report.resolve("pitest.stderr.log").isFile)
+    assertFalse(report.resolve(".evidence.tsv").exists())
+    assertFalse(report.resolve(".toolchain.tsv").exists())
+    assertFalse(report.resolve(".running").exists())
+    assertEquals(before, decisionSnapshot(), "diagnosis replaced ordinary suite evidence")
+    assertTrue(
+      diagnostic.output.contains("VERBOSE_NO_SPINNER diagnostic") &&
+          diagnostic.output.contains("isolated output cannot support") &&
+          diagnostic.output.contains(report.resolve("pitest.stdout.log").absolutePath) &&
+          !diagnostic.output.contains("pitest 'encoding': 1/1 detected"),
+      diagnostic.output,
+    )
+
+    runner(
+      "pitestEncodingDiagnostic",
+      "-PmutateOnly=com.example.Codec",
+    ).build()
+    val scopedReport = File(fixtureDir, "build/reports/pitest-diagnostic-scoped/encoding")
+    assertEquals("com.example.Codec\n", scopedReport.resolve(".scoped").readText())
+    assertTrue(scopedReport.resolve("pitest.stdout.log").isFile)
+    assertEquals(before, decisionSnapshot(), "scoped diagnosis replaced ordinary evidence")
+    val scopedRepeat = runner(
+      "pitestEncodingDiagnostic",
+      "-PmutateOnly=com.example.Codec",
+    ).build()
+    assertTrue(scopedRepeat.output.contains("Configuration cache entry reused."), scopedRepeat.output)
+  }
+
+  @Test
+  fun `diagnostic report paths cannot be redirected onto decision-grade evidence`() {
+    writeFixture(
+      buildTail =
+        """
+          if (providers.gradleProperty("redirectDiagnostic").isPresent) {
+            tasks.named<software.sava.build.hardening.task.PitestDiagnosticTask>(
+                "pitestEncodingDiagnostic") {
+              reportDirectory.set(layout.buildDirectory.dir("reports/pitest/encoding"))
+            }
+          }
+        """.trimIndent(),
+    )
+    runner("pitestEncoding").build()
+    val ordinary = File(fixtureDir, "build/reports/pitest/encoding")
+    val before = listOf("mutations.csv", ".evidence.tsv", ".toolchain.tsv")
+      .associateWith { ordinary.resolve(it).readBytes().toList() }
+
+    val refused = runner("pitestEncodingDiagnostic", "-PredirectDiagnostic").buildAndFail().output
+
+    assertTrue(
+      refused.contains("cannot be changed") || refused.contains("cannot change"),
+      refused,
+    )
+    assertEquals(
+      before,
+      before.keys.associateWith { ordinary.resolve(it).readBytes().toList() },
+      "refused diagnostic redirection changed ordinary evidence",
+    )
+  }
+
+  @Test
+  fun `diagnostic PIT refuses customization that weakens its non-evidence invariants`() {
+    writeFixture(
+      buildTail =
+        """
+          tasks.named<software.sava.build.hardening.task.PitestDiagnosticTask>(
+              "pitestEncodingDiagnostic") {
+            historyRequested.set(true)
+            bindSuiteEvidence.set(true)
+            enforceExit.set(false)
+            diagnosticMode.set(false)
+            verbosity.set("DEFAULT")
+            args("--historyInputLocation=unmanaged.hist")
+          }
+        """.trimIndent(),
+    )
+
+    val report = File(fixtureDir, "build/reports/pitest-diagnostic/encoding")
+    val preserved = report.resolve("preserved.txt").apply {
+      parentFile.mkdirs()
+      writeText("prior diagnostic\n")
+    }
+    val failed = runner("pitestEncodingDiagnostic").buildAndFail().output
+
+    assertTrue(failed.contains("diagnostic safety invariant(s) were overridden"), failed)
+    listOf(
+      "historyRequested must be false",
+      "bindSuiteEvidence must be false",
+      "enforceExit must be true",
+      "diagnosticMode must be true",
+      "verbosity must be VERBOSE_NO_SPINNER",
+      "direct PIT arguments/providers are not allowed",
+    ).forEach { finding -> assertTrue(failed.contains(finding), failed) }
+    assertEquals(
+      "prior diagnostic\n",
+      preserved.readText(),
+      "refused diagnostic changed its prior isolated output",
+    )
   }
 
   @Test
@@ -1832,6 +2019,34 @@ $buildTail
   }
 
   @Test
+  fun `diagnostic PIT refuses a certification graph before touching diagnostic output`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val diagnosticReport = File(fixtureDir, "build/reports/pitest-diagnostic/encoding")
+    val preserved = diagnosticReport.resolve("preserved.txt").apply {
+      parentFile.mkdirs()
+      writeText("prior diagnostic\n")
+    }
+    val failed = runner(
+      "hardeningCertify",
+      "pitestEncodingDiagnostic",
+    ).buildAndFail().output
+
+    assertTrue(
+      failed.contains("verbose diagnostics cannot run inside hardeningCertify") &&
+          failed.contains("separate Gradle invocations"),
+      failed,
+    )
+    assertEquals(
+      "prior diagnostic\n",
+      preserved.readText(),
+      "certification-graph refusal changed prior diagnostic output",
+    )
+  }
+
+  @Test
   fun `baseline writers reject isolated execution before PIT or record changes`() {
     writeFixture()
     val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv")
@@ -2042,9 +2257,14 @@ $buildTail
   }
 
   @Test
-  fun `evidence commit failure keeps the report behind the running sentinel`() {
+  fun `malformed attempt state is refused before any report leaf is changed`() {
     writeFixture()
     val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    val staleCsv = reportDir.resolve("mutations.csv").apply {
+      parentFile.mkdirs()
+      writeText("stale report\n")
+    }
+    val staleLog = reportDir.resolve("pitest.stdout.log").apply { writeText("stale log\n") }
     reportDir.resolve(".evidence.tsv/blocked").apply {
       parentFile.mkdirs()
       writeText("not a replaceable evidence file")
@@ -2052,7 +2272,17 @@ $buildTail
 
     val failed = runner("pitestEncoding").buildAndFail().output
 
-    assertTrue(reportDir.resolve(".running").isFile, "evidence failure exposed the report:\n$failed")
+    assertFalse(
+      reportDir.resolve(".running").exists(),
+      "pre-attempt validation partially started a report lifecycle:\n$failed",
+    )
+    assertTrue(
+      reportDir.resolve(".evidence.tsv/blocked").isFile,
+      "pre-attempt validation changed the malformed leaf it refused",
+    )
+    assertEquals("stale report\n", staleCsv.readText(), "atomic validation deleted the old CSV")
+    assertEquals("stale log\n", staleLog.readText(), "atomic validation truncated the old log")
+    assertFalse(reportDir.resolve("arguments.txt").exists(), "PIT ran after pre-attempt refusal")
     assertTrue(
       failed.contains("partial population is not evidence") ||
           failed.contains(".evidence.tsv"),
@@ -2166,6 +2396,24 @@ $buildTail
     assertFalse(
       failed.output.contains("slowest PIT coverage-phase test"),
       "a failed PIT attempt emitted cost advice from incomplete evidence:\n${failed.output}",
+    )
+    val failedReport = File(fixtureDir, "build/reports/pitest/encoding")
+    assertTrue(
+      failed.output.contains("failed attempt raw logs") &&
+          failed.output.contains(failedReport.resolve("pitest.stdout.log").absolutePath) &&
+          failed.output.contains(failedReport.resolve("pitest.stderr.log").absolutePath),
+      failed.output,
+    )
+    assertEquals(
+      3,
+      occurrences(failedReport.resolve("pitest.stdout.log").readText(), "common noise"),
+    )
+    assertEquals(
+      2,
+      occurrences(failedReport.resolve("pitest.stderr.log").readText(), "common noise"),
+    )
+    assertTrue(
+      failedReport.resolve("pitest.stderr.log").readText().endsWith("partial tail before crash"),
     )
     assertEquals(
       "com.example.Codec\n", marker.readText(),

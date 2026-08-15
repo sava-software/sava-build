@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.hardening.task.HardeningCommandLines
 import java.io.File
 
 class PitestEvidenceSnapshotTest {
@@ -141,6 +142,31 @@ class PitestEvidenceSnapshotTest {
 
     assertEquals(legacy.configurationSha256, explicitZero.configurationSha256)
     assertNotEquals(legacy.configurationSha256, isolated.configurationSha256)
+  }
+
+  @Test
+  fun `non-default PIT verbosity is opaque evidence input while default stays compatible`() {
+    val pluginCode = file("plugin/sava-build.jar", "sava-build")
+    val input = input(pluginCode = pluginCode)
+    val pluginSha256 = PitestEvidence.sha256(pluginCode)
+    val legacy = PitestEvidenceSnapshot.capture(input, emptyList(), pluginSha256, 0)
+    val explicitDefault = PitestEvidenceSnapshot.capture(
+      input,
+      emptyList(),
+      pluginSha256,
+      0,
+      HardeningCommandLines.PitestVerbosity.DEFAULT,
+    )
+    val verbose = PitestEvidenceSnapshot.capture(
+      input,
+      emptyList(),
+      pluginSha256,
+      0,
+      " verbose_no_spinner ",
+    )
+
+    assertEquals(legacy.configurationSha256, explicitDefault.configurationSha256)
+    assertNotEquals(legacy.configurationSha256, verbose.configurationSha256)
   }
 
   private fun input(

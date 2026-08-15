@@ -5,6 +5,10 @@ import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+/** Keeps the causal operation failure while retaining cleanup diagnostics. */
+internal fun retainPrimaryFailure(primary: Throwable?, next: Throwable): Throwable =
+  primary?.also { it.addSuppressed(next) } ?: next
+
 /**
  * Collapses repeated PIT minion log lines while preserving every non-minion line.
  *
@@ -17,28 +21,47 @@ internal class MinionLineFilter(
   private val seen: MutableSet<String>,
   private val suppressed: AtomicInteger,
   private val coverageStats: PitestCoverageStats,
+  /** Raw per-stream output retained before console-only minion deduplication. */
+  private val retained: OutputStream? = null,
 ) : OutputStream() {
 
   private val buffer = ByteArrayOutputStream()
 
   override fun write(value: Int) {
+    retained?.write(value)
     buffer.write(value)
     if (value == '\n'.code) flushLine()
   }
 
   override fun write(bytes: ByteArray, offset: Int, length: Int) {
-    for (index in offset until offset + length) write(bytes[index].toInt())
+    retained?.write(bytes, offset, length)
+    for (index in offset until offset + length) {
+      val value = bytes[index].toInt()
+      buffer.write(value)
+      if (value == '\n'.code) flushLine()
+    }
   }
 
   override fun flush() {
+    retained?.flush()
     delegate.flush()
   }
 
   override fun close() {
-    if (buffer.size() > 0) flushLine()
+    var failure: Throwable? = null
+    fun attempt(operation: () -> Unit) {
+      try {
+        operation()
+      } catch (next: Throwable) {
+        failure = retainPrimaryFailure(failure, next)
+      }
+    }
+    if (buffer.size() > 0) attempt(::flushLine)
+    attempt { retained?.close() }
     // The destinations belong to Gradle (and are normally System.out/System.err).
     // Closing this filter must never close them for later tasks.
-    delegate.flush()
+    attempt(delegate::flush)
+    failure?.let { throw it }
   }
 
   private fun flushLine() {
@@ -115,19 +138,30 @@ internal class PitestCoverageStats {
 internal class MinionOutputFilters(
   standardOutput: OutputStream,
   errorOutput: OutputStream,
+  retainedStandardOutput: OutputStream? = null,
+  retainedErrorOutput: OutputStream? = null,
 ) {
   private val seen = ConcurrentHashMap.newKeySet<String>()
   private val suppressed = AtomicInteger()
   private val coverageStats = PitestCoverageStats()
 
   val standardOutput: OutputStream =
-    MinionLineFilter(standardOutput, seen, suppressed, coverageStats)
+    MinionLineFilter(
+      standardOutput, seen, suppressed, coverageStats, retainedStandardOutput)
   val errorOutput: OutputStream =
-    MinionLineFilter(errorOutput, seen, suppressed, coverageStats)
+    MinionLineFilter(
+      errorOutput, seen, suppressed, coverageStats, retainedErrorOutput)
 
   fun closeAndSummarize(): PitestOutputSummary {
-    standardOutput.close()
-    errorOutput.close()
+    var failure: Throwable? = null
+    listOf(standardOutput, errorOutput).forEach { output ->
+      try {
+        output.close()
+      } catch (next: Throwable) {
+        failure = retainPrimaryFailure(failure, next)
+      }
+    }
+    failure?.let { throw it }
     return PitestOutputSummary(suppressed.get(), coverageStats.snapshot())
   }
 }

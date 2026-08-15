@@ -35,6 +35,7 @@ import software.sava.build.hardening.task.HardeningCertificationPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationTask
 import software.sava.build.hardening.task.PitestConvergeTask
 import software.sava.build.hardening.task.PitestDebtTask
+import software.sava.build.hardening.task.PitestDiagnosticTask
 import software.sava.build.hardening.task.PitestEvidenceSpec
 import software.sava.build.hardening.task.PitestEvidenceValidationTask
 import software.sava.build.hardening.task.PitestModeCommitTask
@@ -4934,6 +4935,7 @@ hardening.mutation.all {
     } else {
       spec.mutationUnitSize.set(0)
     }
+    spec.verbosity.set(evidencePitestTask.verbosity)
     spec.mutationBytecodeRelease.set(evidenceMutationRelease)
     spec.recompileExcludes.set(evidenceRecompileExcludes)
   }
@@ -5077,6 +5079,40 @@ hardening.mutation.all {
       HardeningWriteRequest.TIMEOUT_AUDIT_INIT,
       "Runs '$suiteName' fresh and seeds its audited timeout membership.")
 
+  // One-shot verbose diagnosis is deliberately a separate report/evidence world.
+  // It shares the suite's actual classes, tests, mutators, launcher and execution
+  // lock, but cannot replace or verify any decision-grade observation.
+  val diagnosticTaskName = "${pitestTaskName}Diagnostic"
+  tasks.register<PitestDiagnosticTask>(diagnosticTaskName) {
+    group = "verification"
+    description =
+      "Runs verbose, history-free '$suiteName' PIT diagnostics without producing mutation evidence."
+    configureTypedPitest(
+      this,
+      suiteName,
+      suite.mutators,
+      withHistory = false,
+      bindSuiteEvidence = false,
+      isolateScopedReport = true,
+    )
+    // Diagnostic output must explain the normal task's actual process, including
+    // the two late JavaExec customizations the evidence model explicitly supports.
+    javaLauncher.set(evidencePitestTask.javaLauncher)
+    classpath = evidencePitestTask.effectiveToolClasspath
+    mainClass.set(evidencePitestTask.mainClass)
+    dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
+    reportDirectory.set(layout.buildDirectory.dir("reports/pitest-diagnostic/$suiteName"))
+    scopedReportDirectory.set(
+      layout.buildDirectory.dir("reports/pitest-diagnostic-scoped/$suiteName"))
+    // Unlike the ordinary JavaExec-compatible task, a diagnostic may never be
+    // redirected onto decision-grade suite output.
+    reportDirectory.disallowChanges()
+    scopedReportDirectory.disallowChanges()
+    javaLauncher.disallowChanges()
+    mainClass.disallowChanges()
+    effectiveToolClasspath.disallowChanges()
+  }
+
   // The convergence second round reuses the normal suite report path but has no
   // ratchet finalizer. Its typed preflight refuses certification before touching
   // the attempt sentinel.
@@ -5088,6 +5124,11 @@ hardening.mutation.all {
     mustRunAfter(pitestConvergeSnapshot)
     round2After?.let { mustRunAfter(it) }
     configureTypedPitest(this, suiteName, suite.mutators, withHistory = true)
+    javaLauncher.set(evidencePitestTask.javaLauncher)
+    classpath = evidencePitestTask.effectiveToolClasspath
+    mainClass.set(evidencePitestTask.mainClass)
+    verbosity.set(evidencePitestTask.verbosity)
+    dependsOn(evidencePitestTask.effectiveToolClasspath.buildDependencies)
   }
   hardeningCertify.configure { mustRunAfter(round2Name) }
   pitestConverge.configure { dependsOn(round2Name) }

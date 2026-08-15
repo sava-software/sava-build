@@ -163,6 +163,7 @@ class HardeningOperationsFunctionalTest {
 
     listOf(
       "pitestEncodingDebt",
+      "pitestEncodingDiagnostic",
       "pitestEncodingBaselineRebase",
       "pitestEncodingBaselineUpdate",
       "pitestEncodingBaselineUnion",

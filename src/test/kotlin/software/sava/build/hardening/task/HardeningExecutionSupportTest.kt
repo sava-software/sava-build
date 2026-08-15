@@ -3,6 +3,7 @@ package software.sava.build.hardening.task
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertIterableEquals
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 
 class HardeningExecutionSupportTest {
@@ -70,7 +72,19 @@ class HardeningExecutionSupportTest {
     assertTrue("--projectBase=${tempDir.absolutePath}" in arguments)
     assertTrue("--jvmArgs=-Xmx1g,{-Dlabels=alpha,beta}" in arguments)
     assertTrue("--features=+arcmutate_history" in arguments)
+    assertFalse(arguments.any { it.startsWith("--verbosity=") })
     assertFalse(arguments.any { it == "--targetClasses=example.*" })
+
+    val diagnostic = HardeningCommandLines.pitest(
+      spec.copy(
+        historyActive = false,
+        verbosity = " verbose_no_spinner ",
+      )
+    )
+    assertTrue("--verbosity=VERBOSE_NO_SPINNER" in diagnostic)
+    assertThrows(IllegalArgumentException::class.java) {
+      HardeningCommandLines.pitest(spec.copy(verbosity = "debug"))
+    }
 
     val fresh = HardeningCommandLines.pitest(spec.copy(mutateOnly = null, historyActive = false))
     assertTrue("--targetClasses=example.*" in fresh)
@@ -198,7 +212,9 @@ class HardeningExecutionSupportTest {
   fun `minion filter deduplicates across streams and flushes unterminated tails`() {
     val stdout = ByteArrayOutputStream()
     val stderr = ByteArrayOutputStream()
-    val filters = MinionOutputFilters(stdout, stderr)
+    val retainedStdout = ByteArrayOutputStream()
+    val retainedStderr = ByteArrayOutputStream()
+    val filters = MinionOutputFilters(stdout, stderr, retainedStdout, retainedStderr)
 
     filters.standardOutput.write("PIT >> INFO : MINION : common\nplain\n".toByteArray())
     filters.errorOutput.write("PIT >> INFO : MINION : common\n".toByteArray())
@@ -209,6 +225,55 @@ class HardeningExecutionSupportTest {
     assertEquals(null, summary.slowestTest)
     assertEquals("PIT >> INFO : MINION : common\nplain\n", stdout.toString(Charsets.UTF_8))
     assertEquals("PIT >> INFO : MINION : final tail", stderr.toString(Charsets.UTF_8))
+    assertEquals(
+      "PIT >> INFO : MINION : common\nplain\n",
+      retainedStdout.toString(Charsets.UTF_8),
+    )
+    assertEquals(
+      "PIT >> INFO : MINION : common\nPIT >> INFO : MINION : final tail",
+      retainedStderr.toString(Charsets.UTF_8),
+    )
+  }
+
+  @Test
+  fun `minion filter closes both retained streams and preserves both close failures`() {
+    class FailingCloseOutput(private val label: String) : ByteArrayOutputStream() {
+      var closeAttempted = false
+
+      override fun close() {
+        closeAttempted = true
+        throw IOException("$label close failed")
+      }
+    }
+
+    val retainedStdout = FailingCloseOutput("stdout")
+    val retainedStderr = FailingCloseOutput("stderr")
+    val filters = MinionOutputFilters(
+      ByteArrayOutputStream(),
+      ByteArrayOutputStream(),
+      retainedStdout,
+      retainedStderr,
+    )
+    filters.standardOutput.write("stdout".toByteArray())
+    filters.errorOutput.write("stderr".toByteArray())
+
+    val failure = assertThrows(IOException::class.java) { filters.closeAndSummarize() }
+
+    assertTrue(retainedStdout.closeAttempted)
+    assertTrue(retainedStderr.closeAttempted)
+    assertEquals("stdout close failed", failure.message)
+    assertEquals(listOf("stderr close failed"), failure.suppressed.map { it.message })
+  }
+
+  @Test
+  fun `cleanup failure is suppressed onto the existing PIT failure`() {
+    val pitFailure = IllegalStateException("PIT failed")
+    val closeFailure = IOException("raw log close failed")
+
+    val retained = retainPrimaryFailure(pitFailure, closeFailure)
+
+    assertSame(pitFailure, retained)
+    assertEquals(listOf(closeFailure), pitFailure.suppressed.toList())
   }
 
   @Test

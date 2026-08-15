@@ -104,6 +104,10 @@ abstract class PitestExecTask : JavaExec() {
   @get:Input
   abstract val timestampedReports: Property<Boolean>
 
+  /** PIT process logging level. DEFAULT is omitted from the command line and evidence text. */
+  @get:Input
+  abstract val verbosity: Property<String>
+
   @get:Input
   @get:Optional
   abstract val mutateOnly: Property<String>
@@ -145,6 +149,10 @@ abstract class PitestExecTask : JavaExec() {
 
   @get:Input
   abstract val bindSuiteEvidence: Property<Boolean>
+
+  /** True only for the isolated, non-evidence diagnostic task family. */
+  @get:Input
+  abstract val diagnosticMode: Property<Boolean>
 
   @get:Input
   abstract val certifyingProjectPath: Property<String>
@@ -217,6 +225,7 @@ abstract class PitestExecTask : JavaExec() {
     mutators,
     outputFormats,
     timestampedReports,
+    verbosity,
     threads,
     minionJvmArgs,
     timeoutFactor,
@@ -229,12 +238,14 @@ abstract class PitestExecTask : JavaExec() {
     mainClass.convention("org.pitest.mutationtest.commandline.MutationCoverageReport")
     outputFormats.convention(listOf("HTML", "XML", "CSV"))
     timestampedReports.convention(false)
+    verbosity.convention(HardeningCommandLines.PitestVerbosity.DEFAULT)
     historyRequested.convention(true)
     historyLicensed.convention(false)
     historyExplicitlyDisabled.convention(false)
     mutationUnitSize.convention(0)
     enforceExit.convention(true)
     bindSuiteEvidence.convention(true)
+    diagnosticMode.convention(false)
     isIgnoreExitValue = true
     argumentProviders.add(commandLineProvider)
   }
@@ -270,6 +281,9 @@ abstract class PitestExecTask : JavaExec() {
   @TaskAction
   override fun exec() {
     requirePluginCodeUnchanged("pitest '${suiteName.get()}' before execution")
+    // Validate before the report lifecycle starts. Command-line assembly and
+    // evidence capture repeat this normalization at their own trust boundaries.
+    HardeningCommandLines.PitestVerbosity.normalize(verbosity.get())
     // Resolve and validate the effective engine before touching the attempt
     // sentinel. An expired, malformed, or ambiguous certificate must not leave an
     // older report looking like an interrupted current run.
@@ -282,56 +296,110 @@ abstract class PitestExecTask : JavaExec() {
     // completion markers even if another task publishes build-service state later.
     commandLineProvider.useHistory(historyActive)
 
-    // Gradle's default process streams are represented as null after a
-    // configuration-cache round trip. Their documented effective destinations are
-    // the console streams; make that fallback explicit before crossing Kotlin's
-    // non-null boundary so minion deduplication remains active on a cache hit.
-    val originalStandardOutput: OutputStream = getStandardOutput() ?: System.out
-    val originalErrorOutput: OutputStream = getErrorOutput() ?: System.err
-    val filters = MinionOutputFilters(originalStandardOutput, originalErrorOutput)
-    standardOutput = filters.standardOutput
-    errorOutput = filters.errorOutput
-
     var attempt: PitestAttempt? = null
     var outputSummary: PitestOutputSummary? = null
     var executionFailure: Throwable? = null
+    var attemptLogs: PitestAttemptLogs? = null
+    var failureLogsPrinted = false
+    fun printFailureLogs() {
+      if (failureLogsPrinted) return
+      val logs = attemptLogs ?: return
+      failureLogsPrinted = true
+      logger.lifecycle(
+        "pitest '${suiteName.get()}': failed attempt raw logs (diagnostic only; not evidence): " +
+          "${logs.standardOutput}, ${logs.errorOutput}"
+      )
+    }
     try {
       attempt = beginAttempt(historyActive, initialToolchain)
-      afterAttemptStarted()
-      super.exec()
-    } catch (failure: Throwable) {
-      executionFailure = failure
-      throw failure
-    } finally {
-      standardOutput = originalStandardOutput
-      errorOutput = originalErrorOutput
-      val summary = filters.closeAndSummarize()
-      outputSummary = summary
-      if (summary.suppressedMinionLines > 0) {
+      val logs = PitestAttemptLogs(currentReportDirectory())
+      attemptLogs = logs
+      // Gradle's default process streams are represented as null after a
+      // configuration-cache round trip. Their documented effective destinations are
+      // the console streams; make that fallback explicit before crossing Kotlin's
+      // non-null boundary so minion deduplication remains active on a cache hit.
+      val originalStandardOutput: OutputStream = getStandardOutput() ?: System.out
+      val originalErrorOutput: OutputStream = getErrorOutput() ?: System.err
+      val retainedStandardOutput = logs.standardOutput.outputStream()
+      var retainedErrorOutput: OutputStream? = null
+      val filters = try {
+        retainedErrorOutput = logs.errorOutput.outputStream()
+        MinionOutputFilters(
+          originalStandardOutput,
+          originalErrorOutput,
+          retainedStandardOutput,
+          retainedErrorOutput,
+        )
+      } catch (failure: Throwable) {
+        listOfNotNull(retainedStandardOutput, retainedErrorOutput).forEach { output ->
+          try {
+            output.close()
+          } catch (closeFailure: Throwable) {
+            failure.addSuppressed(closeFailure)
+          }
+        }
+        throw failure
+      }
+      standardOutput = filters.standardOutput
+      errorOutput = filters.errorOutput
+      if (diagnosticMode.get()) {
         logger.lifecycle(
-          "pitest: suppressed ${summary.suppressedMinionLines} repeated minion log line(s) — " +
-              "first occurrence of each is above"
+          "pitest '${suiteName.get()}': verbose diagnostic raw logs (not mutation evidence): " +
+            "${logs.standardOutput}, ${logs.errorOutput}"
         )
       }
       try {
-        requirePluginCodeUnchanged("pitest '${suiteName.get()}' after execution")
-      } catch (identityFailure: Throwable) {
-        if (executionFailure != null) {
-          executionFailure.addSuppressed(identityFailure)
-        } else {
-          throw identityFailure
+        afterAttemptStarted()
+        super.exec()
+      } catch (failure: Throwable) {
+        executionFailure = failure
+        throw failure
+      } finally {
+        standardOutput = originalStandardOutput
+        errorOutput = originalErrorOutput
+        var postExecutionFailure: Throwable? = executionFailure
+        try {
+          outputSummary = filters.closeAndSummarize()
+        } catch (closeFailure: Throwable) {
+          postExecutionFailure = retainPrimaryFailure(postExecutionFailure, closeFailure)
+        }
+        val summary = outputSummary
+        if (summary != null && summary.suppressedMinionLines > 0) {
+          logger.lifecycle(
+            "pitest: suppressed ${summary.suppressedMinionLines} repeated minion log line(s) — " +
+                "first occurrence of each is above"
+          )
+        }
+        try {
+          requirePluginCodeUnchanged("pitest '${suiteName.get()}' after execution")
+        } catch (identityFailure: Throwable) {
+          postExecutionFailure = retainPrimaryFailure(postExecutionFailure, identityFailure)
+        }
+        if (executionFailure == null) {
+          postExecutionFailure?.let { throw it }
         }
       }
+    } catch (failure: Throwable) {
+      printFailureLogs()
+      throw failure
     }
 
     val result = executionResult.get()
-    if (enforceExit.get()) result.assertNormalExitValue()
-    if (result.exitValue != 0) return
-    completeAttempt(checkNotNull(attempt), historyActive)
-    afterSuccessfulAttempt(
-      outputSummary?.slowestTest?.name,
-      outputSummary?.slowestTest?.durationMillis,
-    )
+    if (result.exitValue != 0) {
+      printFailureLogs()
+      if (enforceExit.get()) result.assertNormalExitValue()
+      return
+    }
+    try {
+      completeAttempt(checkNotNull(attempt), historyActive)
+      afterSuccessfulAttempt(
+        outputSummary?.slowestTest?.name,
+        outputSummary?.slowestTest?.durationMillis,
+      )
+    } catch (failure: Throwable) {
+      printFailureLogs()
+      throw failure
+    }
   }
 
   private fun historyActiveNow(): Boolean =
@@ -362,7 +430,7 @@ abstract class PitestExecTask : JavaExec() {
       certificationSession.get().startAttempt(certifyingProjectPath.get(), suite, invocationId)
     }
 
-    reportDir.mkdirs()
+    prepareAttemptDirectory(reportDir)
     reportDir.resolve(RUNNING_MARKER).writeText("")
     if (!bindsEvidence) return PitestAttempt(invocationId, null, toolchain)
 
@@ -459,6 +527,10 @@ abstract class PitestExecTask : JavaExec() {
     mutateOnly.orNull,
   )
 
+  /** Direct PIT arguments/providers would bypass the managed diagnostic invariants. */
+  protected fun unmanagedPitArgumentsPresent(): Boolean =
+    getArgs().isNotEmpty() || argumentProviders.any { it !== commandLineProvider }
+
   private fun evidenceSnapshot(
     invocationId: String,
     reportSha256: String,
@@ -491,7 +563,7 @@ abstract class PitestExecTask : JavaExec() {
       reportSha256 = reportSha256,
       scope = scope,
       historyAssisted = historyAssisted,
-    ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get())
+    ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get(), verbosity.get())
   }
 
   private fun requirePluginCodeUnchanged(context: String) {
@@ -516,6 +588,46 @@ abstract class PitestExecTask : JavaExec() {
     val preRunToolchain: MutationToolchainRecord,
   )
 
+  private data class PitestAttemptLogs(
+    val standardOutput: File,
+    val errorOutput: File,
+  ) {
+    constructor(reportDirectory: File) : this(
+      reportDirectory.resolve(STANDARD_OUTPUT_LOG),
+      reportDirectory.resolve(ERROR_OUTPUT_LOG),
+    )
+  }
+
+  /**
+   * Invalidates only leaves whose continued presence can be mistaken for this
+   * attempt's decision-grade output. The report directory is a public JavaExec
+   * customization surface, so unrelated/deep HTML content is never recursively
+   * deleted here.
+   */
+  private fun prepareAttemptDirectory(reportDirectory: File) {
+    BaselineFiles.requireDirectoryOrMissing(reportDirectory)
+    if (!reportDirectory.isDirectory && !reportDirectory.mkdirs()) {
+      throw GradleException("pitest '${suiteName.get()}': cannot create report directory $reportDirectory")
+    }
+    val staleLeaves = listOf(
+      REPORT_FILE,
+      XML_REPORT_FILE,
+      HTML_INDEX_FILE,
+      RUNNING_MARKER,
+      SCOPED_MARKER,
+      HISTORY_MARKER,
+      EVIDENCE_FILE,
+      TOOLCHAIN_FILE,
+      EVIDENCE_INVOCATION_FILE,
+      STANDARD_OUTPUT_LOG,
+      ERROR_OUTPUT_LOG,
+    ).map(reportDirectory::resolve)
+    // Validate the complete set before deleting any leaf so a linked/non-regular
+    // artifact cannot produce a half-invalidated attempt directory.
+    staleLeaves.forEach(BaselineFiles::requireRegularFileOrMissing)
+    staleLeaves.forEach(BaselineFiles::deleteIfExists)
+  }
+
   private fun mutationToolchainRecord(): MutationToolchainRecord {
     val projectDirectory = evidenceProjectDirectory.get().asFile
     val lookupStart = workingDir
@@ -538,12 +650,16 @@ abstract class PitestExecTask : JavaExec() {
 
   private companion object {
     const val REPORT_FILE = "mutations.csv"
+    const val XML_REPORT_FILE = "mutations.xml"
+    const val HTML_INDEX_FILE = "index.html"
     const val RUNNING_MARKER = ".running"
     const val SCOPED_MARKER = ".scoped"
     const val HISTORY_MARKER = ".history-assisted"
     const val EVIDENCE_FILE = ".evidence.tsv"
     const val TOOLCHAIN_FILE = ".toolchain.tsv"
     const val EVIDENCE_INVOCATION_FILE = ".evidence-invocation"
+    const val STANDARD_OUTPUT_LOG = "pitest.stdout.log"
+    const val ERROR_OUTPUT_LOG = "pitest.stderr.log"
   }
 }
 
@@ -732,6 +848,48 @@ abstract class PitestConvergeTask : PitestExecTask() {
   }
 }
 
+/** Verbose, history-free PIT diagnosis isolated from every decision-grade report. */
+@UntrackedTask(because = "PIT diagnostics must execute whenever selected")
+abstract class PitestDiagnosticTask : PitestExecTask() {
+  init {
+    historyRequested.convention(false)
+    bindSuiteEvidence.convention(false)
+    diagnosticMode.convention(true)
+    verbosity.convention(HardeningCommandLines.PitestVerbosity.VERBOSE_NO_SPINNER)
+  }
+
+  override fun beforeAttempt() {
+    val diagnosticVerbosity =
+      HardeningCommandLines.PitestVerbosity.normalize(verbosity.get())
+    val overriddenInvariants = buildList {
+      if (historyRequested.get()) add("historyRequested must be false")
+      if (bindSuiteEvidence.get()) add("bindSuiteEvidence must be false")
+      if (!enforceExit.get()) add("enforceExit must be true")
+      if (!diagnosticMode.get()) add("diagnosticMode must be true")
+      if (unmanagedPitArgumentsPresent()) add("direct PIT arguments/providers are not allowed")
+      if (diagnosticVerbosity != HardeningCommandLines.PitestVerbosity.VERBOSE_NO_SPINNER) {
+        add("verbosity must be ${HardeningCommandLines.PitestVerbosity.VERBOSE_NO_SPINNER}")
+      }
+    }
+    if (overriddenInvariants.isNotEmpty()) {
+      throw GradleException(
+        "pitest '${suiteName.get()}': diagnostic safety invariant(s) were overridden: " +
+          overriddenInvariants.joinToString("; ")
+      )
+    }
+    if (certificationSession.get().isActive(certifyingProjectPath.get())) {
+      throw GradleException(
+        "pitest '${suiteName.get()}': verbose diagnostics cannot run inside hardeningCertify; " +
+          "run the diagnostic and certification in separate Gradle invocations"
+      )
+    }
+    logger.lifecycle(
+      "pitest '${suiteName.get()}': VERBOSE_NO_SPINNER diagnostic — history disabled; " +
+        "isolated output cannot support baseline, timeout-audit, mode, or certification decisions"
+    )
+  }
+}
+
 /** Candidate-mutator measurement: isolated report, no history, and a tolerated zero-fire exit. */
 @UntrackedTask(because = "A mutator trial must execute whenever selected")
 abstract class PitestMutatorTrialTask : PitestExecTask() {
@@ -748,9 +906,8 @@ abstract class PitestMutatorTrialTask : PitestExecTask() {
           "(e.g. EXPERIMENTAL_NAKED_RECEIVER), not the suite's existing set"
       )
     }
-    // A failed trial writes no complete report. Refuse to tabulate an earlier run.
-    val report = currentReportDirectory()
-    BaselineFiles.deleteRecursivelyIfExists(report)
+    // The common attempt lifecycle clears every known decision-grade leaf without
+    // recursively deleting consumer-added report content.
   }
 }
 
@@ -767,6 +924,7 @@ private class PitestCommandLineProvider(
   private val mutators: Property<String>,
   private val outputFormats: ListProperty<String>,
   private val timestampedReports: Property<Boolean>,
+  private val verbosity: Property<String>,
   private val threads: Property<Int>,
   private val minionJvmArgs: ListProperty<String>,
   private val timeoutFactor: Property<Double>,
@@ -799,6 +957,7 @@ private class PitestCommandLineProvider(
         mutators = mutators.get(),
         outputFormats = outputFormats.get(),
         timestampedReports = timestampedReports.get(),
+        verbosity = verbosity.get(),
         threads = threads.get(),
         minionJvmArgs = minionJvmArgs.get(),
         timeoutFactor = timeoutFactor.get().toString(),

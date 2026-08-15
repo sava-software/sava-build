@@ -187,6 +187,20 @@ run cheaper. The cost model is directly optimisable:
   (the verify runs as the failed task's finalizer, so without this a
   same-invocation prune workflow would rewrite the baseline from whatever
   fraction of the population PIT reached before dying).
+- **Use `pitest<Suite>Diagnostic` when PIT itself is the question** — it runs
+  `VERBOSE_NO_SPINNER`, history-free, in isolated
+  `build/reports/pitest-diagnostic[-scoped]/<suite>` directories. It has no
+  verifier or quality-gate edge and emits no suite evidence, so its output can
+  show each stream's minion progress, coverage, or failure context but can never
+  support a baseline, timeout-audit, mode, or certification decision. Every PIT task
+  retains the attempt's unfiltered `pitest.stdout.log` and `pitest.stderr.log`
+  beside the selected report before console minion deduplication; failures after
+  attempt startup and diagnostic runs print those paths. The files are truncated on
+  the next attempt selecting that full/scoped report directory,
+  are explicitly non-evidence, and may contain test output, paths, JVM arguments,
+  or other machine-local sensitive data — do not publish them blindly. Attempt
+  startup removes only the known decision-grade report leaves and markers, never
+  recursively deletes consumer-added report content.
 - **Tune the per-test timeout to the suite's real runtimes** — PIT's default
   allowance is `recorded time × 1.25 + 4000ms`; every hanging-mutant
   detection pays that flat fee. Rank the suite's tests by duration first: one
@@ -220,8 +234,10 @@ run cheaper. The cost model is directly optimisable:
 
 Open-source PIT accepts `--historyInputLocation`/`--historyOutputLocation`
 but its only registered history factory throws — do not re-attempt on the
-strength of the CLI flags existing, and note the failed run leaves the
-previous report in place for the verify step to read *(casebook: the 11×
+strength of the CLI flags existing. That historical failure once left the
+previous report in place for verification to read; the current attempt lifecycle
+clears known decision-grade leaves before launch and keeps failures behind
+`.running`, with raw logs retained beside the selected report *(casebook: the 11×
 "speedup" that did no work)*.
 
 The hardening plugin and this process are package-agnostic: any Java project can
@@ -1932,11 +1948,24 @@ MINION_DIED, worker EOF, and the daemon log)*:
   detected score turn infrastructure failure into certification. The refusal prints
   every offending CSV row, and `pitest<Suite>Debt` repeats those rows while falling
   back to the committed baseline for its read-only tally. Save that coordinate (or run
-  Debt) before a quiet re-run replaces the report; a `RUN_ERROR` that persists at the
-  same coordinate is not load and deserves investigation in the mutated bytecode.
-  `RUN_ERROR` alone diagnoses neither load nor memory and never justifies retuning
-  the suite. Record system load and PIT/minion RSS as context, then repeat once on
-  a quiet machine. Reduce `threads` for measured aggregate contention or set
+  Debt) before a quiet re-run replaces the report. `RUN_ERROR` alone diagnoses neither
+  load nor memory and never justifies retuning the suite. Record system load and
+  PIT/minion RSS as context, then repeat once history-free on a quiet machine.
+  Recurrence localizes a repeatable observation, not its cause: a stable mutation-unit
+  partition can repeatedly attribute an aggregate-contention minion death to the same
+  reported coordinate. Compare fresh history-free full-suite attempts with
+  `-PmutateOnly=<class> -PnoMutationHistory`. If the class-scoped batched run kills
+  reliably while the full suite fails at a stable analysis point, investigate the
+  broader population, unit packing, and cross-class effects rather than declaring the
+  mutant defective or load proven. If scoped batching and `-PisolateMutants` disagree,
+  the mutation-unit boundary matters: inspect leaked state first, then packing,
+  process, and measurement overhead. For per-process progress run
+  `pitest<Suite>Diagnostic` full and with `-PmutateOnly=<class>`; read its retained
+  stdout and stderr separately. The last announced unit/mutation narrows where the
+  worker stopped, not why, and the two streams establish no total order. Those
+  comparisons are diagnostic only;
+  only a clean fresh full unscoped run can support records or certification. Reduce
+  `threads` for measured aggregate contention or set
   evidence-bound `minionJvmArgs` only when PIT's preceding output specifically
   diagnoses a process-resource or insufficient-memory failure; a generic minion
   death is not that diagnosis.
@@ -2298,10 +2327,15 @@ edit the block merely to normalize the presentation used by releases before 21.5
 >   `PASSED` lines hides a failure sitting next to them, and a green
 >   `clean build` can mean the build cache short-circuited rather than that
 >   tests ran. Check the failure count and confirm the task actually executed.
->   A mutation run has a second version of this: a *failed* PIT run leaves the
->   previous run's report in place, so the summary you read can describe a run
->   that never happened. Trust the exit code, and delete report directories
->   when comparing runs.
+>   A mutation run has a second version of this: PIT writes reports incrementally,
+>   so a failed run can otherwise look complete. The plugin clears known
+>   decision-grade leaves before each attempt, writes `.running` until clean
+>   completion, and retains unfiltered `pitest.stdout.log` / `pitest.stderr.log`
+>   beside the selected report. Trust the exit code and sentinel, not a summary
+>   from a failed attempt. Use `pitest<Suite>Diagnostic` for isolated
+>   `VERBOSE_NO_SPINNER`, history-free investigation; its report and raw logs are
+>   machine-local diagnostic output, may contain sensitive test/process details,
+>   and can never support a record or certification decision.
 > - **A suite that got faster without getting narrower is a bug report.** Real
 >   speedups come from fewer mutants or faster covering tests; an unexplained
 >   one usually means the run did less than you think. Read the task's evidence
@@ -2317,8 +2351,16 @@ edit the block merely to normalize the presentation used by releases before 21.5
 >   quiet re-run replaces the report. `RUN_ERROR` alone diagnoses neither load nor
 >   memory and never justifies changing threads or heap; record load/RSS as context,
 >   retry once quietly, and tune only when PIT explicitly diagnoses a process-resource
->   failure. A repeat at the same coordinate is not evidence
->   of load: investigate the mutated bytecode, its covering tests, and the tool failure.
+>   failure. Recurrence localizes a repeatable observation, not its cause: stable
+>   mutation-unit partition can report an aggregate-contention minion death at the same
+>   coordinate repeatedly. Compare fresh history-free full attempts with
+>   `-PmutateOnly=<class> -PnoMutationHistory`; a reliable scoped kill points away from
+>   the mutant alone without proving load, while a scoped batched/`-PisolateMutants`
+>   difference says the mutation-unit boundary matters — inspect leaked state first,
+>   then packing/process overhead. Run `pitest<Suite>Diagnostic` full and scoped when
+>   per-process progress is missing; its separate raw streams establish no total order,
+>   and the last announced mutation is context, not cause. Only a clean fresh full
+>   unscoped run can support records or certification.
 >   The daemon log
 >   (`~/.gradle/daemon/<version>/daemon-<pid>.out.log`) keeps a failed build's
 >   full output even when the shell discarded it — read it before calling a

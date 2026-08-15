@@ -26,6 +26,16 @@ class HardeningTypedTaskArchitectureTest {
       script.contains("spec.toolClasspath.from(evidencePitestTask.effectiveToolClasspath)"),
       "typed evidence validators are not wired to the effective normal-task classpath",
     )
+    assertTrue(
+      script.contains("spec.verbosity.set(evidencePitestTask.verbosity)"),
+      "typed evidence validators are not wired to late normal-task verbosity customization",
+    )
+    assertTrue(
+      script.contains("classpath = evidencePitestTask.effectiveToolClasspath") &&
+          script.contains("javaLauncher.set(evidencePitestTask.javaLauncher)") &&
+          script.contains("verbosity.set(evidencePitestTask.verbosity)"),
+      "diagnostic/convergence tasks do not follow the normal task's supported process overrides",
+    )
     assertFalse(
       script.contains("providers.provider { pitestRun.get().effectiveToolClasspath }"),
       "a revalidation surface reintroduced the provider-backed classpath that resolves at cache store",

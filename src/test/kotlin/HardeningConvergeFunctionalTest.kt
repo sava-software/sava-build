@@ -85,6 +85,9 @@ class HardeningConvergeFunctionalTest {
             )
           }
         }
+        tasks.named<software.sava.build.hardening.task.PitestRunTask>("pitestEncoding") {
+          verbosity.set("NO_SPINNER")
+        }
       """.trimIndent() + "\n",
     )
     File(fixtureDir, "src/main/java/com/example/FakePit.java").apply {
@@ -107,6 +110,7 @@ class HardeningConvergeFunctionalTest {
               }
               if (reportDir == null) throw new IllegalArgumentException("missing --reportDir");
               Files.createDirectories(reportDir);
+              Files.writeString(reportDir.resolve("arguments.txt"), String.join("\n", args) + "\n");
               Path staged = Path.of(System.getProperty("fixture.pit.report"));
               for (String name : new String[] {"mutations.csv", "mutations.xml"}) {
                 Files.copy(staged.resolve(name), reportDir.resolve(name),
@@ -316,6 +320,11 @@ class HardeningConvergeFunctionalTest {
       assertTrue(round2.resolve(".evidence.tsv").isFile, "$suite round two has no evidence")
       assertTrue(round2.resolve(".toolchain.tsv").isFile, "$suite round two has no toolchain")
     }
+    val round2Arguments = File(fixtureDir, "build/reports/pitest/encoding/arguments.txt")
+    assertTrue(
+      round2Arguments.readText().lineSequence().any { it == "--verbosity=NO_SPINNER" },
+      "round two did not inherit the normal task's evidence-bound verbosity",
+    )
 
     val round2Toolchain = File(
       fixtureDir,

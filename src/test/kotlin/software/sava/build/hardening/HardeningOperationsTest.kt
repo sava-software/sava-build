@@ -47,6 +47,8 @@ class HardeningOperationsTest {
     )
 
     assertTrue(help.contains("pitestEncodingDebt"), help)
+    assertTrue(help.contains("pitestEncodingDiagnostic"), help)
+    assertTrue(help.contains("isolated output is not mutation evidence"), help)
     assertTrue(help.contains("pitestEncodingBaselineRebase"), help)
     assertTrue(help.contains("pitestEncodingBaselineUpdate"), help)
     assertTrue(

@@ -184,10 +184,16 @@ class AgentsTemplateSyncFunctionalTest {
       printed.contains("Invalid execution outcomes are not results") &&
           printed.contains("never justifies changing threads or heap") &&
           printed.contains("record load/RSS as context") &&
-          printed.contains("A repeat at the same coordinate is not evidence") &&
-          printed.contains("investigate the mutated bytecode"),
-      "the version-matched template must not misclassify a repeatable RUN_ERROR as infrastructure:\n$printed",
+          printed.contains("Recurrence localizes a repeatable observation, not its cause") &&
+          Regex("stable\\s+mutation-unit partition").containsMatchIn(printed) &&
+          printed.contains("-PmutateOnly=<class> -PnoMutationHistory") &&
+          printed.contains("pitest<Suite>Diagnostic") &&
+          printed.contains("separate raw streams establish no total order") &&
+          printed.contains("last announced mutation is context, not cause") &&
+          Regex("Only a clean fresh full\\s+unscoped run").containsMatchIn(printed),
+      "the version-matched template must not turn a repeatable RUN_ERROR coordinate into a cause diagnosis:\n$printed",
     )
+    assertFalse(printed.contains("same coordinate is not evidence"), printed)
     assertTrue(
       printed.contains("mutationOwnershipAudit") &&
           printed.contains("whole-population"),

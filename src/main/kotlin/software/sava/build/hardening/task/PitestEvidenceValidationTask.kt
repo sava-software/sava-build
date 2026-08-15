@@ -206,11 +206,13 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
   @get:Input abstract val timeoutFactor: Property<Double>
   @get:Input abstract val timeoutConst: Property<Long>
   @get:Input abstract val mutationUnitSize: Property<Int>
+  @get:Input abstract val verbosity: Property<String>
   @get:Input abstract val mutationBytecodeRelease: Property<Int>
   @get:Input abstract val recompileExcludes: ListProperty<String>
 
   init {
     mutationUnitSize.convention(0)
+    verbosity.convention(HardeningCommandLines.PitestVerbosity.DEFAULT)
   }
 
   fun capture(recorded: PitestEvidence, useRecordedReportHash: Boolean): PitestEvidence {
@@ -303,7 +305,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
       reportSha256 = reportSha256,
       scope = scope,
       historyAssisted = historyAssisted,
-    ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get())
+    ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get(), verbosity.get())
   }
 
   internal fun requirePluginCodeUnchanged() {

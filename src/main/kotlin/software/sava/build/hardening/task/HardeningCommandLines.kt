@@ -5,6 +5,29 @@ import java.io.File
 /** Pure command-line assembly kept outside Gradle task actions for direct testing. */
 internal object HardeningCommandLines {
 
+  internal object PitestVerbosity {
+    const val DEFAULT = "DEFAULT"
+    const val VERBOSE_NO_SPINNER = "VERBOSE_NO_SPINNER"
+
+    private val supported = setOf(
+      "SILENT",
+      "QUIET",
+      "QUIET_WITH_PROGRESS",
+      DEFAULT,
+      "NO_SPINNER",
+      VERBOSE_NO_SPINNER,
+      "VERBOSE",
+    )
+
+    fun normalize(value: String): String {
+      val normalized = value.trim().uppercase()
+      require(normalized in supported) {
+        "unsupported PIT verbosity '$value' (expected ${supported.sorted().joinToString()})"
+      }
+      return normalized
+    }
+  }
+
   data class Pitest(
     val applicationClasspath: List<File>,
     val targetClasses: List<String>,
@@ -24,6 +47,7 @@ internal object HardeningCommandLines {
     val historyActive: Boolean,
     val historyFile: File,
     val mutationUnitSize: Int = 0,
+    val verbosity: String = PitestVerbosity.DEFAULT,
   )
 
   fun pitest(spec: Pitest): List<String> = buildList {
@@ -49,6 +73,10 @@ internal object HardeningCommandLines {
     }
     add("--timeoutFactor=${spec.timeoutFactor}")
     add("--timeoutConst=${spec.timeoutConst}")
+    val verbosity = PitestVerbosity.normalize(spec.verbosity)
+    if (verbosity != PitestVerbosity.DEFAULT) {
+      add("--verbosity=$verbosity")
+    }
     require(spec.mutationUnitSize >= 0) { "PIT mutation unit size must not be negative" }
     if (spec.mutationUnitSize > 0) {
       require(scopedTargets.isNotEmpty()) {

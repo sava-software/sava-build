@@ -87,8 +87,29 @@ object PitestEvidenceSnapshot {
     minionJvmArgs: Iterable<String>,
     pluginSha256: String,
     mutationUnitSize: Int,
+  ): PitestEvidence = capture(
+    input,
+    minionJvmArgs,
+    pluginSha256,
+    mutationUnitSize,
+    software.sava.build.hardening.task.HardeningCommandLines.PitestVerbosity.DEFAULT,
+  )
+
+  /**
+   * Binds an explicitly customized PIT verbosity without changing ordinary-run
+   * configuration hashes. Diagnostic tasks do not persist suite evidence, but a
+   * consumer's late customization of a decision-grade task must remain observable.
+   */
+  internal fun capture(
+    input: PitestEvidenceSnapshotInput,
+    minionJvmArgs: Iterable<String>,
+    pluginSha256: String,
+    mutationUnitSize: Int,
+    verbosity: String,
   ): PitestEvidence {
     require(mutationUnitSize >= 0) { "PIT mutation unit size must not be negative" }
+    val normalizedVerbosity =
+      software.sava.build.hardening.task.HardeningCommandLines.PitestVerbosity.normalize(verbosity)
     // Realize once at the execution boundary. Apart from avoiding inconsistent views
     // of a mutable FileCollection, this guarantees the order hash and content hash see
     // exactly the same classpath membership.
@@ -108,6 +129,10 @@ object PitestEvidenceSnapshot {
       appendLine("timeoutConst=${input.timeoutConst}")
       if (mutationUnitSize > 0) {
         appendLine("mutationUnitSize=$mutationUnitSize")
+      }
+      if (normalizedVerbosity !=
+          software.sava.build.hardening.task.HardeningCommandLines.PitestVerbosity.DEFAULT) {
+        appendLine("verbosity=$normalizedVerbosity")
       }
       appendLine("mutationBytecodeRelease=${input.mutationBytecodeRelease}")
       appendLine("recompileExcludes=${input.recompileExcludes.sorted().joinToString(",")}")
