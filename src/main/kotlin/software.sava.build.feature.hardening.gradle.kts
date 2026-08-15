@@ -4783,8 +4783,10 @@ hardening.mutation.all {
   // not stash before the runs finish — or clear a report the verify finalizer still reads
   pitestModeSnapshot.configure { mustRunAfter(pitestTaskName, "${pitestTaskName}Verify") }
 
-  // Keep the public tasks JavaExec-compatible while moving their complete process
-  // lifecycle into typed classes. Configuration here is provider wiring only; task
+  // Keep the public tasks JavaExec-compatible for the explicitly mirrored launcher,
+  // tool-classpath, and main-class surface while moving their complete process
+  // lifecycle into typed classes. Direct PIT args/providers are refused because they
+  // bypass the evidence identity. Configuration here is provider wiring only; task
   // execution no longer reaches through this precompiled script.
   val typedMutateOnly = mutationScopeProperty
   val typedPluginCode = evidencePluginCode

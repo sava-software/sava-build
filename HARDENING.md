@@ -1510,6 +1510,13 @@ repo reads one line per module: `0 of 1` from a module with no such arithmetic
 beside `1 of 1` from the module that has it is the expected shape, not a
 miscount.
 
+Those launcher, tool-classpath, main-class, and managed-verbosity properties are
+the supported late `JavaExec` compatibility surface for typed PIT tasks. Direct
+`args(...)` and extra `argumentProviders` are refused: they can override the
+plugin-owned command line without entering its evidence identity. If a needed PIT
+option is missing, add it as a first-class typed, validated, evidence-bound option
+instead of bypassing the model.
+
 The same blindness has a structural sibling: **fluent APIs**. A call whose
 return type is its receiver type is an expression, so `VoidMethodCallMutator`
 never fires on it — a builder-style header write, a `StringBuilder.append`

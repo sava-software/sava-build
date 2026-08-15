@@ -52,9 +52,11 @@ internal fun shouldAdvisePitestCoverageTestCost(durationMillis: Long): Boolean =
 /**
  * Common typed PIT process with execution-time lifecycle and evidence ownership.
  *
- * The task remains a [JavaExec], preserving the public task API consumers already
- * configure. All values read by [exec] are managed properties or named build-service
- * references; no execution action reaches through `Task.project` or a script object.
+ * The task remains a [JavaExec] for the supported launcher, tool-classpath, and
+ * main-class compatibility surface. PIT arguments themselves are owned by typed,
+ * evidence-bound properties; arbitrary direct arguments/providers are refused.
+ * All values read by [exec] are managed properties or named build-service references;
+ * no execution action reaches through `Task.project` or a script object.
  */
 @DisableCachingByDefault(because = "Abstract process base; concrete PIT tasks are always untracked")
 abstract class PitestExecTask : JavaExec() {
@@ -278,8 +280,19 @@ abstract class PitestExecTask : JavaExec() {
     slowestTestDurationMillis: Long?,
   ) = Unit
 
+  /** Optional task-family context for a non-zero exit that this task deliberately tolerates. */
+  protected open fun toleratedNonZeroExitContext(): String? = null
+
   @TaskAction
   override fun exec() {
+    if (unmanagedPitArgumentsPresent()) {
+      throw GradleException(
+        "pitest '${suiteName.get()}': direct JavaExec args/argumentProviders are not supported — " +
+          "they bypass typed PIT configuration and its evidence identity. Configure " +
+          "hardening.mutation instead; a missing PIT option needs a first-class typed, " +
+          "evidence-bound plugin property."
+      )
+    }
     requirePluginCodeUnchanged("pitest '${suiteName.get()}' before execution")
     // Validate before the report lifecycle starts. Command-line assembly and
     // evidence capture repeat this normalization at their own trust boundaries.
@@ -300,16 +313,29 @@ abstract class PitestExecTask : JavaExec() {
     var outputSummary: PitestOutputSummary? = null
     var executionFailure: Throwable? = null
     var attemptLogs: PitestAttemptLogs? = null
-    var failureLogsPrinted = false
-    fun printFailureLogs() {
-      if (failureLogsPrinted) return
+    var attemptLogsPrinted = false
+    fun printAttemptLogs(disposition: AttemptLogDisposition, exitValue: Int? = null) {
+      if (attemptLogsPrinted) return
       val logs = attemptLogs ?: return
-      failureLogsPrinted = true
+      attemptLogsPrinted = true
+      val prefix = when (disposition) {
+        AttemptLogDisposition.FAILED -> "failed attempt raw logs"
+        AttemptLogDisposition.TOLERATED_NON_ZERO -> buildString {
+          append("tolerated non-zero exit ")
+          append(requireNotNull(exitValue))
+          toleratedNonZeroExitContext()?.let { context ->
+            append("; ")
+            append(context)
+          }
+          append(". Raw logs")
+        }
+      }
       logger.lifecycle(
-        "pitest '${suiteName.get()}': failed attempt raw logs (diagnostic only; not evidence): " +
+        "pitest '${suiteName.get()}': $prefix (diagnostic only; not evidence): " +
           "${logs.standardOutput}, ${logs.errorOutput}"
       )
     }
+    fun printFailureLogs() = printAttemptLogs(AttemptLogDisposition.FAILED)
     try {
       attempt = beginAttempt(historyActive, initialToolchain)
       val logs = PitestAttemptLogs(currentReportDirectory())
@@ -386,8 +412,12 @@ abstract class PitestExecTask : JavaExec() {
 
     val result = executionResult.get()
     if (result.exitValue != 0) {
-      printFailureLogs()
-      if (enforceExit.get()) result.assertNormalExitValue()
+      if (enforceExit.get()) {
+        printFailureLogs()
+        result.assertNormalExitValue()
+      } else {
+        printAttemptLogs(AttemptLogDisposition.TOLERATED_NON_ZERO, result.exitValue)
+      }
       return
     }
     try {
@@ -527,8 +557,8 @@ abstract class PitestExecTask : JavaExec() {
     mutateOnly.orNull,
   )
 
-  /** Direct PIT arguments/providers would bypass the managed diagnostic invariants. */
-  protected fun unmanagedPitArgumentsPresent(): Boolean =
+  /** Direct PIT arguments/providers would bypass managed configuration and evidence identity. */
+  private fun unmanagedPitArgumentsPresent(): Boolean =
     getArgs().isNotEmpty() || argumentProviders.any { it !== commandLineProvider }
 
   private fun evidenceSnapshot(
@@ -587,6 +617,11 @@ abstract class PitestExecTask : JavaExec() {
     val preRunEvidence: PitestEvidence?,
     val preRunToolchain: MutationToolchainRecord,
   )
+
+  private enum class AttemptLogDisposition {
+    FAILED,
+    TOLERATED_NON_ZERO,
+  }
 
   private data class PitestAttemptLogs(
     val standardOutput: File,
@@ -866,7 +901,6 @@ abstract class PitestDiagnosticTask : PitestExecTask() {
       if (bindSuiteEvidence.get()) add("bindSuiteEvidence must be false")
       if (!enforceExit.get()) add("enforceExit must be true")
       if (!diagnosticMode.get()) add("diagnosticMode must be true")
-      if (unmanagedPitArgumentsPresent()) add("direct PIT arguments/providers are not allowed")
       if (diagnosticVerbosity != HardeningCommandLines.PitestVerbosity.VERBOSE_NO_SPINNER) {
         add("verbosity must be ${HardeningCommandLines.PitestVerbosity.VERBOSE_NO_SPINNER}")
       }
@@ -909,6 +943,9 @@ abstract class PitestMutatorTrialTask : PitestExecTask() {
     // The common attempt lifecycle clears every known decision-grade leaf without
     // recursively deleting consumer-added report content.
   }
+
+  override fun toleratedNonZeroExitContext(): String =
+    "for a mutator trial a candidate set that cannot fire is an expected cause"
 }
 
 private class PitestCommandLineProvider(

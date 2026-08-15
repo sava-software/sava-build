@@ -200,6 +200,9 @@ $buildTail
             Path dir = Path.of(reportDir);
             Files.createDirectories(dir);
             Files.writeString(dir.resolve("arguments.txt"), String.join("\n", args) + "\n");
+            if (mode.equals("zero-fire")) {
+              System.exit(2);
+            }
             if (mode.equals("fail-before-report")) {
               System.err.print("failed before report");
               System.exit(4);
@@ -840,6 +843,30 @@ $buildTail
       "-PtrialMutators=EXPERIMENTAL_BIG_INTEGER",
     ).build()
     assertTrue(repeated.output.contains("Configuration cache entry reused."), repeated.output)
+
+    File(fixtureDir, "fake-pit-mode.txt").writeText("zero-fire\n")
+    val zeroFire = runner(
+      "pitestMutatorTrial",
+      "-PtrialMutators=EXPERIMENTAL_BIG_INTEGER",
+    ).build()
+    assertTrue(
+      zeroFire.output.contains(
+        "tolerated non-zero exit 2; for a mutator trial a candidate set that cannot fire " +
+          "is an expected cause. Raw logs",
+      ),
+      zeroFire.output,
+    )
+    assertTrue(
+      zeroFire.output.contains("fired in 0 of 1 suite(s)") &&
+          zeroFire.output.contains("0 generated (no report — cannot fire here, or the run failed above)"),
+      zeroFire.output,
+    )
+    assertTrue(
+      zeroFire.output.contains(report.resolve("pitest.stdout.log").absolutePath) &&
+          zeroFire.output.contains(report.resolve("pitest.stderr.log").absolutePath),
+      zeroFire.output,
+    )
+    assertFalse(zeroFire.output.contains("failed attempt raw logs"), zeroFire.output)
   }
 
   @Test
@@ -885,7 +912,6 @@ $buildTail
             enforceExit.set(false)
             diagnosticMode.set(false)
             verbosity.set("DEFAULT")
-            args("--historyInputLocation=unmanaged.hist")
           }
         """.trimIndent(),
     )
@@ -904,13 +930,66 @@ $buildTail
       "enforceExit must be true",
       "diagnosticMode must be true",
       "verbosity must be VERBOSE_NO_SPINNER",
-      "direct PIT arguments/providers are not allowed",
     ).forEach { finding -> assertTrue(failed.contains(finding), failed) }
     assertEquals(
       "prior diagnostic\n",
       preserved.readText(),
       "refused diagnostic changed its prior isolated output",
     )
+  }
+
+  @Test
+  fun `unmanaged PIT arguments are refused before report evidence is touched`() {
+    writeFixture(
+      buildTail =
+        """
+          if (providers.gradleProperty("unmanagedPitArgs").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") {
+              args("--excludedMethods=hiddenOverride")
+            }
+          }
+          if (providers.gradleProperty("unmanagedPitProvider").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") {
+              argumentProviders.add(object : org.gradle.process.CommandLineArgumentProvider {
+                override fun asArguments(): Iterable<String> =
+                  listOf("--excludedMethods=hiddenProviderOverride")
+              })
+            }
+          }
+        """.trimIndent(),
+    )
+    runner("pitestEncoding").build()
+
+    val report = File(fixtureDir, "build/reports/pitest/encoding")
+    val protectedFiles = listOf(
+      "mutations.csv",
+      ".evidence.tsv",
+      ".toolchain.tsv",
+      "arguments.txt",
+    )
+    val before = protectedFiles.associateWith { report.resolve(it).readBytes().toList() }
+
+    listOf("unmanagedPitArgs", "unmanagedPitProvider").forEach { property ->
+      val refused = runner(
+        "pitestEncoding",
+        "-P$property",
+        "--no-configuration-cache",
+      ).buildAndFail().output
+      assertTrue(
+        refused.contains("direct JavaExec args/argumentProviders are not supported") &&
+            refused.contains("first-class typed, evidence-bound plugin property"),
+        refused,
+      )
+      assertEquals(
+        before,
+        protectedFiles.associateWith { report.resolve(it).readBytes().toList() },
+        "$property changed prior decision-grade output before refusal",
+      )
+      assertFalse(
+        report.resolve(".running").exists(),
+        "$property reached the PIT attempt lifecycle before refusal",
+      )
+    }
   }
 
   @Test
