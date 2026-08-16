@@ -28,9 +28,9 @@ abstract class HardeningAdvisoryLog : BuildService<BuildServiceParameters.None>,
   private val advisories = ConcurrentLinkedQueue<Advisory>()
 
   /**
-   * Records one finding. [scope] identifies the suite it came from (project path plus
-   * suite name); [summary] is a short noun phrase, not the full advice — the full text
-   * has already been logged where the finding was made.
+   * Records one finding. [scope] identifies the repository, project, suite, or other
+   * hardening scope it came from; [summary] is a short noun phrase, not the full
+   * advice — the full text has already been logged where the finding was made.
    */
   fun record(scope: String, summary: String) {
     advisories.add(Advisory(scope, summary))
@@ -45,8 +45,8 @@ abstract class HardeningAdvisoryLog : BuildService<BuildServiceParameters.None>,
     Logging.getLogger(HardeningAdvisoryLog::class.java).warn(
       buildString {
         append(
-          "hardening: ${found.size} advisory finding(s) across ${byScope.size} suite(s) — none failed the " +
-            "build; each is printed in full above, next to the suite that found it:"
+          "hardening: ${found.size} advisory finding(s) across ${byScope.size} scope(s) — none failed the " +
+            "build; each is printed in full above, next to the scope that found it:"
         )
         byScope.forEach { (scope, entries) ->
           append("\n  $scope: ${entries.joinToString(", ") { it.summary }}")

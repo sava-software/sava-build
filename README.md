@@ -388,6 +388,12 @@ SHA-256 when settings apply, checks them again at evidence boundaries, and refus
 fuzz, and certification evidence if either path changes. Start a new consumer invocation
 after every publish.
 
+When a handoff or a stale-coordinate diagnosis calls for `--refresh-dependencies`, treat
+that invocation as a transport refresh, not a configuration-cache reuse probe. Gradle
+does not reuse an existing configuration-cache entry while that flag is present; repeat
+the same task graph without it twice when needed — the second no-refresh run must report
+that the configuration cache was reused.
+
 Every build that resolves plugins from the local repo also says so, once, at the end:
 
 ```
@@ -516,10 +522,9 @@ the exact candidate bytes without ArcMutate history.
 
 The record contains relative receipt paths but no checkout paths or credentials. Each
 repository entry says whether it is a `feature-path` or `certification-only` consumer.
-It cannot
-infer an independent Gradle root that produced no receipt, so compare that list with the
-handoff's intended adoption scope before committing the record. From the clean attestation
-commit, verify the proposed record:
+It cannot infer an independent Gradle root that produced no receipt, so compare that list
+with the handoff's intended adoption scope before committing the record. From the clean
+attestation commit, verify the proposed record:
 
 ```shell
 tools/release-attestation.sh verify "$version"

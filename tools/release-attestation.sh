@@ -204,7 +204,7 @@ report_certification_sentinel() {
 
 certification_receipt_summary() {
   local receipt=$1 relative=$2 expected_plugin_hash=$3 expected_commit=$4 expected_tree=$5
-  local before after metadata project session plugin_hash suite_count suites
+  local before after metadata project session plugin_hash receipt_schema suite_count suites
   local git_state git_commit git_tree git_status_sha256 git_project_directory expected_path
   if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
     echo "release-attestation: missing or symlinked certification receipt: $receipt" >&2
@@ -216,6 +216,17 @@ certification_receipt_summary() {
     report_certification_sentinel "$(dirname "$receipt")/pitest-certification.running"
     return 1
   fi
+  receipt_schema=$(awk -F '\t' 'NR == 1 && $1 == "schema" && NF == 2 { print $2 }' \
+    "$receipt") || return 1
+  case "$receipt_schema" in
+    6|'') ;;
+    *[!0-9]*) ;;
+    *)
+      echo "release-attestation: unsupported certification receipt schema $receipt_schema; expected 6: $receipt" >&2
+      echo "release-attestation: recertify that project with the current candidate" >&2
+      return 1
+      ;;
+  esac
   before=$(sha256_file "$receipt") || return 1
   metadata=$(awk -F '\t' '
     $1 == "schema" {
@@ -1450,7 +1461,19 @@ self_test() {
     { print }
   ' "$sava_receipt" > "$sava_receipt.tmp"
   mv "$sava_receipt.tmp" "$sava_receipt"
-  expect_cli_failure "schema-5 consumer certification" "malformed or mixed certification" \
+  expect_cli_failure "schema-5 consumer certification" \
+    "unsupported certification receipt schema 5; expected 6" \
+    "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
+      --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
+  printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"
+
+  awk -F '\t' 'BEGIN { OFS="\t" }
+    $1 == "schema" { $2="7" }
+    { print }
+  ' "$sava_receipt" > "$sava_receipt.tmp"
+  mv "$sava_receipt.tmp" "$sava_receipt"
+  expect_cli_failure "newer consumer certification schema" \
+    "unsupported certification receipt schema 7; expected 6" \
     "$reviewed_script" create-reviewed 1.0.1 --candidate "$reviewed_candidate" \
       --plugin-jar "$reviewed_jar" --adoption "$consumer_sava"
   printf '%s\n' "$valid_sava_receipt" > "$sava_receipt"

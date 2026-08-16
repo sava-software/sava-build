@@ -46,6 +46,9 @@ import java.util.UUID
 
 internal const val PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS = 250L
 
+/** PIT release whose arcmutateMissing meaning was audited; re-audit before changing. */
+private const val ARCMUTATE_MISSING_AUDITED_PIT = "1.25.9"
+
 internal fun shouldAdvisePitestCoverageTestCost(durationMillis: Long): Boolean =
   durationMillis >= PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS
 
@@ -302,6 +305,24 @@ abstract class PitestExecTask : JavaExec() {
     // older report looking like an interrupted current run.
     val initialToolchain = mutationToolchainRecord()
     beforeAttempt()
+    if (diagnosticMode.get()) {
+      initialToolchain.arcMutateBaseVersion?.let { baseVersion ->
+        // The toolchain capture above is the activation and licence boundary. Make
+        // that distinction visible before PIT's poorly named raw field can send an
+        // incident investigation in the wrong direction.
+        val rawFieldMeaning = if (
+          initialToolchain.pitestVersion == ARCMUTATE_MISSING_AUDITED_PIT
+        ) {
+          " With audited PIT $ARCMUTATE_MISSING_AUDITED_PIT, its raw " +
+            "arcmutateMissing field controls only the HTML promotion."
+        } else ""
+        logger.lifecycle(
+          "pitest '${suiteName.get()}': licensed ArcMutate base $baseVersion was validated " +
+            "on the effective tool classpath; that captured toolchain is sava-build's " +
+            "ArcMutate activation identity.$rawFieldMeaning"
+        )
+      }
+    }
 
     val historyActive = historyActiveNow()
     // Freeze this invocation's decision before JavaExec realizes its argument

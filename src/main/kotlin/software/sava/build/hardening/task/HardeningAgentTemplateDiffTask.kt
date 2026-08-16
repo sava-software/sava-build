@@ -4,11 +4,13 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
+import org.gradle.api.services.ServiceReference
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.UntrackedTask
 import org.gradle.process.ExecOperations
+import software.sava.build.hardening.HardeningRepositoryCheckCoordinator
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
@@ -32,12 +34,27 @@ abstract class HardeningAgentTemplateDiffTask : DefaultTask() {
   @get:Input
   abstract val installedTemplate: Property<String>
 
+  @get:Input
+  abstract val repositoryCheckKey: Property<String>
+
+  @get:ServiceReference("hardeningRepositoryCheckCoordinator")
+  abstract val repositoryCheckCoordinator: Property<HardeningRepositoryCheckCoordinator>
+
   @get:Inject
   protected abstract val execOperations: ExecOperations
 
   @TaskAction
   fun printDiff() {
     val agents = agentsFile.get().asFile
+    if (!repositoryCheckCoordinator.get().claim(
+        "hardeningAgentTemplateDiff",
+        agents.absoluteFile.normalize().path,
+        repositoryCheckKey.get(),
+        "review",
+      )) {
+      logger.info("hardeningAgentTemplateDiff: repository-scoped check already ran in this build")
+      return
+    }
     if (!agents.isFile) {
       throw GradleException(
         "hardeningAgentTemplateDiff: ${agents.absolutePath} does not exist; run " +

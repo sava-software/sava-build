@@ -3363,7 +3363,7 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(
-      output.contains("hardening: 5 advisory finding(s) across 1 suite(s)") &&
+      output.contains("hardening: 5 advisory finding(s) across 1 scope(s)") &&
           output.contains(
             "pitest 'encoding': report has no completed-run evidence manifest, " +
                 "committed record is legacy-unversioned, committed record is " +
@@ -3379,7 +3379,7 @@ $fuzzBlock
       .writeText("`Codec.encode` (MathMutator): the estimate crawls, never fails.\n")
     val clean = runner("pitestEncodingVerify").build().output
     assertTrue(
-      clean.contains("hardening: 3 advisory finding(s) across 1 suite(s)") &&
+      clean.contains("hardening: 3 advisory finding(s) across 1 scope(s)") &&
           clean.contains("pitest 'encoding': report has no completed-run evidence manifest") &&
           !clean.contains("unaudited timeout") && !clean.contains("stale audit row"),
       "timeout advisories survived a clean timeout audit:\n$clean"

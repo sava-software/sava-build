@@ -391,4 +391,70 @@ class AgentsTemplateSyncFunctionalTest {
       "the qualified task unexpectedly selected another hardening project:\n${template.output}",
     )
   }
+
+  @Test
+  fun `repository template checks run once across applying subprojects`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "agents-template-repository-scope-test"
+        include("a", "b")
+      """.trimIndent() + "\n"
+    )
+    val moduleBuild =
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+
+        repositories { mavenCentral() }
+      """.trimIndent() + "\n"
+    listOf("a", "b").forEach { name ->
+      File(fixtureDir, name).apply { mkdirs() }
+        .resolve("build.gradle.kts").writeText(moduleBuild)
+    }
+    File(fixtureDir, "AGENTS.md").writeText(
+      "# Agents\n\nAdapted block without boundaries.\n\n" +
+        "<!-- hardening-template sha256:000000000000 -->\n"
+    )
+
+    val diff = runner("hardeningAgentTemplateDiff", "--continue", "--parallel")
+      .buildAndFail().output
+    val failedDiffTasks = diff.lineSequence().count {
+      it.startsWith("> Task :") &&
+        it.contains(":hardeningAgentTemplateDiff") &&
+        it.endsWith(" FAILED")
+    }
+    assertTrue(
+      failedDiffTasks == 1 &&
+        diff.contains("> Task :a:hardeningAgentTemplateDiff") &&
+        diff.contains("> Task :b:hardeningAgentTemplateDiff"),
+      "the repository-scoped diff failure was printed once per applying project:\n$diff",
+    )
+
+    fun assertOneAdvisory(output: String) {
+      assertTrue(
+        output.split("agentsTemplateInSync: AGENTS.md acknowledges template digest").size - 1 == 1,
+        "the repository-scoped stale-marker warning was printed more than once:\n$output",
+      )
+      assertTrue(
+        output.contains("hardening: 1 advisory finding(s) across 1 scope(s)") &&
+          output.contains("repository AGENTS.md: AGENTS.md acknowledges an older hardening template"),
+        "the repository advisory was duplicated or described as suite-scoped:\n$output",
+      )
+    }
+
+    assertOneAdvisory(
+      runner(
+        "agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout", "--parallel",
+      ).build().output,
+    )
+    val reused = runner(
+      "agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout", "--parallel",
+    ).build().output
+    assertTrue(reused.contains("Configuration cache entry reused."), reused)
+    assertOneAdvisory(reused)
+  }
 }

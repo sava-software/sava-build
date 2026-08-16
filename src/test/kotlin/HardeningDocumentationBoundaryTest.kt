@@ -38,4 +38,27 @@ class HardeningDocumentationBoundaryTest {
     assertFalse(featureRow.contains("-PupdateMutationBaseline"))
     assertFalse(featureRow.contains("configuration cache"))
   }
+
+  @Test
+  fun `local validation distinguishes dependency refresh from cache reuse`() {
+    val compactReadme = readme.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactReadme.contains(
+        "treat that invocation as a transport refresh, not a configuration-cache reuse probe"
+      ) && compactReadme.contains("repeat the same task graph without it twice") &&
+          compactReadme.contains("second no-refresh run must report"),
+      "local validation must not ask one --refresh-dependencies invocation to prove cache reuse",
+    )
+  }
+
+  @Test
+  fun `licensed diagnostic explains PITs ArcMutate promotion flag`() {
+    val compactHardening = hardening.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactHardening.contains("captured toolchain is its activation identity") &&
+          compactHardening.contains("audited default PIT 1.25.9") &&
+          compactHardening.contains("`arcmutateMissing` value controls only the HTML promotion"),
+      "diagnostic doctrine must distinguish PIT's promotion flag from validated tool identity",
+    )
+  }
 }

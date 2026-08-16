@@ -187,6 +187,10 @@ $buildTail
               System.out.println("12:00:00 PIT >> INFO : " + slowest);
               System.out.println("> " + slowest);
             }
+            if (mode.equals("raw-options")) {
+              System.out.println(
+                  "PIT >> FINEST : ReportOptions [... arcmutateMissing=true ...]");
+            }
             for (int i = 0; i < 3; i++) System.out.println("PIT >> INFO : MINION : common noise");
             System.out.println("PIT >> INFO : MINION : stdout-only detail");
             System.out.println("plain duplicate");
@@ -788,6 +792,7 @@ $buildTail
           !diagnostic.output.contains("pitest 'encoding': 1/1 detected"),
       diagnostic.output,
     )
+    assertFalse(diagnostic.output.contains("arcmutateMissing"), diagnostic.output)
 
     runner(
       "pitestEncodingDiagnostic",
@@ -802,6 +807,32 @@ $buildTail
       "-PmutateOnly=com.example.Codec",
     ).build()
     assertTrue(scopedRepeat.output.contains("Configuration cache entry reused."), scopedRepeat.output)
+  }
+
+  @Test
+  fun `licensed diagnostic distinguishes PIT html promotion from ArcMutate activation`() {
+    writeFixture()
+    enableFakeArcMutate()
+    File(fixtureDir, "fake-pit-mode.txt").writeText("raw-options\n")
+
+    val diagnostic = runner("pitestEncodingDiagnostic").build()
+    val clarification =
+      "With audited PIT 1.25.9, its raw arcmutateMissing field controls only the HTML promotion"
+    val raw = "ReportOptions [... arcmutateMissing=true ...]"
+
+    assertTrue(
+      diagnostic.output.contains(
+        "licensed ArcMutate base 1.7.1 was validated on the effective tool classpath"
+      ) && diagnostic.output.contains(clarification),
+      diagnostic.output,
+    )
+    assertTrue(diagnostic.output.indexOf(clarification) < diagnostic.output.indexOf(raw), diagnostic.output)
+    val retained = File(
+      fixtureDir,
+      "build/reports/pitest-diagnostic/encoding/pitest.stdout.log",
+    ).readText()
+    assertTrue(retained.contains(raw), retained)
+    assertFalse(retained.contains(clarification), retained)
   }
 
   @Test
@@ -1235,7 +1266,7 @@ $buildTail
       "the advisory did not explain the measurement's boundary:\n${result.output}",
     )
     assertTrue(
-      result.output.contains("hardening: 1 advisory finding(s) across 1 suite(s)") &&
+      result.output.contains("hardening: 1 advisory finding(s) across 1 scope(s)") &&
           result.output.contains(
             ":consumer pitest 'encoding': slowest PIT coverage-phase test took 416 ms",
           ),
@@ -2306,7 +2337,6 @@ $buildTail
       File(fixtureDir, "src").copyRecursively(subproject.resolve("src"))
       File(fixtureDir, "corpus").copyRecursively(subproject.resolve("corpus"))
     }
-
     val result = runner(":a:hardeningCertify", ":b:pitestEncoding").build()
     val aEvidence = PitestEvidence.parse(
       File(fixtureDir, "a/build/reports/pitest/encoding/.evidence.tsv").readText())
@@ -2488,7 +2518,7 @@ $buildTail
         "pitest 'encoding': slowest PIT coverage-phase test " +
             "'[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:roundTrip()]' " +
             "took 250 ms",
-      ) && boundary.contains("hardening: 1 advisory finding(s) across 1 suite(s)"),
+      ) && boundary.contains("hardening: 1 advisory finding(s) across 1 scope(s)"),
       "the inclusive 250 ms boundary did not produce exactly one advisory:\n$boundary",
     )
   }

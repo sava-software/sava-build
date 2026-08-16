@@ -101,16 +101,11 @@ observation. A later `clean` does not erase the completed receipt; starting anot
 certification does invalidate it, because an incomplete replacement must never leave the
 previous success looking current.
 
-Certification receipts are deliberately **project-scoped**. In a multi-project build,
-the unqualified `hardeningCertify` selector runs each project that exposes that task and
-each writes its own receipt and session UUID; no one child receipt claims that the whole
-repository ran. Release attestation gathers every canonical certification receipt present
-in each reviewed checkout and records its relative path, project, session, and suite set.
-It cannot discover an independent Gradle root that was never run, so the release owner must
-compare that derived receipt list with the adoption handoff's intended roots rather than
-treating the first receipt found as repository evidence. Keeping project-scoped
-`hardeningCertify` also preserves the useful ability to certify one module without silently
-putting unrelated modules into certification mode.
+Certification receipts are **project-scoped**: each `hardeningCertify` covers one project's
+registered suites and writes an independent receipt. No child receipt claims the repository
+ran. Release attestation inventories the receipts present but cannot infer a project or
+independent Gradle root that was never run, so compare its inventory with the adoption
+handoff. Project scope also preserves targeted module certification.
 
 Generated evidence must never select the configuration-cache task graph. The PIT
 validators are always present and decide at execution time whether `.evidence.tsv`
@@ -200,7 +195,10 @@ run cheaper. The cost model is directly optimisable:
   are explicitly non-evidence, and may contain test output, paths, JVM arguments,
   or other machine-local sensitive data — do not publish them blindly. Attempt
   startup removes only the known decision-grade report leaves and markers, never
-  recursively deletes consumer-added report content.
+  recursively deletes consumer-added report content. On a licensed diagnostic,
+  sava-build first validates and names the effective ArcMutate base. That captured
+  toolchain is its activation identity. With the audited default PIT 1.25.9, the raw
+  `arcmutateMissing` value controls only the HTML promotion.
 - **Tune the per-test timeout to the suite's real runtimes** — PIT's default
   allowance is `recorded time × 1.25 + 4000ms`; every hanging-mutant
   detection pays that flat fee. Rank the suite's tests by duration first: one
@@ -987,7 +985,7 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   report outright, as the refresh flavours do: their checks are skipped
   entirely on a scoped report, so a green run would certify nothing while
   reading as a certification of the suite. Because every audit finding is advisory in the default modes,
-  the build ends with a one-line-per-suite summary of the advisory findings
+  the build ends with a one-line-per-scope summary of the advisory findings
   it printed — a reviewer-stop nobody scrolls back to is not a stop.
   The audit's static half — row shape, cause category, and README
   presence — reads committed files only. `hardeningCertify`,

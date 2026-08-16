@@ -14,6 +14,7 @@ import software.sava.build.hardening.HardeningHelpTask
 import software.sava.build.hardening.HardeningOperationCompletionTask
 import software.sava.build.hardening.HardeningOperationRequestTask
 import software.sava.build.hardening.HardeningOperationSession
+import software.sava.build.hardening.HardeningRepositoryCheckCoordinator
 import software.sava.build.hardening.HardeningOptionNames
 import software.sava.build.hardening.HardeningPluginIdentityGuard
 import software.sava.build.hardening.HardeningPluginIdentityService
@@ -207,6 +208,9 @@ val hardeningOperationSession = gradle.sharedServices.registerIfAbsent(
 ) {}
 val hardeningFuzzSession = gradle.sharedServices.registerIfAbsent(
     "hardeningFuzzSession", HardeningFuzzSession::class
+) {}
+val hardeningRepositoryCheckCoordinator = gradle.sharedServices.registerIfAbsent(
+    "hardeningRepositoryCheckCoordinator", HardeningRepositoryCheckCoordinator::class
 ) {}
 val hardeningHelpSuiteNames = objects.listProperty<String>()
 val hardeningHelpFuzzTargetNames = objects.listProperty<String>()
@@ -588,6 +592,9 @@ val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
   description = "Diffs the bounded AGENTS.md hardening block against the installed template."
   agentsFile.set(rootProject.layout.projectDirectory.file("AGENTS.md"))
   installedTemplate.set(renderedHardeningAgentTemplate)
+  repositoryCheckKey.set(HardeningTemplateDigest.SHA256_12)
+  repositoryCheckCoordinator.set(hardeningRepositoryCheckCoordinator)
+  usesService(hardeningRepositoryCheckCoordinator)
 }
 val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   group = "verification"
@@ -611,12 +618,23 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   val validatingUnreleased =
       providers.gradleProperty(HardeningOptionNames.SAVA_BUILD_LOCAL_REPO).isPresent
   val advisoryLog = hardeningAdvisoryLog
-  val advisoryScope = (if (project.path == ":") "" else "${project.path} ") + "agentsTemplateInSync"
+  val advisoryScope = "repository AGENTS.md"
+  val repositoryCoordinator = hardeningRepositoryCheckCoordinator
   usesService(advisoryLog)
+  usesService(repositoryCoordinator)
   inputs.files(agentsDoc)
   inputs.property("templateDigest", expected)
   inputs.property("validatingUnreleased", validatingUnreleased)
   doLast {
+    if (!repositoryCoordinator.get().claim(
+        "agentsTemplateInSync",
+        agentsDoc.absoluteFile.normalize().path,
+        expected,
+        if (validatingUnreleased) "unreleased" else "published",
+      )) {
+      logger.info("agentsTemplateInSync: repository-scoped check already ran in this build")
+      return@doLast
+    }
     if (!agentsDoc.isFile) {
       logger.warn(
           "agentsTemplateInSync: no AGENTS.md at $agentsDoc — copy the agent-instructions " +
