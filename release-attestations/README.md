@@ -14,11 +14,13 @@ original path contract.
 Create a record only after the local passes have been reviewed, their completed
 `.pitest-history/pitest-certification.tsv` receipts remain in clean consumer
 checkouts, their exact `0.0.0-test` JAR is retained, and the Release Please version
-metadata is present on the still-open Release Please branch. Commit the record to that
-branch before merging it. A record appended to `main` after the release PR merges is too
-late: the release gates accept and publish only the manifest-version-changing squash
-commit, and that target must already contain the exact attestation. Release Please PRs
-must therefore use **Squash and merge**; rebase and merge-commit shapes fail closed.
+metadata is present on the draft Release Please branch. Commit the record there, then mark
+the pull request ready; `ready_for_review` runs `Release Attestation`. Merge only after it
+passes. Freeze `main` first; if it moves, return the pull request to draft and regenerate
+the record. A record appended to `main` after the release PR merges is too late: the release
+gates accept and publish only the manifest-version-changing squash commit, and that target
+must already contain the exact attestation. Release Please PRs must therefore use **Squash
+and merge**; rebase and merge-commit shapes fail closed.
 Multi-project checkouts may contribute multiple receipts; every
 schema-6 receipt must bind a clean Git commit/tree that still equals the checkout,
 and its project-level plugin hash and every suite row must name the retained JAR's

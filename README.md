@@ -479,10 +479,10 @@ JAR without the Gradle build cache and require its hash to remain equal to that 
 A changed hash means the consumer evidence no longer describes the artifact and another
 relevant adoption pass is required.
 
-After Release Please prepares the version metadata, do not merge its pull request yet.
-Check out that clean Release Please branch and create a compact owner attestation. Pass the
-root of each clean consumer checkout whose exact-byte
-hardening certification was actually reviewed, then classify the release basis and changed-feature
+Release Please opens its version-metadata pull request as a draft. Freeze `main` and the
+reviewed adoption evidence, then check out that clean branch and create a compact owner
+attestation. Pass the root of each clean consumer checkout whose exact-byte hardening
+certification was actually reviewed, then classify the release basis and changed-feature
 evidence explicitly:
 
 ```shell
@@ -500,8 +500,11 @@ tools/release-attestation.sh create-reviewed "$version" \
 git add "release-attestations/$version.json"
 ```
 
-Commit only that generated file to the Release Please branch, so its eventual squash merge
-contains `CHANGELOG.md`, the manifest change, and the reviewed record in one release commit.
+Commit only that generated file to the Release Please branch, then mark the pull request
+ready. The `ready_for_review` event runs `Release Attestation`; merge only after it passes.
+If `main` moves first, return the pull request to draft and regenerate the record.
+The eventual squash merge contains `CHANGELOG.md`, the manifest change, and the reviewed
+record in one release commit.
 Never merge a metadata-only Release Please PR and append the attestation to `main` afterward:
 the release gates accept and publish only the manifest-version-changing squash commit, and a
 later commit cannot repair that target. Use **Squash and merge** for Release Please PRs;
