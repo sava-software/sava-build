@@ -1,5 +1,30 @@
 # Changelog
 
+## [21.5.26](https://github.com/sava-software/sava-build/compare/21.5.25...21.5.26) (2026-08-16)
+
+
+### Features
+
+* **hardening:** add isolated PIT diagnostics ([764ad1f](https://github.com/sava-software/sava-build/commit/764ad1f167d6be7e8dfc3af5694deff0b9c5068b))
+* **hardening:** strengthen review and certification inputs ([2e9c8d4](https://github.com/sava-software/sava-build/commit/2e9c8d4a4d8ab97563598178bbf9b6aae7fd2a7d))
+
+
+### Bug Fixes
+
+* **hardening:** align derived PIT task toolchains ([cfe2300](https://github.com/sava-software/sava-build/commit/cfe2300081922212a7292a9c8169cecf843930a1))
+* **hardening:** deduplicate and clarify diagnostics ([777c4b2](https://github.com/sava-software/sava-build/commit/777c4b243521432d4a8bc6634f99a0f8d876dd9b))
+* **hardening:** enforce honest PIT execution diagnostics ([325ab47](https://github.com/sava-software/sava-build/commit/325ab4722fafcdcee5a7bdbf2ab0c164c21740bc))
+* **hardening:** make baseline remediation non-destructive ([45e30ed](https://github.com/sava-software/sava-build/commit/45e30ed6d6626e9c2fc73a260f8ca45626e3b24b))
+* **hardening:** preserve certification evidence ([8b58c98](https://github.com/sava-software/sava-build/commit/8b58c98fe74a74dca4b7b5a19504ebb0c289c7ca))
+* **hardening:** surface review-state diagnostics ([fdc5483](https://github.com/sava-software/sava-build/commit/fdc5483ed5e28cb131937d4271b91c50c34efafb))
+* **release:** bind attestation to release target ([b86becd](https://github.com/sava-software/sava-build/commit/b86becd083ac3aaff70556c38c2350fc8e95b528))
+
+
+### Build System
+
+* **deps:** bump actions/attest from 4.2.1 to 4.2.2 ([#89](https://github.com/sava-software/sava-build/issues/89)) ([a9af2e8](https://github.com/sava-software/sava-build/commit/a9af2e8469abb3848bc8f6038389257e1ea679b0))
+* **deps:** bump org.junit.jupiter:junit-jupiter from 6.1.2 to 6.1.3 ([#91](https://github.com/sava-software/sava-build/issues/91)) ([07b2b2f](https://github.com/sava-software/sava-build/commit/07b2b2fa9a2acc9e9fe0517e175221615e4db9b0))
+
 ## [21.5.25](https://github.com/sava-software/sava-build/compare/21.5.24...21.5.25) (2026-08-07)
 
 
