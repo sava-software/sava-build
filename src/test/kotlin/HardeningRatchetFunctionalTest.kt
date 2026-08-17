@@ -1209,7 +1209,9 @@ $fuzzBlock
     }
     val quietStash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet").apply {
       writeText(
-        "# report 1,1\n" +
+        "# timeout quiet format 3\n" +
+            "# inputs ${"a".repeat(64)}\n" +
+            "# invocation old-format-observation\n" +
             "com.example.Codec,encode,MathMutator,2\n",
       )
     }
@@ -1264,18 +1266,18 @@ $fuzzBlock
       "pre-fix status evidence was not reset:\n$legacyFull",
     )
     assertFalse(
-      legacyFull.contains("timeout-retirement stash predates fresh-only evidence"),
+      legacyFull.contains("timeout-retirement stash uses an older compatibility format"),
       "legacy evidence advanced or rewrote timeout-retirement state:\n$legacyFull",
     )
     assertTrue(quietBefore.contentEquals(quietStash.readBytes()), "legacy evidence rewrote the quiet stash")
 
     val full = runner("pitestEncoding").build().output
     assertTrue(
-      full.contains("timeout-retirement stash predates fresh-only evidence"),
-      "pre-fix quiet evidence was not reset:\n$full",
+      full.contains("timeout-retirement stash uses an older compatibility format"),
+      "older quiet evidence was not reset:\n$full",
     )
     assertTrue(statusStash.readText().startsWith("# stash format 3\n"), statusStash.readText())
-    assertTrue(quietStash.readText().startsWith("# timeout quiet format 3\n"), quietStash.readText())
+    assertTrue(quietStash.readText().startsWith("# timeout quiet format 4\n"), quietStash.readText())
     assertTrue(
       quietStash.readText().contains("com.example.Codec,encode,MathMutator,1"),
       "the first fresh report inherited two assisted quiet observations:\n${quietStash.readText()}",
@@ -2849,14 +2851,13 @@ $fuzzBlock
       .first { it.startsWith("# inputs ") }
       .removePrefix("# inputs ")
     assertTrue(
-      changed.contains("timeout-retirement inputs changed") &&
+      changed.contains("timeout-retirement execution inputs changed") &&
           previousInputIdentity != currentInputIdentity &&
           changed.contains(
             "input identity prefixes ${previousInputIdentity.take(12)} -> " +
                 currentInputIdentity.take(12)
           ) &&
-          changed.contains("identity includes pluginSha256") &&
-          changed.contains("published JAR SHA-256 or development code-path fingerprint") &&
+          !changed.contains("pluginSha256") &&
           !changed.contains("audited-timeout member(s) have not timed out in 3+"),
       "changed inputs inherited the prior quiet streak:\n$changed",
     )
@@ -2866,20 +2867,67 @@ $fuzzBlock
     )
 
     quietStash.writeText(
-      "# timeout quiet format 3\n" +
+      "# timeout quiet format 4\n" +
         "# inputs nope\n" +
         "# invocation old\n" +
         "com.example.Codec,encode,MathMutator,9\n",
     )
     val malformed = runner("pitestEncoding").build().output
     assertTrue(
-      malformed.contains("format-3 stash has a missing/malformed input identity") &&
-          !malformed.contains("inputs changed since this suite's previous fresh observation"),
-      "a malformed format-3 identity was presented as a valid transition:\n$malformed",
+      malformed.contains("format-4 stash has a missing/malformed input identity") &&
+          !malformed.contains("timeout-retirement execution inputs changed"),
+      "a malformed format-4 identity was presented as a valid transition:\n$malformed",
     )
     assertTrue(
       quietStash.readText().contains("com.example.Codec,encode,MathMutator,1"),
       "a malformed identity did not restart the quiet streak:\n${quietStash.readText()}",
+    )
+  }
+
+  @Test
+  fun `timeout retirement streak survives a plugin identity-only change`() {
+    writeFixture()
+    val configDir = File(fixtureDir, "config/pitest").apply { mkdirs() }
+    configDir.resolve("encoding-timeouts.csv").writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n",
+    )
+    configDir.resolve("README.md").writeText(
+      "## `com.example.Codec.encode`\n\nRemoving progress makes the path non-terminating.\n",
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,12,KILLED,com.example.CodecTest",
+      ),
+      "",
+    )
+
+    runner("pitestEncoding").build()
+    val evidence = PitestEvidence.parse(
+      File(fixtureDir, "build/reports/pitest/encoding/.evidence.tsv").readText(),
+    )
+    val previousPluginObservation = evidence.copy(
+      invocationId = "previous-plugin-observation",
+      pluginSha256 = "different-plugin-bytes",
+    )
+    val quietStash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet")
+    quietStash.writeText(
+      "# timeout quiet format 4\n" +
+          "# inputs ${previousPluginObservation.timeoutRetirementInputIdentitySha256()}\n" +
+          "# invocation ${previousPluginObservation.invocationId}\n" +
+          "com.example.Codec,encode,MathMutator,1\n",
+    )
+
+    val next = runner("pitestEncoding").build().output
+
+    assertFalse(
+      next.contains("timeout-retirement execution inputs changed"),
+      "plugin identity alone reset the timeout-retirement streak:\n$next",
+    )
+    assertTrue(
+      quietStash.readText().contains("com.example.Codec,encode,MathMutator,2"),
+      "plugin identity alone did not preserve the prior quiet observation:\n${quietStash.readText()}",
     )
   }
 
@@ -3049,7 +3097,7 @@ $fuzzBlock
     ).build().output
 
     val reset = runBoth()
-    val resetNotice = "timeout-retirement stash predates fresh-only evidence"
+    val resetNotice = "timeout-retirement stash uses an older compatibility format"
     val statusResetNotice = "status stash predates the current stash format"
     assertTrue(
       reset.contains(":a pitest 'dispatch': $resetNotice") &&

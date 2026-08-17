@@ -6,6 +6,7 @@ import software.sava.build.hardening.BaselineWriteOperation
 import software.sava.build.hardening.CommittedMutationProvenance
 import software.sava.build.hardening.ExclusionAudit
 import software.sava.build.hardening.HardeningAdvisoryLog
+import software.sava.build.hardening.HardeningAgentTemplateBlock
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningFuzzSession
@@ -585,6 +586,8 @@ val hardeningFuzzExecutionSlots = gradle.sharedServices.registerIfAbsent(
 // this task owns keeping it current.
 val renderedHardeningAgentTemplate = HardeningTemplateDigest.TEMPLATE.lineSequence()
     .joinToString("\n") { it.removePrefix("> ") }
+HardeningAgentTemplateBlock.requireCanonicalHeadingFree(
+    renderedHardeningAgentTemplate.lineSequence().toList())
 val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
     "hardeningAgentTemplateDiff"
 ) {
@@ -645,25 +648,33 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
       return@doLast
     }
     val doc = agentsDoc.readText()
-    if (doc.contains("hardening-template sha256:$expected")) {
-      return@doLast
+    val docLines = doc.lines()
+    val inspection = try {
+      HardeningAgentTemplateBlock.inspect(docLines)
+    } catch (invalid: HardeningAgentTemplateBlock.Invalid) {
+      throw GradleException("agentsTemplateInSync: ${invalid.message}", invalid)
     }
+    val currentMarker = inspection.marker?.digest == expected
+    val hasAnyBoundary = inspection.hasAnyBoundary
+    if (currentMarker || hasAnyBoundary) {
+      try {
+        HardeningAgentTemplateBlock.parse(docLines)
+      } catch (invalid: HardeningAgentTemplateBlock.Invalid) {
+        throw GradleException("agentsTemplateInSync: ${invalid.message}", invalid)
+      }
+    }
+    if (currentMarker) return@doLast
     val boundaryStart = HardeningAgentTemplateDiffTask.BLOCK_START
     val boundaryEnd = HardeningAgentTemplateDiffTask.BLOCK_END
-    val hasOrderedBoundaries = doc.indexOf(boundaryStart).let { start ->
-      start >= 0 && doc.indexOf(boundaryEnd, start + boundaryStart.length) >= 0
-    }
-    val boundaryMigration = if (hasOrderedBoundaries) {
+    val boundaryMigration = if (hasAnyBoundary) {
       ""
     } else {
-      "Before running the diff, wrap the existing adapted hardening block between these " +
-        "exact lines:\n  $boundaryStart\n  ... existing adapted hardening block ...\n" +
-        "  $boundaryEnd\n"
+      HardeningAgentTemplateBlock.boundaryMigrationGuidance()
     }
-    val stale = Regex("hardening-template sha256:([0-9a-f]+)").find(doc)
+    val stale = inspection.marker
     if (stale != null && validatingUnreleased) {
       logger.warn(
-          "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.groupValues[1]}; this " +
+          "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.digest}; this " +
               "unreleased checkout's is $expected — by default the marker dance lands with the release " +
               "that ships this digest, not before it. $boundaryMigration" +
               "If this is deliberate RC adoption, run " +
@@ -686,7 +697,7 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
               "differs, then add:\n  <!-- hardening-template sha256:$expected -->"
         } else {
           "The shared agent-instructions template changed since this repo's AGENTS.md last " +
-          "acknowledged it (marker ${stale.groupValues[1]}, current $expected). $boundaryMigration" +
+          "acknowledged it (marker ${stale.digest}, current $expected). $boundaryMigration" +
               "Run './gradlew $templateDiffTask' to compare its explicitly bounded hardening block " +
               "with the installed template. A " +
               "changed bullet may need code, not just prose — then update the marker to:\n" +
@@ -3591,16 +3602,22 @@ hardening.mutation.all {
           // evidence's invocation id identifies that observation; its stable input
           // identity prevents quiet reads from old source/tool/configuration bytes
           // combining with a new run into a false three-run notice.
-          val quietFormatHeader = "# timeout quiet format 3"
-          val currentInputIdentity = retirementEvidence.inputIdentitySha256()
+          // The format is also the semantic compatibility fence. Bump it whenever
+          // retirement interpretation or PIT invocation behavior changes in a way
+          // not represented by the retirement evidence identity below. The loaded
+          // plugin SHA remains bound everywhere decision-grade evidence needs it,
+          // but a fingerprint-only transition under unchanged modeled semantics
+          // does not erase this advisory streak.
+          val quietFormatHeader = "# timeout quiet format 4"
+          val currentInputIdentity =
+              retirementEvidence.timeoutRetirementInputIdentitySha256()
           val inputFingerprint = "# inputs $currentInputIdentity"
           val observationFingerprint = "# invocation ${retirementEvidence.invocationId}"
           val previousLines = if (timeoutQuietFile.isFile) timeoutQuietFile.readLines() else emptyList()
           val currentQuietFormat = previousLines.firstOrNull() == quietFormatHeader
           if (previousLines.isNotEmpty() && !currentQuietFormat) {
             logger.lifecycle(
-                "$advisoryScope: timeout-retirement stash predates fresh-only evidence " +
-                    "bound to current inputs — " +
+                "$advisoryScope: timeout-retirement stash uses an older compatibility format — " +
                     "the quiet-run counter resets this run")
           }
           val previousInputIdentity = previousLines.getOrNull(1)
@@ -3610,15 +3627,14 @@ hardening.mutation.all {
           val sameInputs = currentQuietFormat && previousInputIdentity == currentInputIdentity
           if (currentQuietFormat && previousInputIdentity == null) {
             logger.lifecycle(
-                "$advisoryScope: timeout-retirement format-3 stash has a missing/malformed " +
+                "$advisoryScope: timeout-retirement format-4 stash has a missing/malformed " +
                     "input identity — the quiet-run counter resets this run")
           } else if (currentQuietFormat && !sameInputs) {
             logger.lifecycle(
-                "$advisoryScope: timeout-retirement inputs changed since this suite's previous " +
+                "$advisoryScope: timeout-retirement execution inputs changed since this suite's previous " +
                     "fresh observation (input identity prefixes " +
                     "${previousInputIdentity!!.take(12)} -> " +
-                    "${currentInputIdentity.take(12)}; the identity includes pluginSha256 — " +
-                    "the published JAR SHA-256 or development code-path fingerprint) — " +
+                    "${currentInputIdentity.take(12)}) — " +
                     "the quiet-run counter resets this run")
           }
           val sameObservation = sameInputs &&

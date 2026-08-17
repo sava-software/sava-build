@@ -74,13 +74,30 @@ data class PitestEvidence(
    * Identity of the code, loaded sava-build plugin bytes, mutation tools, classpaths,
    * and suite configuration behind an observation. Invocation and report bytes are
    * deliberately excluded: successive fresh runs of identical inputs must share this
-   * identity while still carrying distinct [invocationId] values. [pluginSha256] is a
-   * stable input because observations interpreted by different verifier code must not
-   * combine into one retirement claim. For a published plugin it is the JAR SHA-256;
-   * development class directories use a deterministic code-path tree fingerprint.
+   * identity while still carrying distinct [invocationId] values. [pluginSha256]
+   * remains a stable input for comparisons that require the exact wrapper identity.
+   * Timeout retirement uses [timeoutRetirementInputIdentitySha256] instead, with its
+   * stash format as the verifier-semantics fence. For a published plugin the value is
+   * the JAR SHA-256; development class directories use a deterministic code-path tree
+   * fingerprint.
    */
   fun inputIdentitySha256(): String = sha256(
       copy(invocationId = "", reportSha256 = "").render())
+
+  /**
+   * Input identity for the advisory timeout-retirement streak. The completed
+   * evidence and every certifying boundary still bind [pluginSha256]. When the
+   * captured PIT inputs and timeout-retirement semantics are unchanged, a plugin
+   * fingerprint change alone need not erase prior quiet observations. Invocation/report
+   * bytes identify individual observations and are excluded for the same reason as
+   * [inputIdentitySha256].
+   *
+   * The timeout-quiet stash format is the compatibility fence for verifier or PIT
+   * invocation semantics not represented by the remaining evidence fields. Bump
+   * that format instead of adding the entire plugin JAR back to this identity.
+   */
+  fun timeoutRetirementInputIdentitySha256(): String = sha256(
+      copy(invocationId = "", reportSha256 = "", pluginSha256 = "").render())
 
   companion object {
     const val SCHEMA = "3"

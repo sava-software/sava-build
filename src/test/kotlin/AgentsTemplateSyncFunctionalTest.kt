@@ -111,6 +111,12 @@ class AgentsTemplateSyncFunctionalTest {
       "the stale-marker failure must route legacy blocks through the bounded diff migration:\n" +
         stale.output,
     )
+    assertTrue(
+      stale.output.contains("immediately before the first shared hardening rule") &&
+          stale.output.contains("immediately after the last") &&
+          stale.output.contains("digest marker and all repository-specific facts outside"),
+      "the stale-marker failure must explain the semantic boundary placement:\n" + stale.output,
+    )
   }
 
   @Test
@@ -175,8 +181,8 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("repeated fresh history-free non-timeout observations") &&
           printed.contains("lines cannot define identity") &&
           printed.contains("never warns, fails, or requires re-anchoring") &&
-          printed.contains("Plugin bytes are an input") &&
-          printed.contains("a changed JAR restarts the streak") &&
+          printed.contains("fingerprint change alone does not reset") &&
+          printed.contains("timeout-quiet format bump") &&
           printed.contains("reports are previews"),
       "the version-matched template must keep record decisions history-free and timeout evidence observable:\n$printed",
     )
@@ -225,6 +231,7 @@ class AgentsTemplateSyncFunctionalTest {
     }
 
     assertMatches(expectedPrintedTemplate)
+    assertMatches("\n$expectedPrintedTemplate\n\n")
     val adapted = expectedPrintedTemplate.replaceFirst(
       "- **Scale verification to the change.**",
       "1. **Configuration-cache reread.**",
@@ -239,6 +246,18 @@ class AgentsTemplateSyncFunctionalTest {
     assertTrue(reread.output.contains("+- **Scale verification to the change.**"), reread.output)
 
     assertMatches(expectedTemplate, quoteBoundaries = true)
+    assertMatches(">\n$expectedTemplate\n> ", quoteBoundaries = true)
+
+    agentsDoc.writeText(
+      "```markdown\n$BLOCK_START\nexample\n$BLOCK_END\n```\n" +
+          "$BLOCK_START\n$expectedPrintedTemplate\n$BLOCK_END\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n",
+    )
+    val fencedExample = runner("hardeningAgentTemplateDiff").build()
+    assertTrue(
+      fencedExample.output.contains("matches the installed template"),
+      "fenced boundary examples were treated as live tokens:\n${fencedExample.output}",
+    )
   }
 
   @Test
@@ -263,6 +282,122 @@ class AgentsTemplateSyncFunctionalTest {
   }
 
   @Test
+  fun `misplaced repository headings are refused by both diff and sync`() {
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+
+    fun assertDiffRefuses(text: String) {
+      agentsDoc.writeText(text)
+      val failed = runner("hardeningAgentTemplateDiff").buildAndFail()
+      assertTrue(
+        failed.output.contains("Markdown ATX heading at AGENTS.md line 4") &&
+            failed.output.contains("#### This repository") &&
+            failed.output.contains("move $BLOCK_END before repository-specific headings"),
+        "a misplaced repository heading was treated as shared template prose:\n${failed.output}",
+      )
+    }
+
+    assertDiffRefuses(
+      "$BLOCK_START\n- Shared rule.\n\n#### This repository\nLocal facts.\n$BLOCK_END\n",
+    )
+    assertDiffRefuses(
+      "> $BLOCK_START\n> - Shared rule.\n>\n> #### This repository\n" +
+          "> Local facts.\n> $BLOCK_END\n",
+    )
+
+    agentsDoc.writeText(
+      "$BLOCK_START\n- Shared rule.\n\n#### This repository\nLocal facts.\n$BLOCK_END\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n",
+    )
+    val sync = runner("agentsTemplateInSync").buildAndFail()
+    assertTrue(
+      sync.output.contains("Markdown ATX heading at AGENTS.md line 4") &&
+          sync.output.contains("move $BLOCK_END before repository-specific headings"),
+      "the current marker concealed a misplaced template boundary:\n${sync.output}",
+    )
+  }
+
+  @Test
+  fun `heading-like code inside the bounded block remains reviewable`() {
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+    val body =
+      """
+      - Shared rule.
+      ```text
+      # fenced code
+      > literal prompt
+      ```
+          #### indented code
+      \# escaped hash
+      #not-a-heading
+      """.trimIndent()
+    agentsDoc.writeText(
+      "$BLOCK_START\n$body\n$BLOCK_END\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n",
+    )
+
+    val diff = runner("hardeningAgentTemplateDiff").build()
+    assertFalse(diff.output.contains("Markdown ATX heading"), diff.output)
+    val sync = runner("agentsTemplateInSync").build()
+    assertFalse(sync.output.contains("Markdown ATX heading"), sync.output)
+
+    val quotedBody = body.lineSequence().joinToString("\n") { "> $it" }
+    agentsDoc.writeText(
+      "> $BLOCK_START\n$quotedBody\n> $BLOCK_END\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n",
+    )
+    val quotedDiff = runner("hardeningAgentTemplateDiff").build()
+    assertFalse(quotedDiff.output.contains("mixes quoted and unquoted"), quotedDiff.output)
+    val quotedSync = runner("agentsTemplateInSync").build()
+    assertFalse(quotedSync.output.contains("mixes quoted and unquoted"), quotedSync.output)
+  }
+
+  @Test
+  fun `digest markers are unique real lines outside the bounded block`() {
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+
+    agentsDoc.writeText(
+      "$BLOCK_START\n- Shared rule.\n$BLOCK_END\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n" +
+          "<!-- hardening-template sha256:000000000000 -->\n",
+    )
+    val duplicate = runner("agentsTemplateInSync").buildAndFail()
+    assertTrue(
+      duplicate.output.contains("contains 2 hardening-template digest markers") &&
+          duplicate.output.contains("keep exactly one"),
+      "duplicate real markers were not refused:\n${duplicate.output}",
+    )
+
+    agentsDoc.writeText(
+      "$BLOCK_START\n- Shared rule.\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n$BLOCK_END\n",
+    )
+    val insideDiff = runner("hardeningAgentTemplateDiff").buildAndFail()
+    assertTrue(
+      insideDiff.output.contains("digest marker is inside the bounded block") &&
+          insideDiff.output.contains("keep the marker outside"),
+      "the diff accepted a digest marker inside its reviewed region:\n${insideDiff.output}",
+    )
+    val insideSync = runner("agentsTemplateInSync").buildAndFail()
+    assertTrue(
+      insideSync.output.contains("digest marker is inside the bounded block"),
+      "the sync gate accepted a digest marker inside its reviewed region:\n${insideSync.output}",
+    )
+
+    agentsDoc.writeText(
+      "```markdown\n> ```\n<!-- hardening-template sha256:$expectedDigest -->\n" +
+          "$BLOCK_START\nexample\n$BLOCK_END\n```\n",
+    )
+    val fencedOnly = runner("agentsTemplateInSync").buildAndFail()
+    assertTrue(
+      fencedOnly.output.contains("has no 'hardening-template' marker"),
+      "a fenced marker example satisfied the acknowledgment gate:\n${fencedOnly.output}",
+    )
+  }
+
+  @Test
   fun `template diff refuses missing ambiguous reversed empty and mixed quote boundaries`() {
     writeFixture()
     val agentsDoc = File(fixtureDir, "AGENTS.md")
@@ -273,6 +408,7 @@ class AgentsTemplateSyncFunctionalTest {
       "$BLOCK_START\nbody\n$BLOCK_START\nbody\n$BLOCK_END\n",
       "$BLOCK_END\nbody\n$BLOCK_START\n",
       "$BLOCK_START\n\n$BLOCK_END\n",
+      "$BLOCK_START\n>\n> \n$BLOCK_END\n",
       "$BLOCK_START\n> quoted\nunquoted\n$BLOCK_END\n",
     )
 
@@ -288,6 +424,12 @@ class AgentsTemplateSyncFunctionalTest {
           failed.output.contains(BLOCK_START) && failed.output.contains(BLOCK_END),
           "missing-boundary failure did not print copy-ready boundary lines:\n${failed.output}",
         )
+        assertTrue(
+          failed.output.contains("immediately before the first shared hardening rule") &&
+              failed.output.contains("immediately after the last") &&
+              failed.output.contains("digest marker and all repository-specific facts outside"),
+          "missing-boundary failure did not explain the semantic boundary placement:\n${failed.output}",
+        )
       }
     }
   }
@@ -302,7 +444,11 @@ class AgentsTemplateSyncFunctionalTest {
     // landed and the pin was bumped.
     writeFixture()
     val agentsDoc = File(fixtureDir, "AGENTS.md")
-    agentsDoc.writeText("# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n")
+    agentsDoc.writeText(
+      "# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n" +
+          "```markdown\n<!-- hardening-template sha256:$expectedDigest -->\n" +
+          "$BLOCK_START\nexample\n$BLOCK_END\n```\n",
+    )
 
     val advisory = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout").build()
     assertTrue(
@@ -315,6 +461,10 @@ class AgentsTemplateSyncFunctionalTest {
       "the advisory must distinguish ordinary candidate validation from a staged RC-adoption change:\n" + advisory.output,
     )
     assertTrue(advisory.output.contains("sha256:$expectedDigest"), advisory.output)
+    assertTrue(
+      advisory.output.contains("acknowledges template digest 000000000000"),
+      "a fenced current-marker example concealed the real stale marker:\n${advisory.output}",
+    )
 
     // a marker-less AGENTS.md is an unadopted repo, not a pending marker dance —
     // the flag does not soften that failure
@@ -327,7 +477,8 @@ class AgentsTemplateSyncFunctionalTest {
   fun `a current acknowledgment passes and the check gates both verification entry points`() {
     writeFixture()
     File(fixtureDir, "AGENTS.md").writeText(
-      "# Agents\n\nAdapted hardening block.\n\n<!-- hardening-template sha256:$expectedDigest -->\n"
+      "# Agents\n\n$BLOCK_START\nAdapted hardening block.\n$BLOCK_END\n\n" +
+        "<!-- hardening-template sha256:$expectedDigest -->\n"
     )
 
     val current = runner("agentsTemplateInSync").build()

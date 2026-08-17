@@ -943,12 +943,13 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   The verify keeps a per-member quiet counter only for those documented
   `cause:liveness` rows in `.pitest-history/`, keyed to the completed evidence
   invocation so standalone verify re-runs of one report are one observation,
-  and bound to every stable completed-evidence field, including source/classes,
-  runtime and tool classpaths, suite configuration, Java, PIT/JUnit/mutation
-  toolchain, evidence/identity schemas, and the loaded sava-build plugin code-path
-  fingerprint (`pluginSha256`; the JAR SHA-256 for a published plugin). Changing any
-  of those inputs — including a plugin upgrade whose JAR bytes differ — restarts the
-  streak. `cause:resource`, `cause:harness`,
+  and bound to the stable completed-evidence fields that describe the observation,
+  including source/classes, runtime and tool classpaths, suite configuration, Java,
+  PIT/JUnit/mutation toolchain, and evidence/identity schemas. Changing any of those
+  inputs restarts the streak. The loaded sava-build `pluginSha256` remains bound to
+  completed evidence and certification, but not this advisory counter. If verifier or
+  PIT invocation semantics change without a captured input changing, advance the
+  timeout-quiet format and reset prior streaks. `cause:resource`, `cause:harness`,
   `cause:untriaged`, and undocumented rows are already non-certifying findings
   and never enter that retirement counter. It notices admissible liveness
   members with no timeout in 3+ consecutive fresh full mutation runs over
@@ -2279,8 +2280,10 @@ edit the block merely to normalize the presentation used by releases before 21.5
 >   all current line-full candidates, but lines cannot define identity: moving imports,
 >   adding a method, or reflowing code never warns, fails, or requires re-anchoring.
 >   **Retire.** Remove an admissible liveness member only after the tool reports 3+
->   distinct fresh full-run quiet observations over identical inputs, confirmed under
->   solo/gate load. Plugin bytes are an input; a changed JAR restarts the streak. A
+>   distinct fresh full-run quiet observations over identical execution inputs,
+>   confirmed under solo/gate load. When retirement semantics are unchanged, a plugin
+>   fingerprint change alone does not reset this advisory; captured PIT-input changes
+>   do, and unmodeled semantic changes require a timeout-quiet format bump. A
 >   finite `KILLED`↔`TIMED_OUT` race never certifies: repair it instead of waiting on
 >   liveness retirement. The quiet stash is a machine-local nomination; never copy or
 >   merge it, and retain the row without same-input gate confirmation. Assisted

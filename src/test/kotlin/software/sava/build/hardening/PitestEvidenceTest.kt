@@ -116,6 +116,36 @@ class PitestEvidenceTest {
   }
 
   @Test
+  fun `timeout retirement identity ignores plugin and observation bytes but binds remaining evidence inputs`() {
+    val identity = evidence().timeoutRetirementInputIdentitySha256()
+
+    assertEquals(
+      identity,
+      evidence().copy(
+        invocationId = "another-run",
+        reportSha256 = "another-report",
+        pluginSha256 = "another-plugin",
+      ).timeoutRetirementInputIdentitySha256(),
+    )
+    listOf(
+      evidence().copy(pitestVersion = "changed-pit"),
+      evidence().copy(junitPluginVersion = "changed-junit"),
+      evidence().copy(identitySchema = "changed-identity"),
+      evidence().copy(javaVersion = "changed-java"),
+      evidence().copy(sourceSha256 = "changed-source"),
+      evidence().copy(classesSha256 = "changed-classes"),
+      evidence().copy(classpathSha256 = "changed-classpath"),
+      evidence().copy(toolClasspathSha256 = "changed-tool-classpath"),
+      evidence().copy(mutationToolchainSha256 = "changed-mutation-toolchain"),
+      evidence().copy(configurationSha256 = "changed-config"),
+      evidence().copy(scope = "com.example.Codec"),
+      evidence().copy(historyAssisted = true),
+    ).forEach { changed ->
+      assertTrue(identity != changed.timeoutRetirementInputIdentitySha256(), changed.toString())
+    }
+  }
+
+  @Test
   fun `certification project evidence treats the Java runtime as project-wide`() {
     val java25 = HardeningCertificationTask.ProjectEvidence.from(evidence())
     val java21 = HardeningCertificationTask.ProjectEvidence.from(
