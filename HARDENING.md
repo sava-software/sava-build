@@ -534,8 +534,10 @@ ratchet (see the transient-failures section).
 Baseline keys are **line-less** — `class,method,mutator,STATUS` — because line
 numbers churn whenever a mutated file is edited, and identity that churns
 makes the ratchet police text moves instead of behavior. Lines still appear
-on rows, demoted to metadata as trailing `# line N` tags (the audited-timeout
-convention), kept for triage pointers and the line-drift advisory below. A
+on rows, demoted to metadata as trailing `# line N` tags (or `# lines N, M`
+for exact observed sites), kept for triage pointers and the line-drift advisory
+below. Ranges such as `# lines 786-800` are invalid: claiming every line in a
+span as observed would weaken affinity and can hide a same-key swap. A
 baseline update rewrites tags for rows matched to this report while protected
 timeout/insurance rows keep their last observed tags; a green prune likewise rewrites
 the tags of retained rows it matched at their own key. Union operations preserve
@@ -572,6 +574,26 @@ unkilled row annotated with PIT's mutation description prefixed with its
 line (`line 41: removed conditional…` — the key no longer carries the line,
 so the description does), and the ratchet-failure listing carries the same
 annotations.
+
+For an intentional same-suite key move or method rename, do not ask Prune or
+Retag to infer equivalence. Start with the applicable additive writer:
+`pitest<Suite>BaselineUnion`, or `pitest<Suite>BaselineRebase` when the provenance
+diagnostic requires it. Review the new `# untriaged` rows, and carry or rewrite an
+old argument only onto a row the source review proves is its replacement; leave
+every other new row untriaged. Then run the ordinary suite fresh, inspect its
+complete prune-candidate preview, and only afterward Prune the exact old candidates
+whose absence and removal were independently reviewed. Retag changes metadata,
+never identity, and Update is a complete rewrite rather than a re-key tool.
+
+A cross-suite or cross-repository move is two independent record transitions.
+Source accepted/timeout rows and their arguments are review input, not destination
+membership. For a new destination suite, generate current accepted rows with
+`pitest<Suite>BaselineUpdate` and seed actually observed timeouts with
+`pitest<Suite>TimeoutAuditInit`; when the destination records already exist, use the
+applicable additive BaselineUnion/BaselineRebase path named by its provenance
+diagnostic, and add only the timeout members the destination verify prints and the
+destination review classifies. Retire source rows separately. Never copy PIT-version
+or toolchain sidecars, machine-local history, reports, or receipts between suites.
 
 Refreshes are kept honest in both directions. `pitest<Suite>BaselineUpdate` is
 a report-driven rewrite plus explicit timeout/insurance keeps; it is not allowed to erase
@@ -862,7 +884,10 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
     Missing, unknown, conflicting, `resource`, `harness`, and `untriaged` categories
     warn, and strict certification refuses them. Unexplained infrastructure noise is
     not `cause:harness`; leave it untriaged until a specific finite covering-path race
-    has been demonstrated.
+    has been demonstrated. A newcomer warning's paste-ready `cause:untriaged` row is
+    likewise a fail-closed draft, not a committable disposition: classify it and
+    replace the placeholder before certification, or keep the finite mutant out of
+    the audited set while its contract-first repair or acceptance is completed.
 
   Cause class and report status are separate claims. `cause:liveness` explains why
   a valid `TIMED_OUT` result can detect that mutant; it never turns `MEMORY_ERROR`
@@ -895,7 +920,8 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   prove the conflict. Review positive multiplicity drift and its
   line-full candidates carefully, but do not pretend a source-line number closes the
   hole. `# line` remains a triage pointer only and changing it never authorizes or
-  invalidates evidence.
+  invalidates evidence. After their cause classification, timeout comments use the
+  exact-list spelling `line N` or `lines N, M`; a range is not observed-line evidence.
   Adoption is seeded, not
   transcribed: a suite whose summary reports timeouts with no set on disk is
   pointed at `pitest<Suite>TimeoutAuditInit`, which writes the membership rows from the
@@ -2147,7 +2173,11 @@ The source block below is quoted only so it renders as one unit in this document
 The project-qualified `hardeningAgentTemplate` removes the leading `> ` markers and
 prints paste-ready instruction text between `<!-- hardening-template block:start -->`
 and `<!-- hardening-template block:end -->`; the digest still names the canonical
-quoted source block. The matching `hardeningAgentTemplateDiff` automatically removes
+quoted source block. Its complete output is also the canonical final layout:
+start marker, body, end marker, then exactly one digest marker. During a legacy
+transition the old marker may remain before the block long enough to run the diff,
+but after review replace/remove it rather than appending a second marker. The matching
+`hardeningAgentTemplateDiff` automatically removes
 one uniform Markdown quote layer from a legacy block and its boundary comments; do not
 edit the block merely to normalize the presentation used by releases before 21.5.25.
 

@@ -114,7 +114,11 @@ class AgentsTemplateSyncFunctionalTest {
     assertTrue(
       stale.output.contains("immediately before the first shared hardening rule") &&
           stale.output.contains("immediately after the last") &&
-          stale.output.contains("digest marker and all repository-specific facts outside"),
+          stale.output.contains("digest marker and all repository-specific facts outside") &&
+          stale.output.contains("hardeningAgentTemplate emits the canonical final order") &&
+          stale.output.contains("then one digest marker") &&
+          stale.output.contains("replace or remove that line after review") &&
+          stale.output.contains("do not append the emitted marker"),
       "the stale-marker failure must explain the semantic boundary placement:\n" + stale.output,
     )
   }
@@ -124,18 +128,20 @@ class AgentsTemplateSyncFunctionalTest {
     writeFixture()
 
     val printed = runner("hardeningAgentTemplate").build().output
+    val marker = "<!-- hardening-template sha256:$expectedDigest -->"
 
     assertTrue(printed.contains(expectedPrintedTemplate), printed)
     assertTrue(
       printed.indexOf(BLOCK_START) < printed.indexOf(expectedPrintedTemplate) &&
-          printed.indexOf(expectedPrintedTemplate) < printed.indexOf(BLOCK_END),
-      "the paste-ready template must carry explicit diff boundaries:\n$printed",
+          printed.indexOf(expectedPrintedTemplate) < printed.indexOf(BLOCK_END) &&
+          printed.indexOf(BLOCK_END) < printed.indexOf(marker),
+      "the paste-ready template must emit start, body, end, then digest marker:\n$printed",
     )
     assertFalse(
       printed.lineSequence().any { it.startsWith("> -") || it.startsWith(">   ") },
       printed,
     )
-    assertTrue(printed.contains("<!-- hardening-template sha256:$expectedDigest -->"), printed)
+    assertTrue(printed.lineSequence().count { it == marker } == 1, printed)
     assertFalse(printed.contains("github.com/sava-software/sava-build/blob/main"), printed)
     assertTrue(
       printed.contains("Consumer hardening notes contain only local ownership") &&
@@ -427,7 +433,11 @@ class AgentsTemplateSyncFunctionalTest {
         assertTrue(
           failed.output.contains("immediately before the first shared hardening rule") &&
               failed.output.contains("immediately after the last") &&
-              failed.output.contains("digest marker and all repository-specific facts outside"),
+              failed.output.contains("digest marker and all repository-specific facts outside") &&
+              failed.output.contains("hardeningAgentTemplate emits the canonical final order") &&
+              failed.output.contains("then one digest marker") &&
+              failed.output.contains("replace or remove that line after review") &&
+              failed.output.contains("do not append the emitted marker"),
           "missing-boundary failure did not explain the semantic boundary placement:\n${failed.output}",
         )
       }

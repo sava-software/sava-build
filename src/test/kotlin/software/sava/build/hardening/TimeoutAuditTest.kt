@@ -61,7 +61,7 @@ class TimeoutAuditTest {
 
   @Test
   fun `parse keeps the lines a row's comment names, united across duplicates`() {
-    // the key is line-less on purpose, but the '# line N' the seed writes is the
+    // the key is line-less on purpose, but the 'line N' tag after the cause is the
     // anchor the README cause argues about — kept per member for the drift check
     val membership = TimeoutAudit.parse(listOf(
       "com.example.Codec,encode,MathMutator # lines 12, 30",
@@ -87,6 +87,67 @@ class TimeoutAuditTest {
       ),
       membership.recordedLines
     )
+  }
+
+  @Test
+  fun `a timeout line range is invalid rather than partially parsed`() {
+    val member = "com.example.Codec,await,VoidMethodCallMutator"
+    listOf("786-800", "786–800", "786—800", "786−800", "786..800", "786 to 800")
+        .forEach { value ->
+          val membership = TimeoutAudit.parse(listOf(
+            "$member # cause:liveness lines $value",
+          ))
+
+          assertEquals(setOf(member), membership.members, value)
+          assertFalse(membership.recordedLines.containsKey(member), value)
+          assertEquals(TimeoutAudit.CauseCategory.LIVENESS, membership.causeCategories[member], value)
+          assertTrue(membership.causeFindings.isEmpty(), value)
+          val finding = membership.lineMetadataFindings.single()
+          assertEquals(member, finding.member, value)
+          assertTrue(finding.detail.contains("invalid line metadata 'lines $value'"), finding.detail)
+          assertTrue(
+            finding.detail.contains("'line N' or 'lines N, M' after the cause classification"),
+            finding.detail,
+          )
+          assertTrue(
+            finding.detail.contains("remove the optional tag when no exact observation exists"),
+            finding.detail,
+          )
+        }
+  }
+
+  @Test
+  fun `invalid line metadata stays separate from cause findings and overflow does not throw`() {
+    val resource = "com.example.Codec,grow,MathMutator"
+    val overflow = "com.example.Codec,wait,MathMutator"
+    val tooLarge = "999999999999999999999999"
+    val membership = TimeoutAudit.parse(listOf(
+      "$resource # cause:resource lines 10-20",
+      "$overflow # cause:liveness line $tooLarge",
+    ))
+
+    assertEquals(1, membership.causeFindings.size)
+    val resourceFinding = membership.causeFindings.single { it.member == resource }
+    assertTrue(resourceFinding.detail.contains("cause:resource terminates"))
+    assertFalse(resourceFinding.detail.contains("line metadata"))
+    assertEquals(2, membership.lineMetadataFindings.size)
+    val resourceMetadata = membership.lineMetadataFindings.single { it.member == resource }
+    assertTrue(resourceMetadata.detail.contains("invalid line metadata 'lines 10-20'"))
+    val overflowFinding = membership.lineMetadataFindings.single { it.member == overflow }
+    assertTrue(overflowFinding.detail.contains("invalid line metadata 'line $tooLarge'"))
+    assertFalse(membership.recordedLines.containsKey(resource))
+    assertFalse(membership.recordedLines.containsKey(overflow))
+
+    assertEquals(
+      listOf(overflowFinding),
+      TimeoutAudit.lineMetadataFindings(membership, listOf(overflow)),
+    )
+    val warning = TimeoutAudit.lineMetadataWarning(
+      "encoding", "encoding-timeouts.csv", membership.lineMetadataFindings)
+    assertTrue(warning.contains("2 audited-timeout member(s) carry invalid optional line metadata"))
+    assertTrue(warning.contains("does not change membership or cause classification"))
+    assertTrue(warning.contains("block strict certification"))
+    assertTrue(warning.contains("change timeout-retirement eligibility"))
   }
 
   @Test

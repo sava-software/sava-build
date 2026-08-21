@@ -1330,6 +1330,49 @@ $fuzzBlock
   }
 
   @Test
+  fun `a baseline line range is not folded into its label and blocks writers`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance # line 10\n"
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText("# flip insurance\n\nMeasured mode flip.\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,10,SURVIVED,none"
+      ),
+      ""
+    )
+    bindLegacyFixtureRecord()
+    val baselineBefore =
+      "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance # lines 10-30\n"
+    baselineFile().writeText(baselineBefore)
+    val checking = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      checking.contains("1 accepted row(s) carry invalid diagnostic line metadata") &&
+          checking.contains("invalid line metadata '# lines 10-30'") &&
+          checking.contains("ranges and out-of-range numbers are not valid"),
+      "the accepted range did not receive a targeted diagnostic:\n$checking"
+    )
+    assertFalse(
+      checking.contains("label(s) with no argument"),
+      "the invalid range leaked into the flip-insurance label:\n$checking"
+    )
+
+    val debt = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      debt.contains("1 accepted row(s) in encoding-accepted.csv carry invalid diagnostic line metadata"),
+      "Debt did not diagnose the same range:\n$debt"
+    )
+
+    val refused = baselineRetagRunner().buildAndFail().output
+    assertTrue(refused.contains("fix the invalid diagnostic line metadata"), refused)
+    assertEquals(baselineBefore, baselineFile().readText(), "Retag rewrote invalid metadata")
+  }
+
+  @Test
   fun `an indented comment is prose not a phantom row and survives a rewrite`() {
     // '  # ...' passed the column-0 comment filter and parsed as a row matching
     // nothing — phantom since-killed debt. Recognized as a comment now; and since
@@ -1596,7 +1639,11 @@ $fuzzBlock
     val printedRow = "com.example.Codec,encode,IncrementsMutator # cause:untriaged line 30"
     assertTrue(
       output.contains("1 timed-out mutant(s) not in the audited set (encoding-timeouts.csv)") &&
-          output.contains(printedRow),
+          output.contains(printedRow) &&
+          output.contains("paste-ready, fail-closed draft") &&
+          output.contains("replace its deliberate cause:untriaged placeholder") &&
+          output.contains("placeholder is non-certifying") &&
+          output.contains("only cause:liveness may remain"),
       "unaudited timeout not warned paste-ready:\n$output"
     )
     assertFalse(
@@ -2182,6 +2229,62 @@ $fuzzBlock
     }
     val stash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet").readText()
     assertFalse(stash.contains("com.example.Codec,encode,MathMutator"), stash)
+  }
+
+  @Test
+  fun `invalid liveness metadata remains advisory and does not alter retirement`() {
+    writeFixture()
+    val member = "com.example.Codec,encode,MathMutator"
+    val timeoutsFile = File(fixtureDir, "config/pitest/encoding-timeouts.csv")
+    timeoutsFile.parentFile.mkdirs()
+    timeoutsFile.writeText("$member # cause:liveness lines 10-30\n")
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: removing progress strands the loop.\n",
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,12,KILLED,com.example.CodecTest",
+      ),
+      "",
+    )
+
+    val quietNotice = "audited-timeout member(s) have not timed out in 3+"
+    repeat(3) { index ->
+      val output = runner("pitestEncoding").build().output
+      assertTrue(output.contains("invalid line metadata 'lines 10-30'"), output)
+      assertTrue(
+        output.contains("1 audited timeout(s) with invalid line metadata"),
+        "invalid timeout metadata was not retained in the advisory summary:\n$output",
+      )
+      if (index < 2) {
+        assertFalse(output.contains(quietNotice), "quiet notice fired before run 3:\n$output")
+      } else {
+        assertTrue(output.contains(quietNotice), "metadata reset the quiet streak:\n$output")
+        assertTrue(output.contains("1 quiet audited-timeout member(s)"), output)
+      }
+    }
+    val stash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet").readText()
+    assertTrue(stash.contains("$member,3"), stash)
+
+    val strictDebt = runner("pitestEncodingDebt", "-PstrictTimeoutAudit").build().output
+    assertTrue(
+      strictDebt.contains("invalid optional line metadata") &&
+          strictDebt.contains("-PstrictTimeoutAudit committed-file preview is clean"),
+      strictDebt,
+    )
+    val strict = runner("pitestEncoding", "-PstrictTimeoutAudit").build().output
+    assertTrue(strict.contains("invalid optional line metadata"), strict)
+    assertEquals(
+      1,
+      strict.lineSequence().count {
+        it.contains("audited-timeout member(s) carry invalid optional line metadata")
+      },
+      "strict execution printed the advisory more than once:\n$strict",
+    )
+    assertTrue(strict.contains(":pitestEncoding"), strict)
+    assertFalse(strict.contains("inadmissible cause classification"), strict)
   }
 
   @Test
@@ -3277,7 +3380,8 @@ $fuzzBlock
 
     val debt = runner("pitestEncodingDebt").build().output
     assertTrue(
-      debt.contains("4 audited-timeout member(s) lack an admissible cause classification") &&
+      debt.contains(
+        "4 audited-timeout member(s) lack an admissible cause classification") &&
           debt.contains("cause:resource terminates") &&
           debt.contains("cause:harness is a finite covering-path/watchdog race") &&
           debt.contains("cause:untriaged has not been reviewed") &&
@@ -3288,7 +3392,9 @@ $fuzzBlock
       "pitestEncodingDebt", "-PstrictTimeoutAudit",
     ).buildAndFail().output
     assertTrue(
-      strictDebt.contains("-PstrictTimeoutAudit found 0 malformed membership row(s), 4 inadmissible") &&
+      strictDebt.contains(
+        "-PstrictTimeoutAudit found 0 malformed membership row(s), 4 inadmissible or " +
+            "unfinished cause classification(s)") &&
           strictDebt.contains("Debt has checked committed files only") &&
           strictDebt.contains("report-dependent strict checks require a full pitestEncoding") &&
           strictDebt.contains("This Debt invocation did not run PIT") &&
@@ -3302,7 +3408,8 @@ $fuzzBlock
     )
     val strict = runner("pitestEncoding", "-PstrictTimeoutAudit").buildAndFail().output
     assertTrue(
-      strict.contains("4 inadmissible or unfinished cause classification(s)") &&
+      strict.contains(
+        "4 inadmissible or unfinished cause classification(s)") &&
           strict.contains("Only cause:liveness may remain in a certifying audited set") &&
           strict.contains("Keep finite resource/harness work explicit and non-certifying") &&
           strict.contains("do not relabel it as liveness or delete it from one quiet run") &&
@@ -3489,6 +3596,113 @@ $fuzzBlock
       output.contains("newly covered — was"),
       "must not pair across methods as a flip:\n$output"
     )
+  }
+
+  @Test
+  fun `a reviewed method rename uses union then prune without automatic argument carry`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,10,MathMutator,SURVIVED # encoding family\n"
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "# encoding family\n\nThe reviewed encoding property is unchanged by a pure method rename.\n"
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encodeChecked,12,SURVIVED,none",
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator," +
+            "newHelper,30,SURVIVED,none"
+      ),
+      ""
+    )
+    bindLegacyFixtureRecord()
+
+    val gate = runner("pitestEncoding").buildAndFail().output
+    assertTrue(
+      gate.contains("For an intentional same-suite key move or method rename") &&
+          gate.contains("pitestEncodingBaselineUnion is phase one") &&
+          gate.contains("only onto a generated row that review proves is its replacement") &&
+          gate.contains("leave every other new row '# untriaged'") &&
+          gate.contains("ordinary fresh preview") &&
+          gate.contains("BaselineRetag changes line metadata, not keys") &&
+          gate.contains("do not substitute the complete-rewrite BaselineUpdate"),
+      "a concurrent fresh/stale gate did not explain the reviewed re-key flow:\n$gate"
+    )
+    assertFalse(
+      gate.contains("label(s) with no argument"),
+      "the seeded source argument was reported as orphaned:\n$gate"
+    )
+
+    val union = baselineUnionRunner().build().output
+    assertTrue(union.contains("union added 2 entries"), union)
+    assertEquals(
+      listOf(
+        "com.example.Codec,encode,MathMutator,SURVIVED # encoding family # line 10",
+        "com.example.Codec,encodeChecked,MathMutator,SURVIVED # untriaged # line 12",
+        "com.example.Codec,newHelper,IncrementsMutator,SURVIVED # untriaged # line 30"
+      ),
+      baselineFile().readLines(),
+      "Union must not infer that the old method's argument belongs to either new key"
+    )
+
+    // This edit represents the review the tool cannot perform: the source change proves
+    // which argument belongs at the new key before the old key is retired.
+    baselineFile().writeText(
+      baselineFile().readText().replace(
+        "encodeChecked,MathMutator,SURVIVED # untriaged # line 12",
+        "encodeChecked,MathMutator,SURVIVED # encoding family # line 12"
+      )
+    )
+
+    assertTrue(
+      baselineFile().readText().contains(
+        "newHelper,IncrementsMutator,SURVIVED # untriaged # line 30"),
+      "reviewing the rename carried its argument onto unrelated fresh debt"
+    )
+    // The unrelated survivor is killed independently before the second observation.
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encodeChecked,12,SURVIVED,none",
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.IncrementsMutator," +
+            "newHelper,30,KILLED,com.example.CodecTest"
+      ),
+      ""
+    )
+
+    val preview = runner("pitestEncoding", "-PnoMutationHistory").build().output
+    assertTrue(
+      preview.contains("2 row(s) are unmatched by this run") &&
+          preview.contains("pitestEncodingBaselinePrune would remove exactly these candidate row(s)") &&
+          preview.contains(
+            "com.example.Codec,encode,MathMutator,SURVIVED # encoding family # line 10") &&
+          preview.contains(
+            "com.example.Codec,newHelper,IncrementsMutator,SURVIVED # untriaged # line 30"),
+      "the second fresh observation did not expose the complete pre-Prune decision:\n$preview"
+    )
+
+    val prune = baselinePruneRunner().build().output
+    assertTrue(prune.contains("prune dropped 2 row(s)"), prune)
+    assertTrue(
+      prune.contains("com.example.Codec,encode,MathMutator,SURVIVED # encoding family # line 10"),
+      prune
+    )
+    assertEquals(
+      listOf(
+        "com.example.Codec,encodeChecked,MathMutator,SURVIVED # encoding family # line 12"
+      ),
+      baselineFile().readLines(),
+      "Prune must retain the reviewed argument at the generated new key"
+    )
+
+    val settled = runner("pitestEncoding").build().output
+    assertFalse(settled.contains("label(s) with no argument"), settled)
   }
 
   @Test

@@ -2,6 +2,8 @@ package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
@@ -59,6 +61,80 @@ class BaselineNotesTest {
     val prose = BaselineNotes.parse("a,b,c,d # line 12 moved the guard")
     assertEquals("# line 12 moved the guard", prose.note)
     assertEquals(emptyList<Int>(), prose.recordedLines)
+  }
+
+  @Test
+  fun `a line range is split from the label but remains invalid metadata`() {
+    val source =
+        "a,b,MathMutator,SURVIVED # flip insurance # lines 786-800"
+    val ranged = BaselineNotes.parse(source)
+
+    assertEquals("# flip insurance", ranged.note)
+    assertEquals("flip insurance", BaselineNotes.labelOf(ranged.note!!))
+    assertTrue(BaselineNotes.hasFlipInsurance(ranged.note))
+    assertEquals(emptyList<Int>(), ranged.recordedLines)
+    assertEquals("# lines 786-800", ranged.invalidLineMetadata)
+    assertEquals(
+        emptyList<String>(),
+        BaselineNotes.undocumentedLabels(listOf(ranged.note!!)) { "# flip insurance\n" },
+    )
+
+    val document = BaselineDocument.parse("$source\n")
+    assertEquals(listOf(1), document.invalidLineMetadataRows.map { it.lineNumber })
+    assertEquals(source, BaselineNotes.render(ranged), "read-only rendering must retain the bad suffix")
+    val refusal = assertThrows(IllegalArgumentException::class.java) {
+      document.rewriteRowsPreservingNonRows(document.rows)
+    }
+    assertTrue(refusal.message.orEmpty().contains("invalid line metadata '# lines 786-800'"))
+    assertTrue(
+      refusal.message.orEmpty().contains(
+        "'# line N' or '# lines N, M' as the trailing accepted-row tag"),
+    )
+    assertTrue(
+      refusal.message.orEmpty().contains(
+        "remove the optional tag when no exact observation exists"),
+    )
+    assertTrue(refusal.message.orEmpty().contains("ranges and out-of-range numbers are not valid"))
+
+    val clean = BaselineDocument.parse("a,b,MathMutator,SURVIVED\n")
+    val invalidReplacement = BaselineNotes.Row(
+        "a,b,MathMutator,SURVIVED", "# flip insurance", emptyList(), "# lines 1-2")
+    val replacementRefusal = assertThrows(IllegalArgumentException::class.java) {
+      clean.rewriteRowsPreservingNonRows(listOf(invalidReplacement))
+    }
+    assertTrue(replacementRefusal.message.orEmpty().contains("replacement 1 invalid line metadata"))
+
+    val current = "${BaselineDocument.CURRENT_HEADER}\n$source\n"
+    assertEquals(
+        "$source\n",
+        BaselineDocument.parse(current).renderDowngraded(),
+        "raw-preserving downgrade must remain available",
+    )
+  }
+
+  @Test
+  fun `range spellings and overflowing line numbers remain invalid metadata`() {
+    listOf(
+      "10-30",
+      "10–30",
+      "10—30",
+      "10−30",
+      "10..30",
+      "10 to 30",
+      "10-20, 30-40",
+      "10, 20-30",
+    ).forEach { value ->
+      val row = BaselineNotes.parse("a,b,c,d # family # lines $value")
+      assertEquals("# family", row.note, value)
+      assertEquals(emptyList<Int>(), row.recordedLines, value)
+      assertEquals("# lines $value", row.invalidLineMetadata, value)
+    }
+
+    val overflow = "999999999999999999999999"
+    val row = BaselineNotes.parse("a,b,c,d # family # line $overflow")
+    assertEquals("# family", row.note)
+    assertEquals(emptyList<Int>(), row.recordedLines)
+    assertEquals("# line $overflow", row.invalidLineMetadata)
   }
 
   @Test

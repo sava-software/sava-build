@@ -29,6 +29,7 @@ import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.PreparedMutationWrite
 import software.sava.build.hardening.ProjectWriteOperation
+import software.sava.build.hardening.RecordedLineMetadata
 import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
@@ -1437,6 +1438,24 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
           )
         }
       }
+      val invalidLineMetadataRows = baselineDocument.invalidLineMetadataRows
+      if (invalidLineMetadataRows.isNotEmpty()) {
+        val details = invalidLineMetadataRows.joinToString("\n") { row ->
+          "  line ${row.lineNumber}: ${row.raw}\n    " +
+              RecordedLineMetadata.acceptedInvalidDetail(
+                  checkNotNull(row.value.invalidLineMetadata))
+        }
+        logger.warn(
+            "pitestModeCompare: ${invalidLineMetadataRows.size} accepted row(s) in " +
+                "${baselineFile.name} carry invalid diagnostic line metadata. The key still " +
+                "compares, but a range is not evidence that every line in the span was observed:\n" +
+                details)
+        if (unionFlips) {
+          throw GradleException(
+              "pitestModeCompare: pitestModeCompareUnion refuses to rewrite invalid line " +
+                  "metadata; list the exact observed mutant lines first.")
+        }
+      }
       val acceptedRows: MutableList<BaselineNotes.Row> = baselineDocument.rows.toMutableList()
       // Counts, not membership: sibling mutants share the line-less key, and the
       // verify compares multisets — insurance must match its arithmetic or a key
@@ -2684,6 +2703,12 @@ hardening.mutation.all {
           logger.warn(TimeoutAudit.causeFindingWarning(
               suiteName, timeoutsFile.name, staticCauseFindings))
         }
+        val staticLineMetadataFindings =
+            TimeoutAudit.lineMetadataFindings(membership, membership.members)
+        if (staticLineMetadataFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.lineMetadataWarning(
+              suiteName, timeoutsFile.name, staticLineMetadataFindings))
+        }
         val staticUndocumented = TimeoutAudit.undocumentedCauses(membership.members) {
           readmeFile.takeIf { it.isFile }?.readText() ?: ""
         }
@@ -3208,6 +3233,29 @@ hardening.mutation.all {
           )
         }
       }
+      val invalidLineMetadataRows = baselineDocument.invalidLineMetadataRows
+      if (invalidLineMetadataRows.isNotEmpty()) {
+        val details = invalidLineMetadataRows.joinToString("\n") { row ->
+          "  line ${row.lineNumber}: ${row.raw}\n    " +
+              RecordedLineMetadata.acceptedInvalidDetail(
+                  checkNotNull(row.value.invalidLineMetadata))
+        }
+        logger.warn(
+            "pitest baseline '$suiteName': ${invalidLineMetadataRows.size} accepted row(s) " +
+                "carry invalid diagnostic line metadata. Their keys still accept matching " +
+                "mutants and the invalid suffix is not part of the family label, but it supplies " +
+                "no line-affinity evidence and every row-rewriting baseline writer refuses it:\n$details")
+        if (!writingRecord || initTimeoutAudit) {
+          advisoryLog.get().record(
+              advisoryScope,
+              "${invalidLineMetadataRows.size} baseline row(s) with invalid line metadata",
+          )
+        } else {
+          throw GradleException(
+              "pitest baseline '$suiteName': fix the invalid diagnostic line metadata listed " +
+                  "above before rewriting ${baselineFile.name}.")
+        }
+      }
       val acceptedRows: List<BaselineNotes.Row> = baselineDocument.rows
       val accepted: List<String> = acceptedRows.map { it.key }
       // The line-less 'class,method,mutator' coordinate is Mutant.coordinate —
@@ -3558,6 +3606,15 @@ hardening.mutation.all {
           advisoryLog.get().record(advisoryScope, "${staleMembers.size} stale audit row(s)")
         }
         val liveMembers = timeoutFindings.liveMembers
+        val lineMetadataFindings = timeoutFindings.lineMetadataFindings
+        if (lineMetadataFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.lineMetadataWarning(
+              suiteName, timeoutsFile.name, lineMetadataFindings))
+          advisoryLog.get().record(
+              advisoryScope,
+              "${lineMetadataFindings.size} audited timeout(s) with invalid line metadata",
+          )
+        }
         val causeFindings = timeoutFindings.causeFindings
         if (causeFindings.isNotEmpty()) {
           logger.warn(TimeoutAudit.causeFindingWarning(
@@ -3657,7 +3714,8 @@ hardening.mutation.all {
           // Retirement is a hygiene nomination for otherwise valid audited
           // liveness only. Resource/harness/untriaged rows and liveness rows whose
           // README argument is missing are unfinished findings, not candidates that
-          // three quiet runs can legitimize or silently erase.
+          // three quiet runs can legitimize or silently erase. Optional source-line
+          // metadata does not authorize the row and therefore does not alter this set.
           val retirementMembers = liveMembers.filterTo(linkedSetOf()) { member ->
             membership.causeCategories[member] == TimeoutAudit.CauseCategory.LIVENESS &&
                 member !in timeoutFindings.undocumented
@@ -4304,8 +4362,8 @@ hardening.mutation.all {
         val staleGone = acceptedRows.indices.filter { keepPlan[it] == BaselineEngine.Disposition.DROP }
         if (staleGone.isNotEmpty()) {
           val concurrentFresh = if (fresh.isEmpty()) "" else
-            "\nThis report also has ${fresh.size} new gated row(s); triage the failure below " +
-                "before any baseline rewrite."
+            "\nThis report also has ${fresh.size} new gated row(s); do not run Prune or Retag " +
+                "while they remain gated. Follow the ratchet failure's additive remediation below."
           logger.lifecycle(
               "pitest baseline '$suiteName': ${staleGone.size} row(s) are unmatched by this run; " +
                   "${pitestTaskName}BaselinePrune would remove exactly these candidate row(s) if deliberately chosen " +
@@ -4383,24 +4441,39 @@ hardening.mutation.all {
                 (recordedPit != null && recordedPit != currentPit) ||
                 (recordedToolchain != null && currentToolchain != null &&
                     recordedToolchain.identitySha256 != currentToolchain.identitySha256)
+        fun rekeyRemediation(phaseOne: String): String =
+          if (keepPlan.none { it == BaselineEngine.Disposition.DROP }) "" else
+            " For an intentional same-suite key move or method rename, $phaseOne is phase one: " +
+                "review the source change and carry or rewrite an old acceptance argument only " +
+                "onto a generated row that review proves is its replacement; leave every other " +
+                "new row '# untriaged'. Then run $pitestTaskName -PnoMutationHistory as an " +
+                "ordinary fresh preview and review its full BaselinePrune candidate list. Only " +
+                "afterward run ${pitestTaskName}BaselinePrune if those exact candidates remain " +
+                "absent and every removal is independently justified. BaselineRetag changes line " +
+                "metadata, not keys; do not substitute the complete-rewrite BaselineUpdate."
         val remediation = when {
           provenanceRequiresRebase ->
             "\nKill them with tests, or document each acceptance, then review a fresh " +
                 "$pitestTaskName -PnoMutationHistory observation and run " +
                 "${pitestTaskName}BaselineRebase. This record is not bound to the current " +
                 "PIT/toolchain; Rebase preserves every old row, appends current rows as " +
-                "'# untriaged', and binds the reviewed provenance."
+                "'# untriaged', and binds the reviewed provenance." +
+                rekeyRemediation("${pitestTaskName}BaselineRebase")
           committedRecordExisted && currentToolchain == null ->
             "\nKill them with tests, or document each acceptance, then first run " +
                 "$pitestTaskName -PnoMutationHistory so the current toolchain can be compared " +
                 "with the record. If provenance still matches, use " +
                 "${pitestTaskName}BaselineUnion; if it changed, use " +
-                "${pitestTaskName}BaselineRebase. Neither transition removes old rows."
+                "${pitestTaskName}BaselineRebase. Neither transition removes old rows." +
+                rekeyRemediation(
+                    "the applicable ${pitestTaskName}BaselineUnion or " +
+                        "${pitestTaskName}BaselineRebase")
           baselineExisted ->
             "\nKill them with tests, or after documenting each acceptance run " +
                 "${pitestTaskName}BaselineUnion; Union appends the current rows as '# untriaged' " +
                 "without removing unmatched evidence. BaselineUpdate is a complete report rewrite, " +
-                "not remediation for this incremental gate failure (see HARDENING.md)."
+                "not remediation for this incremental gate failure (see HARDENING.md)." +
+                rekeyRemediation("${pitestTaskName}BaselineUnion")
           else ->
             "\nKill them with tests, or accept knowingly by documenting each reason and running " +
                 "${pitestTaskName}BaselineUpdate to seed config/pitest/$suiteName-accepted.csv " +
@@ -4514,6 +4587,9 @@ hardening.mutation.all {
       val debtTimeoutCauseFindings = debtTimeoutMembership
           ?.let { TimeoutAudit.causeFindings(it, it.members) }
           .orEmpty()
+      val debtTimeoutLineMetadataFindings = debtTimeoutMembership
+          ?.let { TimeoutAudit.lineMetadataFindings(it, it.members) }
+          .orEmpty()
       val debtTimeoutUndocumented = debtTimeoutMembership
           ?.let { membership ->
             TimeoutAudit.undocumentedCauses(membership.members) {
@@ -4527,6 +4603,10 @@ hardening.mutation.all {
         if (debtTimeoutCauseFindings.isNotEmpty()) {
           logger.warn(TimeoutAudit.causeFindingWarning(
               suiteName, debtTimeoutsFile.name, debtTimeoutCauseFindings))
+        }
+        if (debtTimeoutLineMetadataFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.lineMetadataWarning(
+              suiteName, debtTimeoutsFile.name, debtTimeoutLineMetadataFindings))
         }
         if (debtTimeoutUndocumented.isNotEmpty()) {
           logger.warn(TimeoutAudit.undocumentedCauseWarning(
@@ -4674,6 +4754,19 @@ hardening.mutation.all {
                 "no mutant, and blocks every baseline rewrite:\n" +
                 malformedRows.joinToString("\n") { "  $it" }
         )
+      }
+      val invalidLineMetadataRows = baselineDocument.invalidLineMetadataRows
+      if (invalidLineMetadataRows.isNotEmpty()) {
+        logger.warn(
+            "pitest '$suiteName': ${invalidLineMetadataRows.size} accepted row(s) in " +
+                "${baselineFile.name} carry invalid diagnostic line metadata. Their keys still " +
+                "count in this read-only tally, but ranges are not observed-line evidence and a " +
+                "row-rewriting writer will refuse them:\n" +
+                invalidLineMetadataRows.joinToString("\n") { row ->
+                  "  line ${row.lineNumber}: ${row.raw}\n    " +
+                      RecordedLineMetadata.acceptedInvalidDetail(
+                          checkNotNull(row.value.invalidLineMetadata))
+                })
       }
       val wellFormedRows = baselineDocument.rows
       val baselinePairs = wellFormedRows

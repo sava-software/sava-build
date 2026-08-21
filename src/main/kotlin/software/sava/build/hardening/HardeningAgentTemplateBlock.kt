@@ -105,14 +105,20 @@ internal object HardeningAgentTemplateBlock {
       "Place the start immediately before the first shared hardening rule and the end " +
       "immediately after the last; keep the digest marker and all repository-specific " +
       "facts outside that pair. This check will not guess the block from headings or " +
-      "digest-marker placement."
+      "digest-marker placement. " + canonicalFinalLayoutGuidance()
 
   fun boundaryMigrationGuidance(): String =
     "Before running the diff, wrap the existing adapted hardening block between these " +
       "exact lines:\n  $BLOCK_START\n  ... existing adapted hardening block ...\n" +
       "  $BLOCK_END\nPlace the start immediately before the first shared hardening rule and " +
       "the end immediately after the last; keep the digest marker and all " +
-      "repository-specific facts outside that pair.\n"
+      "repository-specific facts outside that pair. " + canonicalFinalLayoutGuidance() + "\n"
+
+  private fun canonicalFinalLayoutGuidance(): String =
+    "hardeningAgentTemplate emits the canonical final order as $BLOCK_START, the shared " +
+      "body, $BLOCK_END, then one digest marker. If a legacy digest marker exists, replace " +
+      "or remove that line after review; do not append the emitted marker while leaving the " +
+      "legacy copy."
 
   private data class PresentedLine(
     val content: String,

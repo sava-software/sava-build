@@ -23,7 +23,7 @@ import software.sava.build.hardening.TimeoutAudit
  * classification defect cannot consume a full mutation observation and then discard
  * it. Mutant-facing checks still belong to the report verifier.
  */
-@UntrackedTask(because = "Strict timeout metadata must be inspected before every mutation run that depends on it")
+@UntrackedTask(because = "Committed timeout audit must be inspected before every strict mutation run")
 abstract class TimeoutAuditPreflightTask : DefaultTask() {
 
   @get:Input

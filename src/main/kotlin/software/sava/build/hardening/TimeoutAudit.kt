@@ -50,6 +50,12 @@ internal object TimeoutAudit {
     val detail: String,
   )
 
+  /** Optional diagnostic source-line metadata that could not be interpreted exactly. */
+  data class LineMetadataFinding(
+    val member: String,
+    val detail: String,
+  )
+
   /**
    * Well-formed, de-duplicated `class,method,mutator` members, the rows that failed
    * to parse, and each member's recorded lines — the numbers a row's `# line 12` /
@@ -63,6 +69,7 @@ internal object TimeoutAudit {
     val recordedLines: Map<String, Set<Int>>,
     val causeCategories: Map<String, CauseCategory>,
     val causeFindings: List<CauseFinding>,
+    val lineMetadataFindings: List<LineMetadataFinding>,
   )
 
   /**
@@ -77,6 +84,7 @@ internal object TimeoutAudit {
     val staleMembers: Set<String>,
     val liveMembers: Set<String>,
     val causeFindings: List<CauseFinding>,
+    val lineMetadataFindings: List<LineMetadataFinding>,
     val undocumented: List<String>,
     val multiMutantMembers: List<MemberPopulation>,
   )
@@ -98,16 +106,13 @@ internal object TimeoutAudit {
     val copies: Int,
   )
 
-  // Comma or slash between numbers: the seed writes commas, but hand-written rows
-  // in shipped consumer files say '# lines 137/141' — a parser keeping only the
-  // first number would read the second line's timeout as false drift.
-  private val LINE_COMMENT = Regex("""\blines?\s+(\d+(?:\s*[,/]\s*\d+)*)""")
   private val CAUSE_COMMENT = Regex("""\bcause\s*:\s*([A-Za-z][A-Za-z0-9_-]*)\b""")
 
   private data class ParsedRow(
     val key: String,
     val recordedLines: List<Int>,
     val causeTokens: List<String>,
+    val invalidLineMetadata: String?,
   )
 
   /**
@@ -118,20 +123,20 @@ internal object TimeoutAudit {
    * counts a twice-pasted row the same way — once (their recorded lines union).
    *
    * The comment is not all thrown away: the key is line-less on purpose, but the
-   * `# line N` the seed writes (and the paste-ready row carries) remains useful as a
-   * human triage pointer, so it is retained as diagnostic metadata per member.
+   * `line N` tag the seed writes after its cause (and the paste-ready row carries)
+   * remains useful as a human triage pointer, so it is retained as diagnostic
+   * metadata per member.
    */
   fun parse(lines: List<String>): Membership {
     val rows = lines.map { line ->
       val comment = line.substringAfter('#', "")
       val key = line.substringBefore('#').split(',').joinToString(",") { it.trim() }
-      val recorded = LINE_COMMENT.find(comment)
-          ?.groupValues?.get(1)?.split(',', '/')?.mapNotNull { it.trim().toIntOrNull() }
-          .orEmpty()
+      val lineMetadata = RecordedLineMetadata.timeoutComment(comment)
       ParsedRow(
           key,
-          recorded,
+          lineMetadata.lines,
           CAUSE_COMMENT.findAll(comment).map { it.groupValues[1] }.toList(),
+          lineMetadata.invalid,
       )
     }.filter { it.key.isNotEmpty() }
     val (memberRows, malformedRows) = rows.partition { row ->
@@ -144,35 +149,45 @@ internal object TimeoutAudit {
         .mapValues { (_, recorded) -> recorded.flatten().toSet() }
     val categories = linkedMapOf<String, CauseCategory>()
     val causeFindings = mutableListOf<CauseFinding>()
+    val lineMetadataFindings = mutableListOf<LineMetadataFinding>()
     memberRows.groupBy { it.key }.toSortedMap().forEach { (member, copies) ->
+      val findingDetails = mutableListOf<String>()
+      val invalidMetadata = copies.mapNotNull { it.invalidLineMetadata }.distinct()
+      if (invalidMetadata.isNotEmpty()) {
+        lineMetadataFindings += LineMetadataFinding(
+            member,
+            invalidMetadata.joinToString("; ") { RecordedLineMetadata.timeoutInvalidDetail(it) },
+        )
+      }
       val tokens = copies.flatMap { it.causeTokens }.distinct()
       when {
-        tokens.isEmpty() -> causeFindings += CauseFinding(
-            member, "missing cause:liveness/resource/harness/untriaged")
-        tokens.size > 1 -> causeFindings += CauseFinding(
-            member, "conflicting cause categories: ${tokens.sorted().joinToString(", ")}")
+        tokens.isEmpty() -> findingDetails +=
+            "missing cause:liveness/resource/harness/untriaged"
+        tokens.size > 1 -> findingDetails +=
+            "conflicting cause categories: ${tokens.sorted().joinToString(", ")}"
         else -> {
           val token = tokens.single()
           val category = CauseCategory.fromToken(token)
           if (category == null) {
-            causeFindings += CauseFinding(member, "unknown cause category '$token'")
+            findingDetails += "unknown cause category '$token'"
           } else {
             categories[member] = category
             when (category) {
               CauseCategory.LIVENESS -> Unit
-              CauseCategory.RESOURCE -> causeFindings += CauseFinding(
-                  member,
+              CauseCategory.RESOURCE -> findingDetails +=
                   "cause:resource terminates and needs a deterministic contract-first disposition, " +
-                      "not watchdog detection")
-              CauseCategory.HARNESS -> causeFindings += CauseFinding(
-                  member,
+                      "not watchdog detection"
+              CauseCategory.HARNESS -> findingDetails +=
                   "cause:harness is a finite covering-path/watchdog race that must be repaired " +
-                      "before certification")
-              CauseCategory.UNTRIAGED -> causeFindings += CauseFinding(
-                  member, "cause:untriaged has not been reviewed")
+                      "before certification"
+              CauseCategory.UNTRIAGED -> findingDetails +=
+                  "cause:untriaged has not been reviewed"
             }
           }
         }
+      }
+      if (findingDetails.isNotEmpty()) {
+        causeFindings += CauseFinding(member, findingDetails.joinToString("; "))
       }
     }
     return Membership(
@@ -181,6 +196,7 @@ internal object TimeoutAudit {
         recordedLines,
         categories,
         causeFindings,
+        lineMetadataFindings,
     )
   }
 
@@ -188,6 +204,15 @@ internal object TimeoutAudit {
   fun causeFindings(membership: Membership, members: Collection<String>): List<CauseFinding> {
     val selected = members.toSet()
     return membership.causeFindings.filter { it.member in selected }
+  }
+
+  /** Invalid optional line metadata for [members], separate from cause validity. */
+  fun lineMetadataFindings(
+    membership: Membership,
+    members: Collection<String>,
+  ): List<LineMetadataFinding> {
+    val selected = members.toSet()
+    return membership.lineMetadataFindings.filter { it.member in selected }
   }
 
   /** Combines a trusted completed report with committed timeout membership. */
@@ -212,6 +237,7 @@ internal object TimeoutAudit {
         staleMembers = staleMembers,
         liveMembers = liveMembers,
         causeFindings = causeFindings(membership, liveMembers),
+        lineMetadataFindings = lineMetadataFindings(membership, liveMembers),
         undocumented = undocumentedCauses(liveMembers, readme),
         multiMutantMembers = memberPopulations(rows, liveMembers),
     )
@@ -279,8 +305,11 @@ internal object TimeoutAudit {
       "pitest '$suiteName': ${unaudited.size} timed-out mutant(s) not in the audited set " +
           "($fileName) — a new timeout hides a weakened-assertion blind spot " +
           "behind \"detected\"; identify the structural cause (the removed loop exit, the " +
-          "reversed cursor), add the row below to the set and the cause to " +
-          "config/pitest/README.md:\n" +
+          "reversed cursor). The row below is a paste-ready, fail-closed draft: replace its " +
+          "deliberate cause:untriaged placeholder with the reviewed classification and write " +
+          "the structural argument in config/pitest/README.md before committing it. The " +
+          "placeholder is non-certifying; only cause:liveness may remain in a certifying " +
+          "audited set:\n" +
           unaudited.joinToString("\n") {
             "  ${it.coordinate} # cause:untriaged line ${it.lineText}"
           } + historyDecisionCaveat
@@ -338,6 +367,17 @@ internal object TimeoutAudit {
           "deterministic resource-contract test/fix or a stable SURVIVED equivalence argument, " +
           "'cause:harness' records a reviewed finite covering-path/watchdog race while it is " +
           "being repaired, and 'cause:untriaged' is unfinished; all three are non-certifying:\n" +
+          findings.sortedBy { it.member }.joinToString("\n") { "  ${it.member} # ${it.detail}" }
+
+  fun lineMetadataWarning(
+    suiteName: String,
+    fileName: String,
+    findings: Collection<LineMetadataFinding>,
+  ): String =
+      "pitest '$suiteName': ${findings.size} audited-timeout member(s) carry invalid optional " +
+          "line metadata in $fileName. This metadata supplies no source-line diagnostic evidence; " +
+          "it does not change membership or cause classification, block strict certification, or " +
+          "change timeout-retirement eligibility:\n" +
           findings.sortedBy { it.member }.joinToString("\n") { "  ${it.member} # ${it.detail}" }
 
   /** The malformed-row warning, or null when every row parses. */
