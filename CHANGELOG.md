@@ -1,5 +1,17 @@
 # Changelog
 
+## [21.5.27](https://github.com/sava-software/sava-build/compare/21.5.26...21.5.27) (2026-08-21)
+
+
+### Bug Fixes
+
+* **release:** stage attestations in draft pull requests ([a203cfe](https://github.com/sava-software/sava-build/commit/a203cfec2f041d5fd5c8e5f0a8decd05a44ed81f))
+
+
+### Build System
+
+* **deps:** bump docker/setup-buildx-action ([#94](https://github.com/sava-software/sava-build/issues/94)) ([882ff32](https://github.com/sava-software/sava-build/commit/882ff3270db8febda6e654bc4a8ae52a5031ac1e))
+
 ## [21.5.26](https://github.com/sava-software/sava-build/compare/21.5.25...21.5.26) (2026-08-16)
 
 
