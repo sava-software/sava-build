@@ -2252,7 +2252,11 @@ $buildTail
 
     File(fixtureDir, "fake-pit-mode.txt").writeText("timeout\n")
     val strict = runner("releaseG").buildAndFail().output
-    assertTrue(strict.contains("timed-out mutant(s) and no audited set"), strict)
+    assertTrue(
+      strict.contains("physical TIMED_OUT mutant instance(s) across 1 line-less key(s)") &&
+          strict.contains("and no audited set"),
+      strict,
+    )
     assertFalse(receipt.exists(), "strict verification failure produced a receipt")
   }
 

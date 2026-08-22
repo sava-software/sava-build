@@ -9,6 +9,15 @@ import org.junit.jupiter.api.Test
 class HardeningOperationsTest {
 
   @Test
+  fun `hardening task paths distinguish root and nested projects`() {
+    assertEquals(":pitestEncoding", qualifiedHardeningTaskPath(":", "pitestEncoding"))
+    assertEquals(
+      ":codec:pitestEncoding",
+      qualifiedHardeningTaskPath(":codec", "pitestEncoding"),
+    )
+  }
+
+  @Test
   fun `the central option inventory separates active and removed properties`() {
     assertEquals(11, HardeningOptionNames.descriptors.size)
     assertEquals(

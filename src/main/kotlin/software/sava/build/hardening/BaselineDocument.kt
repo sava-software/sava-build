@@ -91,6 +91,9 @@ internal class BaselineDocument private constructor(
   val comments: List<Entry.Comment> = entries.filterIsInstance<Entry.Comment>()
   val blankLines: List<Entry.Blank> = entries.filterIsInstance<Entry.Blank>()
   val malformedRows: List<Entry.MalformedRow> = entries.filterIsInstance<Entry.MalformedRow>()
+  /** Valid baseline keys whose optional diagnostic line suffix uses invalid range syntax. */
+  val invalidLineMetadataRows: List<Entry.Row> =
+      rowEntries.filter { it.value.invalidLineMetadata != null }
 
   /**
    * Whether this file carries a record worth keeping. Whitespace alone is not
@@ -114,6 +117,7 @@ internal class BaselineDocument private constructor(
    */
   fun migrateToCurrent(): Transition {
     requireNoMalformedRows("migrate to accepted-baseline schema $CURRENT_SCHEMA")
+    requireNoInvalidLineMetadata("migrate to accepted-baseline schema $CURRENT_SCHEMA")
     val canonicalized = rowEntries.count { BaselineNotes.render(it.value) != it.raw }
     val content = render(
         SchemaState.CURRENT,
@@ -180,6 +184,8 @@ internal class BaselineDocument private constructor(
     replacementRows: List<BaselineNotes.Row>,
     targetSchema: SchemaState = schemaState,
   ): String {
+    requireNoInvalidLineMetadata("rewrite accepted-baseline rows")
+    requireValidReplacementLineMetadata("rewrite accepted-baseline rows", replacementRows)
     if (targetSchema == SchemaState.CURRENT) {
       requireNoMalformedRows("write accepted-baseline schema $CURRENT_SCHEMA")
     }
@@ -217,6 +223,9 @@ internal class BaselineDocument private constructor(
     replacements: List<RowReplacement>,
     targetSchema: SchemaState = schemaState,
   ): String {
+    requireNoInvalidLineMetadata("rewrite accepted-baseline rows")
+    requireValidReplacementLineMetadata(
+        "rewrite accepted-baseline rows", replacements.map { it.value })
     if (targetSchema == SchemaState.CURRENT) {
       requireNoMalformedRows("write accepted-baseline schema $CURRENT_SCHEMA")
     }
@@ -251,6 +260,31 @@ internal class BaselineDocument private constructor(
     require(malformedRows.isEmpty()) {
       val detail = malformedRows.joinToString(", ") { "line ${it.lineNumber}" }
       "cannot $operation: malformed baseline row(s) at $detail"
+    }
+  }
+
+  private fun requireNoInvalidLineMetadata(operation: String) {
+    require(invalidLineMetadataRows.isEmpty()) {
+      val detail = invalidLineMetadataRows.joinToString(", ") { row ->
+        "line ${row.lineNumber} " +
+            RecordedLineMetadata.acceptedInvalidDetail(checkNotNull(row.value.invalidLineMetadata))
+      }
+      "cannot $operation: $detail"
+    }
+  }
+
+  private fun requireValidReplacementLineMetadata(
+    operation: String,
+    replacementRows: List<BaselineNotes.Row>,
+  ) {
+    val invalid = replacementRows.withIndex()
+        .filter { it.value.invalidLineMetadata != null }
+    require(invalid.isEmpty()) {
+      val detail = invalid.joinToString(", ") { (index, row) ->
+        "replacement ${index + 1} " +
+            RecordedLineMetadata.acceptedInvalidDetail(checkNotNull(row.invalidLineMetadata))
+      }
+      "cannot $operation: $detail"
     }
   }
 

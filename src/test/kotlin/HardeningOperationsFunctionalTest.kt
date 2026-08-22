@@ -710,6 +710,12 @@ class HardeningOperationsFunctionalTest {
     val cold = runner("pitestEncodingBaselineRetag").build()
     assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
     assertTrue(cold.output.contains("selected baseline line-tag refresh"), cold.output)
+    assertTrue(
+      cold.output.contains("intentionally does not reuse an existing report") &&
+          cold.output.contains("one new full, unscoped, history-free PIT observation") &&
+          cold.output.contains(":pitestEncoding -PnoMutationHistory"),
+      cold.output,
+    )
     assertTrue(cold.output.contains("retag refreshed 1 matched row line tag(s)"), cold.output)
     assertTrue(cold.output.contains("including unmatched evidence"), cold.output)
     assertEquals(

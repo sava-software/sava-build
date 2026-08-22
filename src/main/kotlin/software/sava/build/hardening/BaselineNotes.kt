@@ -1,6 +1,109 @@
 package software.sava.build.hardening
 
 /**
+ * Shared grammar for diagnostic source-line metadata. A tag names exact observed
+ * mutant lines; it is not a source span. Keeping the number-list grammar here stops
+ * accepted baselines and timeout audit sets from disagreeing about comma/slash lists
+ * or partially accepting the first endpoint of a range.
+ */
+internal object RecordedLineMetadata {
+
+  data class AcceptedSuffix(
+    val start: Int,
+    val lines: List<Int>,
+    val invalid: String? = null,
+  )
+
+  data class TimeoutComment(
+    val lines: List<Int>,
+    val invalid: String? = null,
+  )
+
+  private const val NUMBER_LIST = "\\d+(?:\\s*[,/]\\s*\\d+)*"
+  private const val RANGE_OPERATOR = "(?:[-\\u2013\\u2014\\u2212]|\\.\\.|\\bto\\b)"
+  private const val RANGE_ITEM = "\\d+\\s*$RANGE_OPERATOR\\s*\\d+"
+  private const val RANGE_OR_NUMBER = "(?:$RANGE_ITEM|\\d+)"
+  private const val RANGE_LIST = "$RANGE_OR_NUMBER(?:\\s*[,/]\\s*$RANGE_OR_NUMBER)*"
+  private val RANGE_OPERATOR_PATTERN = Regex(RANGE_OPERATOR)
+  private val ACCEPTED_TAG =
+      Regex("""#\s*lines?\s+($RANGE_LIST)(?=\s*(?:#|$))""")
+  private val TIMEOUT_LIST = Regex(
+      """\blines?\s+($NUMBER_LIST)(?!\d)(?!\s*(?:[,/]|$RANGE_OPERATOR)\s*\d)""")
+  private val TIMEOUT_RANGE =
+      Regex("""\blines?\s+($NUMBER_LIST\s*$RANGE_OPERATOR\s*$NUMBER_LIST)""")
+
+  private fun numbers(value: String): List<Int>? {
+    val parsed = Regex("""\d+""").findAll(value).map { it.value.toIntOrNull() }.toList()
+    return if (parsed.any { it == null }) null else parsed.filterNotNull()
+  }
+
+  /** A canonical or recognized-invalid trailing accepted-baseline tag, when present. */
+  fun acceptedSuffix(line: String): AcceptedSuffix? {
+    val matches = ACCEPTED_TAG.findAll(line).toList()
+    if (matches.isEmpty()) return null
+    val last = matches.last()
+    if (line.substring(last.range.last + 1).isNotBlank()) return null
+
+    // Metadata may already be malformed before a final valid tag, for example
+    // `# lines 10-30 # line 12`. Walk the contiguous metadata tail rather than
+    // recognizing only its final tag; otherwise the range becomes part of the
+    // family label and a writer silently accepts it.
+    var first = matches.lastIndex
+    while (first > 0) {
+      val previous = matches[first - 1]
+      val gap = line.substring(previous.range.last + 1, matches[first].range.first)
+      if (gap.isNotBlank()) break
+      first--
+    }
+    val trailing = matches.subList(first, matches.size)
+    val parsedLines = mutableListOf<Int>()
+    val invalid = mutableListOf<String>()
+    trailing.forEach { match ->
+      val value = match.groupValues[1]
+      val lines = if (RANGE_OPERATOR_PATTERN.containsMatchIn(value)) null else numbers(value)
+      if (lines == null) {
+        invalid += match.value.trim()
+      } else {
+        parsedLines += lines
+      }
+    }
+    return AcceptedSuffix(
+        trailing.first().range.first,
+        parsedLines,
+        invalid.takeIf { it.isNotEmpty() }?.joinToString(" "),
+    )
+  }
+
+  /** Exact lines or recognized-invalid metadata in a timeout row's free-form comment. */
+  fun timeoutComment(comment: String): TimeoutComment {
+    val range = TIMEOUT_RANGE.find(comment)
+    val list = TIMEOUT_LIST.find(comment)
+    if (range != null && (list == null || range.range.first <= list.range.first)) {
+      val match = range
+      return TimeoutComment(emptyList(), match.value.trim())
+    }
+    val match = list ?: return TimeoutComment(emptyList())
+    val lines = numbers(match.groupValues[1])
+    return if (lines == null) {
+      TimeoutComment(emptyList(), match.value.trim())
+    } else {
+      TimeoutComment(lines)
+    }
+  }
+
+  fun acceptedInvalidDetail(raw: String): String =
+      invalidDetail(raw, "'# line N' or '# lines N, M' as the trailing accepted-row tag")
+
+  fun timeoutInvalidDetail(raw: String): String =
+      invalidDetail(raw, "'line N' or 'lines N, M' after the cause classification")
+
+  private fun invalidDetail(raw: String, canonical: String): String =
+      "invalid line metadata '$raw' — replace it with exact observed mutant lines as " +
+          "$canonical, or remove the optional tag when no exact observation exists; ranges " +
+          "and out-of-range numbers are not valid"
+}
+
+/**
  * The single place that knows a baseline row's format, so the accepted-row parser, the
  * verify / `Debt` per-label breakdowns, and `pitestModeCompare`'s insurance writes can
  * never drift on where a note begins, how a family label is read out of one, or which
@@ -22,7 +125,13 @@ package software.sava.build.hardening
 internal object BaselineNotes {
 
   /** One parsed baseline row: its line-less key, its note, and its recorded lines. */
-  data class Row(val key: String, val note: String?, val recordedLines: List<Int>)
+  data class Row(
+    val key: String,
+    val note: String?,
+    val recordedLines: List<Int>,
+    /** An invalid suffix split from [note], but intentionally not interpreted. */
+    val invalidLineMetadata: String? = null,
+  )
 
   /**
    * The literal persistence marker written by `pitestModeCompareUnion`.
@@ -48,22 +157,23 @@ internal object BaselineNotes {
     else -> "$note (flip insurance: $detail)"
   }
 
-  // Trailing '# line 61' / '# lines 61, 93' / '# lines 61/93' comment. Anchored to the
-  // end of the line so a label containing the word 'line' cannot be misread as a tag.
-  private val LINE_TAG = Regex("""#\s*lines?\s+\d+(?:\s*[,/]\s*\d+)*\s*$""")
-
   /** Parses one non-comment baseline line into its [Row]. */
   fun parse(line: String): Row {
-    val tagMatch = LINE_TAG.find(line)
-    val beforeTag = if (tagMatch == null) line else line.substring(0, tagMatch.range.first)
-    val tagLines = tagMatch?.value?.let { tag ->
-      Regex("""\d+""").findAll(tag).map { it.value.toInt() }.toList()
-    }.orEmpty()
+    // Both a valid list and an invalid range are split before reading the family
+    // label. A range is retained as a finding, never expanded into a broad set that
+    // could hide a same-key swap from line affinity and drift diagnostics.
+    val lineMetadata = RecordedLineMetadata.acceptedSuffix(line)
+    val beforeTag = if (lineMetadata == null) line else line.substring(0, lineMetadata.start)
     val hash = beforeTag.indexOf('#')
     val rawKey = (if (hash < 0) beforeTag else beforeTag.substring(0, hash)).trim()
     val note = if (hash < 0) null else beforeTag.substring(hash).trim().ifEmpty { null }
     val (key, legacyLine) = normalize(rawKey)
-    return Row(key, note, legacyLine?.let { listOf(it) } ?: tagLines)
+    return Row(
+        key,
+        note,
+        legacyLine?.let { listOf(it) } ?: lineMetadata?.lines.orEmpty(),
+        lineMetadata?.invalid,
+    )
   }
 
   /**
@@ -93,8 +203,8 @@ internal object BaselineNotes {
    * ignores it.
    */
   fun malformed(line: String): Boolean {
-    val tagMatch = LINE_TAG.find(line)
-    val beforeTag = if (tagMatch == null) line else line.substring(0, tagMatch.range.first)
+    val lineMetadata = RecordedLineMetadata.acceptedSuffix(line)
+    val beforeTag = if (lineMetadata == null) line else line.substring(0, lineMetadata.start)
     val hash = beforeTag.indexOf('#')
     val rawKey = (if (hash < 0) beforeTag else beforeTag.substring(0, hash)).trim()
     val fields = rawKey.split(',').map { it.trim() }
@@ -116,7 +226,14 @@ internal object BaselineNotes {
   fun render(key: String, note: String?, lines: Collection<Int>): String =
       key + (note?.let { " $it" } ?: "") + renderLineTag(lines)
 
-  fun render(row: Row): String = render(row.key, row.note, row.recordedLines)
+  /**
+   * Renders an existing row for diagnostics without erasing an invalid suffix. Record
+   * writers refuse such rows through [BaselineDocument]; preserving it here keeps a
+   * read-only stale/timeout preview from crashing or printing a deceptively repaired row.
+   */
+  fun render(row: Row): String =
+      render(row.key, row.note, row.recordedLines) +
+          (row.invalidLineMetadata?.let { " $it" } ?: "")
 
   /**
    * The line-drift check, row-level where the data supports it: for each key in

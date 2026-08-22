@@ -534,8 +534,10 @@ ratchet (see the transient-failures section).
 Baseline keys are **line-less** — `class,method,mutator,STATUS` — because line
 numbers churn whenever a mutated file is edited, and identity that churns
 makes the ratchet police text moves instead of behavior. Lines still appear
-on rows, demoted to metadata as trailing `# line N` tags (the audited-timeout
-convention), kept for triage pointers and the line-drift advisory below. A
+on rows, demoted to metadata as trailing `# line N` tags (or `# lines N, M`
+for exact observed sites), kept for triage pointers and the line-drift advisory
+below. Ranges such as `# lines 786-800` are invalid: claiming every line in a
+span as observed would weaken affinity and can hide a same-key swap. A
 baseline update rewrites tags for rows matched to this report while protected
 timeout/insurance rows keep their last observed tags; a green prune likewise rewrites
 the tags of retained rows it matched at their own key. Union operations preserve
@@ -572,6 +574,26 @@ unkilled row annotated with PIT's mutation description prefixed with its
 line (`line 41: removed conditional…` — the key no longer carries the line,
 so the description does), and the ratchet-failure listing carries the same
 annotations.
+
+For an intentional same-suite key move or method rename, do not ask Prune or
+Retag to infer equivalence. Start with the applicable additive writer:
+`pitest<Suite>BaselineUnion`, or `pitest<Suite>BaselineRebase` when the provenance
+diagnostic requires it. Review the new `# untriaged` rows, and carry or rewrite an
+old argument only onto a row the source review proves is its replacement; leave
+every other new row untriaged. Then run the ordinary suite fresh, inspect its
+complete prune-candidate preview, and only afterward Prune the exact old candidates
+whose absence and removal were independently reviewed. Retag changes metadata,
+never identity, and Update is a complete rewrite rather than a re-key tool.
+
+A cross-suite or cross-repository move is two independent record transitions.
+Source accepted/timeout rows and their arguments are review input, not destination
+membership. For a new destination suite, generate current accepted rows with
+`pitest<Suite>BaselineUpdate` and seed actually observed timeouts with
+`pitest<Suite>TimeoutAuditInit`; when the destination records already exist, use the
+applicable additive BaselineUnion/BaselineRebase path named by its provenance
+diagnostic, and add only the timeout members the destination verify prints and the
+destination review classifies. Retire source rows separately. Never copy PIT-version
+or toolchain sidecars, machine-local history, reports, or receipts between suites.
 
 Refreshes are kept honest in both directions. `pitest<Suite>BaselineUpdate` is
 a report-driven rewrite plus explicit timeout/insurance keeps; it is not allowed to erase
@@ -649,7 +671,8 @@ The shrink transition is mechanically shrink-only, not self-authorizing:
 `pitest<Suite>BaselinePrune` drops baseline rows matching nothing this run and
 adds no rows. One run cannot distinguish a stable removal from an uninsured
 load- or mode-dependent flip, so the ordinary verify prints a **preview of the
-exact candidate rows** without recommending the flag. Re-measure those rows
+exact candidate rows** without treating the preview as deletion authorization.
+Re-measure those rows
 with `-PnoMutationHistory` under the relevant solo/gate load and prune only when
 the same candidates stay
 absent; a row proved to flip belongs in persistent `# flip insurance` instead.
@@ -665,7 +688,8 @@ has excess to drop, and which sibling goes is decided by line affinity first
 (a row whose `# line` tag names no live line is preferred as the absent sibling),
 file order after — so a noted live-anchored row is not dropped for its bare sibling,
 while duplicate same-line siblings remain inherently ambiguous,
-and the candidate preview names the same row prune would remove *(casebook:
+and, for the same report population, the candidate preview and Prune classifier
+name the same row *(casebook:
 the stale hint that named the wrong flag)*. Two unmatched classes are kept
 anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
 (watchdog detection, not a kill or a cause diagnosis), and rows with an *unmatched*
@@ -678,9 +702,11 @@ timeout budget — one audited permanent timeout cannot vouch for an unbounded
 pile of genuinely killed siblings. Flip-insured rows are kept
 unconditionally and decided *before* the timeout budget, so an insured row
 never spends the budget its uninsured sibling needs. Prune and the candidate
-preview read one row-level keep plan, so the preview and the eventual action
-name exactly the same rows. Agreement prevents a tooling lie; repeated
-observation supplies the evidence the tool cannot infer from one report.
+preview read one row-level keep-plan implementation, so given the same report
+population they name exactly the same rows. The actual Prune task deliberately
+runs a new fresh observation and may see a different population; review that
+resulting diff. Same-population classifier agreement prevents a tooling lie;
+repeated observation supplies the evidence the tool cannot infer from one report.
 Never substitute a hand-rolled cleanup script, which is how the status-blind
 prune happened. The named record transitions are mutually exclusive; the build
 refuses a combination.
@@ -862,7 +888,10 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
     Missing, unknown, conflicting, `resource`, `harness`, and `untriaged` categories
     warn, and strict certification refuses them. Unexplained infrastructure noise is
     not `cause:harness`; leave it untriaged until a specific finite covering-path race
-    has been demonstrated.
+    has been demonstrated. A newcomer warning's paste-ready `cause:untriaged` row is
+    likewise a fail-closed draft, not a committable disposition: classify it and
+    replace the placeholder before certification, or keep the finite mutant out of
+    the audited set while its contract-first repair or acceptance is completed.
 
   Cause class and report status are separate claims. `cause:liveness` explains why
   a valid `TIMED_OUT` result can detect that mutant; it never turns `MEMORY_ERROR`
@@ -895,7 +924,8 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   prove the conflict. Review positive multiplicity drift and its
   line-full candidates carefully, but do not pretend a source-line number closes the
   hole. `# line` remains a triage pointer only and changing it never authorizes or
-  invalidates evidence.
+  invalidates evidence. After their cause classification, timeout comments use the
+  exact-list spelling `line N` or `lines N, M`; a range is not observed-line evidence.
   Adoption is seeded, not
   transcribed: a suite whose summary reports timeouts with no set on disk is
   pointed at `pitest<Suite>TimeoutAuditInit`, which writes the membership rows from the
@@ -943,12 +973,13 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   The verify keeps a per-member quiet counter only for those documented
   `cause:liveness` rows in `.pitest-history/`, keyed to the completed evidence
   invocation so standalone verify re-runs of one report are one observation,
-  and bound to every stable completed-evidence field, including source/classes,
-  runtime and tool classpaths, suite configuration, Java, PIT/JUnit/mutation
-  toolchain, evidence/identity schemas, and the loaded sava-build plugin code-path
-  fingerprint (`pluginSha256`; the JAR SHA-256 for a published plugin). Changing any
-  of those inputs — including a plugin upgrade whose JAR bytes differ — restarts the
-  streak. `cause:resource`, `cause:harness`,
+  and bound to the stable completed-evidence fields that describe the observation,
+  including source/classes, runtime and tool classpaths, suite configuration, Java,
+  PIT/JUnit/mutation toolchain, and evidence/identity schemas. Changing any of those
+  inputs restarts the streak. The loaded sava-build `pluginSha256` remains bound to
+  completed evidence and certification, but not this advisory counter. If verifier or
+  PIT invocation semantics change without a captured input changing, advance the
+  timeout-quiet format and reset prior streaks. `cause:resource`, `cause:harness`,
   `cause:untriaged`, and undocumented rows are already non-certifying findings
   and never enter that retirement counter. It notices admissible liveness
   members with no timeout in 3+ consecutive fresh full mutation runs over
@@ -2123,8 +2154,11 @@ act on the changed requirement. The plugin also carries a digest of this templat
 blockquote lines. When a root
 `AGENTS.md` does not exist, `agentsTemplateInSync` (wired into `check`) warns and
 prints the marker because adoption still requires the deliberate copy step above.
-Once `AGENTS.md` exists, a missing or stale marker fails until the file contains
-`<!-- hardening-template sha256:<digest> -->` acknowledging the release's template.
+Once `AGENTS.md` exists, the gate requires exactly one ordered boundary pair around a
+non-empty shared block and exactly one current
+`<!-- hardening-template sha256:<digest> -->` outside it. A current marker alone does
+not satisfy the gate: legacy marker-only consumers must add the boundaries before they
+can claim a reviewable acknowledgment of the release's template.
 Thus editing the template below breaks already-adopted downstream checks on their
 next plugin refresh, which is the point, and no list of downstream repos needs
 maintaining anywhere. The marker is an acknowledgment, not a checksum of the local
@@ -2146,9 +2180,14 @@ The source block below is quoted only so it renders as one unit in this document
 The project-qualified `hardeningAgentTemplate` removes the leading `> ` markers and
 prints paste-ready instruction text between `<!-- hardening-template block:start -->`
 and `<!-- hardening-template block:end -->`; the digest still names the canonical
-quoted source block. The matching `hardeningAgentTemplateDiff` automatically removes
-one uniform Markdown quote layer from a legacy block and its boundary comments; do not
-edit the block merely to normalize the presentation used by releases before 21.5.25.
+quoted source block. Its complete output is also the canonical final layout:
+start marker, body, end marker, then exactly one digest marker. During a legacy
+transition the old marker may remain before the block long enough to run the diff,
+but after review replace/remove it rather than appending a second marker. The matching
+`hardeningAgentTemplateDiff` automatically removes one uniform Markdown quote layer
+from a legacy block. The boundary lines may either carry that same quote layer or be
+added unquoted exactly as the migration failure prints; do not edit the block merely
+to normalize the presentation used by releases before 21.5.25.
 
 > - **Scale verification to the change.** Iterate with the module's `test`
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated
@@ -2279,8 +2318,10 @@ edit the block merely to normalize the presentation used by releases before 21.5
 >   all current line-full candidates, but lines cannot define identity: moving imports,
 >   adding a method, or reflowing code never warns, fails, or requires re-anchoring.
 >   **Retire.** Remove an admissible liveness member only after the tool reports 3+
->   distinct fresh full-run quiet observations over identical inputs, confirmed under
->   solo/gate load. Plugin bytes are an input; a changed JAR restarts the streak. A
+>   distinct fresh full-run quiet observations over identical execution inputs,
+>   confirmed under solo/gate load. When retirement semantics are unchanged, a plugin
+>   fingerprint change alone does not reset this advisory; captured PIT-input changes
+>   do, and unmodeled semantic changes require a timeout-quiet format bump. A
 >   finite `KILLED`↔`TIMED_OUT` race never certifies: repair it instead of waiting on
 >   liveness retirement. The quiet stash is a machine-local nomination; never copy or
 >   merge it, and retain the row without same-input gate confirmation. Assisted

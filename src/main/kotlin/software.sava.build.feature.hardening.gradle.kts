@@ -6,6 +6,7 @@ import software.sava.build.hardening.BaselineWriteOperation
 import software.sava.build.hardening.CommittedMutationProvenance
 import software.sava.build.hardening.ExclusionAudit
 import software.sava.build.hardening.HardeningAdvisoryLog
+import software.sava.build.hardening.HardeningAgentTemplateBlock
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningFuzzSession
@@ -28,7 +29,9 @@ import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.PreparedMutationWrite
 import software.sava.build.hardening.ProjectWriteOperation
+import software.sava.build.hardening.RecordedLineMetadata
 import software.sava.build.hardening.TimeoutAudit
+import software.sava.build.hardening.qualifiedHardeningTaskPath
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
 import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
@@ -577,14 +580,17 @@ val hardeningFuzzExecutionSlots = gradle.sharedServices.registerIfAbsent(
 // block in each consuming repo's AGENTS.md; repository-specific facts stay outside.
 // Legacy adapted copies drift silently until their next normal sync. A template change
 // is invisible from inside the repos it obligates. The plugin carries a digest of the
-// current template block; this check fails until the repo's AGENTS.md contains a
-// marker acknowledging that digest. The marker is an acknowledgment, not a checksum
-// of the local block: update it only after re-diffing the block against the template
+// current template block; this check fails until the repo's AGENTS.md contains one
+// valid bounded block and a marker acknowledging that digest. The marker is an
+// acknowledgment, not a checksum of the local block: update it only after re-diffing
+// the block against the template
 // — a changed bullet may mean new code, not just new prose. A repo without an
 // AGENTS.md is warned, not failed: the adoption checklist owns creating the file;
 // this task owns keeping it current.
 val renderedHardeningAgentTemplate = HardeningTemplateDigest.TEMPLATE.lineSequence()
     .joinToString("\n") { it.removePrefix("> ") }
+HardeningAgentTemplateBlock.requireCanonicalHeadingFree(
+    renderedHardeningAgentTemplate.lineSequence().toList())
 val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
     "hardeningAgentTemplateDiff"
 ) {
@@ -598,7 +604,7 @@ val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
 }
 val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   group = "verification"
-  description = "Fails when AGENTS.md has not acknowledged the current agent-instructions template in HARDENING.md."
+  description = "Fails when an existing AGENTS.md lacks a valid bounded acknowledgment of the current agent-instructions template."
   val agentsDoc = rootProject.layout.projectDirectory.file("AGENTS.md").asFile
   val expected = HardeningTemplateDigest.SHA256_12
   val templateTask = if (project.path == ":") "hardeningAgentTemplate" else "${project.path}:hardeningAgentTemplate"
@@ -645,25 +651,33 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
       return@doLast
     }
     val doc = agentsDoc.readText()
-    if (doc.contains("hardening-template sha256:$expected")) {
-      return@doLast
+    val docLines = doc.lines()
+    val inspection = try {
+      HardeningAgentTemplateBlock.inspect(docLines)
+    } catch (invalid: HardeningAgentTemplateBlock.Invalid) {
+      throw GradleException("agentsTemplateInSync: ${invalid.message}", invalid)
     }
+    val currentMarker = inspection.marker?.digest == expected
+    val hasAnyBoundary = inspection.hasAnyBoundary
+    if (currentMarker || hasAnyBoundary) {
+      try {
+        HardeningAgentTemplateBlock.parse(docLines)
+      } catch (invalid: HardeningAgentTemplateBlock.Invalid) {
+        throw GradleException("agentsTemplateInSync: ${invalid.message}", invalid)
+      }
+    }
+    if (currentMarker) return@doLast
     val boundaryStart = HardeningAgentTemplateDiffTask.BLOCK_START
     val boundaryEnd = HardeningAgentTemplateDiffTask.BLOCK_END
-    val hasOrderedBoundaries = doc.indexOf(boundaryStart).let { start ->
-      start >= 0 && doc.indexOf(boundaryEnd, start + boundaryStart.length) >= 0
-    }
-    val boundaryMigration = if (hasOrderedBoundaries) {
+    val boundaryMigration = if (hasAnyBoundary) {
       ""
     } else {
-      "Before running the diff, wrap the existing adapted hardening block between these " +
-        "exact lines:\n  $boundaryStart\n  ... existing adapted hardening block ...\n" +
-        "  $boundaryEnd\n"
+      HardeningAgentTemplateBlock.boundaryMigrationGuidance()
     }
-    val stale = Regex("hardening-template sha256:([0-9a-f]+)").find(doc)
+    val stale = inspection.marker
     if (stale != null && validatingUnreleased) {
       logger.warn(
-          "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.groupValues[1]}; this " +
+          "agentsTemplateInSync: AGENTS.md acknowledges template digest ${stale.digest}; this " +
               "unreleased checkout's is $expected — by default the marker dance lands with the release " +
               "that ships this digest, not before it. $boundaryMigration" +
               "If this is deliberate RC adoption, run " +
@@ -686,7 +700,7 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
               "differs, then add:\n  <!-- hardening-template sha256:$expected -->"
         } else {
           "The shared agent-instructions template changed since this repo's AGENTS.md last " +
-          "acknowledged it (marker ${stale.groupValues[1]}, current $expected). $boundaryMigration" +
+          "acknowledged it (marker ${stale.digest}, current $expected). $boundaryMigration" +
               "Run './gradlew $templateDiffTask' to compare its explicitly bounded hardening block " +
               "with the installed template. A " +
               "changed bullet may need code, not just prose — then update the marker to:\n" +
@@ -1424,6 +1438,24 @@ val pitestModeCompare = tasks.register("pitestModeCompare") {
                   "(listed above) — pitestModeCompareUnion refuses uninterpretable content. " +
                   "Fix the row shape first."
           )
+        }
+      }
+      val invalidLineMetadataRows = baselineDocument.invalidLineMetadataRows
+      if (invalidLineMetadataRows.isNotEmpty()) {
+        val details = invalidLineMetadataRows.joinToString("\n") { row ->
+          "  line ${row.lineNumber}: ${row.raw}\n    " +
+              RecordedLineMetadata.acceptedInvalidDetail(
+                  checkNotNull(row.value.invalidLineMetadata))
+        }
+        logger.warn(
+            "pitestModeCompare: ${invalidLineMetadataRows.size} accepted row(s) in " +
+                "${baselineFile.name} carry invalid diagnostic line metadata. The key still " +
+                "compares, but a range is not evidence that every line in the span was observed:\n" +
+                details)
+        if (unionFlips) {
+          throw GradleException(
+              "pitestModeCompare: pitestModeCompareUnion refuses to rewrite invalid line " +
+                  "metadata; list the exact observed mutant lines first.")
         }
       }
       val acceptedRows: MutableList<BaselineNotes.Row> = baselineDocument.rows.toMutableList()
@@ -2347,6 +2379,8 @@ hardening.mutation.all {
   val evidenceMutationRelease = hardening.mutationBytecodeRelease
   val evidenceRecompileExcludes = hardening.recompileExcludes
   val evidenceProjectPath = project.path
+  val evidencePitestTaskPath = qualifiedHardeningTaskPath(evidenceProjectPath, pitestTaskName)
+  val evidenceBaselinePruneTaskPath = "${evidencePitestTaskPath}BaselinePrune"
   val evidenceCertificationSession = hardeningCertificationSession
   val evidenceReportFile = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
   val evidenceManifestFile = layout.buildDirectory.file("reports/pitest/$suiteName/.evidence.tsv")
@@ -2612,6 +2646,12 @@ hardening.mutation.all {
       val timedOutByAuditKey = rows
           .filter { it.status == MutantStatus.TIMED_OUT }
           .groupBy { it.coordinate }
+      val timeoutCandidates = TimeoutAudit.timeoutCandidates(rows)
+      val configuredPitestVersion = (this as PitestVerifyTask).finalEvidence.pitestVersion.get()
+      val configuredTimeoutFactor = (this as PitestVerifyTask).finalEvidence.timeoutFactor.get()
+      val configuredTimeoutConst = (this as PitestVerifyTask).finalEvidence.timeoutConst.get()
+      val watchdogFormulaContext = TimeoutAudit.watchdogFormulaContext(
+          configuredPitestVersion, configuredTimeoutFactor, configuredTimeoutConst)
       val historyAssistedReport = csv.parentFile.resolve(".history-assisted").isFile
       val historyDecisionCaveat = if (historyAssistedReport) {
         "\nThis [history] result is check-only. Run $pitestTaskName -PnoMutationHistory " +
@@ -2619,29 +2659,30 @@ hardening.mutation.all {
       } else {
         ""
       }
-      fun pasteReadyMemberRows(indent: String) =
-          timedOutByAuditKey.keys.sorted().joinToString("\n") { key ->
-            val lines = timedOutByAuditKey.getValue(key).map { it.lineText }.distinct()
-            "$indent$key # cause:untriaged line${if (lines.size > 1) "s" else ""} " +
-                lines.joinToString(", ")
-          }
       fun missingTimeoutAuditHint(): String =
-          "pitest '$suiteName': ${rows.count { it.status == MutantStatus.TIMED_OUT }} " +
-              "timed-out mutant(s) and no audited set — a timeout detects slowness, not " +
+          "pitest '$suiteName': ${TimeoutAudit.timeoutCandidateCount(timeoutCandidates)} " +
+              "and no audited set — a timeout detects slowness, not " +
               "wrongness, so the ratchet cannot see a weakened covering assertion behind one. " +
               "Adopt the audit with ${pitestTaskName}TimeoutAuditInit (seeds " +
-              "config/pitest/${timeoutsFile.name} from this run), or paste the row(s) below — " +
-              "timeout observations may not reproduce for a later seeding run:\n" +
-              pasteReadyMemberRows("  ") + "\n" +
+              "config/pitest/${timeoutsFile.name} from this run), or paste the one draft row per " +
+              "line-less key below. Where a key collapses multiple physical instances, nested " +
+              "'# observed' comments retain line/status multiplicity. Timeout observations may " +
+              "not reproduce for a later seeding run. " +
+              "$watchdogFormulaContext\n" +
+              TimeoutAudit.timeoutCandidateDetail(timeoutCandidates) + "\n" +
               "then replace cause:untriaged and write each member's structural argument in " +
               "config/pitest/README.md; the seeded state is intentionally uncertifiable." +
               historyDecisionCaveat
       fun missingTimeoutAuditProvenancePreview(): String =
           "pitest '$suiteName': the current full report contains " +
-              "${rows.count { it.status == MutantStatus.TIMED_OUT }} timed-out mutant(s) and no " +
-              "audited set, but committed mutation provenance is invalid. Retain these candidates " +
+              "${TimeoutAudit.timeoutCandidateCount(timeoutCandidates)} and no audited set, but " +
+              "committed mutation provenance is invalid. Retain these candidates " +
               "for triage; do not seed or add them until provenance is repaired/rebased and a " +
-              "fresh full observation confirms them:\n" + pasteReadyMemberRows("  ") +
+              "fresh full observation confirms them. Each line-less key has one draft row. " +
+              "Where a key collapses multiple physical instances, nested '# observed' comments " +
+              "retain line/status multiplicity. " +
+              "$watchdogFormulaContext\n" +
+              TimeoutAudit.timeoutCandidateDetail(timeoutCandidates) +
               historyDecisionCaveat
       fun warnTimeoutFindingsBeforeProvenanceRefusal() {
         val fullPopulation = !scoped &&
@@ -2673,6 +2714,12 @@ hardening.mutation.all {
           logger.warn(TimeoutAudit.causeFindingWarning(
               suiteName, timeoutsFile.name, staticCauseFindings))
         }
+        val staticLineMetadataFindings =
+            TimeoutAudit.lineMetadataFindings(membership, membership.members)
+        if (staticLineMetadataFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.lineMetadataWarning(
+              suiteName, timeoutsFile.name, staticLineMetadataFindings))
+        }
         val staticUndocumented = TimeoutAudit.undocumentedCauses(membership.members) {
           readmeFile.takeIf { it.isFile }?.readText() ?: ""
         }
@@ -2696,7 +2743,14 @@ hardening.mutation.all {
         }
         if (findings.unaudited.isNotEmpty()) {
           logger.warn(TimeoutAudit.unauditedProvenancePreview(
-              suiteName, timeoutsFile.name, findings.unaudited, historyDecisionCaveat))
+              suiteName,
+              timeoutsFile.name,
+              findings.unaudited,
+              configuredPitestVersion,
+              configuredTimeoutFactor,
+              configuredTimeoutConst,
+              historyDecisionCaveat,
+          ))
         }
         if (findings.staleMembers.isNotEmpty()) {
           logger.warn(TimeoutAudit.staleProvenancePreview(
@@ -3197,6 +3251,29 @@ hardening.mutation.all {
           )
         }
       }
+      val invalidLineMetadataRows = baselineDocument.invalidLineMetadataRows
+      if (invalidLineMetadataRows.isNotEmpty()) {
+        val details = invalidLineMetadataRows.joinToString("\n") { row ->
+          "  line ${row.lineNumber}: ${row.raw}\n    " +
+              RecordedLineMetadata.acceptedInvalidDetail(
+                  checkNotNull(row.value.invalidLineMetadata))
+        }
+        logger.warn(
+            "pitest baseline '$suiteName': ${invalidLineMetadataRows.size} accepted row(s) " +
+                "carry invalid diagnostic line metadata. Their keys still accept matching " +
+                "mutants and the invalid suffix is not part of the family label, but it supplies " +
+                "no line-affinity evidence and every row-rewriting baseline writer refuses it:\n$details")
+        if (!writingRecord || initTimeoutAudit) {
+          advisoryLog.get().record(
+              advisoryScope,
+              "${invalidLineMetadataRows.size} baseline row(s) with invalid line metadata",
+          )
+        } else {
+          throw GradleException(
+              "pitest baseline '$suiteName': fix the invalid diagnostic line metadata listed " +
+                  "above before rewriting ${baselineFile.name}.")
+        }
+      }
       val acceptedRows: List<BaselineNotes.Row> = baselineDocument.rows
       val accepted: List<String> = acceptedRows.map { it.key }
       // The line-less 'class,method,mutator' coordinate is Mutant.coordinate —
@@ -3438,7 +3515,7 @@ hardening.mutation.all {
                   "it is."
           )
         }
-        val seeded = pasteReadyMemberRows("")
+        val seeded = TimeoutAudit.timeoutCandidateRows(timeoutCandidates)
         pendingTimeoutAuditContent =
             "# Audited TIMED_OUT set for the '$suiteName' suite (HARDENING.md, the audited-timeout\n" +
                 "# bullet): one line-less 'class,method,mutator' member per row. A timeout detects\n" +
@@ -3492,7 +3569,14 @@ hardening.mutation.all {
           // '#' comment — pasting the printed row into the set must satisfy the check,
           // never trip the stale-member notice
           logger.warn(TimeoutAudit.unauditedWarning(
-              suiteName, timeoutsFile.name, unaudited, historyDecisionCaveat))
+              suiteName,
+              timeoutsFile.name,
+              unaudited,
+              configuredPitestVersion,
+              configuredTimeoutFactor,
+              configuredTimeoutConst,
+              historyDecisionCaveat,
+          ))
           val unauditedCoordinates = unaudited.mapTo(linkedSetOf()) { it.coordinate }
           val acceptedAtUnauditedKeys = acceptedRows
               .filter { row ->
@@ -3529,11 +3613,13 @@ hardening.mutation.all {
               val overlapCount = acceptedAtUnauditedKeys
                   .mapTo(linkedSetOf()) { it.key.substringBeforeLast(',') }
                   .size
-              ", $overlapCount at accepted baseline key(s)"
+              ", $overlapCount overlapping line-less key(s) with accepted baseline row(s)"
             }
+            val advisoryCandidates = TimeoutAudit.timeoutCandidates(unaudited)
             advisoryLog.get().record(
                 advisoryScope,
-                "${unaudited.size} unaudited timeout(s)$overlapSummary",
+                "${TimeoutAudit.timeoutCandidateCount(advisoryCandidates)} remain " +
+                    "unaudited$overlapSummary",
             )
           }
         }
@@ -3547,6 +3633,15 @@ hardening.mutation.all {
           advisoryLog.get().record(advisoryScope, "${staleMembers.size} stale audit row(s)")
         }
         val liveMembers = timeoutFindings.liveMembers
+        val lineMetadataFindings = timeoutFindings.lineMetadataFindings
+        if (lineMetadataFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.lineMetadataWarning(
+              suiteName, timeoutsFile.name, lineMetadataFindings))
+          advisoryLog.get().record(
+              advisoryScope,
+              "${lineMetadataFindings.size} audited timeout(s) with invalid line metadata",
+          )
+        }
         val causeFindings = timeoutFindings.causeFindings
         if (causeFindings.isNotEmpty()) {
           logger.warn(TimeoutAudit.causeFindingWarning(
@@ -3591,16 +3686,22 @@ hardening.mutation.all {
           // evidence's invocation id identifies that observation; its stable input
           // identity prevents quiet reads from old source/tool/configuration bytes
           // combining with a new run into a false three-run notice.
-          val quietFormatHeader = "# timeout quiet format 3"
-          val currentInputIdentity = retirementEvidence.inputIdentitySha256()
+          // The format is also the semantic compatibility fence. Bump it whenever
+          // retirement interpretation or PIT invocation behavior changes in a way
+          // not represented by the retirement evidence identity below. The loaded
+          // plugin SHA remains bound everywhere decision-grade evidence needs it,
+          // but a fingerprint-only transition under unchanged modeled semantics
+          // does not erase this advisory streak.
+          val quietFormatHeader = "# timeout quiet format 4"
+          val currentInputIdentity =
+              retirementEvidence.timeoutRetirementInputIdentitySha256()
           val inputFingerprint = "# inputs $currentInputIdentity"
           val observationFingerprint = "# invocation ${retirementEvidence.invocationId}"
           val previousLines = if (timeoutQuietFile.isFile) timeoutQuietFile.readLines() else emptyList()
           val currentQuietFormat = previousLines.firstOrNull() == quietFormatHeader
           if (previousLines.isNotEmpty() && !currentQuietFormat) {
             logger.lifecycle(
-                "$advisoryScope: timeout-retirement stash predates fresh-only evidence " +
-                    "bound to current inputs — " +
+                "$advisoryScope: timeout-retirement stash uses an older compatibility format — " +
                     "the quiet-run counter resets this run")
           }
           val previousInputIdentity = previousLines.getOrNull(1)
@@ -3610,15 +3711,14 @@ hardening.mutation.all {
           val sameInputs = currentQuietFormat && previousInputIdentity == currentInputIdentity
           if (currentQuietFormat && previousInputIdentity == null) {
             logger.lifecycle(
-                "$advisoryScope: timeout-retirement format-3 stash has a missing/malformed " +
+                "$advisoryScope: timeout-retirement format-4 stash has a missing/malformed " +
                     "input identity — the quiet-run counter resets this run")
           } else if (currentQuietFormat && !sameInputs) {
             logger.lifecycle(
-                "$advisoryScope: timeout-retirement inputs changed since this suite's previous " +
+                "$advisoryScope: timeout-retirement execution inputs changed since this suite's previous " +
                     "fresh observation (input identity prefixes " +
                     "${previousInputIdentity!!.take(12)} -> " +
-                    "${currentInputIdentity.take(12)}; the identity includes pluginSha256 — " +
-                    "the published JAR SHA-256 or development code-path fingerprint) — " +
+                    "${currentInputIdentity.take(12)}) — " +
                     "the quiet-run counter resets this run")
           }
           val sameObservation = sameInputs &&
@@ -3641,7 +3741,8 @@ hardening.mutation.all {
           // Retirement is a hygiene nomination for otherwise valid audited
           // liveness only. Resource/harness/untriaged rows and liveness rows whose
           // README argument is missing are unfinished findings, not candidates that
-          // three quiet runs can legitimize or silently erase.
+          // three quiet runs can legitimize or silently erase. Optional source-line
+          // metadata does not authorize the row and therefore does not alter this set.
           val retirementMembers = liveMembers.filterTo(linkedSetOf()) { member ->
             membership.causeCategories[member] == TimeoutAudit.CauseCategory.LIVENESS &&
                 member !in timeoutFindings.undocumented
@@ -3724,12 +3825,25 @@ hardening.mutation.all {
         if (strictTimeoutAudit &&
             (unaudited.isNotEmpty() || malformed.isNotEmpty() || causeFindings.isNotEmpty() ||
                 undocumented.isNotEmpty())) {
+          val strictUnaudited = TimeoutAudit.timeoutCandidates(unaudited)
+          val strictUnauditedSummary = if (unaudited.isNotEmpty()) {
+            "${TimeoutAudit.timeoutCandidateCount(strictUnaudited)} remain unaudited, "
+          } else {
+            ""
+          }
+          val unauditedRemediation = if (unaudited.isNotEmpty()) {
+            "For the unaudited candidates, paste the printed row(s) into ${timeoutsFile.name}, " +
+                "then replace each deliberate cause:untriaged placeholder with the reviewed cause. "
+          } else {
+            ""
+          }
           throw GradleException(
-              "pitest '$suiteName': -PstrictTimeoutAudit — ${unaudited.size} unaudited timed-out mutant(s), " +
+              "pitest '$suiteName': -PstrictTimeoutAudit — " +
+                  strictUnauditedSummary +
                   "${malformed.size} malformed membership row(s), ${causeFindings.size} inadmissible or " +
                   "unfinished cause classification(s), and ${undocumented.size} audited member(s) without " +
-                  "a README cause; see the warnings above. Paste the printed row(s) into ${timeoutsFile.name}, " +
-                  "then resolve each finding: only cause:liveness may remain in a certifying audited set. " +
+                  "a README cause; see the warnings above. $unauditedRemediation" +
+                  "Resolve each finding: only cause:liveness may remain in a certifying audited set. " +
                   "Keep finite resource/harness work explicit and non-certifying while fixing it; do not " +
                   "relabel it as liveness or delete it from one quiet run. Finish untriaged or missing " +
                   "classifications, write each structural argument in config/pitest/README.md, and remove a " +
@@ -4268,8 +4382,8 @@ hardening.mutation.all {
       }
       if (stale.isNotEmpty()) {
         // The unmatched entries classified from the keep plan — the SAME row-level
-        // assignment prune executes, so the preview names exactly the rows prune
-        // would remove (two independent allocators once disagreed at cross-status
+        // classifier prune executes, so the preview names exactly the current
+        // candidates (two independent allocators once disagreed at cross-status
         // coordinates; casebook: the stale hint that named the wrong flag). Agreement
         // is necessary but does not authorize the deletion: one fresh run cannot tell
         // stable removal from an uninsured load/mode flip. Rows a live flip counterpart
@@ -4287,21 +4401,56 @@ hardening.mutation.all {
         val staleInsured = acceptedRows.indices.filter { keepPlan[it] == BaselineEngine.Disposition.INSURED }
         val staleGone = acceptedRows.indices.filter { keepPlan[it] == BaselineEngine.Disposition.DROP }
         if (staleGone.isNotEmpty()) {
-          val concurrentFresh = if (fresh.isEmpty()) "" else
-            "\nThis report also has ${fresh.size} new gated row(s); triage the failure below " +
-                "before any baseline rewrite."
+          val candidateHeading = if (fresh.isEmpty()) {
+            "The ${pitestTaskName}BaselinePrune classifier marks exactly these row(s) as " +
+                "candidates in this preview (no baseline change):"
+          } else {
+            "these are unmatched candidate row(s) only (preview only; no baseline change). " +
+                "No removal task is eligible while this report also contains fresh gated rows:"
+          }
+          val removalGuidance = if (fresh.isNotEmpty()) {
+            "\nThis report also has ${fresh.size} new gated row(s). Immediate next action: " +
+                "resolve every new row through the ratchet failure's additive remediation below; " +
+                "do not run Prune or Retag while they remain gated. After the gate is clear, obtain " +
+                "a new fresh full history-free preview before reconsidering these candidates."
+          } else {
+            val freshFullHistoryFreePreview = verifiedEvidence?.let { evidence ->
+              evidence.scope == PitestEvidence.FULL_SCOPE &&
+                  !evidence.historyAssisted &&
+                  !historyAssistedReport
+            } == true
+            val currentObservation = when {
+              historyAssistedReport ->
+                "This [history] preview cannot qualify as fresh full history-free absence " +
+                    "evidence."
+              !freshFullHistoryFreePreview ->
+                "This unbound preview cannot qualify as fresh full history-free absence " +
+                    "evidence."
+              else ->
+                "This preview is fresh, full, and history-free; it is one eligible observation " +
+                    "only if review confirms the relevant solo/gate load context."
+            }
+            "\n$currentObservation\nEvidence required before deletion: at least two distinct, " +
+                "matching fresh full history-free previews under the relevant solo/gate " +
+                "conditions, with every listed row absent, plus row-by-row confirmation that " +
+                "each written removal criterion is met. The plugin does not persist or infer " +
+                "that reviewed load context. Obtain the next qualifying preview with:\n" +
+                "  ./gradlew $evidencePitestTaskPath -PnoMutationHistory --console=plain\n" +
+                "After review confirms the minimum repeated evidence and no fresh gated rows " +
+                "exist, run:\n" +
+                "  ./gradlew $evidenceBaselinePruneTaskPath --console=plain\n" +
+                "$evidenceBaselinePruneTaskPath performs another fresh full history-free " +
+                "write-boundary run and changes the baseline only from that run; review the " +
+                "resulting diff."
+          }
           logger.lifecycle(
               "pitest baseline '$suiteName': ${staleGone.size} row(s) are unmatched by this run; " +
-                  "${pitestTaskName}BaselinePrune would remove exactly these candidate row(s) if deliberately chosen " +
-                  "(preview only; no baseline change):\n" +
+                  "$candidateHeading\n" +
                   staleGone.joinToString("\n") { "  ${BaselineNotes.render(acceptedRows[it])}" } +
-                  "\nOne history-free run cannot distinguish stable removal from an uninsured load- or " +
+                  "\nOne fresh history-free absence preview cannot distinguish stable removal " +
+                  "from an uninsured load- or " +
                   "mode-dependent flip. This preview is evidence to investigate, not authorization " +
-                  "to shrink the record. Re-measure with $pitestTaskName -PnoMutationHistory under " +
-                  "the relevant solo/gate load, reconcile " +
-                  "each row with its written removal criterion and local evidence, and only then " +
-                  "invoke ${pitestTaskName}BaselinePrune if these exact rows stay absent." +
-                  concurrentFresh + historyDecisionCaveat)
+                  "to shrink the record." + removalGuidance)
         }
         if (staleInsured.isNotEmpty()) {
           // "unmatched at their own status", not "read killed": the insured
@@ -4367,24 +4516,39 @@ hardening.mutation.all {
                 (recordedPit != null && recordedPit != currentPit) ||
                 (recordedToolchain != null && currentToolchain != null &&
                     recordedToolchain.identitySha256 != currentToolchain.identitySha256)
+        fun rekeyRemediation(phaseOne: String): String =
+          if (keepPlan.none { it == BaselineEngine.Disposition.DROP }) "" else
+            " For an intentional same-suite key move or method rename, $phaseOne is phase one: " +
+                "review the source change and carry or rewrite an old acceptance argument only " +
+                "onto a generated row that review proves is its replacement; leave every other " +
+                "new row '# untriaged'. Then run $pitestTaskName -PnoMutationHistory as an " +
+                "ordinary fresh preview and review its full BaselinePrune candidate list. Only " +
+                "afterward run ${pitestTaskName}BaselinePrune if those exact candidates remain " +
+                "absent and every removal is independently justified. BaselineRetag changes line " +
+                "metadata, not keys; do not substitute the complete-rewrite BaselineUpdate."
         val remediation = when {
           provenanceRequiresRebase ->
             "\nKill them with tests, or document each acceptance, then review a fresh " +
                 "$pitestTaskName -PnoMutationHistory observation and run " +
                 "${pitestTaskName}BaselineRebase. This record is not bound to the current " +
                 "PIT/toolchain; Rebase preserves every old row, appends current rows as " +
-                "'# untriaged', and binds the reviewed provenance."
+                "'# untriaged', and binds the reviewed provenance." +
+                rekeyRemediation("${pitestTaskName}BaselineRebase")
           committedRecordExisted && currentToolchain == null ->
             "\nKill them with tests, or document each acceptance, then first run " +
                 "$pitestTaskName -PnoMutationHistory so the current toolchain can be compared " +
                 "with the record. If provenance still matches, use " +
                 "${pitestTaskName}BaselineUnion; if it changed, use " +
-                "${pitestTaskName}BaselineRebase. Neither transition removes old rows."
+                "${pitestTaskName}BaselineRebase. Neither transition removes old rows." +
+                rekeyRemediation(
+                    "the applicable ${pitestTaskName}BaselineUnion or " +
+                        "${pitestTaskName}BaselineRebase")
           baselineExisted ->
             "\nKill them with tests, or after documenting each acceptance run " +
                 "${pitestTaskName}BaselineUnion; Union appends the current rows as '# untriaged' " +
                 "without removing unmatched evidence. BaselineUpdate is a complete report rewrite, " +
-                "not remediation for this incremental gate failure (see HARDENING.md)."
+                "not remediation for this incremental gate failure (see HARDENING.md)." +
+                rekeyRemediation("${pitestTaskName}BaselineUnion")
           else ->
             "\nKill them with tests, or accept knowingly by documenting each reason and running " +
                 "${pitestTaskName}BaselineUpdate to seed config/pitest/$suiteName-accepted.csv " +
@@ -4498,6 +4662,9 @@ hardening.mutation.all {
       val debtTimeoutCauseFindings = debtTimeoutMembership
           ?.let { TimeoutAudit.causeFindings(it, it.members) }
           .orEmpty()
+      val debtTimeoutLineMetadataFindings = debtTimeoutMembership
+          ?.let { TimeoutAudit.lineMetadataFindings(it, it.members) }
+          .orEmpty()
       val debtTimeoutUndocumented = debtTimeoutMembership
           ?.let { membership ->
             TimeoutAudit.undocumentedCauses(membership.members) {
@@ -4511,6 +4678,10 @@ hardening.mutation.all {
         if (debtTimeoutCauseFindings.isNotEmpty()) {
           logger.warn(TimeoutAudit.causeFindingWarning(
               suiteName, debtTimeoutsFile.name, debtTimeoutCauseFindings))
+        }
+        if (debtTimeoutLineMetadataFindings.isNotEmpty()) {
+          logger.warn(TimeoutAudit.lineMetadataWarning(
+              suiteName, debtTimeoutsFile.name, debtTimeoutLineMetadataFindings))
         }
         if (debtTimeoutUndocumented.isNotEmpty()) {
           logger.warn(TimeoutAudit.undocumentedCauseWarning(
@@ -4658,6 +4829,19 @@ hardening.mutation.all {
                 "no mutant, and blocks every baseline rewrite:\n" +
                 malformedRows.joinToString("\n") { "  $it" }
         )
+      }
+      val invalidLineMetadataRows = baselineDocument.invalidLineMetadataRows
+      if (invalidLineMetadataRows.isNotEmpty()) {
+        logger.warn(
+            "pitest '$suiteName': ${invalidLineMetadataRows.size} accepted row(s) in " +
+                "${baselineFile.name} carry invalid diagnostic line metadata. Their keys still " +
+                "count in this read-only tally, but ranges are not observed-line evidence and a " +
+                "row-rewriting writer will refuse them:\n" +
+                invalidLineMetadataRows.joinToString("\n") { row ->
+                  "  line ${row.lineNumber}: ${row.raw}\n    " +
+                      RecordedLineMetadata.acceptedInvalidDetail(
+                          checkNotNull(row.value.invalidLineMetadata))
+                })
       }
       val wellFormedRows = baselineDocument.rows
       val baselinePairs = wellFormedRows
