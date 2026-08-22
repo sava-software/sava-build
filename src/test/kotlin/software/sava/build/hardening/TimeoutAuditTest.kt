@@ -321,6 +321,78 @@ class TimeoutAuditTest {
   }
 
   @Test
+  fun `timeout candidates separate physical instances from line-less rows`() {
+    val rows = Mutant.parseReport(listOf(
+      "Codec.java,com.example.Codec,x.MathMutator,wait,30,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,10,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,30,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.IncrementsMutator,other,44,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,20,KILLED,CodecTest",
+    ))
+
+    val candidates = TimeoutAudit.timeoutCandidates(rows)
+
+    assertEquals(4, candidates.instanceCount)
+    assertEquals(2, candidates.keyCount)
+    assertEquals(
+      "4 physical TIMED_OUT mutant instance(s) across 2 line-less key(s)",
+      TimeoutAudit.timeoutCandidateCount(candidates),
+    )
+    assertEquals(
+      listOf(
+        TimeoutAudit.MemberPopulation(
+          "com.example.Codec,other,IncrementsMutator",
+          1,
+          listOf(TimeoutAudit.PopulationObservation(44, "TIMED_OUT", 1)),
+        ),
+        TimeoutAudit.MemberPopulation(
+          "com.example.Codec,wait,MathMutator",
+          3,
+          listOf(
+            TimeoutAudit.PopulationObservation(10, "TIMED_OUT", 1),
+            TimeoutAudit.PopulationObservation(30, "TIMED_OUT", 2),
+          ),
+        ),
+      ),
+      candidates.populations,
+    )
+    assertEquals(
+      "com.example.Codec,other,IncrementsMutator # cause:untriaged line 44\n" +
+          "com.example.Codec,wait,MathMutator # cause:untriaged lines 10, 30",
+      TimeoutAudit.timeoutCandidateRows(candidates),
+    )
+
+    val detail = TimeoutAudit.timeoutCandidateDetail(candidates)
+    assertFalse(detail.contains("# observed: line 44 TIMED_OUT x1"), detail)
+    assertTrue(detail.contains("# observed: line 10 TIMED_OUT x1"), detail)
+    assertTrue(detail.contains("# observed: line 30 TIMED_OUT x2"), detail)
+    assertFalse(detail.contains("KILLED"), detail)
+    val parsedDetail = TimeoutAudit.parse(detail.lines())
+    assertEquals(
+      setOf(
+        "com.example.Codec,other,IncrementsMutator",
+        "com.example.Codec,wait,MathMutator",
+      ),
+      parsedDetail.members,
+    )
+    assertTrue(parsedDetail.malformed.isEmpty(), detail)
+  }
+
+  @Test
+  fun `watchdog context prints configured arithmetic without inventing a budget`() {
+    val context = TimeoutAudit.watchdogFormulaContext("1.25.9", 2.0, 1500L)
+
+    assertTrue(context.contains("round(testDurationMs × 2.0) + 1500 ms"), context)
+    assertTrue(context.contains("audited PIT 1.25.9"), context)
+    assertTrue(context.contains("no per-mutant budget can be calculated"), context)
+
+    val unaudited = TimeoutAudit.watchdogFormulaContext("1.26.0", 1.5, 4000L)
+    assertTrue(unaudited.contains("has not audited"), unaudited)
+    assertTrue(unaudited.contains("timeoutFactor=1.5, timeoutConst=4000 ms"), unaudited)
+    assertFalse(unaudited.contains("round("), unaudited)
+  }
+
+  @Test
   fun `member population detail omits single mutants and multi-mutant keys without a timeout`() {
     val rows = Mutant.parseReport(listOf(
       "Codec.java,com.example.Codec,x.MathMutator,one,10,TIMED_OUT,none",

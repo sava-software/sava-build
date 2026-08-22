@@ -671,7 +671,8 @@ The shrink transition is mechanically shrink-only, not self-authorizing:
 `pitest<Suite>BaselinePrune` drops baseline rows matching nothing this run and
 adds no rows. One run cannot distinguish a stable removal from an uninsured
 load- or mode-dependent flip, so the ordinary verify prints a **preview of the
-exact candidate rows** without recommending the flag. Re-measure those rows
+exact candidate rows** without treating the preview as deletion authorization.
+Re-measure those rows
 with `-PnoMutationHistory` under the relevant solo/gate load and prune only when
 the same candidates stay
 absent; a row proved to flip belongs in persistent `# flip insurance` instead.
@@ -687,7 +688,8 @@ has excess to drop, and which sibling goes is decided by line affinity first
 (a row whose `# line` tag names no live line is preferred as the absent sibling),
 file order after — so a noted live-anchored row is not dropped for its bare sibling,
 while duplicate same-line siblings remain inherently ambiguous,
-and the candidate preview names the same row prune would remove *(casebook:
+and, for the same report population, the candidate preview and Prune classifier
+name the same row *(casebook:
 the stale hint that named the wrong flag)*. Two unmatched classes are kept
 anyway, each named in the output: rows whose coordinate `TIMED_OUT` this run
 (watchdog detection, not a kill or a cause diagnosis), and rows with an *unmatched*
@@ -700,9 +702,11 @@ timeout budget — one audited permanent timeout cannot vouch for an unbounded
 pile of genuinely killed siblings. Flip-insured rows are kept
 unconditionally and decided *before* the timeout budget, so an insured row
 never spends the budget its uninsured sibling needs. Prune and the candidate
-preview read one row-level keep plan, so the preview and the eventual action
-name exactly the same rows. Agreement prevents a tooling lie; repeated
-observation supplies the evidence the tool cannot infer from one report.
+preview read one row-level keep-plan implementation, so given the same report
+population they name exactly the same rows. The actual Prune task deliberately
+runs a new fresh observation and may see a different population; review that
+resulting diff. Same-population classifier agreement prevents a tooling lie;
+repeated observation supplies the evidence the tool cannot infer from one report.
 Never substitute a hand-rolled cleanup script, which is how the status-blind
 prune happened. The named record transitions are mutually exclusive; the build
 refuses a combination.

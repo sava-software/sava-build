@@ -121,6 +121,10 @@ internal enum class ProjectWriteOperation(val description: String) {
   SCHEMA_DOWNGRADE("schema:downgrade"),
 }
 
+/** Copy-ready task path for either a root or nested hardening project. */
+internal fun qualifiedHardeningTaskPath(projectPath: String, taskName: String): String =
+    if (projectPath == ":") ":$taskName" else "$projectPath:$taskName"
+
 /** One path/content pair prepared in memory for a final typed mutation-record commit. */
 internal data class PreparedMutationWrite(
   val targetPath: String,
@@ -539,6 +543,15 @@ internal abstract class HardeningOperationRequestTask : DefaultTask() {
       } catch (e: IllegalArgumentException) {
         throw GradleException("${path}: ${e.message}", e)
       }
+      val pitestTaskPath = qualifiedHardeningTaskPath(
+          projectPath,
+          "pitest" + suite.replaceFirstChar(Char::uppercase),
+      )
+      logger.lifecycle(
+          "${path}: selected ${selected.displayName}; this suite writer intentionally does not " +
+              "reuse an existing report. It always runs one new full, unscoped, history-free PIT " +
+              "observation before writing; budget the same PIT execution cost as " +
+              "$pitestTaskPath -PnoMutationHistory")
     } else {
       try {
         operationSession.get().requestProject(
@@ -550,8 +563,9 @@ internal abstract class HardeningOperationRequestTask : DefaultTask() {
       } catch (e: IllegalArgumentException) {
         throw GradleException("${path}: ${e.message}", e)
       }
+      logger.lifecycle(
+          "${path}: selected ${selected.displayName}; record writes require fresh evidence")
     }
-    logger.lifecycle("${path}: selected ${selected.displayName}; record writes require fresh evidence")
   }
 }
 

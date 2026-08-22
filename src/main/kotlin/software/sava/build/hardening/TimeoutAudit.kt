@@ -106,7 +106,23 @@ internal object TimeoutAudit {
     val copies: Int,
   )
 
+  /**
+   * Physical timeout observations grouped by the line-less membership key a reviewer
+   * can actually commit. [instanceCount] deliberately remains separate from
+   * [keyCount]: several physical mutants may need one cause classification, while
+   * their lines and multiplicity remain diagnostic evidence rather than identity.
+   */
+  data class TimeoutCandidates(
+    val populations: List<MemberPopulation>,
+  ) {
+    val instanceCount: Int get() = populations.sumOf { it.mutantCount }
+    val keyCount: Int get() = populations.size
+  }
+
   private val CAUSE_COMMENT = Regex("""\bcause\s*:\s*([A-Za-z][A-Za-z0-9_-]*)\b""")
+
+  /** PIT release whose float-rounding watchdog strategy was inspected; re-audit before moving. */
+  private const val WATCHDOG_FORMULA_AUDITED_PITEST = "1.25.9"
 
   private data class ParsedRow(
     val key: String,
@@ -255,26 +271,95 @@ internal object TimeoutAudit {
     members: Collection<String>,
   ): List<MemberPopulation> {
     val selected = members.toSet()
-    return rows.asSequence()
-        .filter { it.coordinate in selected }
-        .groupBy { it.coordinate }
-        .entries.asSequence()
-        .filter { (_, mutants) ->
-          mutants.size > 1 && mutants.any { it.status == MutantStatus.TIMED_OUT }
+    return populations(rows.filter { it.coordinate in selected })
+        .filter { population ->
+          population.mutantCount > 1 &&
+              population.observations.any { it.status == MutantStatus.TIMED_OUT.name }
         }
-        .sortedBy { it.key }
-        .map { (member, mutants) ->
-          val observations = mutants
-              .groupingBy { it.line!! to it.rawStatus }
-              .eachCount()
-              .entries
-              .sortedWith(compareBy({ it.key.first }, { it.key.second }))
-              .map { (lineAndStatus, copies) ->
-                PopulationObservation(lineAndStatus.first, lineAndStatus.second, copies)
-              }
-          MemberPopulation(member, mutants.size, observations)
-        }
-        .toList()
+  }
+
+  /** All physical `TIMED_OUT` rows, grouped by their committable line-less key. */
+  fun timeoutCandidates(rows: Collection<Mutant>): TimeoutCandidates {
+    val timedOut = rows.filter { it.status == MutantStatus.TIMED_OUT }
+    return TimeoutCandidates(populations(timedOut))
+  }
+
+  private fun populations(rows: Collection<Mutant>): List<MemberPopulation> = rows
+      .groupBy { it.coordinate }
+      .entries
+      .sortedBy { it.key }
+      .map { (member, mutants) ->
+        val observations = mutants
+            .groupingBy { it.line!! to it.rawStatus }
+            .eachCount()
+            .entries
+            .sortedWith(compareBy({ it.key.first }, { it.key.second }))
+            .map { (lineAndStatus, copies) ->
+              PopulationObservation(lineAndStatus.first, lineAndStatus.second, copies)
+            }
+        MemberPopulation(member, mutants.size, observations)
+      }
+
+  /** Physical observations and committable keys must never be presented as one count. */
+  fun timeoutCandidateCount(candidates: TimeoutCandidates): String =
+      "${candidates.instanceCount} physical TIMED_OUT mutant instance(s) across " +
+          "${candidates.keyCount} line-less key(s)"
+
+  /** One paste-ready membership row per line-less key, with sorted distinct line tags. */
+  fun timeoutCandidateRows(
+    candidates: TimeoutCandidates,
+    indent: String = "",
+  ): String = candidates.populations.joinToString("\n") { population ->
+    indent + timeoutCandidateRow(population)
+  }
+
+  /**
+   * Paste-ready rows plus comment-only physical evidence for keys that collapse
+   * multiple instances. Copying the whole block is safe: the parser ignores each
+   * nested `# observed` line, while a reviewer can still see same-line copies that
+   * the membership row necessarily collapses.
+   */
+  fun timeoutCandidateDetail(
+    candidates: TimeoutCandidates,
+    indent: String = "  ",
+  ): String = candidates.populations.joinToString("\n") { population ->
+    val row = "$indent${timeoutCandidateRow(population)}"
+    if (population.mutantCount == 1) {
+      row
+    } else {
+      row + "\n" + population.observations.joinToString("\n") { observation ->
+        "$indent  # observed: line ${observation.line} ${observation.status} " +
+            "x${observation.copies}"
+      }
+    }
+  }
+
+  private fun timeoutCandidateRow(population: MemberPopulation): String {
+    val lines = population.observations.map { it.line }.distinct().sorted()
+    return "${population.member} # cause:untriaged " +
+        "line${if (lines.size == 1) "" else "s"} ${lines.joinToString(", ")}"
+  }
+
+  /**
+   * The configured arithmetic is useful incident context, but the CSV has neither
+   * the covering test PIT selected nor its recorded duration. Never turn settings
+   * alone into a fictional per-mutant budget.
+   */
+  fun watchdogFormulaContext(
+    pitestVersion: String,
+    timeoutFactor: Double,
+    timeoutConst: Long,
+  ): String {
+    val configured = if (pitestVersion == WATCHDOG_FORMULA_AUDITED_PITEST) {
+      "Configured watchdog (audited PIT $pitestVersion): " +
+          "round(testDurationMs × $timeoutFactor) + $timeoutConst ms."
+    } else {
+      "Configured watchdog inputs for PIT $pitestVersion: timeoutFactor=$timeoutFactor, " +
+          "timeoutConst=$timeoutConst ms; this plugin version has not audited that PIT " +
+          "release's exact duration conversion."
+    }
+    return "$configured PIT CSV lacks the active covering test and its recorded duration, " +
+        "so no per-mutant budget can be calculated."
   }
 
   /** Shared Debt/verify rendering for [memberPopulations]. */
@@ -300,19 +385,24 @@ internal object TimeoutAudit {
     suiteName: String,
     fileName: String,
     unaudited: Collection<Mutant>,
+    pitestVersion: String,
+    timeoutFactor: Double,
+    timeoutConst: Long,
     historyDecisionCaveat: String = "",
-  ): String =
-      "pitest '$suiteName': ${unaudited.size} timed-out mutant(s) not in the audited set " +
+  ): String {
+    val candidates = timeoutCandidates(unaudited)
+    return "pitest '$suiteName': ${timeoutCandidateCount(candidates)} not in the audited set " +
           "($fileName) — a new timeout hides a weakened-assertion blind spot " +
           "behind \"detected\"; identify the structural cause (the removed loop exit, the " +
-          "reversed cursor). The row below is a paste-ready, fail-closed draft: replace its " +
-          "deliberate cause:untriaged placeholder with the reviewed classification and write " +
-          "the structural argument in config/pitest/README.md before committing it. The " +
+          "reversed cursor). Each key below has one paste-ready, fail-closed draft row. Where " +
+          "a key collapses multiple physical instances, nested '# observed' comments preserve " +
+          "line/status multiplicity. Replace " +
+          "each deliberate cause:untriaged placeholder with the reviewed classification and " +
+          "write the structural argument in config/pitest/README.md before committing it. The " +
           "placeholder is non-certifying; only cause:liveness may remain in a certifying " +
-          "audited set:\n" +
-          unaudited.joinToString("\n") {
-            "  ${it.coordinate} # cause:untriaged line ${it.lineText}"
-          } + historyDecisionCaveat
+          "audited set. ${watchdogFormulaContext(pitestVersion, timeoutFactor, timeoutConst)}\n" +
+          timeoutCandidateDetail(candidates) + historyDecisionCaveat
+  }
 
   /**
    * The same coordinates while committed provenance is invalid. This deliberately
@@ -323,15 +413,22 @@ internal object TimeoutAudit {
     suiteName: String,
     fileName: String,
     unaudited: Collection<Mutant>,
+    pitestVersion: String,
+    timeoutFactor: Double,
+    timeoutConst: Long,
     historyDecisionCaveat: String = "",
-  ): String =
-      "pitest '$suiteName': the current full report contains ${unaudited.size} timed-out " +
-          "mutant(s) outside $fileName, but committed mutation provenance is invalid. Retain " +
+  ): String {
+    val candidates = timeoutCandidates(unaudited)
+    return "pitest '$suiteName': the current full report contains " +
+          "${timeoutCandidateCount(candidates)} outside $fileName, but committed mutation " +
+          "provenance is invalid. Retain " +
           "these candidates for triage; do not add or classify them until provenance is " +
-          "repaired/rebased and a fresh full observation confirms them:\n" +
-          unaudited.joinToString("\n") {
-            "  ${it.coordinate} # cause:untriaged line ${it.lineText}"
-          } + historyDecisionCaveat
+          "repaired/rebased and a fresh full observation confirms them. Each line-less key " +
+          "has one draft row. Where a key collapses multiple physical instances, nested " +
+          "'# observed' comments retain line/status multiplicity. " +
+          "${watchdogFormulaContext(pitestVersion, timeoutFactor, timeoutConst)}\n" +
+          timeoutCandidateDetail(candidates) + historyDecisionCaveat
+  }
 
   /** The report-dependent warning for committed members absent from the population. */
   fun staleWarning(
