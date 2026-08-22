@@ -61,20 +61,13 @@ class ReleaseAttestationWorkflowTest {
   @Test
   fun `ready Release Please pull requests require the reviewed record before merge`() {
     val check = workflow("gradle_plugin_check_pr.yml")
-    val draftGuard = check.indexOf("if: \${{ github.event.pull_request.draft == false }}")
+    val readyGuard = check.indexOf("if: \${{ github.event.pull_request.draft == false }}")
     val attestationPath = check.indexOf("relative=\"release-attestations/\$version.json\"")
     val verification = check.indexOf("tools/release-attestation.sh verify \"\$version\"")
 
     assertTrue(releasePleaseConfig.contains("\"draft-pull-request\": true"), releasePleaseConfig)
     assertTrue(
       check.contains("types: [ opened, synchronize, reopened, ready_for_review ]"),
-      check,
-    )
-    assertTrue(
-      check.contains(
-        "name: \${{ github.event.pull_request.draft && " +
-            "'Release Attestation (draft)' || 'Release Attestation' }}",
-      ),
       check,
     )
     assertTrue(check.contains("contents: read"), check)
@@ -86,11 +79,33 @@ class ReleaseAttestationWorkflowTest {
     assertTrue(
       check.contains(
         "jobs:\n  release-attestation:\n" +
-            "    if: \${{ github.event.pull_request.draft == false }}",
+            "    name: \${{ github.event.pull_request.draft && " +
+            "'Release Attestation (draft)' || 'Release Attestation' }}",
       ),
       check,
     )
-    assertTrue(draftGuard >= 0 && attestationPath > draftGuard, check)
+    assertTrue(
+      check.contains(
+        "- name: Await ready-for-review\n" +
+            "        if: \${{ github.event.pull_request.draft }}",
+      ),
+      check,
+    )
+    assertTrue(
+      check.contains(
+        "- if: \${{ github.event.pull_request.draft == false }}\n" +
+            "        uses: actions/checkout@",
+      ),
+      check,
+    )
+    assertTrue(
+      check.contains(
+        "- name: Verify reviewed release attestation in proposed release tree\n" +
+            "        if: \${{ github.event.pull_request.draft == false }}",
+      ),
+      check,
+    )
+    assertTrue(readyGuard >= 0 && attestationPath > readyGuard, check)
     listOf("seen_changelog", "seen_manifest", "seen_attestation").forEach { required ->
       assertTrue(check.contains(required), check)
     }
