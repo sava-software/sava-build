@@ -24,9 +24,9 @@ internal object RecordedLineMetadata {
   private const val RANGE_ITEM = "\\d+\\s*$RANGE_OPERATOR\\s*\\d+"
   private const val RANGE_OR_NUMBER = "(?:$RANGE_ITEM|\\d+)"
   private const val RANGE_LIST = "$RANGE_OR_NUMBER(?:\\s*[,/]\\s*$RANGE_OR_NUMBER)*"
-  private val ACCEPTED_LIST = Regex("""#\s*lines?\s+($NUMBER_LIST)\s*$""")
-  private val ACCEPTED_RANGE =
-      Regex("""#\s*lines?\s+($RANGE_LIST)\s*$""")
+  private val RANGE_OPERATOR_PATTERN = Regex(RANGE_OPERATOR)
+  private val ACCEPTED_TAG =
+      Regex("""#\s*lines?\s+($RANGE_LIST)(?=\s*(?:#|$))""")
   private val TIMEOUT_LIST = Regex(
       """\blines?\s+($NUMBER_LIST)(?!\d)(?!\s*(?:[,/]|$RANGE_OPERATOR)\s*\d)""")
   private val TIMEOUT_RANGE =
@@ -39,26 +39,50 @@ internal object RecordedLineMetadata {
 
   /** A canonical or recognized-invalid trailing accepted-baseline tag, when present. */
   fun acceptedSuffix(line: String): AcceptedSuffix? {
-    ACCEPTED_LIST.find(line)?.let { match ->
-      val lines = numbers(match.groupValues[1])
-      return if (lines == null) {
-        AcceptedSuffix(match.range.first, emptyList(), match.value.trim())
+    val matches = ACCEPTED_TAG.findAll(line).toList()
+    if (matches.isEmpty()) return null
+    val last = matches.last()
+    if (line.substring(last.range.last + 1).isNotBlank()) return null
+
+    // Metadata may already be malformed before a final valid tag, for example
+    // `# lines 10-30 # line 12`. Walk the contiguous metadata tail rather than
+    // recognizing only its final tag; otherwise the range becomes part of the
+    // family label and a writer silently accepts it.
+    var first = matches.lastIndex
+    while (first > 0) {
+      val previous = matches[first - 1]
+      val gap = line.substring(previous.range.last + 1, matches[first].range.first)
+      if (gap.isNotBlank()) break
+      first--
+    }
+    val trailing = matches.subList(first, matches.size)
+    val parsedLines = mutableListOf<Int>()
+    val invalid = mutableListOf<String>()
+    trailing.forEach { match ->
+      val value = match.groupValues[1]
+      val lines = if (RANGE_OPERATOR_PATTERN.containsMatchIn(value)) null else numbers(value)
+      if (lines == null) {
+        invalid += match.value.trim()
       } else {
-        AcceptedSuffix(match.range.first, lines)
+        parsedLines += lines
       }
     }
-    ACCEPTED_RANGE.find(line)?.let { match ->
-      return AcceptedSuffix(match.range.first, emptyList(), match.value.trim())
-    }
-    return null
+    return AcceptedSuffix(
+        trailing.first().range.first,
+        parsedLines,
+        invalid.takeIf { it.isNotEmpty() }?.joinToString(" "),
+    )
   }
 
   /** Exact lines or recognized-invalid metadata in a timeout row's free-form comment. */
   fun timeoutComment(comment: String): TimeoutComment {
-    TIMEOUT_RANGE.find(comment)?.let { match ->
+    val range = TIMEOUT_RANGE.find(comment)
+    val list = TIMEOUT_LIST.find(comment)
+    if (range != null && (list == null || range.range.first <= list.range.first)) {
+      val match = range
       return TimeoutComment(emptyList(), match.value.trim())
     }
-    val match = TIMEOUT_LIST.find(comment) ?: return TimeoutComment(emptyList())
+    val match = list ?: return TimeoutComment(emptyList())
     val lines = numbers(match.groupValues[1])
     return if (lines == null) {
       TimeoutComment(emptyList(), match.value.trim())

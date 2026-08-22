@@ -238,6 +238,15 @@ class AgentsTemplateSyncFunctionalTest {
 
     assertMatches(expectedPrintedTemplate)
     assertMatches("\n$expectedPrintedTemplate\n\n")
+    // The migration failure prints unquoted boundary lines. They must be usable
+    // verbatim around a legacy body that still carries one uniform quote layer.
+    assertMatches(expectedTemplate)
+    val migratedQuotedBody = runner("agentsTemplateInSync").build()
+    assertFalse(
+      migratedQuotedBody.output.contains("mixes quoted and unquoted"),
+      "the sync gate rejected the copy-ready migration around a quoted legacy body:\n" +
+          migratedQuotedBody.output,
+    )
     val adapted = expectedPrintedTemplate.replaceFirst(
       "- **Scale verification to the change.**",
       "1. **Configuration-cache reread.**",
@@ -404,25 +413,88 @@ class AgentsTemplateSyncFunctionalTest {
   }
 
   @Test
+  fun `a malformed digest marker is a hard sync failure`() {
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+    agentsDoc.writeText(
+      "$BLOCK_START\n- Shared rule.\n$BLOCK_END\n" +
+          "<!-- hardening-template sha256:ABCDEF012345 -->\n",
+    )
+
+    val failed = runner("agentsTemplateInSync").buildAndFail()
+
+    assertTrue(
+      failed.output.contains("malformed hardening-template digest marker at AGENTS.md line 4") &&
+          failed.output.contains("<12 lowercase hex>"),
+      "a malformed marker fell through to ordinary missing-marker remediation:\n${failed.output}",
+    )
+  }
+
+  @Test
+  fun `quoted and unquoted boundary lines cannot be mixed`() {
+    writeFixture()
+    val agentsDoc = File(fixtureDir, "AGENTS.md")
+    agentsDoc.writeText(
+      "> $BLOCK_START\n> - Shared rule.\n$BLOCK_END\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n",
+    )
+
+    val diff = runner("hardeningAgentTemplateDiff").buildAndFail()
+    assertTrue(
+      diff.output.contains("boundaries mix quoted and unquoted presentation") &&
+          diff.output.contains("quote both boundary lines or neither"),
+      "the diff accepted a mismatched boundary presentation:\n${diff.output}",
+    )
+    val sync = runner("agentsTemplateInSync").buildAndFail()
+    assertTrue(
+      sync.output.contains("boundaries mix quoted and unquoted presentation") &&
+          sync.output.contains("quote both boundary lines or neither"),
+      "the sync gate accepted a mismatched boundary presentation:\n${sync.output}",
+    )
+  }
+
+  @Test
+  fun `a current marker without boundaries is an explicit migration failure`() {
+    writeFixture()
+    File(fixtureDir, "AGENTS.md").writeText(
+      "# Agents\n\nLegacy adapted block.\n\n" +
+          "<!-- hardening-template sha256:$expectedDigest -->\n",
+    )
+
+    val failed = runner("agentsTemplateInSync").buildAndFail()
+
+    assertTrue(
+      failed.output.contains("must contain exactly one ordered boundary pair") &&
+          failed.output.contains(BLOCK_START) && failed.output.contains(BLOCK_END),
+      "a current marker concealed a marker-only legacy block:\n${failed.output}",
+    )
+  }
+
+  @Test
   fun `template diff refuses missing ambiguous reversed empty and mixed quote boundaries`() {
     writeFixture()
     val agentsDoc = File(fixtureDir, "AGENTS.md")
     val missing = runner("hardeningAgentTemplateDiff").buildAndFail()
     assertTrue(missing.output.contains("AGENTS.md does not exist"), missing.output)
     val malformed = listOf(
-      "no boundaries\n",
-      "$BLOCK_START\nbody\n$BLOCK_START\nbody\n$BLOCK_END\n",
-      "$BLOCK_END\nbody\n$BLOCK_START\n",
-      "$BLOCK_START\n\n$BLOCK_END\n",
-      "$BLOCK_START\n>\n> \n$BLOCK_END\n",
-      "$BLOCK_START\n> quoted\nunquoted\n$BLOCK_END\n",
+      "no boundaries\n" to "must contain exactly one ordered boundary pair",
+      "$BLOCK_START\nbody\n$BLOCK_START\nbody\n$BLOCK_END\n" to
+          "must contain exactly one ordered boundary pair",
+      "$BLOCK_END\nbody\n$BLOCK_START\n" to
+          "must contain exactly one ordered boundary pair",
+      "$BLOCK_START\n\n$BLOCK_END\n" to "bounded hardening template block in AGENTS.md is empty",
+      "> $BLOCK_START\n>\n> \n> $BLOCK_END\n" to
+          "bounded hardening template block in AGENTS.md is empty",
+      "$BLOCK_START\n> quoted\nunquoted\n$BLOCK_END\n" to
+          "bounded block mixes quoted and unquoted nonblank lines",
     )
 
-    malformed.forEachIndexed { index, text ->
+    malformed.forEachIndexed { index, (text, expectedFailure) ->
       agentsDoc.writeText(text)
       val failed = runner("hardeningAgentTemplateDiff").buildAndFail()
       assertTrue(
-        failed.output.contains("hardeningAgentTemplateDiff:"),
+        failed.output.contains("hardeningAgentTemplateDiff:") &&
+            failed.output.contains(expectedFailure),
         "malformed case $index did not fail with task context:\n${failed.output}",
       )
       if (index == 0) {

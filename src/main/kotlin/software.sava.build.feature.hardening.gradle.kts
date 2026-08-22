@@ -580,9 +580,10 @@ val hardeningFuzzExecutionSlots = gradle.sharedServices.registerIfAbsent(
 // block in each consuming repo's AGENTS.md; repository-specific facts stay outside.
 // Legacy adapted copies drift silently until their next normal sync. A template change
 // is invisible from inside the repos it obligates. The plugin carries a digest of the
-// current template block; this check fails until the repo's AGENTS.md contains a
-// marker acknowledging that digest. The marker is an acknowledgment, not a checksum
-// of the local block: update it only after re-diffing the block against the template
+// current template block; this check fails until the repo's AGENTS.md contains one
+// valid bounded block and a marker acknowledging that digest. The marker is an
+// acknowledgment, not a checksum of the local block: update it only after re-diffing
+// the block against the template
 // — a changed bullet may mean new code, not just new prose. A repo without an
 // AGENTS.md is warned, not failed: the adoption checklist owns creating the file;
 // this task owns keeping it current.
@@ -603,7 +604,7 @@ val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
 }
 val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   group = "verification"
-  description = "Fails when AGENTS.md has not acknowledged the current agent-instructions template in HARDENING.md."
+  description = "Fails when an existing AGENTS.md lacks a valid bounded acknowledgment of the current agent-instructions template."
   val agentsDoc = rootProject.layout.projectDirectory.file("AGENTS.md").asFile
   val expected = HardeningTemplateDigest.SHA256_12
   val templateTask = if (project.path == ":") "hardeningAgentTemplate" else "${project.path}:hardeningAgentTemplate"

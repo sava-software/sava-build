@@ -117,6 +117,27 @@ class TimeoutAuditTest {
   }
 
   @Test
+  fun `the first timeout line token decides metadata before later prose ranges`() {
+    val validFirst = "com.example.Codec,await,VoidMethodCallMutator"
+    val invalidFirst = "com.example.Codec,decode,MathMutator"
+    val membership = TimeoutAudit.parse(listOf(
+      "$validFirst # cause:liveness line 12 # see README lines 40-50",
+      "$invalidFirst # cause:liveness lines 70-80 # observed later at line 75",
+    ))
+
+    assertEquals(setOf(12), membership.recordedLines[validFirst])
+    assertFalse(membership.recordedLines.containsKey(invalidFirst))
+    assertEquals(
+      listOf(invalidFirst),
+      membership.lineMetadataFindings.map { it.member },
+    )
+    assertTrue(
+      membership.lineMetadataFindings.single().detail
+          .contains("invalid line metadata 'lines 70-80'"),
+    )
+  }
+
+  @Test
   fun `invalid line metadata stays separate from cause findings and overflow does not throw`() {
     val resource = "com.example.Codec,grow,MathMutator"
     val overflow = "com.example.Codec,wait,MathMutator"

@@ -110,6 +110,21 @@ class BaselineNotesTest {
         BaselineDocument.parse(current).renderDowngraded(),
         "raw-preserving downgrade must remain available",
     )
+
+    val followedByValid = BaselineNotes.parse(
+        "a,b,MathMutator,SURVIVED # flip insurance # lines 786-800 # line 790",
+    )
+    assertEquals("# flip insurance", followedByValid.note)
+    assertEquals(listOf(790), followedByValid.recordedLines)
+    assertEquals("# lines 786-800", followedByValid.invalidLineMetadata)
+    assertEquals("flip insurance", BaselineNotes.labelOf(followedByValid.note!!))
+    val mixedDocument = BaselineDocument.parse(
+        "a,b,MathMutator,SURVIVED # flip insurance # lines 786-800 # line 790\n",
+    )
+    val mixedRefusal = assertThrows(IllegalArgumentException::class.java) {
+      mixedDocument.rewriteRowsPreservingNonRows(mixedDocument.rows)
+    }
+    assertTrue(mixedRefusal.message.orEmpty().contains("invalid line metadata '# lines 786-800'"))
   }
 
   @Test

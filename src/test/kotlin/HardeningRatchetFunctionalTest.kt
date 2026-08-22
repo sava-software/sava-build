@@ -1363,7 +1363,8 @@ $fuzzBlock
     )
     bindLegacyFixtureRecord()
     val baselineBefore =
-      "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance # lines 10-30\n"
+      "com.example.Codec,encode,MathMutator,SURVIVED " +
+          "# flip insurance # lines 10-30 # line 10\n"
     baselineFile().writeText(baselineBefore)
     val checking = runner("pitestEncodingVerify").build().output
     assertTrue(
@@ -3360,13 +3361,16 @@ $fuzzBlock
     )
     // the escalated findings are the failure, not advisories: the end-of-build
     // summary opens with "none failed the build", which must stay true
+    val encodingAdvisorySummary = failed.lineSequence()
+        .firstOrNull { it.startsWith("  pitest 'encoding':") }
+    assertTrue(
+      encodingAdvisorySummary != null,
+      "strict run did not print its remaining advisory summary:\n$failed",
+    )
     assertFalse(
-      failed.contains(
-        "  pitest 'encoding': 1 physical TIMED_OUT mutant instance(s) across " +
-            "1 line-less key(s) remain unaudited",
-      ) ||
-          failed.contains("malformed audit row(s)") ||
-          failed.contains("audited timeout(s) without a README cause"),
+      encodingAdvisorySummary!!.contains("remain unaudited") ||
+          encodingAdvisorySummary.contains("malformed audit row(s)") ||
+          encodingAdvisorySummary.contains("audited timeout(s) without a README cause"),
       "strict-escalated finding also recorded as an advisory:\n$failed"
     )
 
@@ -4094,6 +4098,41 @@ $fuzzBlock
       baselineFile().readText().contains("  # context for the row below\n"),
       "the insurance rewrite dropped its comment:\n${baselineFile().readText()}"
     )
+  }
+
+  @Test
+  fun `mode compare warns on invalid line metadata and union refuses it`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val validBaseline =
+      "com.example.Codec,encode,MathMutator,SURVIVED # flip insurance # line 790\n"
+    baselineFile().writeText(validBaseline)
+    fun mutant(status: String) =
+      "Codec.java,com.example.Codec," +
+          "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "encode,790,$status," +
+          (if (status == "KILLED") "com.example.CodecTest" else "none")
+
+    writeReport(listOf(mutant("KILLED")), "")
+    bindLegacyFixtureRecord()
+    val invalidBaseline =
+      "com.example.Codec,encode,MathMutator,SURVIVED " +
+          "# flip insurance # lines 786-800 # line 790\n"
+    baselineFile().writeText(invalidBaseline)
+    modeSnapshot("solo")
+    writeReport(listOf(mutant("SURVIVED")), "")
+    modeSnapshot("gate")
+
+    val warning = runner("pitestModeCompare").build().output
+    assertTrue(
+      warning.contains("1 accepted row(s) in encoding-accepted.csv carry invalid diagnostic line metadata") &&
+          warning.contains("invalid line metadata '# lines 786-800'"),
+      warning,
+    )
+
+    val refusal = modeCompareUnionRunner().buildAndFail().output
+    assertTrue(refusal.contains("pitestModeCompareUnion refuses to rewrite invalid line metadata"), refusal)
+    assertEquals(invalidBaseline, baselineFile().readText(), "mode insurance rewrote invalid metadata")
   }
 
   @Test

@@ -2154,8 +2154,11 @@ act on the changed requirement. The plugin also carries a digest of this templat
 blockquote lines. When a root
 `AGENTS.md` does not exist, `agentsTemplateInSync` (wired into `check`) warns and
 prints the marker because adoption still requires the deliberate copy step above.
-Once `AGENTS.md` exists, a missing or stale marker fails until the file contains
-`<!-- hardening-template sha256:<digest> -->` acknowledging the release's template.
+Once `AGENTS.md` exists, the gate requires exactly one ordered boundary pair around a
+non-empty shared block and exactly one current
+`<!-- hardening-template sha256:<digest> -->` outside it. A current marker alone does
+not satisfy the gate: legacy marker-only consumers must add the boundaries before they
+can claim a reviewable acknowledgment of the release's template.
 Thus editing the template below breaks already-adopted downstream checks on their
 next plugin refresh, which is the point, and no list of downstream repos needs
 maintaining anywhere. The marker is an acknowledgment, not a checksum of the local
@@ -2181,9 +2184,10 @@ quoted source block. Its complete output is also the canonical final layout:
 start marker, body, end marker, then exactly one digest marker. During a legacy
 transition the old marker may remain before the block long enough to run the diff,
 but after review replace/remove it rather than appending a second marker. The matching
-`hardeningAgentTemplateDiff` automatically removes
-one uniform Markdown quote layer from a legacy block and its boundary comments; do not
-edit the block merely to normalize the presentation used by releases before 21.5.25.
+`hardeningAgentTemplateDiff` automatically removes one uniform Markdown quote layer
+from a legacy block. The boundary lines may either carry that same quote layer or be
+added unquoted exactly as the migration failure prints; do not edit the block merely
+to normalize the presentation used by releases before 21.5.25.
 
 > - **Scale verification to the change.** Iterate with the module's `test`
 >   task; before handing off, run only the `pitest<Suite>`(s) whose mutated

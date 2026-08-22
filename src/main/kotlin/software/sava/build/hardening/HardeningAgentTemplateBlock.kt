@@ -66,7 +66,15 @@ internal object HardeningAgentTemplateBlock {
       }
     }
     val block = lines.subList(start.index + 1, end.index)
-    val quoteNormalized = normalizeQuoteLayer(block, start.quoted)
+    // The migration guidance deliberately gives consumers unquoted, copy-ready
+    // boundary lines. Legacy bodies may still carry the uniform Markdown quote
+    // layer used before 21.5.25, so infer that layer from the body when the new
+    // boundaries are unquoted. Quoted boundaries remain an explicit requirement
+    // that the complete body use the same presentation.
+    val quoteNormalized = normalizeQuoteLayer(
+      block,
+      expectedQuoted = if (start.quoted) true else null,
+    )
     val leadingBlankCount = quoteNormalized.indexOfFirst { !it.isBlank() }.let { first ->
       if (first < 0) quoteNormalized.size else first
     }
@@ -186,12 +194,17 @@ internal object HardeningAgentTemplateBlock {
     return markers.singleOrNull()
   }
 
-  private fun normalizeQuoteLayer(block: List<String>, expectedQuoted: Boolean): List<String> {
+  private fun normalizeQuoteLayer(
+    block: List<String>,
+    expectedQuoted: Boolean?,
+  ): List<String> {
+    var inferredQuoted = expectedQuoted
     var fence: Fence? = null
     block.forEach { rawLine ->
       if (rawLine.isBlank()) return@forEach
       val presented = present(rawLine)
-      if (expectedQuoted && !presented.quoted) throw mixedQuoteFailure()
+      val bodyQuoted = inferredQuoted ?: presented.quoted.also { inferredQuoted = it }
+      if (bodyQuoted && !presented.quoted) throw mixedQuoteFailure()
       val structural = presented.structural
       val activeFence = fence
       if (activeFence != null) {
@@ -200,12 +213,12 @@ internal object HardeningAgentTemplateBlock {
         }
         return@forEach
       }
-      if (!expectedQuoted && presented.quoted) throw mixedQuoteFailure()
+      if (!bodyQuoted && presented.quoted) throw mixedQuoteFailure()
       if (structural != null) {
         openingFence(structural, presented.quoted)?.let { fence = it }
       }
     }
-    return if (expectedQuoted) {
+    return if (inferredQuoted == true) {
       block.map { rawLine -> if (rawLine.isBlank()) "" else present(rawLine).content }
     } else {
       block
