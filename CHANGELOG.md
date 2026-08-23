@@ -1,5 +1,19 @@
 # Changelog
 
+## [21.5.27](https://github.com/sava-software/sava-build/compare/21.5.26...21.5.27) (2026-08-23)
+
+
+### Bug Fixes
+
+* **hardening:** preserve actionable adoption evidence ([#96](https://github.com/sava-software/sava-build/issues/96)) ([c2ecd76](https://github.com/sava-software/sava-build/commit/c2ecd76bae6b01125b5bf6a632a8546de3c46c44))
+* **release:** stage attestations in draft pull requests ([a203cfe](https://github.com/sava-software/sava-build/commit/a203cfec2f041d5fd5c8e5f0a8decd05a44ed81f))
+* **release:** stage bot refreshes without red checks ([#97](https://github.com/sava-software/sava-build/issues/97)) ([b8ec50c](https://github.com/sava-software/sava-build/commit/b8ec50c7d3c021f154ee86a37207f222c5115bb1))
+
+
+### Build System
+
+* **deps:** bump docker/setup-buildx-action ([#94](https://github.com/sava-software/sava-build/issues/94)) ([882ff32](https://github.com/sava-software/sava-build/commit/882ff3270db8febda6e654bc4a8ae52a5031ac1e))
+
 ## [21.5.26](https://github.com/sava-software/sava-build/compare/21.5.25...21.5.26) (2026-08-16)
 
 
