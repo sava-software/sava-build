@@ -2,6 +2,7 @@ name: Gradle Check PR
 
 on:
   pull_request:
+    branches: [ main ]
     types: [ opened, synchronize, reopened, ready_for_review ]
 
 concurrency:
@@ -12,21 +13,48 @@ permissions:
   contents: read
 
 jobs:
+  # Keep one always-running, dynamically named job: a skipped job with the exact required
+  # context can count as successful, while staging must leave that context absent.
   release-attestation:
-    name: ${{ github.event.pull_request.draft && 'Release Attestation (draft)' || 'Release Attestation' }}
+    name: >-
+      ${{
+        (github.event.pull_request.draft == false &&
+          github.event.action == 'synchronize' &&
+          github.actor == 'sava-release-please[bot]' &&
+          github.event.pull_request.user.login == 'sava-release-please[bot]') &&
+          'Release Attestation (staging)' ||
+        github.event.pull_request.draft && 'Release Attestation (draft)' ||
+        'Release Attestation'
+      }}
     runs-on: ubuntu-latest
+    env:
+      RELEASE_PLEASE_BOT_REFRESH: >-
+        ${{
+          (github.event.pull_request.draft == false &&
+            github.event.action == 'synchronize' &&
+            github.actor == 'sava-release-please[bot]' &&
+            github.event.pull_request.user.login == 'sava-release-please[bot]') &&
+            'true' || 'false'
+        }}
     steps:
       - name: Await ready-for-review
         if: ${{ github.event.pull_request.draft }}
         run: echo "Release attestation starts when this pull request is ready for review."
 
-      - if: ${{ github.event.pull_request.draft == false }}
+      - name: Await reviewed attestation after Release Please refresh
+        if: ${{ env.RELEASE_PLEASE_BOT_REFRESH == 'true' }}
+        run: >-
+          echo "Release Please refreshed this pull request; verification waits for a
+          human-reviewed attestation push or ready-for-review event. This staging check
+          does not satisfy the required Release Attestation context."
+
+      - if: ${{ github.event.pull_request.draft == false && env.RELEASE_PLEASE_BOT_REFRESH != 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
       - name: Verify reviewed release attestation in proposed release tree
-        if: ${{ github.event.pull_request.draft == false }}
+        if: ${{ github.event.pull_request.draft == false && env.RELEASE_PLEASE_BOT_REFRESH != 'true' }}
         run: |
           base="${{ github.event.pull_request.base.sha }}"
           base_version=$(git show \

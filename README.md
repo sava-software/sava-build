@@ -479,9 +479,9 @@ JAR without the Gradle build cache and require its hash to remain equal to that 
 A changed hash means the consumer evidence no longer describes the artifact and another
 relevant adoption pass is required.
 
-Release Please opens its version-metadata pull request as a draft. Freeze `main` and the
-reviewed adoption evidence, then check out that clean branch and create a compact owner
-attestation. Pass the root of each clean consumer checkout whose exact-byte hardening
+Release Please initially opens its version-metadata pull request as a draft. Freeze `main`
+and the reviewed adoption evidence, then check out that clean branch and create a compact
+owner attestation. Pass the root of each clean consumer checkout whose exact-byte hardening
 certification was actually reviewed, then classify the release basis and changed-feature
 evidence explicitly:
 
@@ -500,9 +500,13 @@ tools/release-attestation.sh create-reviewed "$version" \
 git add "release-attestations/$version.json"
 ```
 
-Commit only that generated file to the Release Please branch, then mark the pull request
-ready. The `ready_for_review` event runs `Release Attestation`; merge only after it passes.
-If `main` moves first, return the pull request to draft and regenerate the record.
+Commit only that generated file to the Release Please branch. If the pull request is draft,
+mark it ready; `ready_for_review` runs `Release Attestation`. If Release Please refreshes an
+already-ready pull request after `main` moves, its bot-triggered `synchronize` run reports only
+`Release Attestation (staging)`: it does not verify the tree or satisfy the required check.
+Regenerate the record against the refreshed base and push it. If the pull request remains
+ready, that `synchronize` runs strict `Release Attestation` verification; if you returned it
+to draft, mark it ready afterward. Merge only after the required check passes.
 The eventual squash merge contains `CHANGELOG.md`, the manifest change, and the reviewed
 record in one release commit.
 Never merge a metadata-only Release Please PR and append the attestation to `main` afterward:
