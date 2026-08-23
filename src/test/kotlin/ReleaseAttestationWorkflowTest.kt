@@ -61,11 +61,12 @@ class ReleaseAttestationWorkflowTest {
   @Test
   fun `ready Release Please pull requests require the reviewed record before merge`() {
     val check = workflow("gradle_plugin_check_pr.yml")
-    val readyGuard = check.indexOf("if: \${{ github.event.pull_request.draft == false }}")
+    val checkout = check.indexOf("uses: actions/checkout@")
     val attestationPath = check.indexOf("relative=\"release-attestations/\$version.json\"")
     val verification = check.indexOf("tools/release-attestation.sh verify \"\$version\"")
 
     assertTrue(releasePleaseConfig.contains("\"draft-pull-request\": true"), releasePleaseConfig)
+    assertTrue(check.contains("branches: [ main ]"), check)
     assertTrue(
       check.contains("types: [ opened, synchronize, reopened, ready_for_review ]"),
       check,
@@ -78,34 +79,12 @@ class ReleaseAttestationWorkflowTest {
     assertTrue(check.contains("if [ \"\$version\" = \"\$base_version\" ]"), check)
     assertTrue(
       check.contains(
-        "jobs:\n  release-attestation:\n" +
-            "    name: \${{ github.event.pull_request.draft && " +
-            "'Release Attestation (draft)' || 'Release Attestation' }}",
-      ),
-      check,
-    )
-    assertTrue(
-      check.contains(
         "- name: Await ready-for-review\n" +
             "        if: \${{ github.event.pull_request.draft }}",
       ),
       check,
     )
-    assertTrue(
-      check.contains(
-        "- if: \${{ github.event.pull_request.draft == false }}\n" +
-            "        uses: actions/checkout@",
-      ),
-      check,
-    )
-    assertTrue(
-      check.contains(
-        "- name: Verify reviewed release attestation in proposed release tree\n" +
-            "        if: \${{ github.event.pull_request.draft == false }}",
-      ),
-      check,
-    )
-    assertTrue(readyGuard >= 0 && attestationPath > readyGuard, check)
+    assertTrue(checkout >= 0 && attestationPath > checkout, check)
     listOf("seen_changelog", "seen_manifest", "seen_attestation").forEach { required ->
       assertTrue(check.contains(required), check)
     }
@@ -113,6 +92,78 @@ class ReleaseAttestationWorkflowTest {
     assertTrue(check.contains("if [ \"\$candidate\" != \"\$base\" ]"), check)
     assertTrue(check.contains("Unexpected Release Please PR path"), check)
     assertTrue(verification > attestationPath, check)
+  }
+
+  @Test
+  fun `Release Please bot refreshes stage without satisfying the required context`() {
+    val check = workflow("gradle_plugin_check_pr.yml")
+    val jobStart = check.indexOf("  release-attestation:")
+    val runsOn = check.indexOf("    runs-on:", jobStart)
+    val jobHeader = check.substring(jobStart, runsOn)
+    val steps = check.indexOf("    steps:", runsOn)
+    val jobBlock = check.substring(jobStart, check.indexOf("\n  check:", steps))
+    val environment = check.substring(runsOn, steps)
+    val stagingStep = check.indexOf(
+      "- name: Await reviewed attestation after Release Please refresh",
+    )
+    val checkout = check.indexOf("uses: actions/checkout@")
+    val verification = check.indexOf(
+      "- name: Verify reviewed release attestation in proposed release tree",
+    )
+    val stagingPredicate = Regex(
+      """github\.event\.pull_request\.draft == false\s*&&\s*""" +
+          """github\.event\.action == 'synchronize'\s*&&\s*""" +
+          """github\.actor == 'sava-release-please\[bot]'\s*&&\s*""" +
+          """github\.event\.pull_request\.user\.login == 'sava-release-please\[bot]'""",
+    )
+    val stagingName = Regex(
+      stagingPredicate.pattern +
+          """\)\s*&&\s*'Release Attestation \(staging\)'""",
+    )
+    val stagingEnvironment = Regex(
+      stagingPredicate.pattern + """\)\s*&&\s*'true'\s*\|\|\s*'false'""",
+    )
+    val verificationGuard =
+      "if: \${{ github.event.pull_request.draft == false && " +
+          "env.RELEASE_PLEASE_BOT_REFRESH != 'true' }}"
+
+    assertTrue(jobStart >= 0 && runsOn > jobStart, check)
+    assertTrue(jobHeader.contains("'Release Attestation (staging)'"), jobHeader)
+    assertTrue(jobHeader.contains("'Release Attestation (draft)'"), jobHeader)
+    assertTrue(jobHeader.contains("'Release Attestation'"), jobHeader)
+    assertTrue(!Regex("(?m)^    if:").containsMatchIn(jobBlock), jobBlock)
+    assertTrue(!check.contains("\n    name: Release Attestation\n"), check)
+    assertTrue(stagingPredicate.findAll(check).count() == 2, check)
+    assertTrue(stagingName.containsMatchIn(jobHeader), jobHeader)
+    assertTrue(environment.contains("RELEASE_PLEASE_BOT_REFRESH: >-"), environment)
+    assertTrue(stagingEnvironment.containsMatchIn(environment), environment)
+    assertTrue(
+      check.contains(
+        "- name: Await reviewed attestation after Release Please refresh\n" +
+            "        if: \${{ env.RELEASE_PLEASE_BOT_REFRESH == 'true' }}",
+      ),
+      check,
+    )
+    assertTrue(check.split(verificationGuard).size - 1 == 2, check)
+    assertTrue(
+      check.contains("- $verificationGuard\n        uses: actions/checkout@"),
+      check,
+    )
+    assertTrue(
+      check.contains(
+        "- name: Verify reviewed release attestation in proposed release tree\n" +
+            "        $verificationGuard",
+      ),
+      check,
+    )
+    assertTrue(stagingStep >= 0 && checkout > stagingStep && verification > checkout, check)
+    assertTrue(
+      check.contains("does not satisfy the required Release Attestation context"),
+      check,
+    )
+    assertTrue(readme.contains("Release Attestation (staging)"), readme)
+    assertTrue(readme.contains("does not verify the tree"), readme)
+    assertTrue(readme.contains("mark it ready afterward"), readme)
   }
 
   @Test

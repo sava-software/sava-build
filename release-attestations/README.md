@@ -14,10 +14,14 @@ original path contract.
 Create a record only after the local passes have been reviewed, their completed
 `.pitest-history/pitest-certification.tsv` receipts remain in clean consumer
 checkouts, their exact `0.0.0-test` JAR is retained, and the Release Please version
-metadata is present on the draft Release Please branch. Commit the record there, then mark
-the pull request ready; `ready_for_review` runs `Release Attestation`. Merge only after it
-passes. Freeze `main` first; if it moves, return the pull request to draft and regenerate
-the record. A record appended to `main` after the release PR merges is too late: the release
+metadata is present on the Release Please branch. Commit the record there. If the pull
+request is draft, mark it ready; `ready_for_review` runs `Release Attestation`. A bot-triggered
+refresh of an already-ready pull request reports only `Release Attestation (staging)`, which
+does not verify the tree or satisfy the required check. Regenerate against the refreshed base
+and push the record. If the pull request remains ready, that `synchronize` runs strict
+`Release Attestation` verification; if you returned it to draft, mark it ready afterward.
+Merge only after the required check passes.
+A record appended to `main` after the release PR merges is too late: the release
 gates accept and publish only the manifest-version-changing squash commit, and that target
 must already contain the exact attestation. Release Please PRs must therefore use **Squash
 and merge**; rebase and merge-commit shapes fail closed.
