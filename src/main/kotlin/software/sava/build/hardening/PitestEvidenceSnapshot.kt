@@ -106,6 +106,33 @@ object PitestEvidenceSnapshot {
     pluginSha256: String,
     mutationUnitSize: Int,
     verbosity: String,
+  ): PitestEvidence = capture(
+    input,
+    minionJvmArgs,
+    pluginSha256,
+    mutationUnitSize,
+    verbosity,
+    emptyList(),
+  )
+
+  /**
+   * Binds the suite's removed test classes without changing the published
+   * snapshot-input ABI. An empty set stays absent from the canonical text, so a suite
+   * that removes nothing keeps the `configurationSha256` it already published — the
+   * same rule [minionJvmArgs] and [mutationUnitSize] follow.
+   *
+   * That is a statement about this one field. A completed report binds plugin bytes,
+   * sources, classes and classpaths too, and an upgrade moves the plugin hash
+   * regardless, so it does not mean a recorded report survives one. What it means is
+   * that adding the setting is not itself a reason for anything to go stale.
+   */
+  internal fun capture(
+    input: PitestEvidenceSnapshotInput,
+    minionJvmArgs: Iterable<String>,
+    pluginSha256: String,
+    mutationUnitSize: Int,
+    verbosity: String,
+    excludedTestClasses: Iterable<String>,
   ): PitestEvidence {
     require(mutationUnitSize >= 0) { "PIT mutation unit size must not be negative" }
     val normalizedVerbosity =
@@ -116,10 +143,20 @@ object PitestEvidenceSnapshot {
     val runtimeFiles = input.runtimeClasspath.toList()
     val toolFiles = input.toolClasspath.toList()
     val minionArgs = minionJvmArgs.toList()
+    // Validated here, at the encoder, because every capture overload funnels through
+    // this function and the one-argument form is published: a check on any one
+    // caller's inputs leaves this boundary able to mint a colliding identity for the
+    // next. These two are checked together because they collide as a pair — a newline
+    // in either lets one suite's configuration render as another's.
+    val excludedTests = excludedTestClasses.map(HardeningNames::requireTestExclusionGlob)
+    HardeningNames.requireSingleLineValue("targetTests", input.targetTests)
     val configurationText = buildString {
       appendLine("targetClasses=${input.targetClasses.sorted().joinToString(",")}")
       appendLine("excludedClasses=${input.excludedClasses.sorted().joinToString(",")}")
       appendLine("targetTests=${input.targetTests}")
+      if (excludedTests.isNotEmpty()) {
+        appendLine("excludedTestClasses=${excludedTests.sorted().joinToString(",")}")
+      }
       appendLine("mutators=${input.mutators}")
       appendLine("threads=${input.threads}")
       if (minionArgs.isNotEmpty()) {

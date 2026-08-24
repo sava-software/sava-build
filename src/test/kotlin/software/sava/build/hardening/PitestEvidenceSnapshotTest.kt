@@ -2,6 +2,8 @@ package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.gradle.api.GradleException
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import software.sava.build.hardening.task.HardeningCommandLines
@@ -175,6 +177,7 @@ class PitestEvidenceSnapshotTest {
     runtimeClasspath: Iterable<File> = emptyList(),
     toolClasspath: Iterable<File> = emptyList(),
     pluginCode: File,
+    targetTests: String = "example.*Test*",
   ) = PitestEvidenceSnapshotInput(
     suite = "encoding",
     invocationId = "run-123",
@@ -190,7 +193,7 @@ class PitestEvidenceSnapshotTest {
     mutationToolchainSha256 = "0".repeat(64),
     targetClasses = listOf("example.Parser", "example.Codec"),
     excludedClasses = listOf("example.Generated", "example.CodecFuzz"),
-    targetTests = "example.*Test*",
+    targetTests = targetTests,
     mutators = "STRONGER",
     threads = 4,
     timeoutFactor = 1.25,
@@ -207,4 +210,66 @@ class PitestEvidenceSnapshotTest {
       it.parentFile.mkdirs()
       it.writeText(content)
     }
+
+  @Test
+  fun `removed test classes are set-ordered evidence while an empty set stays compatible`() {
+    val pluginCode = file("plugin/sava-build.jar", "sava-build")
+    val input = input(pluginCode = pluginCode)
+    val pluginSha256 = PitestEvidence.sha256(pluginCode)
+    val default = HardeningCommandLines.PitestVerbosity.DEFAULT
+    // The published contract this setting had to preserve: a suite that removes no
+    // test class keeps the configuration hash it published before the option existed.
+    val legacy = PitestEvidenceSnapshot.capture(input, emptyList(), pluginSha256, 0, default)
+    val explicitEmpty =
+      PitestEvidenceSnapshot.capture(input, emptyList(), pluginSha256, 0, default, emptyList())
+    val removed = PitestEvidenceSnapshot.capture(
+      input, emptyList(), pluginSha256, 0, default, listOf("example.SlowTest"))
+    // PIT ORs the exclusions, so registration order is not a configuration difference.
+    val reordered = PitestEvidenceSnapshot.capture(
+      input, emptyList(), pluginSha256, 0, default, listOf("example.ScriptTest", "example.SlowTest"))
+    val sameSet = PitestEvidenceSnapshot.capture(
+      input, emptyList(), pluginSha256, 0, default, listOf("example.SlowTest", "example.ScriptTest"))
+
+    assertEquals(legacy.configurationSha256, explicitEmpty.configurationSha256)
+    assertNotEquals(legacy.configurationSha256, removed.configurationSha256)
+    assertNotEquals(removed.configurationSha256, reordered.configurationSha256)
+    assertEquals(reordered.configurationSha256, sameSet.configurationSha256)
+  }
+
+  @Test
+  fun `the evidence encoder refuses selection values that could forge a configuration line`() {
+    // The canonical text is one key=value line per setting, so a value carrying a
+    // newline writes a line of its own: targetTests ending '|\nexcludedTestClasses=y'
+    // beside the record 'com.ZTest' would render exactly as targetTests ending '|'
+    // beside the single record 'y\nexcludedTestClasses=com.ZTest' — one
+    // configurationSha256 for two suites that hand PIT different arguments, only one
+    // of which excludes com.ZTest.
+    //
+    // Refused at the encoder rather than only on the suite's providers, because
+    // every capture overload funnels here, the one-argument form is published, and a
+    // caller reaching this directly would otherwise mint the colliding identity.
+    val pluginCode = file("plugin/sava-build.jar", "sava-build")
+    val pluginSha256 = PitestEvidence.sha256(pluginCode)
+    val default = HardeningCommandLines.PitestVerbosity.DEFAULT
+    fun capture(targetTests: String, excludedTestClasses: List<String>) =
+      PitestEvidenceSnapshot.capture(
+        input(pluginCode = pluginCode, targetTests = targetTests),
+        emptyList(), pluginSha256, 0, default, excludedTestClasses,
+      )
+
+    assertThrows(GradleException::class.java, {
+      capture("~com\\..*Test$|\nexcludedTestClasses=y", listOf("com.ZTest"))
+    }, "a targetTests that opens a configuration line was encoded")
+
+    assertThrows(GradleException::class.java, {
+      capture("~com\\..*Test$|", listOf("y\nexcludedTestClasses=com.ZTest"))
+    }, "an exclusion that closes a forged configuration line was encoded")
+
+    // The published one-argument form funnels here too, so it is covered by the same
+    // check rather than by whatever its caller happened to validate.
+    assertThrows(GradleException::class.java, {
+      PitestEvidenceSnapshot.capture(
+        input(pluginCode = pluginCode, targetTests = "example.*Test*\nmutators=EVIL"))
+    }, "the published capture overload encoded a forged configuration line")
+  }
 }

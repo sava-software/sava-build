@@ -1,5 +1,6 @@
 package software.sava.build.hardening.task
 
+import org.gradle.api.GradleException
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertIterableEquals
@@ -132,7 +133,96 @@ class HardeningExecutionSupportTest {
     )
 
     assertFalse(arguments.any { it.startsWith("--excludedClasses=") })
+    assertFalse(arguments.any { it.startsWith("--excludedTestClasses=") })
     assertFalse(arguments.any { it.startsWith("--jvmArgs=") })
+  }
+
+  @Test
+  fun `removed test classes reach PIT as one comma-joined subtraction beside the positive glob`() {
+    val arguments = HardeningCommandLines.pitest(
+      HardeningCommandLines.Pitest(
+        applicationClasspath = emptyList(),
+        targetClasses = listOf("example.Codec"),
+        mutateOnly = null,
+        excludedClasses = emptyList(),
+        targetTests = "example.*Test*",
+        excludedTestClasses = listOf("example.ScriptTest", "example.SlowTest"),
+        sourceDirectories = emptyList(),
+        reportDirectory = tempDir.resolve("report"),
+        projectBaseDirectory = tempDir,
+        mutators = "DEFAULTS",
+        outputFormats = listOf("CSV"),
+        timestampedReports = false,
+        threads = 1,
+        minionJvmArgs = emptyList(),
+        timeoutFactor = "1.25",
+        timeoutConst = 4000,
+        historyActive = false,
+        historyFile = tempDir.resolve("history"),
+      )
+    )
+
+    // The positive glob has to survive: PIT intersects the two, and dropping it
+    // would make the subtraction the whole selection.
+    assertTrue("--targetTests=example.*Test*" in arguments)
+    assertTrue("--excludedTestClasses=example.ScriptTest,example.SlowTest" in arguments)
+  }
+
+  @Test
+  fun `test exclusions reject only what joining them into one argument would corrupt`() {
+    val base = HardeningCommandLines.Pitest(
+      applicationClasspath = emptyList(),
+      targetClasses = listOf("example.Codec"),
+      mutateOnly = null,
+      excludedClasses = emptyList(),
+      targetTests = "example.*Test*",
+      sourceDirectories = emptyList(),
+      reportDirectory = tempDir.resolve("report"),
+      projectBaseDirectory = tempDir,
+      mutators = "DEFAULTS",
+      outputFormats = listOf("CSV"),
+      timestampedReports = false,
+      threads = 1,
+      minionJvmArgs = emptyList(),
+      timeoutFactor = "1.25",
+      timeoutConst = 4000,
+      historyActive = false,
+      historyFile = tempDir.resolve("history"),
+    )
+
+    listOf(
+      // silently two globs, neither of them the one written
+      "example.ScriptTest,example.SlowTest",
+      // an empty glob in the joined argument
+      "  ",
+    ).forEach { glob ->
+      assertThrows(GradleException::class.java, {
+        HardeningCommandLines.pitest(base.copy(excludedTestClasses = listOf(glob)))
+      }, "expected '$glob' to be refused")
+    }
+
+    // Both halves of the pair that can forge the evidence encoding: a newline in
+    // either lets one suite's configuration text render as another's.
+    listOf("example.A\nexcludedTestClasses=example.B", "example.A\rB", "example.A\u0000B")
+      .forEach { value ->
+        assertThrows(GradleException::class.java, {
+          HardeningCommandLines.pitest(base.copy(excludedTestClasses = listOf(value)))
+        }, "expected exclusion '$value' to be refused")
+        assertThrows(GradleException::class.java, {
+          HardeningCommandLines.pitest(base.copy(targetTests = value))
+        }, "expected targetTests '$value' to be refused")
+      }
+
+    // Everything else is PIT's grammar to interpret, not this plugin's to police.
+    // Nothing reads these back, so a second opinion about which spellings are
+    // sensible would only be another thing to keep in step with PIT.
+    listOf("~example\\.Script.*", "example.*Test*", "**.ScriptTest").forEach { glob ->
+      assertTrue(
+        "--excludedTestClasses=$glob" in
+          HardeningCommandLines.pitest(base.copy(excludedTestClasses = listOf(glob))),
+        "refused '$glob'",
+      )
+    }
   }
 
   @Test

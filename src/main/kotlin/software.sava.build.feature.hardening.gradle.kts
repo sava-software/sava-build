@@ -2298,6 +2298,30 @@ hardening.mutation.all {
   suite.timeoutFactor.convention(1.25)
   suite.timeoutConst.convention(4000L)
   suite.excludedClasses.convention(emptyList())
+  suite.excludedTestClasses.convention(emptyMap())
+  // The one funnel every test-exclusion glob passes through on its way to both the
+  // command line and the evidence, and therefore where the reason is enforced. It has
+  // to be enforced somewhere that fails: the advisory log never fails a build by
+  // design, so a reason checked only there is not required, it is suggested — and a
+  // removal nobody argued is indistinguishable from a glob that reached one class
+  // further than its author meant.
+  //
+  // PIT ORs the exclusions, so their order changes nothing about what runs; sorting
+  // makes the command line and the evidence configuration text depend on the set
+  // alone rather than on registration order.
+  val excludedTestGlobs = suite.excludedTestClasses.map { records ->
+    val unargued = records.filterValues(String::isBlank).keys.sorted()
+    require(unargued.isEmpty()) {
+      "pitest '${suite.name}': ${unargued.size} excludeTestClass record(s) carry no reason:\n" +
+          unargued.joinToString("\n") { "  $it" } + "\n" +
+          "Kills come only from targetTests, so a removal narrows what can kill a mutant and " +
+          "leaves nothing in the report to say why. Say what the class is and why mutation " +
+          "analysis must not run it, or drop the record."
+    }
+    // Checked here, not only where the command line is built: the evidence spec tasks
+    // hash this configuration without ever assembling a command.
+    records.keys.sorted().onEach(HardeningNames::requireTestExclusionGlob)
+  }
   // the registration's own exclusions plus every registered fuzz harness; feeds
   // both the PIT argument and the mutator-blindness scan so the two cannot drift
   val allExcludedClasses = suite.excludedClasses.zip(fuzzHarnessExcludes) { excluded, harnesses ->
@@ -5022,6 +5046,13 @@ hardening.mutation.all {
     task.targetClasses.set(suite.targetClasses)
     task.excludedClasses.set(allExcludedClasses)
     task.targetTests.set(suite.targetTests)
+    task.excludedTestClasses.set(excludedTestGlobs)
+    // Locked, unlike its neighbours, because this one carries an invariant the
+    // property itself cannot state: the reason is enforced in the provider above.
+    // Left settable, a consumer could put a glob straight onto the task, skip the
+    // ratchet, and produce a green run and its evidence with nothing recorded
+    // anywhere saying why those tests did not get to kill anything.
+    task.excludedTestClasses.disallowChanges()
     task.mutators.set(mutatorsSource)
     task.threads.set(suite.threads)
     task.minionJvmArgs.set(suite.minionJvmArgs)
@@ -5135,6 +5166,13 @@ hardening.mutation.all {
     spec.targetClasses.set(suite.targetClasses)
     spec.excludedClasses.set(allExcludedClasses)
     spec.targetTests.set(suite.targetTests)
+    spec.excludedTestClasses.set(excludedTestGlobs)
+    // Same lock on the evidence side, and this is the sharper of the two. A verify
+    // spec set apart from the task fails on a configuration mismatch anyway; what a
+    // settable spec really buys is the reverse — re-pointing the *validator* back at
+    // a record set the suite has since changed makes the recorded configuration match
+    // again, so a superseded report passes as current evidence.
+    spec.excludedTestClasses.disallowChanges()
     spec.mutators.set(suite.mutators)
     spec.threads.set(suite.threads)
     spec.minionJvmArgs.set(suite.minionJvmArgs)

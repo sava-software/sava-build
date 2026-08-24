@@ -142,7 +142,43 @@ run cheaper. The cost model is directly optimisable:
 - **Split an expensive class into its own suite** — one split took a suite
   46.7s → 20.9s, and the new seconds-long suite is all most edits owe.
 - **Narrow `targetTests`** to the classes that actually cover the target —
-  one suite went 10.6s → 6.1s.
+  one suite went 10.6s → 6.1s. Narrowing has a failure mode a wide glob does
+  not, so measure it rather than assuming: kills come only from `targetTests`,
+  so a killing test outside the new pattern is invisible and its mutants are
+  recorded `NO_COVERAGE`. One suite scoped its tests to the package it mutates
+  and reported debt it did not have — a helper's only unit test lived in the
+  root package, so the filter could not see it and its mutants read as
+  uncovered. Widening the filter alone, changing nothing else, killed two
+  recorded survivors and flipped two more from `NO_COVERAGE` to `SURVIVED`:
+  small numbers, but they were the suite misreporting its own coverage, which
+  is the more expensive kind of wrong.
+- **Subtract one test instead**, where the wide glob is what makes the
+  measurement honest and a single class inside it must not run per mutant:
+  `excludeTestClass("<glob>", "<why>")` removes it from PIT's selection while
+  `test` keeps running it. Not primarily a speed lever, and adopting it for
+  that will disappoint: PIT orders a mutant's covering tests by recorded time
+  less a direct-hit bonus and stops at the first kill, so a slow test sits last
+  and is reached only when every faster covering test has failed to kill it.
+  What it costs unconditionally is one execution in the coverage phase, which
+  runs every selected test once. The cases are narrow — a class whose fixtures
+  are built in a static initializer, which PIT attributes to whichever test
+  triggered initialization and does not re-run between a class's mutants, so the
+  fixture can hold a previous mutant's output; a subprocess or network driver
+  whose coverage-phase cost is real and whose per-mutant cost arrives later, as
+  insurance against the survivors that would start reaching it. The
+  reason is required — a build with an unargued record fails before PIT starts,
+  because a removal narrows what can kill a mutant and leaves nothing in the
+  report to say why.
+
+  Nothing else about a removal is checked, deliberately. Whether a record still
+  earns its place, or reached one class further than its author meant, are
+  questions about which tests would actually *run* — and answering them means
+  reconstructing PIT's effective test selection: JUnit discovery, the recompile's
+  own exclusions, and which generated sources exist at all. Compiled class names
+  answer none of that, so a check built on them is confidently wrong rather than
+  merely incomplete. Write the record narrowly and say why; the globs are bound
+  into the report's configuration evidence, so what a run was measured under is
+  recorded whether or not anything reviews it.
 - **Split by layer, not just by cost**: code the harness's own machinery
   executes — a logging shim the server's threads log through, anything a
   socket test stands on — gets its own suite covered only by in-process
@@ -1419,6 +1455,12 @@ as more than it is. The generic edges:
   `NO_COVERAGE` even when thoroughly tested. That is useful information — it
   maps which logic is verifiable in seconds versus minutes — but read such a
   row accordingly before writing a unit test that merely restates wiring.
+  `excludeTestClass` removes a class from that selection deliberately, and is
+  the same edge sharpened to one class: what it takes out can no longer kill
+  anything here. Unlike the accidental version it must be argued at the call
+  site — an unargued record fails the build — and the globs are bound into the
+  report's configuration evidence, so the population bound is a written decision
+  rather than a property of how the glob happened to be spelled.
 - **Excluded classes never enter the population.** Every `excludedClasses`
   glob and every auto-excluded fuzz harness is a deliberate hole; the
   excluded-production-class advisory names main-source classes a glob
@@ -1913,8 +1955,11 @@ it. `TIMED_OUT` flips (above) are one mechanism; two more:
 
 Convergence is checkable, and the plugin scripts it: `pitestConverge` runs
 every suite twice in one invocation — snapshotting and clearing the reports
-between rounds, since Gradle would otherwise serve the second run from the
-first — and diffs per-mutant statuses, failing on flips that cross the
+between rounds, so that round two cannot read anything round one left behind:
+`pitest<Suite>` is `@UntrackedTask` and always makes a fresh attempt, but an
+attempt that fails partway leaves its files in place, and a round diffed
+against those is diffed against a corpse — and diffs per-mutant statuses,
+failing on flips that cross the
 unkilled boundary. Both rounds follow the normal suite's effective launcher,
 tool classpath, main class, and verbosity; otherwise a process-toolchain delta
 could masquerade as mutant flapping. With an arcmutate licence active it refuses
@@ -1927,8 +1972,10 @@ agreeing proves the weaker thing.
 
 The mode comparison is scripted too. `pitestModeSnapshot -PpitestMode=<label>`
 stashes the current reports under a label and **clears them** — not
-optional: Gradle serves an up-to-date `pitest<Suite>` without re-running
-PIT, so an uncleared second run compares a file to itself. It refuses a
+optional. Not because Gradle would serve the task up-to-date; `pitest<Suite>`
+is `@UntrackedTask` and re-runs whenever selected. Because a failed or
+interrupted attempt leaves its report leaves behind, and an uncleared second
+label would compare against those rather than against its own run. It refuses a
 partial report set (a suite would be diffed against its absence) and a
 history-assisted report (a reused status is not an observation of the
 mode). `pitestModeCompare` then diffs **per-mutant status** across every
