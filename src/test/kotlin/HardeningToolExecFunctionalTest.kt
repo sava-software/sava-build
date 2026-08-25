@@ -1,5 +1,6 @@
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -2909,5 +2910,231 @@ $buildTail
     assertTrue(events[1].startsWith("end "), events.toString())
     assertTrue(events[2].startsWith("start "), events.toString())
     assertTrue(events[3].startsWith("end "), events.toString())
+  }
+
+  @Test
+  fun `a test-selection record reaches PIT, and an unargued one fails before it can`() {
+    // Selection itself is proved against real PIT in HardeningTestSelectionFunctionalTest.
+    // What this owns is the plumbing either side of it: that a record travels task
+    // configuration and the configuration cache onto the command line, and that a
+    // record without an argument stops the build rather than logging about it.
+    val scenariosRoot = fixtureDir
+    fun writeScenario(name: String, declineLines: String = "") {
+      fixtureDir = scenariosRoot.resolve(name).apply { mkdirs() }
+      enableTestKitConfigurationCache(fixtureDir)
+      writeFixture(declineLines = declineLines)
+    }
+
+    // Nothing recorded: the argument must be absent entirely, not empty.
+    writeScenario("none")
+    val none = runner("pitestEncoding", "--info").build().output
+    assertFalse(none.contains("--excludedTestClasses="), "an empty removal reached PIT:\n" + none)
+
+    // Recorded with its reason, and surviving the configuration cache.
+    writeScenario(
+      "removed",
+      declineLines = """excludeTestClass("com.example.ScriptTests", "spawns a subprocess per test")""",
+    )
+    runner("pitestEncoding").build()
+    val removed = runner("pitestEncoding", "--info").build().output
+    assertTrue(removed.contains("Configuration cache entry reused."), removed)
+    assertTrue(
+      removed.contains("--excludedTestClasses=com.example.ScriptTests"),
+      "the record did not reach PIT's command line:\n" + removed,
+    )
+
+    // Several records reach PIT as one sorted, comma-joined argument, so what is
+    // sent depends on the set rather than on the order they were registered in.
+    writeScenario(
+      "several",
+      declineLines =
+        """excludeTestClass("com.example.ScriptTests", "spawns a subprocess per test")
+           excludeTestClass("com.example.LiveTests", "needs live credentials")""",
+    )
+    val several = runner("pitestEncoding", "--info").build().output
+    assertTrue(
+      several.contains("--excludedTestClasses=com.example.LiveTests,com.example.ScriptTests"),
+      "records did not reach PIT as one sorted argument:\n" + several,
+    )
+
+    // No reason: the build stops. An advisory cannot carry this, because advisories
+    // never fail a build by design — a reason checked only there is not required.
+    writeScenario("blank", declineLines = """excludeTestClass("com.example.ScriptTests", "   ")""")
+    val blank = runner("pitestEncoding").buildAndFail().output
+    assertTrue(blank.contains("excludeTestClass record(s) carry no reason"), blank)
+    assertTrue(blank.contains("com.example.ScriptTests"), blank)
+    // PIT records every argument it was handed on startup, so the absence of that
+    // file is the proof: an argument missing from non---info output would show the
+    // same thing whether PIT never ran or merely ran unlogged.
+    assertFalse(
+      File(fixtureDir, "build/reports/pitest/encoding/arguments.txt").exists(),
+      "the run started despite an unargued record:\n" + blank,
+    )
+  }
+
+  @Test
+  fun `a test-selection glob cannot be put on the task behind the reason requirement`() {
+    // The reason is enforced where the DSL's records become globs, so the task
+    // property is the way around it: set it late, skip the ratchet, and a green run
+    // and its evidence exist with nothing anywhere saying why those tests were not
+    // allowed to kill anything. The property is locked for that reason, and this is
+    // what stops the lock being dropped as redundant.
+    writeFixture(
+      buildTail = """
+        tasks.named<software.sava.build.hardening.task.PitestRunTask>("pitestEncoding") {
+          excludedTestClasses.add("com.example.ScriptTests")
+        }
+      """.trimIndent(),
+    )
+
+    val refused = runner("pitestEncoding").buildAndFail().output
+    assertTrue(
+      refused.contains("cannot be changed any further"),
+      "a glob was accepted straight onto the task, bypassing the reason:\n" + refused,
+    )
+    assertFalse(
+      File(fixtureDir, "build/reports/pitest/encoding/arguments.txt").exists(),
+      "the run started with an unargued glob:\n" + refused,
+    )
+  }
+
+  @Test
+  fun `a test-selection glob cannot be put on the validator to make stale evidence pass`() {
+    // The run task's lock has its own test. This one is the spec side, and the attack
+    // is narrower than "set a spec property": setting only the verify spec makes
+    // verification fail on a configuration mismatch anyway. The bypass that would
+    // actually work is on the validator — record a report under one record set,
+    // change the suite, then put the OLD value back on
+    // pitestEncodingEvidenceValidate so the recorded configuration matches again and
+    // a stale report is accepted as current. Without the lock that succeeds.
+    writeFixture(
+      declineLines = """
+        if (providers.gradleProperty("excludeScriptTests").isPresent) {
+          excludeTestClass("com.example.ScriptTests", "spawns a subprocess per test")
+        }
+      """.trimIndent(),
+      buildTail = """
+        if (providers.gradleProperty("forgeValidatorEvidence").isPresent) {
+          tasks.named<software.sava.build.hardening.task.PitestEvidenceValidationTask>(
+              "pitestEncodingEvidenceValidate") {
+            evidence.excludedTestClasses.set(emptyList<String>())
+          }
+        }
+      """.trimIndent(),
+    )
+
+    // A report recorded with no record at all.
+    runner("pitestEncoding").build()
+
+    // The suite now declares one, so the report on disk is stale. Re-pointing the
+    // validator at the old value is what the lock has to refuse.
+    val forged = runner(
+      "pitestEncodingEvidenceValidate",
+      "-PexcludeScriptTests=true",
+      "-PforgeValidatorEvidence=true",
+    ).buildAndFail().output
+    assertTrue(
+      forged.contains("cannot be changed any further"),
+      "the validator accepted a hand-set configuration, which is how a stale report " +
+        "is made to look current:\n" + forged,
+    )
+
+    // Control: without the override the same stale report is refused on its
+    // configuration, so the run above failed for the lock and not for that.
+    val honest = runner("pitestEncodingEvidenceValidate", "-PexcludeScriptTests=true")
+      .buildAndFail().output
+    assertTrue(honest.contains("configurationSha256: recorded="), honest)
+  }
+
+  @Test
+  fun `a test-selection record is part of the recorded configuration identity`() {
+    // Everything varies through Gradle properties so the build script's bytes never
+    // change between runs. build.gradle.kts is itself fingerprinted into
+    // sourceSha256, so a test that edited it to add a record would invalidate the
+    // report whatever the exclusion did, and would prove nothing about this setting.
+    writeFixture(
+      declineLines = """
+        if (providers.gradleProperty("excludeScriptTests").isPresent) {
+          excludeTestClass(
+            "com.example.ScriptTests",
+            providers.gradleProperty("exclusionReason").getOrElse("spawns a subprocess per test"),
+          )
+        }
+        providers.gradleProperty("commaGlob").orNull?.let { excludeTestClass(it, "malformed on purpose") }
+      """.trimIndent(),
+    )
+    val evidenceFile = File(fixtureDir, "build/reports/pitest/encoding/.evidence.tsv")
+    fun runPitest(vararg args: String): PitestEvidence {
+      runner("pitestEncoding", *args).build()
+      return PitestEvidence.parse(evidenceFile.readText())
+    }
+
+    val none = runPitest()
+    val recorded = runPitest("-PexcludeScriptTests=true")
+
+    assertNotEquals(
+      none.configurationSha256, recorded.configurationSha256,
+      "a removal that changes which tests can kill a mutant left the configuration identical",
+    )
+    // Nothing else may have moved, or the assertion above is about the wrong field.
+    assertEquals(none.sourceSha256, recorded.sourceSha256, "the sources changed between runs")
+    assertEquals(none.classesSha256, recorded.classesSha256, "the classes changed between runs")
+    assertEquals(none.classpathSha256, recorded.classpathSha256, "the classpath changed between runs")
+
+    // The reason is not part of what PIT did, so it is not part of the identity:
+    // rewording one under the same glob must not restart a certification streak.
+    val reworded = runPitest("-PexcludeScriptTests=true", "-PexclusionReason=restated, same removal")
+    assertEquals(
+      recorded.configurationSha256, reworded.configurationSha256,
+      "rewording a record's reason changed the recorded configuration identity",
+    )
+
+    // Dropping the record returns to the identity the suite had before it existed —
+    // byte for byte, which is what makes the empty case compatible with a report
+    // recorded before this setting was available.
+    assertEquals(
+      none.configurationSha256, runPitest().configurationSha256,
+      "removing the record did not restore the pre-record configuration identity",
+    )
+
+    // The validator's half, which hashing alone cannot show. The report on disk was
+    // made without the record; the build now declares it, and nothing has re-run PIT
+    // or touched a file. Revalidating must refuse the report, and must refuse it for
+    // the configuration rather than for anything that came along with the edit.
+    val stale = runner("pitestEncodingEvidenceValidate", "-PexcludeScriptTests=true")
+      .buildAndFail().output
+    assertTrue(
+      stale.contains("configurationSha256: recorded="),
+      "a report made under a different record set was not refused on its configuration:\n" + stale,
+    )
+    assertFalse(
+      stale.contains("sourceSha256: recorded="),
+      "the sources moved too, so this proves nothing about the exclusion:\n" + stale,
+    )
+
+    // A malformed glob has to be refused on the evidence path too, not only where
+    // the command line is built. Records 'a' and 'b' and the single record 'a,b'
+    // render to the same canonical configuration line, so a comma reaching the hash
+    // would let two different suite configurations share one identity — and this
+    // task never assembles a PIT command, so the command-boundary check cannot
+    // catch it. Without the shared-provider validation this run goes green.
+    val comma = runner("pitestEncodingEvidenceValidate", "-PcommaGlob=com.example.A,com.example.B")
+      .buildAndFail().output
+    assertTrue(
+      comma.contains("cannot contain a comma"),
+      "an evidence-only task accepted a glob that corrupts the configuration text:\n" + comma,
+    )
+
+    // And a newline, which forges a whole line of that text rather than one entry
+    // of one line: a record ending 'y\nexcludedTestClasses=...' renders the same as
+    // a targetTests that opened the line and a separate record that closed it, so
+    // two suites that hand PIT different arguments would share one identity.
+    val newline = runner(
+      "pitestEncodingEvidenceValidate", "-PcommaGlob=y\nexcludedTestClasses=com.example.Z")
+      .buildAndFail().output
+    assertTrue(
+      newline.contains("cannot contain a line break or NUL"),
+      "an evidence-only task accepted a glob that can forge a configuration line:\n" + newline,
+    )
   }
 }

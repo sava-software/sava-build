@@ -103,8 +103,85 @@ abstract class MutationSuite @Inject constructor(private val name: String) : Nam
    *  Empty by default. */
   abstract val excludedClasses: ListProperty<String>
 
-  /** PIT glob matching the test classes to run, e.g. "com.example.codec.*Test*". */
+  /** PIT glob, or comma-separated globs, matching the test classes to run — e.g.
+   *  "com.example.codec.*Test*" or "com.example.a.*Test*,com.example.b.*Test*".
+   *  A `~`-prefixed entry is a raw regex, which can omit a class through a negative
+   *  lookahead; [excludeTestClass] is the spelling that has to say why. */
   abstract val targetTests: Property<String>
+
+  /**
+   * Test classes removed from [targetTests]' selection, keyed by PIT glob with the
+   * reason. Empty by default. Set through [excludeTestClass].
+   */
+  abstract val excludedTestClasses: MapProperty<String, String>
+
+  /**
+   * Removes the test classes [glob] matches from PIT's test selection, while
+   * leaving them to run under `test`.
+   *
+   * [targetTests] selects positively — one glob or a comma-separated list of them —
+   * so the conventional `*Test*` selects every
+   * test class in its packages. Usually that is what you want, and the cheaper
+   * lever is to narrow it — but narrowing has a failure mode a widened glob does
+   * not: kills come only from `targetTests`, so a killing test outside the pattern
+   * is invisible and its mutants are recorded `NO_COVERAGE`. A suite that cannot
+   * see its own coverage reports debt it does not have, and the fix is to widen
+   * again. Where both are true at once — the wide glob is needed for an honest
+   * measurement, and one class inside it must not run per mutant — this is the
+   * only structured, reason-bearing way to say so.
+   *
+   * The cases are specific, and none of them is "this test is slow". PIT orders a
+   * mutant's covering tests by recorded time less a direct-hit bonus and stops at
+   * the first kill, so a slow test sits last in the list and is reached only when
+   * every faster covering test has already failed to kill. Expect no speed-up from
+   * a record on a class that is not killing anything; what it removes for certain
+   * is one execution in the coverage phase, which runs every selected test once.
+   *
+   * The real case is correctness. A test whose fixtures are built in a static
+   * initializer cannot be trusted here at all: PIT attributes class-init coverage
+   * to whichever test triggered initialization, and the mutation phase reuses one
+   * JVM across a class's mutants without re-running `<clinit>`, so the fixture can
+   * hold a previous mutant's output. A subprocess or network driver is the weaker
+   * case — its coverage-phase cost is real, and the record is insurance against the
+   * per-mutant cost that arrives once survivors start reaching it. Neither is a
+   * reason to stop running the test — only to stop running it *here*.
+   *
+   * [reason] is required for the same purpose it is on [declineExclusionAudit]: a
+   * removal that is not argued is indistinguishable from an oversight, and this
+   * one is invisible from the report — the mutants simply have one fewer test that
+   * might have killed them. There is no mechanical category to derive here the way
+   * there is for excluded production classes (test roots, fuzz harnesses, sibling
+   * ownership); every test-selection removal is a cost-against-value judgment, so
+   * the argument lives at the call site rather than in a separate decline.
+   *
+   * Not the only way to omit a test: a `~`-prefixed [targetTests] is a raw regex,
+   * which PIT supports, and a negative lookahead drops a class from the selection.
+   * What that spelling has no room for is the structure — the omission is fused into
+   * the positive selector rather than enumerated beside it, so there is no list of
+   * what a suite removed and nowhere for a reason to live. This is the subtraction
+   * that is separable and argued; it is not a claim that no other is expressible.
+   *
+   * Required literally: a blank [reason] fails the build before PIT starts, rather
+   * than being reported the way a blank decline is. A decline can be made a no-op
+   * because suppression is all it does; this glob reaches PIT's command line
+   * whatever is written beside it, so the only moment to insist is before the run.
+   *
+   * Nothing checks afterwards whether a record still earns its place. That is a
+   * question about which tests would actually run, which needs JUnit discovery —
+   * compiled class names cannot tell a live test from a helper or from a class
+   * whose last `@Test` was deleted, so a check built on them would be confidently
+   * wrong about a record that removes nothing. The globs are bound into the
+   * report's configuration evidence, so what a run was measured under is recorded
+   * even though no advisory reviews it.
+   *
+   * Only the globs are: [reason] is not part of what PIT did, so rewording one
+   * leaves `configurationSha256` alone. That does not preserve a completed report,
+   * which also binds the build script's own bytes — it means the rewording is not
+   * the thing that invalidated it.
+   */
+  fun excludeTestClass(glob: String, reason: String) {
+    excludedTestClasses.put(glob, reason)
+  }
 
   /** PIT mutator group (default "STRONGER"). */
   abstract val mutators: Property<String>

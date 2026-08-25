@@ -135,6 +135,9 @@ hardening {
     // each entry must begin with '-' and contain no whitespace, braces,
     // '#', quotes, or backslashes.
     // minionJvmArgs = listOf("-Xmx1g")
+    // Optional: keep a test out of PIT's selection while it still runs under
+    // 'test'. Kills come only from targetTests, so say why in the reason.
+    // excludeTestClass("com.acme.product.ScriptTests", "spawns a git subprocess per test")
   }
   fuzz.register("parser") {
     targetClass = "com.acme.product.ParserFuzz"

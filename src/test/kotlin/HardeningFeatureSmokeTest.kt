@@ -56,6 +56,10 @@ class HardeningFeatureSmokeTest {
             // own exclusions must survive ahead of the appended fuzz harnesses
             excludedClasses = listOf("com.example.*Test*")
             targetTests = "com.example.*Test*"
+            // registered out of sorted order: PIT ORs the subtraction, so the
+            // command line must depend on the set and not on registration order
+            excludeTestClass("com.example.SlowScriptTest", "spawns a subprocess per test")
+            excludeTestClass("com.example.LiveTest", "needs live credentials")
             timeoutFactor = 2.5
             timeoutConst = 10000L
             minionJvmArgs = listOf("-Xms256m", "-Xmx1g")
@@ -101,10 +105,17 @@ class HardeningFeatureSmokeTest {
             // class plus its nested classes — so a package-wildcard suite never
             // mutates the harness that exercises it
             check(pit.any { it == "--excludedClasses=com.example.CodecFuzz,com.example.CodecFuzz$*,com.example.PlainFuzz,com.example.PlainFuzz$*" }) { "harness auto-exclusion: " + pit }
+            // a suite that removes no test class must not gain the argument at all:
+            // an empty --excludedTestClasses would change every existing consumer's
+            // command line and, through it, the recorded evidence identity
+            check(pit.none { it.startsWith("--excludedTestClasses=") }) { "unexpected test exclusion: " + pit }
             val tuned = tunedArgs.get()
             check(tuned.any { it == "--timeoutFactor=2.5" }) { "timeoutFactor override: " + tuned }
             check(tuned.any { it == "--timeoutConst=10000" }) { "timeoutConst override: " + tuned }
             check(tuned.any { it == "--jvmArgs=-Xms256m,-Xmx1g" }) { "minionJvmArgs: " + tuned }
+            check(tuned.any { it == "--excludedTestClasses=com.example.LiveTest,com.example.SlowScriptTest" }) { "excludeTestClass: " + tuned }
+            // the positive glob has to survive beside it — PIT intersects the two
+            check(tuned.any { it == "--targetTests=com.example.*Test*" }) { "targetTests beside exclusion: " + tuned }
             // a suite's own exclusions come first, harnesses appended after
             check(tuned.any { it == "--excludedClasses=com.example.*Test*,com.example.CodecFuzz,com.example.CodecFuzz$*,com.example.PlainFuzz,com.example.PlainFuzz$*" }) { "own + harness exclusions: " + tuned }
             val fuzz = fuzzArgs.get()

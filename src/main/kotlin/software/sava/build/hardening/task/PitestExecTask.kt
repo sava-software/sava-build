@@ -84,6 +84,10 @@ abstract class PitestExecTask : JavaExec() {
   @get:Input
   abstract val targetTests: Property<String>
 
+  /** Globs removed from [targetTests]' selection; the suite's reasons stay in the DSL. */
+  @get:Input
+  abstract val excludedTestClasses: ListProperty<String>
+
   @get:Input
   abstract val mutators: Property<String>
 
@@ -223,6 +227,7 @@ abstract class PitestExecTask : JavaExec() {
     mutateOnly,
     excludedClasses,
     targetTests,
+    excludedTestClasses,
     sourceDirectories,
     reportDirectory,
     scopedReportDirectory,
@@ -614,7 +619,8 @@ abstract class PitestExecTask : JavaExec() {
       reportSha256 = reportSha256,
       scope = scope,
       historyAssisted = historyAssisted,
-    ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get(), verbosity.get())
+    ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get(), verbosity.get(),
+      excludedTestClasses.get())
   }
 
   private fun requirePluginCodeUnchanged(context: String) {
@@ -975,6 +981,7 @@ private class PitestCommandLineProvider(
   private val mutateOnly: Property<String>,
   private val excludedClasses: ListProperty<String>,
   private val targetTests: Property<String>,
+  private val excludedTestClasses: ListProperty<String>,
   private val sourceDirectories: ConfigurableFileCollection,
   private val reportDirectory: DirectoryProperty,
   private val scopedReportDirectory: DirectoryProperty,
@@ -1005,6 +1012,7 @@ private class PitestCommandLineProvider(
         mutateOnly = mutateOnly.orNull,
         excludedClasses = excludedClasses.get(),
         targetTests = targetTests.get(),
+        excludedTestClasses = excludedTestClasses.get(),
         sourceDirectories = sourceDirectories.files.toList(),
         reportDirectory = PitestReportDirectories.select(
           reportDirectory.get().asFile,

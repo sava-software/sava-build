@@ -34,6 +34,7 @@ internal object HardeningCommandLines {
     val mutateOnly: String?,
     val excludedClasses: List<String>,
     val targetTests: String,
+    val excludedTestClasses: List<String> = emptyList(),
     val sourceDirectories: List<File>,
     val reportDirectory: File,
     val projectBaseDirectory: File,
@@ -60,7 +61,20 @@ internal object HardeningCommandLines {
     if (spec.excludedClasses.isNotEmpty()) {
       add("--excludedClasses=" + spec.excludedClasses.joinToString(","))
     }
-    add("--targetTests=${spec.targetTests}")
+    // Command-boundary defence for the same encoding hazard the suite already
+    // checked. Not a return of the glob-grammar opinion this deliberately does not
+    // hold: a line break or NUL is broken in a process argument whatever PIT's
+    // grammar makes of the rest.
+    add("--targetTests=" +
+      software.sava.build.hardening.HardeningNames.requireSingleLineValue(
+        "targetTests", spec.targetTests))
+    // Emitted only when non-empty, like --excludedClasses above: an unconditional
+    // empty argument would change every existing suite's command line and, through
+    // the configuration text, its recorded evidence identity.
+    if (spec.excludedTestClasses.isNotEmpty()) {
+      add("--excludedTestClasses=" +
+        spec.excludedTestClasses.joinToString(",", transform = ::requireTestExclusionGlob))
+    }
     add("--sourceDirs=" + spec.sourceDirectories.joinToString(",") { it.absolutePath })
     add("--reportDir=${spec.reportDirectory.absolutePath}")
     add("--projectBase=${spec.projectBaseDirectory.absolutePath}")
@@ -95,6 +109,15 @@ internal object HardeningCommandLines {
       add("--features=+arcmutate_history")
     }
   }
+
+  /**
+   * The same rule the suite's records already passed, applied again at the boundary
+   * that builds the argument. Kept as its own check rather than trusted upstream: a
+   * later caller assembling this command from somewhere other than a registered
+   * suite would otherwise corrupt the argument silently.
+   */
+  private fun requireTestExclusionGlob(glob: String): String =
+    software.sava.build.hardening.HardeningNames.requireTestExclusionGlob(glob)
 
   /** PIT uses commas as child-argument separators and braces to quote embedded commas. */
   private fun encodePitestJvmArg(argument: String): String {
