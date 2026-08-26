@@ -17,30 +17,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  release-attestation:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
-      - name: Refuse a superseded Gradle Check
-        run: |
-          remote_main=$(git ls-remote origin refs/heads/main | cut -f1)
-          if [ -z "$remote_main" ] || [ "$(git rev-parse HEAD)" != "$remote_main" ]; then
-            echo "A newer main commit exists; its Gradle Check workflow will run the release gate."
-            exit 1
-          fi
-      - name: Verify pending release attestation
-        run: |
-          bash -n tools/release-attestation.sh
-          tools/release-attestation.sh verify-pending-release
-
   release-please:
-    needs: release-attestation
     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository }}
     uses: ./.github/workflows/release-please.yml
     secrets: inherit

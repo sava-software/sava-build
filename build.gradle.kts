@@ -183,14 +183,6 @@ tasks.test {
       // HardeningDocumentationBoundaryTest reads the release/source-of-truth boundary
       // from the root README through the same root path.
       projectReadme = layout.projectDirectory.file("README.md")
-      // ReleaseAttestationWorkflowTest pins the two workflow handoffs that make the
-      // machine-local certification observable before tagging and publishing.
-      releaseWorkflowFiles.from(
-        layout.projectDirectory.file(".github/workflows/gradle_plugin_build.yml"),
-        layout.projectDirectory.file(".github/workflows/gradle_plugin_check_pr.yml"),
-        layout.projectDirectory.file(".github/workflows/gradle_plugin_publish.yml"),
-        layout.projectDirectory.file(".github/workflows/release-gradle-plugin-please.yml"),
-      )
       // The repository intentionally carries the public, package-scoped OSS
       // ArcMutate certificate. Its test guards the eligibility boundary and, most
       // importantly, ensures the private subscription URL is never pasted beside it.
@@ -206,21 +198,14 @@ tasks.test {
   )
 }
 
-// Local release evidence replaced scheduled fuzz workflows, so its cheap parsers,
-// verifiers, and handoff gate belong on the ordinary plugin check.
+// Local fuzz evidence replaced scheduled fuzz workflows, so its cheap parser and
+// self-test belong on the ordinary plugin check.
 val localFuzzScript = layout.projectDirectory.file("tools/local-fuzz.sh")
-val releaseAttestationScript = layout.projectDirectory.file("tools/release-attestation.sh")
 val localFuzzSyntax = tasks.register<Exec>("localFuzzSyntax") {
   group = "verification"
   description = "Checks tools/local-fuzz.sh syntax."
   inputs.file(localFuzzScript)
   commandLine("bash", "-n", localFuzzScript.asFile.absolutePath)
-}
-val releaseAttestationSyntax = tasks.register<Exec>("releaseAttestationSyntax") {
-  group = "verification"
-  description = "Checks tools/release-attestation.sh syntax."
-  inputs.file(releaseAttestationScript)
-  commandLine("bash", "-n", releaseAttestationScript.asFile.absolutePath)
 }
 val localFuzzSelfTest = tasks.register<Exec>("localFuzzSelfTest") {
   group = "verification"
@@ -229,15 +214,8 @@ val localFuzzSelfTest = tasks.register<Exec>("localFuzzSelfTest") {
   inputs.file(localFuzzScript)
   commandLine("bash", localFuzzScript.asFile.absolutePath, "--self-test")
 }
-val releaseAttestationSelfTest = tasks.register<Exec>("releaseAttestationSelfTest") {
-  group = "verification"
-  description = "Runs the release attestation gate's hermetic self-test."
-  dependsOn(releaseAttestationSyntax)
-  inputs.file(releaseAttestationScript)
-  commandLine("bash", releaseAttestationScript.asFile.absolutePath, "--self-test")
-}
 tasks.named("check") {
-  dependsOn(localFuzzSelfTest, releaseAttestationSelfTest)
+  dependsOn(localFuzzSelfTest)
 }
 
 // Passes the fixture paths to the test JVM as '-D' arguments while declaring them with
@@ -252,10 +230,6 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)
   abstract val projectReadme: RegularFileProperty
-
-  @get:InputFiles
-  @get:PathSensitive(PathSensitivity.RELATIVE)
-  abstract val releaseWorkflowFiles: ConfigurableFileCollection
 
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)

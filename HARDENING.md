@@ -58,8 +58,8 @@ must bind the complete expected roster, refuse a stale shared plugin binary, and
 which recorded checkouts it revalidated. Keep evidence outside the tree it certifies
 *(casebook: the aggregate run that skipped two consumers)*. Releasing `sava-build` itself uses
 the already-reviewed local adoption passes rather than requiring a duplicate full-fleet
-campaign; its owner-attestation and Release Please mechanics live only in the README's
-[Local adoption and release attestation](README.md#local-adoption-and-release-attestation)
+campaign; its Release Please mechanics live only in the README's
+[Local adoption and releasing](README.md#local-adoption-and-releasing)
 section.
 
 `qualityGate` = `test` + every registered `pitest<Suite>`, serialized, each
@@ -103,9 +103,9 @@ previous success looking current.
 
 Certification receipts are **project-scoped**: each `hardeningCertify` covers one project's
 registered suites and writes an independent receipt. No child receipt claims the repository
-ran. Release attestation inventories the receipts present but cannot infer a project or
-independent Gradle root that was never run, so compare its inventory with the adoption
-handoff. Project scope also preserves targeted module certification.
+ran, and nothing can infer a project or independent Gradle root that was never run, so
+compare the receipts present with the adoption handoff. Project scope also preserves
+targeted module certification.
 
 Generated evidence must never select the configuration-cache task graph. The PIT
 validators are always present and decide at execution time whether `.evidence.tsv`
@@ -1885,9 +1885,9 @@ iteration but creates no aggregate proof.
 A consumer's own fuzz certification must run every registered target against the exact
 candidate plugin binary, invalidate stale aggregate receipts before execution, and retain
 immutable, commit-bound evidence. A local campaign is sufficient; no soak window or scheduled
-workflow is required. The `sava-build` owner instead records the relevant local adoption
+workflow is required. The `sava-build` owner instead relies on the relevant local adoption
 passes already performed during development; its release mechanics live in the
-[sava-build README](README.md#local-adoption-and-release-attestation), rather than being
+[sava-build README](README.md#local-adoption-and-releasing), rather than being
 copied into consumer or policy documentation.
 
 `fuzzWorkflowInSync` remains only as a compatibility no-op for older consumer scripts.

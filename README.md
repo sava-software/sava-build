@@ -464,7 +464,7 @@ checkout. When changing dependencies, regenerate the
 ./gradlew --write-verification-metadata pgp,sha256 check generatePrecompiledScriptPluginAccessors
 ```
 
-### Local adoption and release attestation
+### Local adoption and releasing
 
 The release proof for `sava-build` combines deliberate local adoption passes with the
 plugin's own functional tests. Across a release, consumer passes can exercise real baselines,
@@ -474,83 +474,23 @@ prove that consumer exercised the behavior changed in this release. Re-running e
 historical checkout as one final fleet is an
 optional diagnostic, not a tag or publication prerequisite.
 
-Before opening the release, retain the exact `0.0.0-test` JAR used by the reviewed adoption
-passes, keep each consumer's completed `.pitest-history/pitest-certification.tsv` receipt,
-and record the final candidate commit. Multi-project consumers can contribute several such
-receipts. If later commits touch only release tooling, tests, or documentation, rebuild the
-JAR without the Gradle build cache and require its hash to remain equal to that reviewed JAR.
-A changed hash means the consumer evidence no longer describes the artifact and another
-relevant adoption pass is required.
+Consumers validate an unreleased plugin through the committed `-PsavaBuildLocalRepo`
+support in their settings: publish with
+`./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository`, point the property at
+`build/sava-test-repo`, and confirm the build's own notice names the expected
+application-time SHA-256. Consumer certification receipts
+(`.pitest-history/pitest-certification.tsv`) remain hardening evidence for their own
+repositories; a release does not collect them.
 
-Release Please initially opens its version-metadata pull request as a draft. Freeze `main`
-and the reviewed adoption evidence, then check out that clean branch and create a compact
-owner attestation. Pass the root of each clean consumer checkout whose exact-byte hardening
-certification was actually reviewed, then classify the release basis and changed-feature
-evidence explicitly:
+Releasing is Release Please plus the ordinary check:
 
-```shell
-version=$(jq -r '.["."]' .release-please-manifest.json)
-candidate=<final-reviewed-main-commit>
-reviewed_jar=<retained-0.0.0-test-jar-used-by-those-passes>
-idl_src_gen_checkout=<canonical-absolute-path-to-clean-idl-src-gen-checkout>
-ravina_checkout=<canonical-absolute-path-to-clean-ravina-checkout>
-tools/release-attestation.sh create-reviewed "$version" \
-  --candidate "$candidate" \
-  --plugin-jar "$reviewed_jar" \
-  --review-basis consumer-feature \
-  --certification-only-adoption "$idl_src_gen_checkout" \
-  --feature-adoption "$ravina_checkout"
-git add "release-attestations/$version.json"
-```
-
-Commit only that generated file to the Release Please branch. If the pull request is draft,
-mark it ready; `ready_for_review` runs `Release Attestation`. If Release Please refreshes an
-already-ready pull request after `main` moves, its bot-triggered `synchronize` run reports only
-`Release Attestation (staging)`: it does not verify the tree or satisfy the required check.
-Regenerate the record against the refreshed base and push it. If the pull request remains
-ready, that `synchronize` runs strict `Release Attestation` verification; if you returned it
-to draft, mark it ready afterward. Merge only after the required check passes.
-The eventual squash merge contains `CHANGELOG.md`, the manifest change, and the reviewed
-record in one release commit.
-Never merge a metadata-only Release Please PR and append the attestation to `main` afterward:
-the release gates accept and publish only the manifest-version-changing squash commit, and a
-later commit cannot repair that target. Use **Squash and merge** for Release Please PRs;
-rebase or merge-commit histories are deliberately refused because Git history alone cannot
-distinguish them from a late repair on `main`.
-`create-reviewed` derives each consumer's GitHub slug, clean commit/tree,
-receipt hashes, projects, sessions, and suites; it refuses missing, incomplete, malformed,
-mixed, or stale receipts, including any suite whose `pluginSha256` differs from the retained
-JAR. `--adoption` remains a deprecated alias for `--certification-only-adoption`. The required
-review basis is one of `consumer-feature`, `plugin-only`, or `certification-only`.
-`consumer-feature` requires at least one checkout passed as `--feature-adoption`;
-`plugin-only` permits no checkouts when plugin-owned tests carry the proof, while
-`certification-only` requires at least one `--certification-only-adoption`. Both
-non-feature bases refuse `--feature-adoption` checkouts.
-The distinction is an owner-reviewed role on otherwise identical derived certification
-evidence: Ravina exercised the history-boundary feature path, while idl-src-gen confirmed
-the exact candidate bytes without ArcMutate history.
-
-The record contains relative receipt paths but no checkout paths or credentials. Each
-repository entry says whether it is a `feature-path` or `certification-only` consumer.
-It cannot infer an independent Gradle root that produced no receipt, so compare that list
-with the handoff's intended adoption scope before committing the record. From the clean
-attestation commit, verify the proposed record:
-
-```shell
-tools/release-attestation.sh verify "$version"
-```
-
-The Release Please PR check validates the proposed release tree before merge. The post-merge
-workflow then refuses to create a pending version's tag unless the exact commit that changed
-the release manifest already contains the identical reviewed record. The tag-triggered
-workflow verifies it again against the exact tag checkout, builds
-without the Gradle build cache, and refuses publication unless the resulting JAR has the
-reviewed hash. Any non-release source change after the recorded candidate invalidates the
-attestation. Verification prints the number of exact-byte-certified consumer checkouts and
-the subset reviewed as feature-path consumers; never count every certified repository as an
-independent validation of the release's changed behavior.
-`verify-pending-release` is a post-merge workflow gate; it deliberately cannot pass on the
-open two-commit Release Please branch before GitHub creates the required squash commit.
+1. Land changes on `main`; a green `Gradle Check` lets Release Please open or refresh its
+   draft release pull request (`always-bump-patch`).
+2. Review the CHANGELOG, mark the pull request ready, and squash-merge it.
+3. The merge is tagged by Release Please, and the tag-triggered workflow re-runs `check`
+   without the Gradle build cache, publishes to GitHub Packages, and attests build
+   provenance with GitHub's native `actions/attest` — verifiable by consumers through the
+   `software.sava.build.check.attestations` feature or `gh attestation verify`.
 
 Each adoption report has two upstream channels. First, report any plugin defect or
 consumer workaround immediately. Second, batch reusable rules, hazards, tempting false leads,
@@ -566,7 +506,4 @@ The local fuzz runner remains available when a change warrants a cross-repositor
 tools/local-fuzz.sh --seconds 121 --parallel-targets 4 ../ravina
 ```
 
-Its strict `--release` mode can still produce an immutable, SHA-bound fuzz bundle for an
-explicit experiment, but release attestation is derived from the reviewed consumer
-certification receipts; a release never requires a duplicate aggregate mutation campaign.
 Scheduled GitHub fuzz workflows are likewise outside the plugin contract.

@@ -10,13 +10,18 @@ class HardeningDocumentationBoundaryTest {
   private val hardening = projectRoot.resolve("HARDENING.md").readText()
 
   @Test
-  fun `release review mechanics live in the sava-build README only`() {
-    assertTrue(readme.contains("tools/release-attestation.sh create-reviewed"))
+  fun `release mechanics live in the sava-build README only`() {
+    assertTrue(readme.contains("Releasing is Release Please plus the ordinary check"))
     assertTrue(readme.contains("optional diagnostic, not a tag or publication prerequisite"))
     assertFalse(readme.contains("tools/local-fuzz.sh --release --seconds"))
     assertFalse(hardening.contains("tools/local-fuzz.sh --release --seconds"))
+    // The owner-attestation ceremony was removed deliberately (agents act as the owner,
+    // so authorization-shaped gates gated nothing); provenance is GitHub's native
+    // actions/attest at publish time. Nothing may reintroduce the ceremony by pointer.
+    assertFalse(readme.contains("release-attestation"))
+    assertFalse(hardening.contains("release-attestations/"))
     assertTrue(
-      hardening.contains("README.md#local-adoption-and-release-attestation"),
+      hardening.contains("README.md#local-adoption-and-releasing"),
       "portable policy must point release owners to the one operational contract",
     )
   }

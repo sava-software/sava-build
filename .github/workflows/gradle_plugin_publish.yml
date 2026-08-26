@@ -32,21 +32,14 @@ jobs:
 
       - name: Check release tooling
         run: |
-          bash -n tools/local-fuzz.sh tools/release-attestation.sh
+          bash -n tools/local-fuzz.sh
           tools/local-fuzz.sh --self-test
-          tools/release-attestation.sh --self-test
-
-      - name: Verify reviewed release attestation
-        run: tools/release-attestation.sh verify-tag "${GITHUB_REF_NAME}"
 
       - name: Check
         run: ./gradlew --stacktrace --no-build-cache -Psign=true -Pversion=${{ github.ref_name }} check
         env:
           ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
-
-      - name: Verify built plugin matches certified candidate
-        run: tools/release-attestation.sh verify-built-jar "${GITHUB_REF_NAME}" "build/libs/sava-build-${GITHUB_REF_NAME}.jar"
 
 #      - name: Maven Central
 #        run: ./gradlew --stacktrace -Psign=true -Pversion=${{ github.ref_name }} :publishCentralPortalDeployment
