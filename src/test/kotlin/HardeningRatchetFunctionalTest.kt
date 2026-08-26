@@ -117,8 +117,10 @@ $fuzzBlock
           tasks.named<JavaExec>("pitestEncoding") {
             classpath = sourceSets.main.get().output
             mainClass.set("com.example.FakePit")
-            systemProperty(
-              "fixture.pit.report",
+            // Through the environment: the master JVM's own options are refused
+            // because the evidence does not record them.
+            environment(
+              "FIXTURE_PIT_REPORT",
               layout.projectDirectory.dir("fixture-pit-report").asFile.absolutePath,
             )
           }
@@ -167,7 +169,7 @@ $fuzzBlock
                 throw new IllegalArgumentException("missing --reportDir");
               }
               Files.createDirectories(reportDir);
-              Path staged = Path.of(System.getProperty("fixture.pit.report"));
+              Path staged = Path.of(System.getenv("FIXTURE_PIT_REPORT"));
               for (String name : new String[] {"mutations.csv", "mutations.xml"}) {
                 Files.copy(staged.resolve(name), reportDir.resolve(name),
                     StandardCopyOption.REPLACE_EXISTING);
@@ -1990,11 +1992,22 @@ $fuzzBlock
     assertTrue(torn.contains("interrupted newer write"), torn)
     assertFalse(torn.contains("failed/incomplete write"), torn)
 
+    // The reserved-value collision this used to probe with -PmutateOnly=full is now
+    // refused where the scope is normalized, rather than defended one consumer at a
+    // time: `scope` is the only field carrying mutateOnly into the evidence, so a run
+    // narrowed to a glob spelled "full" recorded itself as a full-population run and
+    // lost the out-of-band .scoped marker with it.
+    val reserved = runner("pitestEncoding", "-PmutateOnly=full").buildAndFail().output
+    assertTrue(
+      reserved.contains("that is the scope a full-population run records"),
+      "a scoped run spelled as the sentinel was accepted:\n$reserved",
+    )
+
     val scopedTorn = runner(
       "pitestEncoding",
-      // Pin the reserved-value collision: a scoped property literally named
-      // "full" is still partial evidence and must not satisfy FULL_SCOPE.
-      "-PmutateOnly=full",
+      // Still a genuinely scoped run: partial evidence must not satisfy the
+      // suite-wide timeout audit, whatever the glob is spelled.
+      "-PmutateOnly=com.example.Codec",
     ).buildAndFail().output
     assertTrue(
       scopedTorn.contains("report-dependent timeout membership findings were not evaluated") &&
@@ -3179,8 +3192,10 @@ $fuzzBlock
           tasks.named<JavaExec>("pitestDispatch") {
             classpath = sourceSets.main.get().output
             mainClass.set("com.example.FakePit")
-            systemProperty(
-              "fixture.pit.report",
+            // Through the environment: the master JVM's own options are refused
+            // because the evidence does not record them.
+            environment(
+              "FIXTURE_PIT_REPORT",
               layout.projectDirectory.dir("fixture-pit-report").asFile.absolutePath,
             )
           }
@@ -3235,7 +3250,7 @@ $fuzzBlock
               }
               if (reportDir == null) throw new IllegalArgumentException("missing --reportDir");
               Files.createDirectories(reportDir);
-              Path staged = Path.of(System.getProperty("fixture.pit.report"));
+              Path staged = Path.of(System.getenv("FIXTURE_PIT_REPORT"));
               for (String name : new String[] {"mutations.csv", "mutations.xml"}) {
                 Files.copy(staged.resolve(name), reportDir.resolve(name),
                     StandardCopyOption.REPLACE_EXISTING);

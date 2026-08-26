@@ -2300,11 +2300,11 @@ hardening.mutation.all {
   suite.excludedClasses.convention(emptyList())
   suite.excludedTestClasses.convention(emptyMap())
   // The one funnel every test-exclusion glob passes through on its way to both the
-  // command line and the evidence, and therefore where the reason is enforced. It has
-  // to be enforced somewhere that fails: the advisory log never fails a build by
-  // design, so a reason checked only there is not required, it is suggested — and a
-  // removal nobody argued is indistinguishable from a glob that reached one class
-  // further than its author meant.
+  // command line and the evidence, and therefore where the reason is enforced. It
+  // has to be enforced somewhere that fails: the advisory log never fails a build
+  // by design, so a reason checked only there is not required, it is suggested —
+  // and a removal nobody argued is indistinguishable from a glob that reached one
+  // class further than its author meant.
   //
   // PIT ORs the exclusions, so their order changes nothing about what runs; sorting
   // makes the command line and the evidence configuration text depend on the set
@@ -2318,9 +2318,18 @@ hardening.mutation.all {
           "leaves nothing in the report to say why. Say what the class is and why mutation " +
           "analysis must not run it, or drop the record."
     }
-    // Checked here, not only where the command line is built: the evidence spec tasks
-    // hash this configuration without ever assembling a command.
+    // Checked here, not only where the command line is built: the evidence spec
+    // tasks hash this configuration without ever assembling a command, and a glob
+    // carrying a comma renders into the canonical text indistinguishably from two
+    // records spelled separately.
     records.keys.sorted().onEach(HardeningNames::requireTestExclusionGlob)
+  }
+  // targetTests has no records to funnel through, but it shares the encoding the
+  // exclusions can forge, and the two collide as a pair: a newline in either lets
+  // one suite's configuration render as another's. Validated once here so the task
+  // and the evidence spec below read the same checked value.
+  val validatedTargetTests = suite.targetTests.map {
+    HardeningNames.requireSingleLineValue("targetTests", it)
   }
   // the registration's own exclusions plus every registered fuzz harness; feeds
   // both the PIT argument and the mutator-blindness scan so the two cannot drift
@@ -5045,7 +5054,7 @@ hardening.mutation.all {
     task.suiteName.set(suiteName)
     task.targetClasses.set(suite.targetClasses)
     task.excludedClasses.set(allExcludedClasses)
-    task.targetTests.set(suite.targetTests)
+    task.targetTests.set(validatedTargetTests)
     task.excludedTestClasses.set(excludedTestGlobs)
     // Locked, unlike its neighbours, because this one carries an invariant the
     // property itself cannot state: the reason is enforced in the provider above.
@@ -5053,6 +5062,7 @@ hardening.mutation.all {
     // ratchet, and produce a green run and its evidence with nothing recorded
     // anywhere saying why those tests did not get to kill anything.
     task.excludedTestClasses.disallowChanges()
+    task.targetTests.disallowChanges()
     task.mutators.set(mutatorsSource)
     task.threads.set(suite.threads)
     task.minionJvmArgs.set(suite.minionJvmArgs)
@@ -5060,8 +5070,11 @@ hardening.mutation.all {
     task.timeoutConst.set(suite.timeoutConst)
     task.mutateOnly.set(typedMutateOnly)
 
-    task.applicationClasspath.from(mutationClassesDir, evidenceClasspathFiles)
-    task.sourceDirectories.from(layout.projectDirectory.dir("src/main/java"))
+    // setFrom, not from: a `configureEach` registered before this plugin applied has
+    // already run by now, and `from` would keep whatever it added — the lock below
+    // would then pin a value nobody here chose rather than the wiring above.
+    task.applicationClasspath.setFrom(mutationClassesDir, evidenceClasspathFiles)
+    task.sourceDirectories.setFrom(layout.projectDirectory.dir("src/main/java"))
     task.reportDirectory.set(layout.buildDirectory.dir("reports/pitest/$reportSubdir"))
     task.scopedReportDirectory.set(layout.buildDirectory.dir(
         if (isolateScopedReport) "reports/pitest-scoped/$reportSubdir"
@@ -5091,6 +5104,25 @@ hardening.mutation.all {
     task.arcMutateBaseVersion.set(hardening.arcmutateBaseVersion)
     task.mutationBytecodeRelease.set(hardening.mutationBytecodeRelease)
     task.recompileExcludes.set(hardening.recompileExcludes)
+
+    // Set explicitly and then locked, in that order and last. These reach PIT's
+    // command line but have no field of their own in the configuration text, so a
+    // late change to any alters the run while the evidence identity stays
+    // byte-identical. `applicationClasspath` is the sharpest: it becomes --classPath,
+    // and the identity binds a parallel file collection rather than the one PIT is
+    // handed. Locking serializes nothing, so unlike binding them as new fields it
+    // moves no recorded hash.
+    //
+    // The two scalars are set rather than left on their convention for the same
+    // reason the collections use setFrom: a value a `configureEach` put there before
+    // this ran would otherwise be what the lock preserves.
+    //
+    task.outputFormats.set(listOf("HTML", "XML", "CSV"))
+    task.timestampedReports.set(false)
+    task.applicationClasspath.disallowChanges()
+    task.sourceDirectories.disallowChanges()
+    task.outputFormats.disallowChanges()
+    task.timestampedReports.disallowChanges()
   }
 
   val runAfter = previousPitestTask
@@ -5122,6 +5154,13 @@ hardening.mutation.all {
     adviceSiblingExcludes.set(suiteExcludedGlobs)
     adviceDeclinedMutators.set(suite.declinedMutators)
     adviceDeclinedExclusions.set(suite.declinedExclusionAudits)
+    // Locked here rather than in the shared helper, which also configures the
+    // diagnostic and converge tasks that set their own report paths afterwards.
+    // `reportDirectory` was the one surface advertised as customizable on this task,
+    // and it does not work: the ratchet reads a fixed path, so a relocated report
+    // reads as a run that never happened. An advertised surface that breaks the gate
+    // is worse than no surface, and the diagnostic task already locks its own.
+    reportDirectory.disallowChanges()
     adviceTrialTaskPath.set(
         if (project.path == ":") ":pitestMutatorTrial" else "${project.path}:pitestMutatorTrial")
     adviceAdvisoryScope.set(suiteAdvisoryScope)
@@ -5165,7 +5204,7 @@ hardening.mutation.all {
     spec.arcMutateLicensed.set(arcMutateLicencePresent)
     spec.targetClasses.set(suite.targetClasses)
     spec.excludedClasses.set(allExcludedClasses)
-    spec.targetTests.set(suite.targetTests)
+    spec.targetTests.set(validatedTargetTests)
     spec.excludedTestClasses.set(excludedTestGlobs)
     // Same lock on the evidence side, and this is the sharper of the two. A verify
     // spec set apart from the task fails on a configuration mismatch anyway; what a
@@ -5173,6 +5212,7 @@ hardening.mutation.all {
     // a record set the suite has since changed makes the recorded configuration match
     // again, so a superseded report passes as current evidence.
     spec.excludedTestClasses.disallowChanges()
+    spec.targetTests.disallowChanges()
     spec.mutators.set(suite.mutators)
     spec.threads.set(suite.threads)
     spec.minionJvmArgs.set(suite.minionJvmArgs)
@@ -5184,6 +5224,7 @@ hardening.mutation.all {
       spec.mutationUnitSize.set(0)
     }
     spec.verbosity.set(evidencePitestTask.verbosity)
+    spec.mainClass.set(evidencePitestTask.mainClass)
     spec.mutationBytecodeRelease.set(evidenceMutationRelease)
     spec.recompileExcludes.set(evidenceRecompileExcludes)
   }

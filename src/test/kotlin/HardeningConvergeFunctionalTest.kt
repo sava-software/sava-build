@@ -78,8 +78,10 @@ class HardeningConvergeFunctionalTest {
           tasks.named<JavaExec>(taskName) {
             classpath = sourceSets.main.get().output
             mainClass.set("com.example.FakePit")
-            systemProperty(
-              "fixture.pit.report",
+            // Through the environment: the master JVM's own options are refused
+            // because the evidence does not record them.
+            environment(
+              "FIXTURE_PIT_REPORT",
               layout.projectDirectory.dir("fixture-pit-report/" + stagedReport)
                 .asFile.absolutePath,
             )
@@ -111,7 +113,7 @@ class HardeningConvergeFunctionalTest {
               if (reportDir == null) throw new IllegalArgumentException("missing --reportDir");
               Files.createDirectories(reportDir);
               Files.writeString(reportDir.resolve("arguments.txt"), String.join("\n", args) + "\n");
-              Path staged = Path.of(System.getProperty("fixture.pit.report"));
+              Path staged = Path.of(System.getenv("FIXTURE_PIT_REPORT"));
               for (String name : new String[] {"mutations.csv", "mutations.xml"}) {
                 Files.copy(staged.resolve(name), reportDir.resolve(name),
                     StandardCopyOption.REPLACE_EXISTING);

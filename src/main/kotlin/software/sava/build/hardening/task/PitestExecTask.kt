@@ -129,14 +129,18 @@ abstract class PitestExecTask : JavaExec() {
   @get:PathSensitive(PathSensitivity.RELATIVE)
   abstract val sourceDirectories: ConfigurableFileCollection
 
-  /** The report is deliberately regenerated on every invocation. */
+  /**
+   * The report is deliberately regenerated on every invocation. Not a customization
+   * surface on the ratcheted run task, which locks it after wiring: the ratchet reads
+   * a fixed path, so a relocated report would read as a run that never happened.
+   * Diagnostic tasks relocate their own copies and lock them separately.
+   */
   @get:OutputDirectory
   abstract val reportDirectory: DirectoryProperty
 
   /**
    * Scoped iteration output is isolated from the suite's full-population evidence.
-   * This remains internal because [reportDirectory] is the compatibility surface
-   * consumers may customize; plugin wiring supplies the isolated location.
+   * This remains internal; plugin wiring supplies the isolated location.
    */
   @get:Internal
   abstract val scopedReportDirectory: DirectoryProperty
@@ -245,7 +249,7 @@ abstract class PitestExecTask : JavaExec() {
   )
 
   init {
-    mainClass.convention("org.pitest.mutationtest.commandline.MutationCoverageReport")
+    mainClass.convention(PitestEvidenceSnapshot.DEFAULT_MAIN_CLASS)
     outputFormats.convention(listOf("HTML", "XML", "CSV"))
     timestampedReports.convention(false)
     verbosity.convention(HardeningCommandLines.PitestVerbosity.DEFAULT)
@@ -291,6 +295,37 @@ abstract class PitestExecTask : JavaExec() {
   /** Optional task-family context for a non-zero exit that this task deliberately tolerates. */
   protected open fun toleratedNonZeroExitContext(): String? = null
 
+  /**
+   * The master JVM's own configuration is not in the evidence and is refused rather
+   * than recorded.
+   *
+   * A `-Dmode=b` given to a main class that reads it produces a different report from
+   * `-Dmode=a`, so the report could validate under the other's identity. Recording it
+   * was tried and is not stable: `JavaExec` moves a `-D` out of `jvmArgs` into
+   * `systemProperties` while assembling the process, and a fresh task that has not
+   * executed holds a third shape — so one run's pre- and post-capture disagreed and
+   * the two converge rounds disagreed, the guard firing on its own bookkeeping.
+   *
+   * Refusing is the same answer this task already gives to direct `args(...)`, and
+   * for the same reason: the supported surface is the launcher, the tool classpath,
+   * the main class and verbosity. PIT's child JVMs — the ones that actually run the
+   * tests — are configured through the suite's `minionJvmArgs`, which is
+   * evidence-bound.
+   */
+  private fun requireUnconfiguredMasterJvm() {
+    val configured = buildList {
+      jvmArgs?.takeIf { it.isNotEmpty() }?.let { add("jvmArgs=$it") }
+      systemProperties.takeIf { it.isNotEmpty() }?.let { add("systemProperties=${it.keys.sorted()}") }
+    }
+    if (configured.isEmpty()) return
+    throw GradleException(
+      "pitest '${suiteName.get()}': the PIT master JVM carries configuration the evidence does " +
+        "not record (${configured.joinToString("; ")}), so two runs that behaved differently " +
+        "would share one identity. Configure PIT's child JVMs with the suite's evidence-bound " +
+        "minionJvmArgs instead."
+    )
+  }
+
   @TaskAction
   override fun exec() {
     if (unmanagedPitArgumentsPresent()) {
@@ -309,6 +344,7 @@ abstract class PitestExecTask : JavaExec() {
     // sentinel. An expired, malformed, or ambiguous certificate must not leave an
     // older report looking like an interrupted current run.
     val initialToolchain = mutationToolchainRecord()
+    requireUnconfiguredMasterJvm()
     beforeAttempt()
     if (diagnosticMode.get()) {
       initialToolchain.arcMutateBaseVersion?.let { baseVersion ->
@@ -620,7 +656,7 @@ abstract class PitestExecTask : JavaExec() {
       scope = scope,
       historyAssisted = historyAssisted,
     ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get(), verbosity.get(),
-      excludedTestClasses.get())
+      excludedTestClasses.get(), mainClass.get())
   }
 
   private fun requirePluginCodeUnchanged(context: String) {
@@ -1041,6 +1077,19 @@ internal object PitestReportDirectories {
     if (scope.isEmpty()) {
       throw GradleException(
         "-PmutateOnly requires a nonblank class glob; omit the property for a full-population run"
+      )
+    }
+    // `scope` is the only field carrying mutateOnly into the evidence, and an
+    // unscoped run records the sentinel below. Spelled as the sentinel, a run
+    // narrowed to one glob records itself as a full-population run — and the
+    // out-of-band `.scoped` marker, the only other discriminator, is decided by the
+    // same string comparison, so it is removed too. Refused here because this is the
+    // funnel the command line, the marker and the manifest all pass through.
+    if (scope == PitestEvidence.FULL_SCOPE) {
+      throw GradleException(
+        "-PmutateOnly cannot be '${PitestEvidence.FULL_SCOPE}': that is the scope a " +
+          "full-population run records, so a scoped run spelled this way would be " +
+          "indistinguishable from one. Omit the property for a full-population run."
       )
     }
   }

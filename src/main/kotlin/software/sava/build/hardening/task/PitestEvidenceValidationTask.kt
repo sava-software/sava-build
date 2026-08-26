@@ -201,6 +201,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
   @get:Input abstract val excludedClasses: ListProperty<String>
   @get:Input abstract val targetTests: Property<String>
   @get:Input abstract val excludedTestClasses: ListProperty<String>
+  @get:Input abstract val mainClass: Property<String>
   @get:Input abstract val mutators: Property<String>
   @get:Input abstract val threads: Property<Int>
   @get:Input abstract val minionJvmArgs: ListProperty<String>
@@ -213,6 +214,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
 
   init {
     mutationUnitSize.convention(0)
+    mainClass.convention(PitestEvidenceSnapshot.DEFAULT_MAIN_CLASS)
     verbosity.convention(HardeningCommandLines.PitestVerbosity.DEFAULT)
   }
 
@@ -307,7 +309,7 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
       scope = scope,
       historyAssisted = historyAssisted,
     ), minionJvmArgs.get(), expectedPluginSha256.get(), mutationUnitSize.get(), verbosity.get(),
-      excludedTestClasses.get())
+      excludedTestClasses.get(), mainClass.get())
   }
 
   internal fun requirePluginCodeUnchanged() {

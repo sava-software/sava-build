@@ -1,6 +1,8 @@
 package software.sava.build.hardening
 
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -184,5 +186,147 @@ class PitestEvidenceTest {
     }
 
     assertTrue(failure.message.orEmpty().contains("symbolic-link component"), failure.message)
+  }
+
+  @Test
+  fun `different file sets cannot share a fingerprint through NUL bytes in content`() {
+    // The entries were framed with a NUL between the name, the content and the next
+    // entry, which is unambiguous only while content cannot contain NUL — and this
+    // hashes compiled class files, which routinely do. One file `a` holding
+    // `X\0b\0Y` fed the digest exactly the bytes two files `a`=`X` and `b`=`Y` feed
+    // it, so two different file sets shared a fingerprint.
+    val one = File(tempDir, "one").apply { mkdirs() }
+    val two = File(tempDir, "two").apply { mkdirs() }
+    File(one, "a").writeBytes("X\u0000b\u0000Y".toByteArray(Charsets.ISO_8859_1))
+    File(two, "a").writeBytes("X".toByteArray())
+    File(two, "b").writeBytes("Y".toByteArray())
+
+    assertNotEquals(
+      PitestEvidence.fingerprint(one, listOf(File(one, "a"))),
+      PitestEvidence.fingerprint(two, listOf(File(two, "a"), File(two, "b"))),
+    )
+  }
+
+  @Test
+  fun `a fingerprint still distinguishes name changes and content changes`() {
+    // The framing change must not have flattened what the hash is actually for.
+    val dir = File(tempDir, "fp").apply { mkdirs() }
+    val a = File(dir, "a").apply { writeText("X") }
+    val base = PitestEvidence.fingerprint(dir, listOf(a))
+
+    a.writeText("Y")
+    val contentChanged = PitestEvidence.fingerprint(dir, listOf(a))
+    assertNotEquals(base, contentChanged, "a content change did not move the fingerprint")
+
+    a.writeText("X")
+    val renamed = File(dir, "b").apply { writeText("X") }
+    assertNotEquals(
+      base, PitestEvidence.fingerprint(dir, listOf(renamed)),
+      "a rename with identical content did not move the fingerprint",
+    )
+    // ...and is still order-independent, which is the property the separate order
+    // hashes exist to complement.
+    assertEquals(
+      PitestEvidence.fingerprint(dir, listOf(a, renamed)),
+      PitestEvidence.fingerprint(dir, listOf(renamed, a)),
+    )
+  }
+
+  @Test
+  fun `hashing text refuses ill-formed UTF-16 rather than folding it onto another value`() {
+    // The one place the canonical text stops being characters and becomes bytes, and
+    // the one place two texts can become one input. String.toByteArray substitutes
+    // '?' for an unpaired surrogate — and '?' is PIT's single-character wildcard, so
+    // `Gen?` and `Gen\uD800` are different class-name patterns with the same bytes.
+    // Every per-field validator runs upstream of this and inspects the String, so
+    // none of them can see it.
+    assertArrayEquals(
+      "Gen?".toByteArray(Charsets.UTF_8),
+      "Gen\uD800".toByteArray(Charsets.UTF_8),
+      "the lenient encoding this guards against no longer collapses; the guard can be reconsidered",
+    )
+    listOf("Gen\uD800", "Gen\uDC00", "a\uDBFFb").forEach { illFormed ->
+      assertThrows(IllegalArgumentException::class.java, {
+        PitestEvidence.sha256(illFormed)
+      }, "ill-formed '$illFormed' was hashed")
+    }
+    // Well-formed text — including a real surrogate pair — hashes exactly as before.
+    // Compared against the ByteArray overload, so this exercises the encoder rather
+    // than calling the same String overload twice.
+    assertEquals(
+      PitestEvidence.sha256("Gen?".toByteArray(Charsets.UTF_8)),
+      PitestEvidence.sha256("Gen?"),
+    )
+    PitestEvidence.sha256("emoji \uD83D\uDE00 pair")
+  }
+
+  @Test
+  fun `a file cannot stand in for a directory tree, which needs no preimage search`() {
+    // The two branches wrote different encodings into one untagged field, and the
+    // file branch hashes arbitrary bytes — so a file need only *hold* the directory
+    // branch's digest input. No search is involved. An empty file and an empty
+    // directory collided outright.
+    val emptyDir = File(tempDir, "emptydir").apply { mkdirs() }
+    val emptyFile = File(tempDir, "emptyfile").apply { writeBytes(ByteArray(0)) }
+    assertNotEquals(
+      PitestEvidence.fingerprintTree(emptyDir),
+      PitestEvidence.fingerprintTree(emptyFile),
+    )
+
+    val dir = File(tempDir, "dir").apply { mkdirs() }
+    File(dir, "a").writeText("X")
+    // int32be(1) || "a" || SHA-256("X") — exactly what the directory branch digests.
+    val forged = File(tempDir, "forged").apply {
+      writeBytes(
+        byteArrayOf(0, 0, 0, 1) + "a".toByteArray(Charsets.UTF_8) +
+          java.security.MessageDigest.getInstance("SHA-256").digest("X".toByteArray(Charsets.UTF_8))
+      )
+    }
+    assertNotEquals(
+      PitestEvidence.fingerprintTree(dir),
+      PitestEvidence.fingerprintTree(forged),
+      "a file holding the tree encoding still impersonates the tree",
+    )
+    // The tag has to sit outside the hash: an in-digest prefix is copyable by the
+    // same trick, since the file branch's input is whatever the file says it is.
+    // Only the directory branch is tagged: the file branch is the published one —
+    // consumer receipts and local-fuzz.sh's 64-hex format check read it raw.
+    assertTrue(PitestEvidence.fingerprintTree(dir).startsWith("tree:"))
+    assertTrue(Regex("^[0-9a-f]{64}$").matches(PitestEvidence.fingerprintTree(forged)))
+  }
+
+  @Test
+  fun `symlink aliases are distinct logical entries, independent of listing order`() {
+    // Two earlier shapes each got half of this wrong. Deduping on the lexically
+    // normalized path dropped a genuinely different file whose `..` crossed a
+    // symlink; deduping on the canonical path erased a real alias — a tree holding
+    // `a` plus symlink `b -> a` exposes two classpath names and must not fingerprint
+    // like a tree holding `a` alone. Entries are now the (relative name, content
+    // digest) pair: exact duplicates collapse, aliases survive, and sorting by the
+    // pair makes the result independent of arrival order.
+    val root = File(tempDir, "root").apply { mkdirs() }
+    val real = File(root, "a").apply { writeText("X") }
+    val alias = File(root, "b")
+    try {
+      java.nio.file.Files.createSymbolicLink(alias.toPath(), real.toPath())
+    } catch (e: Exception) {
+      org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unavailable: $e")
+    }
+
+    assertEquals(
+      PitestEvidence.fingerprint(root, listOf(real, alias)),
+      PitestEvidence.fingerprint(root, listOf(alias, real)),
+      "the result depended on the order the aliases were listed in",
+    )
+    assertNotEquals(
+      PitestEvidence.fingerprint(root, listOf(real)),
+      PitestEvidence.fingerprint(root, listOf(real, alias)),
+      "an alias exposes an additional classpath name and must move the fingerprint",
+    )
+    // An exact duplicate listing of one entry is not an alias and still collapses.
+    assertEquals(
+      PitestEvidence.fingerprint(root, listOf(real)),
+      PitestEvidence.fingerprint(root, listOf(real, real)),
+    )
   }
 }

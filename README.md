@@ -189,6 +189,21 @@ software.sava.core=software.sava:sava-core
 org.postgresql.jdbc=org.postgresql:postgresql
 ```
 
+### Upgrading across hardening template versions
+
+`agentsTemplateInSync` fails a consumer whose committed `AGENTS.md` digest marker no
+longer matches the installed plugin's template. The digest moves with doc releases, so a
+version bump can carry template debt the bumped feature did not create. Recomputed
+per-tag: 21.5.23 `d128cb8208fa` (164 quoted lines), 21.5.24 `014396ea56fe` (191),
+21.5.25 `46f7174e51fb` (232), 21.5.26 `90537d1eb1dd` (241), 21.5.27 `f866084114e0`
+(243). A consumer on 21.5.26 bumping to 21.5.27+ crosses one two-line bullet rewrite
+(the timeout-quiet retirement relaxation: a plugin fingerprint change alone no longer
+resets the streak); a consumer still on 21.5.24 also owes the boundary-pair migration
+(`block:start`/`block:end` markers around the template block). Run
+`./gradlew hardeningAgentTemplateDiff`, review, update the marker in the same commit as
+the version pin — and do not size the delta with that diff task in a repo whose block is
+a local rewrite, since it then reports a wholesale replacement regardless.
+
 ## Plugins
 
 ### Settings plugins

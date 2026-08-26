@@ -105,7 +105,11 @@ Certification receipts are **project-scoped**: each `hardeningCertify` covers on
 registered suites and writes an independent receipt. No child receipt claims the repository
 ran, and nothing can infer a project or independent Gradle root that was never run, so
 compare the receipts present with the adoption handoff. Project scope also preserves
-targeted module certification.
+targeted module certification. One receipt field is routinely misread: `reportSha256`
+identifies an observation, not an input — PIT's first-kill test ordering races near-ties,
+so identical inputs legitimately produce different values across runs. Never treat a
+match or mismatch there as evidence about equivalence; the input-identity fields beside
+it are the ones that compare.
 
 Generated evidence must never select the configuration-cache task graph. The PIT
 validators are always present and decide at execution time whether `.evidence.tsv`
