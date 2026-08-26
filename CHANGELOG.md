@@ -1,5 +1,27 @@
 # Changelog
 
+## [21.5.28](https://github.com/sava-software/sava-build/compare/21.5.27...21.5.28) (2026-08-26)
+
+
+### Features
+
+* **hardening:** expose PIT's excludedTestClasses on MutationSuite ([#104](https://github.com/sava-software/sava-build/issues/104)) ([6fd42c2](https://github.com/sava-software/sava-build/commit/6fd42c20e61811920a0b25497e304a0d7181c545)), closes [#95](https://github.com/sava-software/sava-build/issues/95)
+
+
+### Bug Fixes
+
+* **hardening:** make the evidence identity injective over its inputs ([2d54a00](https://github.com/sava-software/sava-build/commit/2d54a0097dcfec8254322ce3a4820f22274db76d))
+
+
+### Build System
+
+* **gradle:** update wrapper to Gradle 9.7.1 ([2bd0725](https://github.com/sava-software/sava-build/commit/2bd0725012c51db9b80c346a795845df97858a0b))
+
+
+### CI
+
+* **release:** remove the owner-attestation release gate ([68733c6](https://github.com/sava-software/sava-build/commit/68733c64b7442f923d6090624a691cd8449da91f))
+
 ## [21.5.27](https://github.com/sava-software/sava-build/compare/21.5.26...21.5.27) (2026-08-23)
 
 
