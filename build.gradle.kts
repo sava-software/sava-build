@@ -33,7 +33,7 @@ dependencies {
   // https://plugins.gradle.org/plugin/me.champeau.jmh
   implementation("me.champeau.jmh:jmh-gradle-plugin:0.7.3")
   // https://github.com/gradlex-org/java-module-dependencies
-  implementation("org.gradlex:java-module-dependencies:1.13.1")
+  implementation("org.gradlex:java-module-dependencies:1.13.2")
   // https://github.com/gradlex-org/java-module-testing
   implementation("org.gradlex:java-module-testing:1.8.1")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
