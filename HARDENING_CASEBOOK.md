@@ -1490,22 +1490,32 @@ state and must never be committed, but it is durable evidence of an explicit cam
 not a disposable product of the current build directory. Moving the receipt and its
 in-progress sentinel to the already-ignored project-local `.pitest-history/` boundary
 made that distinction concrete. `clean` now preserves a completed receipt. Starting a
-new campaign validates and deletes the durable receipt before any target runs, atomically
-publishes the sentinel, and only then checks and removes the one-release legacy state.
-That ordering matters: even a malformed legacy path leaves the new attempt visibly
-incomplete. The legacy path is confined to Gradle's configured build directory rather
-than the checkout, because centralized builds may put it elsewhere. Success writes the
-new receipt while the sentinel is still present and clears the sentinel last; failure or
-interruption therefore leaves no state that can be mistaken for a pass. The release
-runner invalidates regular receipts in both locations, refuses any filesystem entry at
-either generation's running-sentinel name, and retains only the new durable receipt.
+new campaign requires the durable receipt path to be regular or missing but preserves an
+existing TSV as last-known-success evidence, atomically publishes the sentinel before
+any target runs, and only then checks and removes the one-release legacy state. That
+ordering matters: even a malformed legacy path leaves the new attempt visibly incomplete.
+The legacy path is confined to Gradle's configured build directory rather than the
+checkout, because centralized builds may put it elsewhere. Success replaces the receipt
+while the sentinel is still present and clears the sentinel last. Failure handling
+publishes the sentinel and attempts to restore the prior receipt state, including prior
+absence; if receipt restoration itself fails, the marker keeps any remnant ineligible.
+A process interruption after sentinel publication instead leaves the marker with
+whichever receipt state was last atomically published — no TSV, the prior pass, or the
+newly written replacement. In every case, a TSV is ineligible as proof of the current
+campaign while the marker exists. If path interference removes the owned sentinel,
+failure handling restores it; if that marker cannot be restored, it deletes the TSV
+fail-closed.
+The release runner refuses any filesystem entry at either generation's running-sentinel
+name or any obsolete build-directory receipt, and retains only an eligible durable
+receipt.
 The aggregate also holds an OS lock for the full Gradle invocation. Without that ownership,
 an older campaign could finish after a newer one failed, publish its own receipt, and delete
 the newer failure sentinel. A competing invocation now fails before touching either file.
 
 Rules: *generated does not mean disposable — choose lifecycle from the claim an artifact
-supports*; *a new attempt invalidates the prior success before doing work*; *publish
-success before clearing the in-progress marker, so every interrupted state fails closed*;
+supports*; *a new attempt makes the prior success ineligible for the current claim without
+destroying it*; *publish success before clearing the in-progress marker, so every
+interrupted state fails closed*;
 *a release checklist should not need a magic ordering merely to keep two valid proofs
 from deleting one another*.
 

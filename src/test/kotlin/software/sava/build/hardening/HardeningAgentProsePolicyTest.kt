@@ -40,7 +40,7 @@ class HardeningAgentProsePolicyTest {
       ),
       inspection.findings.map { it.family },
     )
-    assertEquals(listOf(4, 7, 11), inspection.findings.map { it.lineNumber })
+    assertEquals(listOf(4, 9, 12), inspection.findings.map { it.lineNumber })
   }
 
   @Test
@@ -59,7 +59,7 @@ class HardeningAgentProsePolicyTest {
     )
 
     assertEquals(listOf("local-repository-cache"), inspection.findings.map { it.family })
-    assertEquals(3, inspection.findings.single().lineNumber)
+    assertEquals(4, inspection.findings.single().lineNumber)
   }
 
   @Test
@@ -116,11 +116,11 @@ class HardeningAgentProsePolicyTest {
     )
 
     assertEquals(
-      listOf("installed-template-output+installed-template-diff+task-output-granularity"),
+      listOf("installed-template-output+installed-template-diff"),
       inspection.findings.map { it.family },
     )
-    assertEquals(listOf(3), inspection.findings.map { it.lineNumber })
-    assertEquals(3, inspection.findings.single().rules.size)
+    assertEquals(listOf(4), inspection.findings.map { it.lineNumber })
+    assertEquals(2, inspection.findings.single().rules.size)
   }
 
   @Test
@@ -169,18 +169,72 @@ class HardeningAgentProsePolicyTest {
       assertTrue(pronoun.isClean, "$result: ${pronoun.findings}")
     }
 
-    val granular = inspectOutside(
+    listOf(
+      "resolve everything both tasks report",
+      "act on everything both audits report",
+      "act on whatever that task reports",
+    ).forEach { pointer ->
+      val generic = inspectOutside(
+        """
+        # Agents
+
+        Run `hardeningAgentTemplateDiff` and `hardeningAgentProseAudit`, then $pointer.
+
+        ${HardeningAgentTemplateBlock.BLOCK_START}
+        - Shared generated rule.
+        ${HardeningAgentTemplateBlock.BLOCK_END}
+        """.trimIndent()
+      )
+      assertTrue(generic.isClean, "$pointer: ${generic.findings}")
+    }
+
+    val printedResultPointer = inspectOutside(
       """
       # Agents
 
-      After the audits, act on each changed bullet and resolve every prose candidate it names.
+      Run `hardeningAgentTemplate`, then act on whatever it prints.
 
       ${HardeningAgentTemplateBlock.BLOCK_START}
       - Shared generated rule.
       ${HardeningAgentTemplateBlock.BLOCK_END}
       """.trimIndent()
     )
-    assertEquals(listOf("task-output-granularity"), granular.findings.map { it.family })
+    assertTrue(printedResultPointer.isClean, printedResultPointer.findings.toString())
+
+    val imperativeWorkflow = inspectOutside(
+      """
+      # Agents
+
+      GLAM policy on every template-digest move: re-diff with the
+      project-qualified `hardeningAgentTemplateDiff` (e.g.
+      `:sdk:hardeningAgentTemplateDiff`), ACT on each changed bullet (a new
+      bullet may need code, not prose), resolve every candidate named by
+      `hardeningAgentProseAudit` and `hardeningReadmeAudit`, and only then move
+      the digest.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+    assertTrue(imperativeWorkflow.isClean, imperativeWorkflow.findings.toString())
+
+    val declarativeOutputContract = inspectOutside(
+      """
+      # Agents
+
+      `hardeningAgentTemplateDiff` reports every changed bullet and
+      `hardeningAgentProseAudit` names each prose candidate.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+    assertEquals(
+      listOf("task-output-granularity+installed-template-diff"),
+      declarativeOutputContract.findings.map { it.family },
+    )
 
     val copiedContractThenPointer = inspectOutside(
       """
@@ -195,8 +249,102 @@ class HardeningAgentProsePolicyTest {
       """.trimIndent()
     )
     assertEquals(
-      listOf("installed-template-diff"),
+      listOf("task-output-granularity+installed-template-diff"),
       copiedContractThenPointer.findings.map { it.family },
+    )
+  }
+
+  @Test
+  fun `matched phrases retain exact source text rather than masked matcher text`() {
+    val inspection = inspectOutside(
+      """
+      # Agents
+
+      `hardeningAgentTemplateDiff` REPORTS every changed bullet.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+
+    val phrases = inspection.findings.single().rules.map { it.matchedPhrase }
+    assertTrue(
+      phrases.all { it.contains("REPORTS") },
+      phrases.toString(),
+    )
+    assertTrue(phrases.none { it.contains("result", ignoreCase = true) }, phrases.toString())
+    assertTrue(
+      phrases.all { phrase ->
+        "`hardeningAgentTemplateDiff` REPORTS every changed bullet".contains(phrase)
+      },
+      phrases.toString(),
+    )
+
+    val wrappedSourceLine = "REPORTS every changed bullet."
+    val wrapped = inspectOutside(
+      """
+      # Agents
+
+      `hardeningAgentTemplateDiff`
+      $wrappedSourceLine
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+    assertEquals(4, wrapped.findings.single().lineNumber)
+    assertTrue(
+      wrapped.findings.single().rules.all { wrappedSourceLine.contains(it.matchedPhrase) },
+      wrapped.findings.single().rules.toString(),
+    )
+
+    val longSourceLine =
+      "The property adds that repo to pluginManagement and rewrites every " +
+        "software.sava.build plugin id to software.sava:sava-build:0.0.0-test, " +
+        "so the pinned versions are ignored while it is set."
+    val long = inspectOutside(
+      """
+      # Agents
+
+      $longSourceLine
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+    val longPhrase = long.findings.single().rules.single().matchedPhrase
+    assertTrue(longPhrase.length > 96, longPhrase)
+    assertTrue(longSourceLine.contains(longPhrase), longPhrase)
+    assertTrue(!longPhrase.contains(" ... "), longPhrase)
+  }
+
+  @Test
+  fun `finding anchors on the line carrying matched behavior not an earlier task mention`() {
+    val inspection = inspectOutside(
+      """
+      # Agents
+
+      Run `:core:hardeningAgentTemplateDiff` after each upgrade, then
+      remember that `hardeningAgentTemplateDiff` reports every changed bullet.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+
+    assertEquals(4, inspection.findings.single().lineNumber)
+    assertTrue(inspection.findings.single().excerpt.contains("reports every changed bullet"))
+    assertTrue(
+      inspection.findings.single().rules.all {
+        "remember that `hardeningAgentTemplateDiff` reports every changed bullet.".contains(
+          it.matchedPhrase
+        )
+      },
+      inspection.findings.single().rules.toString(),
     )
   }
 
@@ -221,7 +369,7 @@ class HardeningAgentProsePolicyTest {
     )
     assertEquals(2, inspection.findings.single().rules.size)
     val warning = HardeningAgentProsePolicy.warning(inspection, ":core:hardeningHelp")
-    assertEquals(1, Regex("AGENTS\\.md:3").findAll(warning).count(), warning)
+    assertEquals(2, Regex("AGENTS\\.md:3").findAll(warning).count(), warning)
     assertTrue(warning.contains("installed-template-output: \""), warning)
     assertTrue(warning.contains("installed-template-diff: \""), warning)
   }
@@ -249,6 +397,18 @@ class HardeningAgentProsePolicyTest {
     )
     assertEquals(3, inspection.findings.single().rules.size)
     assertEquals(3, inspection.findings.single().lineNumber)
+    assertEquals(
+      listOf(
+        "installed-template-output" to 3,
+        "installed-template-diff" to 4,
+        "template-sync-contract" to 5,
+      ),
+      inspection.findings.single().rules.map { it.family to it.lineNumber },
+    )
+    val warning = HardeningAgentProsePolicy.warning(inspection, ":core:hardeningHelp")
+    assertTrue(warning.contains("AGENTS.md:3  [installed-template-output:"), warning)
+    assertTrue(warning.contains("AGENTS.md:4  [installed-template-diff:"), warning)
+    assertTrue(warning.contains("AGENTS.md:5  [template-sync-contract:"), warning)
   }
 
   @Test
@@ -285,6 +445,82 @@ class HardeningAgentProsePolicyTest {
   }
 
   @Test
+  fun `ordinary copied dsl contracts are candidates`() {
+    val inspection = inspectOutside(
+      """
+      # Agents
+
+      The hardening DSL requires `seedCorpus` for every fuzz target.
+
+      The plugin uses `excludedClasses` to filter generated DTOs.
+
+      A mutation registration block is what creates its PIT task.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+
+    assertEquals(
+      listOf("hardening-dsl-contract", "hardening-dsl-contract", "hardening-dsl-contract"),
+      inspection.findings.map { it.family },
+    )
+  }
+
+  @Test
+  fun `plugin-owned dsl property forms are candidates`() {
+    val inspection = inspectOutside(
+      """
+      # Agents
+
+      The hardening plugin's `excludedClasses` setting filters generated DTOs.
+
+      Within the hardening plugin, `excludedClasses` filters generated DTOs.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+
+    assertEquals(
+      listOf("hardening-dsl-contract", "hardening-dsl-contract"),
+      inspection.findings.map { it.family },
+    )
+  }
+
+  @Test
+  fun `repository-owned dsl configuration and sibling plugin policy are clean`() {
+    val inspection = inspectOutside(
+      """
+      # Agents
+
+      The sdk `seedCorpus` is required by GLAM's checked-in-corpus policy.
+
+      `seedCorpus` is required by GLAM's checked-in-corpus policy.
+
+      The config suite's `excludedClasses` excludes generated DTOs owned by IDL generation.
+
+      `excludedClasses` excludes generated DTOs owned by IDL generation.
+
+      `excludedClasses` filters generated DTOs because another module owns them.
+
+      The fuzz registration block creates GLAM's five locally owned targets.
+
+      The repo applies `software.sava.build.feature.jdk-provisioning` in settings because
+      GLAM requires JDK 25.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+
+    assertTrue(inspection.isClean, inspection.findings.toString())
+  }
+
+  @Test
   fun `repository ownership measurements reasons provenance and timing are clean`() {
     val inspection = inspectOutside(
       """
@@ -305,6 +541,10 @@ class HardeningAgentProsePolicyTest {
       The repo applies `software.sava.build.feature.jdk-provisioning` in settings.
       Every fuzz target declares `seedCorpus` with a repository-owned corpus directory.
       The config suite's `excludedClasses` list contains generated DTOs owned elsewhere.
+
+      Register new harnesses in the owning module's `hardening` block with both
+      `targetClass` AND `seedCorpus` — GLAM registers no fuzz target without a
+      checked-in corpus to replay.
 
       ${HardeningAgentTemplateBlock.BLOCK_START}
       - Shared generated rule.
@@ -335,6 +575,83 @@ class HardeningAgentProsePolicyTest {
     )
 
     assertTrue(inspection.isClean, inspection.findings.toString())
+  }
+
+  @Test
+  fun `task nouns do not borrow mechanics verbs from unrelated local sentences or subjects`() {
+    val inspection = inspectOutside(
+      """
+      # Agents
+
+      Run `hardeningCertify` before release. The local release script writes provenance.
+
+      Run `hardeningAgentTemplateDiff` after upgrades. The repository reports local metrics.
+
+      Run `hardeningCertify` before release, and the local release script writes provenance.
+
+      Run `hardeningAgentTemplateDiff`, and the repository reports local metrics.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+
+    assertTrue(inspection.isClean, inspection.findings.toString())
+  }
+
+  @Test
+  fun `remaining task and dsl nouns do not borrow behavior from a later sentence`() {
+    val inspection = inspectOutside(
+      """
+      # Agents
+
+      Run `agentsTemplateInSync` after upgrades. The local release fails when the tag is missing.
+
+      Run `pitestConfigBaselinePrune` before release. The local script removes old reports.
+
+      The repo mentions `declineMutator`. The local script skips flaky integration tests.
+
+      The hardening plugin is applied here. GLAM requires `seedCorpus` for its local policy.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+
+    assertTrue(inspection.isClean, inspection.findings.toString())
+  }
+
+  @Test
+  fun `sentence-bound task and dsl contracts still report direct installed behavior`() {
+    val inspection = inspectOutside(
+      """
+      # Agents
+
+      `agentsTemplateInSync` fails when the digest is stale.
+
+      `pitestConfigBaselinePrune` removes unmatched rows.
+
+      `declineMutator` skips the named mutator.
+
+      The hardening plugin requires `seedCorpus` for every fuzz target.
+
+      ${HardeningAgentTemplateBlock.BLOCK_START}
+      - Shared generated rule.
+      ${HardeningAgentTemplateBlock.BLOCK_END}
+      """.trimIndent()
+    )
+
+    assertEquals(
+      listOf(
+        "template-sync-contract",
+        "baseline-writer-contract",
+        "hardening-dsl-contract",
+        "hardening-dsl-contract",
+      ),
+      inspection.findings.map { it.family },
+    )
   }
 
   @Test

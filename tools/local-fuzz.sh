@@ -80,6 +80,30 @@ run_consumer_gradle() {
   fi
 }
 
+run_consumer_fuzz_campaign() {
+  local repo=$1 output_file=$2 expected_receipt_fingerprint=$3
+  local current_receipt_fingerprint
+  shift 3
+  # The plugin owns its durable receipt lifecycle. In particular, the runner must
+  # not delete a prior local-fuzz.tsv before fuzzAll has acquired its lock and
+  # published local-fuzz.running: that TSV is the last-known-success receipt if
+  # this invocation fails. Keep all runner-side pre-campaign behavior inside this
+  # testable boundary so the self-test can pin that preservation contract.
+  {
+    current_receipt_fingerprint=$(durable_aggregate_receipt_fingerprint "$repo") || {
+      echo "local-fuzz: could not verify the pre-campaign durable receipt inventory in $repo" >&2
+      return 1
+    }
+    if [ "$current_receipt_fingerprint" != "$expected_receipt_fingerprint" ]; then
+      echo "local-fuzz: durable fuzz receipt inventory changed after execution planning in $repo; refusing to start Gradle" >&2
+      return 1
+    fi
+    (cd "$repo" && run_consumer_gradle ./gradlew --console=plain --continue --parallel \
+        -PsavaBuildLocalRepo="$local_repo" -PmaxFuzzTime="$seconds" \
+        -PmaxParallelFuzzTargets="$parallel_targets" "$@")
+  } 3<&- > "$output_file" 2>&1
+}
+
 snapshot_published_plugin_jar() {
   local source_before source_after retained_hash destination
   reject_symlink_components "$published_plugin_jar" "published plugin jar" || return 1
@@ -426,6 +450,55 @@ aggregate_evidence_matches() {
 durable_aggregate_receipts() {
   find "$1" -type f -path '*/.pitest-history/local-fuzz.tsv' -print \
     2>/dev/null | sort
+}
+
+durable_aggregate_receipt_inventory() {
+  local repo=$1 repo_root histories history receipt relative receipt_hash
+  repo_root=$(cd "$repo" && pwd -P) || return 1
+  histories=$(find "$repo_root" -name .pitest-history -print -prune 2>/dev/null | sort) || return 1
+  if [ -n "$histories" ]; then
+    while IFS= read -r history; do
+      reject_symlink_components "$history" "durable fuzz history" || return 1
+      if [ ! -d "$history" ] || [ -L "$history" ]; then
+        echo "local-fuzz: durable fuzz history is not a regular directory: $history" >&2
+        return 1
+      fi
+      receipt="$history/local-fuzz.tsv"
+      if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+        reject_symlink_components "$receipt" "durable fuzz receipt" || return 1
+        if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
+          echo "local-fuzz: durable fuzz receipt is not a regular file: $receipt" >&2
+          return 1
+        fi
+        relative=${receipt#"$repo_root"/}
+        case "$relative" in
+          "$receipt"|*$'\t'*|*$'\n'*|*$'\037'*)
+            echo "local-fuzz: durable fuzz receipt has an unsafe relative path: $receipt" >&2
+            return 1
+            ;;
+        esac
+        receipt_hash=$(sha256_file "$receipt") || return 1
+        reject_symlink_components "$receipt" "durable fuzz receipt" || return 1
+        if [ ! -f "$receipt" ] || [ -L "$receipt" ] || \
+            [ "$(sha256_file "$receipt")" != "$receipt_hash" ]; then
+          echo "local-fuzz: durable fuzz receipt changed while fingerprinting: $receipt" >&2
+          return 1
+        fi
+        printf '%s\t%s\n' "$relative" "$receipt_hash"
+      fi
+    done <<< "$histories"
+  fi
+}
+
+durable_aggregate_receipt_fingerprint() {
+  local repo=$1 first_inventory second_inventory
+  first_inventory=$(durable_aggregate_receipt_inventory "$repo") || return 1
+  second_inventory=$(durable_aggregate_receipt_inventory "$repo") || return 1
+  if [ "$first_inventory" != "$second_inventory" ]; then
+    echo "local-fuzz: durable fuzz receipt inventory changed while fingerprinting: $repo" >&2
+    return 1
+  fi
+  printf '%s' "$first_inventory" | sha256_stream
 }
 
 aggregate_running_entries() {
@@ -964,16 +1037,17 @@ collect_aggregate_receipts() {
 self_test() {
   local fixture aggregate records targets projects slugs basenames count
   local path_fixture pointer_file target_receipt stale_file legacy_stale_file
-  local running_entry discovered plan_probe stdin_probe symlink_file
+  local running_entry discovered plan_probe stdin_probe symlink_file campaign_probe
   local consumer_args_probe consumer_args_output
   local target_hash long_name key plugin_hash repo_key empty_path_key empty_path_sha
-  local plan_rows _stolen probe_slug probe_repo probe_sha probe_origin
+  local plan_rows _stolen probe_slug probe_repo probe_sha probe_origin probe_receipt_fingerprint
   local plugin_checkout consumer_checkout unavailable_checkout manifest_fixture bundle_fixture
   local preflight_file publish_file jar_file log_file aggregate_file
   local empty_path_log_file empty_path_aggregate_file verify_output_file verify_cwd saved_pwd
   local plugin_commit plugin_tree consumer_commit preflight_hash publish_hash
   local log_hash aggregate_hash empty_path_log_hash empty_path_aggregate_hash
   local manifest_hash verify_output saved_function projection producer_failed
+  local empty_receipt_fingerprint prior_receipt_fingerprint expected_receipt_fingerprint
   local release_mode=false seconds=17 parallel_targets=1
   local run_dir published_plugin_sha256
   local GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -1156,15 +1230,24 @@ self_test() {
     return 1
   fi
   : > "$plan_probe"
-  append_execution_plan_row "$plan_probe" one /repo-one "" origin-one
-  append_execution_plan_row "$plan_probe" two /repo-two sha-two origin-two
+  append_execution_plan_row "$plan_probe" one /repo-one "" origin-one fingerprint-one
+  append_execution_plan_row "$plan_probe" two /repo-two sha-two origin-two fingerprint-two
   printf 'stdin may be consumed by a child\n' > "$stdin_probe"
   plan_rows=0
-  while read_execution_plan_row probe_slug probe_repo probe_sha probe_origin; do
+  while read_execution_plan_row probe_slug probe_repo probe_sha probe_origin \
+      probe_receipt_fingerprint; do
     if [ "$probe_slug" = one ] &&
         { [ "$probe_repo" != /repo-one ] || [ -n "$probe_sha" ] ||
-          [ "$probe_origin" != origin-one ]; }; then
+          [ "$probe_origin" != origin-one ] ||
+          [ "$probe_receipt_fingerprint" != fingerprint-one ]; }; then
       echo "local-fuzz self-test: execution plan collapsed an empty field" >&2
+      return 1
+    fi
+    if [ "$probe_slug" = two ] &&
+        { [ "$probe_repo" != /repo-two ] || [ "$probe_sha" != sha-two ] ||
+          [ "$probe_origin" != origin-two ] ||
+          [ "$probe_receipt_fingerprint" != fingerprint-two ]; }; then
+      echo "local-fuzz self-test: execution plan lost its receipt fingerprint" >&2
       return 1
     fi
     IFS= read -r _stolen || true
@@ -1286,6 +1369,35 @@ self_test() {
     echo "local-fuzz self-test: inconsistent outer execution total was accepted" >&2
     return 1
   fi
+  empty_receipt_fingerprint=$(durable_aggregate_receipt_fingerprint "$path_fixture/repo") || return 1
+  if [ "$empty_receipt_fingerprint" != "$(printf '' | sha256_stream)" ]; then
+    echo "local-fuzz self-test: empty durable-receipt inventory was not stable" >&2
+    return 1
+  fi
+  cp "$aggregate_file" "$stale_file"
+  prior_receipt_fingerprint=$(
+    durable_aggregate_receipt_fingerprint "$path_fixture/repo"
+  ) || return 1
+  expected_receipt_fingerprint=$(
+    printf 'module/.pitest-history/local-fuzz.tsv\t%s' "$aggregate_hash" | sha256_stream
+  )
+  if [ "$prior_receipt_fingerprint" != "$expected_receipt_fingerprint" ]; then
+    echo "local-fuzz self-test: durable-receipt fingerprint omitted path or content identity" >&2
+    return 1
+  fi
+  rm -f "$stale_file"
+  ln -s "$aggregate_file" "$stale_file"
+  if durable_aggregate_receipt_fingerprint "$path_fixture/repo" >/dev/null 2>&1; then
+    echo "local-fuzz self-test: symlinked durable receipt was fingerprinted" >&2
+    return 1
+  fi
+  rm -f "$stale_file"
+  mkdir "$stale_file"
+  if durable_aggregate_receipt_fingerprint "$path_fixture/repo" >/dev/null 2>&1; then
+    echo "local-fuzz self-test: non-regular durable receipt was fingerprinted" >&2
+    return 1
+  fi
+  rmdir "$stale_file"
   cp "$aggregate_file" "$stale_file"
   printf 'legacy stale\n' > "$legacy_stale_file"
   discovered=$(durable_aggregate_receipts "$path_fixture/repo")
@@ -1538,11 +1650,67 @@ self_test() {
     echo "local-fuzz self-test: superseded canonical pointer remained valid" >&2
     return 1
   fi
-  if [ ! -f "$stale_file" ]; then
-    echo "local-fuzz self-test: last-success aggregate receipt was destroyed" >&2
+  # Drive the same pre-campaign boundary as the outer execution loop, but replace
+  # Gradle with the observable state transition of a campaign that starts and then
+  # fails. This specifically guards against the former runner behavior that deleted
+  # local-fuzz.tsv before invoking Gradle.
+  rm -f "$legacy_stale_file"
+  rm -f "$running_entry"
+  cp "$aggregate_file" "$stale_file"
+  prior_receipt_fingerprint=$(
+    durable_aggregate_receipt_fingerprint "$path_fixture/repo"
+  ) || return 1
+  saved_function=$(declare -f run_consumer_gradle)
+  campaign_probe="$path_fixture/campaign-gradle-called"
+  rm -f "$campaign_probe"
+  run_consumer_gradle() {
+    printf 'called\n' > "$campaign_probe"
+    printf 'refused\tself-test campaign failed\n' > "$running_entry"
+    return 71
+  }
+  # Reproduce the exact old runner ordering: planning observed the prior receipt,
+  # then runner-side invalidation removed it before the Gradle boundary.
+  rm -f "$stale_file"
+  if run_consumer_fuzz_campaign "$path_fixture/repo" "$verify_output_file" \
+      "$prior_receipt_fingerprint" fuzzAll; then
+    eval "$saved_function"
+    echo "local-fuzz self-test: pre-campaign receipt deletion was accepted" >&2
     return 1
   fi
-  rm -f "$stale_file"
+  if [ -e "$campaign_probe" ]; then
+    eval "$saved_function"
+    echo "local-fuzz self-test: Gradle ran after pre-campaign receipt deletion" >&2
+    return 1
+  fi
+  case "$(<"$verify_output_file")" in
+    *"durable fuzz receipt inventory changed after execution planning"*) ;;
+    *)
+      eval "$saved_function"
+      echo "local-fuzz self-test: pre-campaign deletion refusal was misreported" >&2
+      return 1
+      ;;
+  esac
+  cp "$aggregate_file" "$stale_file"
+  producer_failed=false
+  if run_consumer_fuzz_campaign "$path_fixture/repo" "$verify_output_file" \
+      "$prior_receipt_fingerprint" fuzzAll; then
+    producer_failed=true
+  fi
+  eval "$saved_function"
+  if $producer_failed; then
+    echo "local-fuzz self-test: simulated failed campaign returned success" >&2
+    return 1
+  fi
+  if ! cmp -s "$stale_file" "$aggregate_file"; then
+    echo "local-fuzz self-test: failed campaign changed the last-success receipt" >&2
+    return 1
+  fi
+  if [ ! -f "$running_entry" ] || \
+      [ "$(<"$running_entry")" != $'refused\tself-test campaign failed' ]; then
+    echo "local-fuzz self-test: failed campaign did not retain its in-progress sentinel" >&2
+    return 1
+  fi
+  rm -f "$campaign_probe" "$running_entry" "$stale_file"
   [ "$(origin_slug git@github.com:sava-software/sava.git)" = "sava-software/sava" ] || return 1
   slugs=$(manifest_slugs)
   [ "$(printf '%s\n' "$slugs" | sort | uniq -d | wc -l | tr -d ' ')" = 0 ] || {
@@ -1732,7 +1900,7 @@ if $release_mode; then
     preflight_failed="$preflight_failed sava-build(dirty)"
   fi
   while IFS=$'\t' read -r slug repo; do
-    repo_sha=""; remote=""; dirty=false; result=passed
+    repo_sha=""; remote=""; dirty=false; result=passed; receipt_fingerprint=""
     if [ ! -d "$repo" ]; then
       result=missing
     elif [ ! -f "$repo/gradlew" ]; then
@@ -1749,10 +1917,15 @@ if $release_mode; then
       elif $dirty; then result=dirty
       fi
     fi
+    if [ "$result" = passed ] &&
+        ! receipt_fingerprint=$(durable_aggregate_receipt_fingerprint "$repo"); then
+      result=invalid_fuzz_receipt_state
+    fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$repo" "$repo_sha" "$remote" "$dirty" "$result" \
       >> "$preflight_file"
     if [ "$result" = passed ]; then
-      append_execution_plan_row "$execution_plan" "$slug" "$repo" "$repo_sha" "$remote"
+      append_execution_plan_row "$execution_plan" "$slug" "$repo" "$repo_sha" "$remote" \
+        "$receipt_fingerprint"
     else
       preflight_failed="$preflight_failed $slug($result)"
     fi
@@ -1765,7 +1938,15 @@ if $release_mode; then
   fi
 else
   while IFS=$'\t' read -r slug repo; do
-    append_execution_plan_row "$execution_plan" "$slug" "$repo"
+    receipt_fingerprint=unavailable
+    if [ -d "$repo" ]; then
+      if ! receipt_fingerprint=$(durable_aggregate_receipt_fingerprint "$repo"); then
+        echo "local-fuzz: $slug has invalid durable fuzz receipt state; refusing execution planning" >&2
+        exit 1
+      fi
+    fi
+    append_execution_plan_row "$execution_plan" "$slug" "$repo" "" "" \
+      "$receipt_fingerprint"
   done < "$plan_file"
 fi
 
@@ -1814,7 +1995,7 @@ record_repo() {
 failed=""
 expected_execution_rows=$(wc -l < "$plan_file" | tr -d ' ')
 processed_execution_rows=0
-while read_execution_plan_row slug repo pre_sha pre_origin; do
+while read_execution_plan_row slug repo pre_sha pre_origin pre_receipt_fingerprint; do
   processed_execution_rows=$((processed_execution_rows + 1))
   safe_slug=$(artifact_key "$slug")
   log_file="logs/$safe_slug.log"
@@ -1882,10 +2063,8 @@ while read_execution_plan_row slug repo pre_sha pre_origin; do
     echo "local-fuzz: $slug@$repo_sha — $task_mode; ${targets:-no registered targets}"
     task_args=()
     while IFS= read -r task; do [ -n "$task" ] && task_args+=("$task"); done <<< "$tasks"
-    if ! (cd "$repo" && run_consumer_gradle ./gradlew --console=plain --continue --parallel \
-        -PsavaBuildLocalRepo="$local_repo" -PmaxFuzzTime="$seconds" \
-        -PmaxParallelFuzzTargets="$parallel_targets" "${task_args[@]}") \
-        3<&- > "$out_file" 2>&1; then
+    if ! run_consumer_fuzz_campaign "$repo" "$out_file" \
+        "$pre_receipt_fingerprint" "${task_args[@]}"; then
       repo_result=fuzz_failed
     elif ! grep -qF "$resolution_notice" "$out_file"; then
       repo_result=resolution_missing
