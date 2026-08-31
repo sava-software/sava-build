@@ -265,6 +265,11 @@ abstract class PitestExecTask : JavaExec() {
   )
 
   init {
+    // Gradle does not retain @UntrackedTask or doNotTrackState for decorated
+    // JavaExec subclasses. The output predicate survives decoration, build-cache
+    // lookup, and configuration-cache reuse, so every explicitly selected PIT
+    // observation executes in this invocation.
+    outputs.upToDateWhen { false }
     mainClass.convention(PitestEvidenceSnapshot.DEFAULT_MAIN_CLASS)
     outputFormats.convention(listOf("HTML", "XML", "CSV"))
     timestampedReports.convention(false)

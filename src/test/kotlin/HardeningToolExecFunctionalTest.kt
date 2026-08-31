@@ -1,4 +1,5 @@
 import org.gradle.testkit.runner.GradleRunner
+import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -2636,10 +2637,14 @@ $buildTail
 
     val first = runner(":b:hardeningCertify", ":a:hardeningCertify").build()
     assertTrue(File(aReceipt).isFile && File(bReceipt).isFile, first.output)
+    assertEquals(TaskOutcome.SUCCESS, first.task(":a:pitestEncoding")?.outcome, first.output)
+    assertEquals(TaskOutcome.SUCCESS, first.task(":b:pitestEncoding")?.outcome, first.output)
     assertRollUp(first.output)
 
     val reused = runner(":b:hardeningCertify", ":a:hardeningCertify").build()
     assertTrue(reused.output.contains("Configuration cache entry reused."), reused.output)
+    assertEquals(TaskOutcome.SUCCESS, reused.task(":a:pitestEncoding")?.outcome, reused.output)
+    assertEquals(TaskOutcome.SUCCESS, reused.task(":b:pitestEncoding")?.outcome, reused.output)
     assertRollUp(reused.output)
   }
 

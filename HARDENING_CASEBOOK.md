@@ -414,8 +414,9 @@ handshake socket, hit `SocketTimeoutException`, and died (`MINION_DIED`,
 before any report was written); the test worker had died with no `hs_err`
 dump — killed from outside, not crashed. An automatic retry on `MINION_DIED`
 was considered and declined at ~1 occurrence per 100 suite runs: it would
-mostly mask environment sickness. Per-mutant `RUN_ERROR` under multi-suite
-load is the same shape smaller; the verify now refuses that incomplete report
+mostly mask environment sickness. A per-mutant `RUN_ERROR`, often first noticed
+during multi-suite execution, is the same shape smaller; load remains context,
+not diagnosis. The verify now refuses that incomplete report
 instead of accepting PIT's detected score.
 
 ## PIT's world is the class path
@@ -1869,6 +1870,14 @@ implementation contract the template prohibited. Incident-client then preserved 
 uniform Markdown quote layer across 243 lines, and the diff normalized it successfully,
 but the installed help never disclosed that supported input shape.
 
+A later incident-client adoption exposed the remaining enforcement gap: three clear
+copies of plugin mechanics and four borderline passages sat in repository-owned
+`AGENTS.md` prose outside a current, correctly bounded template while every installed
+gate passed. The digest gate proves acknowledgment of the shared block, not cleanliness
+of the rest of the document. A repository-scoped, non-failing migration audit now scans
+only that outside prose for conservative field-derived signatures and leaves the shared
+block, arbitrary local facts, and structural failures to their existing authorities.
+
 The repair lists each template task explicitly, labels the mutating scaffold separately,
 and reduces its README skeleton to prompts for local ownership, measurements, reasons,
 and provenance. Behavioral contracts stay in installed help and task descriptions.
@@ -1876,7 +1885,8 @@ Consumer prose may name a project-qualified task and say when local policy invok
 but does not restate output, pass/fail or warning behavior, refusals, normalization, or fallbacks.
 Rules: *a gate named by installed policy must be discoverable in that installed
 version's authority*; *classify a writer as a writer*; *consumer notes may route to a
-task, but must not become a second implementation manual*.
+task, but must not become a second implementation manual*; *a current generated block
+does not certify repository-owned prose outside it*.
 
 ## The invalid attempts that moved and then disappeared
 
@@ -1926,3 +1936,45 @@ numbers; the current report and `# line` tag remain the only transient locators.
 *put an actionable remedy on its own labeled line*; *refresh metadata only after the
 semantic argument still fits*; *do not maintain an unaudited prose copy of source
 coordinates*.
+
+## The fresh task Gradle called up-to-date
+
+Incident-client followed the documented provenance transition literally: first a
+history-free suite observation, then its named `BaselineRebase`. Both selected the same
+PIT inputs, so Gradle marked the second invocation's PIT task `UP-TO-DATE`; the writer's
+fresh-invocation guard correctly refused the old report. A new certification invocation
+failed the same way, making its retry instruction false in practice.
+
+The concrete task class carried `@UntrackedTask`, but Gradle's decorated `JavaExec`
+instance had no runtime reason not to track state. Constructor-time and configuration-time
+`doNotTrackState` calls were cleared by the same task decoration. The effective repair is
+an explicit `outputs.upToDateWhen { false }` predicate on every PIT execution task. The two
+fuzz `JavaExec` families received the same structural protection before a future output
+declaration could turn a requested budget or corpus rewrite into a no-op.
+
+Rules: *freshness must be asserted against the runtime task outcome, not an annotation*;
+*a named writer and certification execute their observations instead of reusing reports*;
+*repair the shared task shape, including prior instances, rather than teaching each
+workflow a rerun flag*.
+
+## The toolchain sidecar that appeared to timestamp every row
+
+The PIT 1.30.0 / ArcMutate Base 1.7.2 adoption left eight accepted
+`RemoveConditionalMutator_ORDER_IF` rows unmatched. All sat beside a current
+`ConditionalsBoundaryMutator`, so the uniform disappearance looked like a new mutator
+population regression. Repository history showed otherwise: the rows predated the
+ArcMutate licence, and the first Base 1.7.1 Rebase conservatively retained them.
+
+Controlled `incident-core:api` runs on identical source measured 128 mutants with open
+PIT 1.25.9, including five `ORDER_IF` candidates; Base 1.7.1 reduced that scoped
+population to 115 and removed those candidates, and Base 1.7.2 produced the same 115.
+The relevant Base subsumption classes
+and PIT conditional-mutator classes were byte-identical across the upgrades. The sidecar
+proved the later transition and fresh observation, not that each safely retained row had
+been generated by that toolchain. Repeated matching prune evidence may retire those
+carryovers without rolling back the dependency.
+
+Rules: *a safe superset may outlive the tool population that generated a row*;
+*toolchain provenance binds the transition, not a fictional per-row observation date*;
+*trace lineage and compare controlled populations before calling an unmatched family a
+regression*.

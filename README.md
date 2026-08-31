@@ -198,7 +198,9 @@ plugin as the task authority: on an upgrade, run the applying project's `hardeni
 `hardeningAgentTemplate` and `hardeningAgentTemplateDiff`. Review or act on the bounded
 diff before moving the digest marker, and move the marker in the same commit as the
 version pin. In a multi-project build, keep all three task names project-qualified so
-one chosen owner reports the installed version's guidance.
+one chosen owner reports the installed version's guidance. The non-failing
+`hardeningAgentProseAudit` selected by `check` and `qualityGate` separately identifies
+known copied plugin mechanics in repository-owned prose outside that bounded block.
 
 ## Plugins
 

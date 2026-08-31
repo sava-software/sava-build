@@ -71,6 +71,9 @@ abstract class FuzzRunTask : JavaExec() {
   )
 
   init {
+    // Keep the execution guarantee next to the JavaExec type so future registration
+    // paths cannot accidentally restore Gradle output reuse.
+    outputs.upToDateWhen { false }
     mainClass.convention("com.code_intelligence.jazzer.Jazzer")
     jvmArguments.convention(JAZZER_JVM_ARGUMENTS)
     argumentProviders.add(commandLineProvider)
@@ -158,6 +161,9 @@ abstract class FuzzMinimizeTask : JavaExec() {
   )
 
   init {
+    // Corpus minimization is an explicit execution request even when its declared
+    // inputs are byte-identical to the previous invocation.
+    outputs.upToDateWhen { false }
     mainClass.convention("com.code_intelligence.jazzer.Jazzer")
     jvmArguments.convention(JAZZER_JVM_ARGUMENTS)
     adoptLocalCorpus.convention(false)

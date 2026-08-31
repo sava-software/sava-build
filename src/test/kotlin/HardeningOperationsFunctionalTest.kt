@@ -1,4 +1,5 @@
 import org.gradle.testkit.runner.GradleRunner
+import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -181,6 +182,7 @@ class HardeningOperationsFunctionalTest {
       "downgradeMutationBaselines",
       "mutationOwnershipAudit",
       "hardeningReadmeAudit",
+      "hardeningAgentProseAudit",
     ).forEach { task -> assertTrue(output.contains(task), "missing $task:\n$output") }
     fun assertSingleEntry(task: String, purpose: String) {
       val entry = Regex(
@@ -205,6 +207,10 @@ class HardeningOperationsFunctionalTest {
       "advise on README source coordinates and inherited scaffold mechanics; used by check and qualityGate",
     )
     assertSingleEntry(
+      "hardeningAgentProseAudit",
+      "advise on copied plugin mechanics in root AGENTS.md prose; used by check and qualityGate",
+    )
+    assertSingleEntry(
       "hardeningInit",
       "scaffold config/pitest/README.md and the .pitest-history/ ignore rule",
     )
@@ -225,6 +231,7 @@ class HardeningOperationsFunctionalTest {
       "hardeningAgentTemplateDiff",
       "agentsTemplateInSync",
       "hardeningReadmeAudit",
+      "hardeningAgentProseAudit",
       "pitestEncoding",
       "pitestEncodingVerify",
     ).forEach { task ->
@@ -515,6 +522,26 @@ class HardeningOperationsFunctionalTest {
     assertTrue(before.contentEquals(baseline.readBytes()), "fixed-point rebase rewrote accepted evidence")
     val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
     assertFalse(args.contains("arcmutate_history"), args)
+  }
+
+  @Test
+  fun `rebase reruns PIT after an identical history-free observation`() {
+    writeFixture()
+    adoptExistingRecordWithRebase()
+
+    val observed = runner("pitestEncoding", "-PnoMutationHistory").build()
+    assertEquals(TaskOutcome.SUCCESS, observed.task(":pitestEncoding")?.outcome, observed.output)
+
+    val rebased = runner(
+      "pitestEncodingBaselineRebase",
+      "-PnoMutationHistory",
+    ).build()
+    assertEquals(TaskOutcome.SUCCESS, rebased.task(":pitestEncoding")?.outcome, rebased.output)
+    assertEquals(
+      listOf("run", "run"),
+      File(fixtureDir, "build/fake-pit/runs.txt").readLines(),
+      "the writer reused the immediately preceding history-free report instead of running PIT",
+    )
   }
 
   @Test

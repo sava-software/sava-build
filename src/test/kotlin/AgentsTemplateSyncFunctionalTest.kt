@@ -181,6 +181,7 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("inline or fenced coordinate rosters") &&
           printed.contains("narrative evidence, not protected membership") &&
           printed.contains("meaningful multiplicity as `xN`") &&
+          printed.contains("typographic `×N` is equivalent") &&
           printed.contains("row's `# line` tag are the sole transient locators"),
       "the version-matched template must keep every README roster free of decaying source-line locators:\n$printed",
     )
@@ -634,8 +635,16 @@ class AgentsTemplateSyncFunctionalTest {
 
     val check = runner("check", "--dry-run").build()
     assertTrue(check.output.contains(":agentsTemplateInSync"), "check must gate on it:\n" + check.output)
+    assertTrue(
+      check.output.contains(":hardeningAgentProseAudit"),
+      "check must run the local-prose audit:\n" + check.output,
+    )
     val gate = runner("qualityGate", "--dry-run").build()
     assertTrue(gate.output.contains(":agentsTemplateInSync"), "qualityGate must gate on it:\n" + gate.output)
+    assertTrue(
+      gate.output.contains(":hardeningAgentProseAudit"),
+      "qualityGate must run the local-prose audit:\n" + gate.output,
+    )
   }
 
   @Test

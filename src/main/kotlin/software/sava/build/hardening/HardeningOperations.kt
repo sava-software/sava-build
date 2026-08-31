@@ -679,6 +679,9 @@ internal object HardeningHelpText {
         "hardeningReadmeAudit",
         "advise on README source coordinates and inherited scaffold mechanics; used by check and qualityGate")
     appendGenerated(
+        "hardeningAgentProseAudit",
+        "advise on copied plugin mechanics in root AGENTS.md prose; used by check and qualityGate")
+    appendGenerated(
         "hardeningAgentTemplate",
         "print the installed bounded agent-instructions template unquoted")
     appendGenerated(

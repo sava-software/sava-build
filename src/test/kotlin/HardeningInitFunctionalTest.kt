@@ -65,7 +65,8 @@ class HardeningInitFunctionalTest {
     assertTrue(readmeText.contains("./gradlew :hardeningHelp"), readmeText)
     assertTrue(
       readmeText.contains("inline, fenced, or tabular coordinate rosters source-line-free") &&
-          readmeText.contains("meaningful multiplicity as `xN`"),
+          readmeText.contains("meaningful multiplicity as `xN`") &&
+          readmeText.contains("typographic `×N` is equivalent"),
       readmeText,
     )
     assertTrue(readmeText.contains("## Untriaged debt"), readmeText)

@@ -13,7 +13,16 @@ internal object HardeningAgentTemplateBlock {
   const val BLOCK_START = "<!-- hardening-template block:start -->"
   const val BLOCK_END = "<!-- hardening-template block:end -->"
 
-  data class Parsed(val lines: List<String>)
+  data class NumberedLine(
+    val lineNumber: Int,
+    val text: String,
+  )
+
+  data class Parsed(
+    val lines: List<String>,
+    /** Repository-owned prose, excluding both boundary lines and the shared body. */
+    val outsideLines: List<NumberedLine>,
+  )
 
   data class Marker(
     val digest: String,
@@ -93,7 +102,14 @@ internal object HardeningAgentTemplateBlock {
           "bullets-only; move $BLOCK_END before repository-specific headings and facts."
       )
     }
-    return Parsed(normalized)
+    val outsideLines = lines.mapIndexedNotNull { index, line ->
+      if (index in start.index..end.index) {
+        null
+      } else {
+        NumberedLine(index + 1, line)
+      }
+    }
+    return Parsed(normalized, outsideLines)
   }
 
   /** Refuses a future canonical template heading before it can invalidate every consumer. */

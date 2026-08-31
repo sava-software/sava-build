@@ -39,6 +39,7 @@ import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.qualifiedHardeningTaskPath
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
+import software.sava.build.hardening.task.HardeningAgentProseAuditTask
 import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
 import software.sava.build.hardening.task.HardeningCertificationPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationTask
@@ -637,6 +638,21 @@ val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
   repositoryCheckCoordinator.set(hardeningRepositoryCheckCoordinator)
   usesService(hardeningRepositoryCheckCoordinator)
 }
+val hardeningAgentProseAudit = tasks.register<HardeningAgentProseAuditTask>(
+    "hardeningAgentProseAudit"
+) {
+  group = "verification"
+  description = "Advises when root AGENTS.md prose outside the generated block copies installed plugin mechanics."
+  helpTaskPath.set(qualifiedHardeningTaskPath(project.path, "hardeningHelp"))
+  repositoryCheckKey.set(HardeningTemplateDigest.SHA256_12)
+  agentsFile.set(rootProject.layout.projectDirectory.file("AGENTS.md"))
+  advisoryLog.set(hardeningAdvisoryLog)
+  repositoryCheckCoordinator.set(hardeningRepositoryCheckCoordinator)
+  usesService(hardeningAdvisoryLog)
+  usesService(hardeningRepositoryCheckCoordinator)
+}
+tasks.named("check") { dependsOn(hardeningAgentProseAudit) }
+qualityGate.configure { dependsOn(hardeningAgentProseAudit) }
 val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   group = "verification"
   description = "Checks the root AGENTS.md bounded acknowledgment of the installed agent-instructions template."
@@ -6268,7 +6284,8 @@ tasks.register("hardeningInit") {
           |and `./gradlew $initTemplateTaskPath` for the version-matched agent contract.
           |The portable decision policy lives in sava-build's `HARDENING.md`.
           |Keep all prose and inline, fenced, or tabular coordinate rosters source-line-free;
-          |retain line-less class/method/mutator evidence and meaningful multiplicity as `xN`.
+          |retain line-less class/method/mutator evidence and meaningful multiplicity as `xN`
+          |(typographic `×N` is equivalent).
           |
           |## Untriaged debt
           |

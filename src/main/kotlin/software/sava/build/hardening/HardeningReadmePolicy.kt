@@ -152,7 +152,7 @@ internal object HardeningReadmePolicy {
       "and provenance. Installed task behavior belongs to $helpTaskPath. Inline, fenced, " +
       "and tabular coordinate rosters are README prose, not protected mutation membership." +
       "\n  Remedy: Remove source coordinates while preserving the class, method, semantic " +
-      "branch, mutator, and meaningful xN multiplicity. Rewrite or remove inherited " +
+      "branch, mutator, and meaningful xN/×N multiplicity. Rewrite or remove inherited " +
       "task-semantics passages; consult $helpTaskPath for installed behavior." +
       "\n  Disposition: This is a non-failing migration advisory."
   }
