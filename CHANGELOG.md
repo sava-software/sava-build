@@ -1,5 +1,19 @@
 # Changelog
 
+## [21.5.29](https://github.com/sava-software/sava-build/compare/21.5.28...21.5.29) (2026-08-31)
+
+
+### Bug Fixes
+
+* **hardening:** close canary adoption gaps ([bc2e880](https://github.com/sava-software/sava-build/commit/bc2e880c456a90739d1c063cbef87e3e137a84d5))
+* **hardening:** close RC adoption gaps ([b0a7844](https://github.com/sava-software/sava-build/commit/b0a7844b011be774ceb709db9a53bb0d1eb0966a))
+
+
+### Build System
+
+* **deps:** update Gradle analysis plugins ([d84ced5](https://github.com/sava-software/sava-build/commit/d84ced5a608e510005f6fd13edd817682e4deff4))
+* **hardening:** update PIT and ArcMutate Base ([ddbbaf2](https://github.com/sava-software/sava-build/commit/ddbbaf2240cb534f7c794a6f1818827c7baf7f80))
+
 ## [21.5.28](https://github.com/sava-software/sava-build/compare/21.5.27...21.5.28) (2026-08-26)
 
 
