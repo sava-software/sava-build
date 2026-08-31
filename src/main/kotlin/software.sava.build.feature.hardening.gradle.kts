@@ -41,6 +41,7 @@ import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
 import software.sava.build.hardening.task.HardeningAgentProseAuditTask
 import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
+import software.sava.build.hardening.task.HardeningCertifyAllTask
 import software.sava.build.hardening.task.HardeningCertificationPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationTask
 import software.sava.build.hardening.task.HardeningReadmeAuditTask
@@ -313,12 +314,13 @@ val hardeningCertifyPreflight =
 
 // `hardeningCertify` depends on both this preflight and `qualityGate`; dependency
 // siblings are otherwise unordered, and even `test`'s compile/resource prerequisites
-// could fail before the old durable receipt was invalidated. An ordering rule adds no
+// could fail before the new attempt's durable sentinel was published. An ordering rule adds no
 // preflight to ordinary task graphs, but when certification selected it, every task in
 // this project (except the intentionally earlier clean) starts only after ownership and
-// invalidation are established.
+// incomplete-attempt state are established.
 tasks.configureEach {
-  if (name != "clean" && name != "hardeningCertifyPreflight") {
+  if (name != "clean" && name != "hardeningCertifyPreflight" &&
+      name != "hardeningCertifyAll") {
     mustRunAfter(hardeningCertifyPreflight)
   }
 }
@@ -362,6 +364,35 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   val receiptRetry = certificationRetryGuidance(certifiedProjectPath)
   val pitVersion = hardening.pitestVersion
   val certifiedSuiteNames = certificationSuiteNames
+  fun markCertificationIncomplete(
+    failure: Throwable,
+    receiptReplacementAttempted: Boolean = false,
+    previousReceipt: ByteArray? = null,
+  ) {
+    try {
+      if (!certificationSession.get().ownsCertification(certifiedProjectPath)) return
+      val reason = (failure.message ?: failure::class.java.simpleName)
+          .replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')
+      if (receiptReplacementAttempted) {
+        BaselineFiles.restoreReceiptSnapshotUnderIncompleteMarker(
+            certifiedProjectDirectory,
+            receiptFile.asFile,
+            receiptRunning.asFile,
+            "refused\t$reason\n",
+            previousReceipt,
+        )
+      } else {
+        BaselineFiles.preserveReceiptUnderIncompleteMarker(
+            certifiedProjectDirectory,
+            receiptFile.asFile,
+            receiptRunning.asFile,
+            "refused\t$reason\n",
+        )
+      }
+    } catch (stateFailure: Exception) {
+      failure.addSuppressed(stateFailure)
+    }
+  }
   doFirst {
     val session = certificationSession.get()
     val sessionId = session.sessionId(certifiedProjectPath)
@@ -371,18 +402,18 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
         !session.ownsCertification(certifiedProjectPath) ||
         expectedSentinel == null || !runningFile.isFile ||
         runningFile.readText() != expectedSentinel) {
-      if (session.ownsCertification(certifiedProjectPath)) {
-        BaselineFiles.requireRegularFileOrMissing(
-            certifiedProjectDirectory, receiptFile.asFile)
-        BaselineFiles.deleteIfExists(receiptFile.asFile)
-      }
-      throw GradleException(
+      val failure = GradleException(
           "hardeningCertify: certification preflight does not own the exact durable " +
               "session sentinel; refusing to reuse or replace certification evidence" +
               receiptRetry)
+      markCertificationIncomplete(failure)
+      throw failure
     }
   }
   doLast {
+    var previousReceipt: ByteArray? = null
+    var receiptReplacementAttempted = false
+    try {
     val sessionId = certificationSession.get().sessionId(certifiedProjectPath)
         ?: throw GradleException(
             "hardeningCertify: certification session is not active" + receiptRetry)
@@ -520,7 +551,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
       }
       // The report and compiled/configured inputs prove what PIT observed; these
       // committed files prove what made that observation acceptable. Keep their
-      // digest in every suite row too: the schema-6 receipt's project-level Git
+      // digest in every suite row too: the schema-7 receipt's project-level Git
       // identity binds the checkout, while this field names the exact baseline,
       // timeout membership, causes, and PIT-version provenance used by the suite.
       val recordInputsSha256 = PitestEvidence.mutationRecordFingerprint(
@@ -541,7 +572,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
           ).joinToString("\t"))
     }
     val receipt = buildString {
-      appendLine("schema\t6")
+      appendLine("schema\t7")
       appendLine("project\t$certifiedProjectPath")
       appendLine("session\t$sessionId")
       appendLine("mode\tfresh-full-strict")
@@ -552,7 +583,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
       appendLine("gitProjectDirectory\t${finalProjectIdentity.git.projectDirectory}")
       appendLine("pluginSha256\t${finalProjectIdentity.pluginSha256}")
       appendLine(
-          "columns\tsuite\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\t" +
+          "suiteColumns\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\t" +
               "configurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\t" +
               "mutationToolchainSha256\trecordInputsSha256\trecordPitestVersion\t" +
               "recordMutationToolchainSha256")
@@ -564,16 +595,17 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
         !runningFile.isFile || runningFile.readText() != expectedSentinel) {
       BaselineFiles.requireRegularFileOrMissing(
           certifiedProjectDirectory, receiptFile.asFile)
-      BaselineFiles.deleteIfExists(receiptFile.asFile)
       throw GradleException(
           "hardeningCertify: certification ownership sentinel changed before receipt publication" +
               receiptRetry)
     }
+    previousReceipt = BaselineFiles.readRegularFileSnapshot(
+        certifiedProjectDirectory, receiptFile.asFile)
+    receiptReplacementAttempted = true
     BaselineFiles.writeAtomically(
         certifiedProjectDirectory, receiptFile.asFile, receipt)
     BaselineFiles.requireRegularFileOrMissing(certifiedProjectDirectory, runningFile)
     if (!runningFile.isFile || runningFile.readText() != expectedSentinel) {
-      BaselineFiles.deleteIfExists(receiptFile.asFile)
       throw GradleException(
           "hardeningCertify: certification ownership sentinel changed during receipt publication" +
               receiptRetry)
@@ -586,8 +618,25 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
     logger.lifecycle(
         "$certificationTaskPath: ${certifiedSuiteNames.size} $suiteNoun certified; " +
             "receipt: $publishedReceipt")
+    } catch (failure: Exception) {
+      markCertificationIncomplete(failure, receiptReplacementAttempted, previousReceipt)
+      throw failure
+    }
   }
 }
+
+// A plain `:a:hardeningCertify :b:hardeningCertify` invocation retains Gradle's
+// fail-fast semantics unless the caller supplies --continue. This root anchor gives
+// consumers a configuration-cache-safe installed alternative: project certifications
+// are sibling finalizers, so one project's failure does not stop the remaining
+// projects, while the original failure still makes the aggregate build fail.
+val hardeningCertifyAll = rootProject.tasks.maybeCreate(
+    "hardeningCertifyAll", HardeningCertifyAllTask::class.java)
+hardeningCertifyAll.group = "verification"
+hardeningCertifyAll.description =
+    "Certifies every project using sava hardening; sibling projects continue after a failure."
+hardeningCertifyAll.excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
+hardeningCertifyAll.finalizedBy(hardeningCertify)
 
 // `mustRunAfter` only orders tasks within one project. PIT and corpus-rewrite tasks
 // retain an exclusive build-wide slot so mutation timeout evidence and source writes
@@ -2127,8 +2176,8 @@ hardening.fuzz.all {
 // receipt and its in-progress sentinel are machine-local campaign state, not build
 // outputs: keeping them in the already-ignored `.pitest-history/` directory lets a
 // later `clean hardeningCertify` preserve a completed fuzz campaign. Starting the next
-// campaign still deletes the completed receipt before any target can run and leaves the
-// sentinel behind on every incomplete path.
+// campaign preserves the last completed receipt and writes the sentinel before any
+// target can run; receipt plus sentinel is an incomplete current campaign.
 val fuzzTargetNames = objects.setProperty<String>()
 val maxFuzzTime = providers.gradleProperty(HardeningOptionNames.MAX_FUZZ_TIME).orElse("60")
 val localFuzzReceiptFile = layout.projectDirectory.file(".pitest-history/local-fuzz.tsv")
@@ -2169,7 +2218,7 @@ val validateFuzzBudget = tasks.register("validateFuzzBudget") {
 // cannot become a task-selection error that bypasses fuzzAll's own fail-closed start
 // boundary. It is intentionally not part of the aggregate graph anymore.
 tasks.register("fuzzAllPreflight") {
-  description = "Internal compatibility marker; fuzzAll now owns receipt invalidation."
+  description = "Internal compatibility marker; fuzzAll now owns its durable campaign start boundary."
 }
 val fuzzAll = tasks.register("fuzzAll") {
   group = "verification"
@@ -2217,9 +2266,10 @@ val fuzzAll = tasks.register("fuzzAll") {
 
       // The ownership lock comes first: a rejected concurrent invocation must not
       // invalidate evidence belonging to the campaign that actually owns this checkout.
-      // Once owned, invalidate durable success before touching optional transition state.
+      // Once owned, mark this attempt before touching optional transition state. Keep
+      // the last successful receipt; the running sentinel makes it ineligible as
+      // evidence that this newer campaign completed.
       BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
-      BaselineFiles.deleteIfExists(receiptFile)
       BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
       BaselineFiles.writeAtomically(trustedProjectDirectory, runningFile, "starting\t$sessionId\n")
 
@@ -2271,11 +2321,12 @@ val fuzzAll = tasks.register("fuzzAll") {
       session.refuse(campaignProjectPath, expectedTargets, reason)
       if (ownsCampaign) {
         try {
-          BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
-          BaselineFiles.deleteIfExists(receiptFile)
-          BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
-          BaselineFiles.writeAtomically(
-              trustedProjectDirectory, runningFile, "refused\t$reason\n")
+          BaselineFiles.preserveReceiptUnderIncompleteMarker(
+              trustedProjectDirectory,
+              receiptFile,
+              runningFile,
+              "refused\t${reason.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')}\n",
+          )
         } catch (stateFailure: Exception) {
           failure.addSuppressed(stateFailure)
         }
@@ -2300,6 +2351,12 @@ val fuzzAllComplete = tasks.register("fuzzAllComplete") {
   val fuzzSession = hardeningFuzzSession
   usesService(fuzzSession)
   doLast {
+    val receiptFile = receiptFileProvider.asFile
+    val runningFile = receiptRunning.asFile
+    val session = fuzzSession.get()
+    var previousReceipt: ByteArray? = null
+    var receiptReplacementAttempted = false
+    try {
     val appliedPluginSha256 = pluginSha256.get()
     try {
       HardeningPluginIdentityGuard.requireUnchanged(
@@ -2310,30 +2367,17 @@ val fuzzAllComplete = tasks.register("fuzzAllComplete") {
           "fuzzAll after campaign",
       )
     } catch (e: IllegalStateException) {
-      val receiptFile = receiptFileProvider.asFile
-      BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
-      BaselineFiles.deleteIfExists(receiptFile)
       throw GradleException(
           "${e.message}; refusing a mixed-plugin receipt", e)
     }
     val completed = try {
-      fuzzSession.get().requireCompleted(receiptProjectPath, names.get())
+      session.requireCompleted(receiptProjectPath, names.get())
     } catch (failure: IllegalStateException) {
-      if (fuzzSession.get().ownsCampaign(receiptProjectPath)) {
-        val receiptFile = receiptFileProvider.asFile
-        BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
-        BaselineFiles.deleteIfExists(receiptFile)
-      }
       throw GradleException("fuzzAll: ${failure.message}; refusing to write a receipt", failure)
     }
     val totalExecutions = try {
       completed.totalExecutions
     } catch (failure: IllegalStateException) {
-      if (fuzzSession.get().ownsCampaign(receiptProjectPath)) {
-        val receiptFile = receiptFileProvider.asFile
-        BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
-        BaselineFiles.deleteIfExists(receiptFile)
-      }
       throw GradleException("fuzzAll: ${failure.message}; refusing to write a receipt", failure)
     }
     val receipt = buildString {
@@ -2349,27 +2393,52 @@ val fuzzAllComplete = tasks.register("fuzzAllComplete") {
                 completed.executionsByTarget.getValue(target))
       }
     }
-    val receiptFile = receiptFileProvider.asFile
-    val runningFile = receiptRunning.asFile
     BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
     val expectedSentinel = "session\t${completed.sessionId}\n"
     if (!runningFile.isFile || runningFile.readText() != expectedSentinel) {
-      BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, receiptFile)
-      BaselineFiles.deleteIfExists(receiptFile)
       throw GradleException(
           "fuzzAll: campaign ownership sentinel changed before receipt publication")
     }
+    previousReceipt = BaselineFiles.readRegularFileSnapshot(
+        trustedProjectDirectory, receiptFile)
+    receiptReplacementAttempted = true
     BaselineFiles.writeAtomically(trustedProjectDirectory, receiptFile, receipt)
     // Publish while the sentinel still exists, then clear it. Interruption can leave
-    // receipt+sentinel (invalid), never a prior valid receipt masquerading as this run.
+    // receipt+sentinel, which is explicitly not a completed current campaign.
     BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
     if (!runningFile.isFile || runningFile.readText() != expectedSentinel) {
-      BaselineFiles.deleteIfExists(receiptFile)
       throw GradleException(
           "fuzzAll: campaign ownership sentinel changed during receipt publication")
     }
     BaselineFiles.deleteIfExists(runningFile)
     logger.lifecycle("fuzzAll: ${names.get().size} local target(s) completed; receipt: $receiptFile")
+    } catch (failure: Exception) {
+      try {
+        if (session.ownsCampaign(receiptProjectPath)) {
+          val reason = (failure.message ?: failure::class.java.simpleName)
+              .replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')
+          if (receiptReplacementAttempted) {
+            BaselineFiles.restoreReceiptSnapshotUnderIncompleteMarker(
+                trustedProjectDirectory,
+                receiptFile,
+                runningFile,
+                "refused\t$reason\n",
+                previousReceipt,
+            )
+          } else {
+            BaselineFiles.preserveReceiptUnderIncompleteMarker(
+                trustedProjectDirectory,
+                receiptFile,
+                runningFile,
+                "refused\t$reason\n",
+            )
+          }
+        }
+      } catch (stateFailure: Exception) {
+        failure.addSuppressed(stateFailure)
+      }
+      throw failure
+    }
   }
 }
 fuzzAll.configure { finalizedBy(fuzzAllComplete) }
@@ -4203,7 +4272,10 @@ hardening.mutation.all {
 
       // A candidate list is not deletion authority until it repeats. Persist the
       // exact DROP multiset — the same row-level plan BaselinePrune consumes — only
-      // for provenance-bound, fresh, full, history-free observations. Unlike the
+      // for provenance-bound, fresh, full, history-free observations made outside
+      // routine release certification. Certification may reveal candidates, but it
+      // must not silently satisfy a later destructive workflow's repetition gate.
+      // Unlike the
       // advisory timeout-retirement identity, this decision identity retains the
       // loaded plugin SHA: a classifier implementation change must reset the chain.
       // The mutation-record fingerprint binds the accepted rows, timeout records,
@@ -4224,6 +4296,7 @@ hardening.mutation.all {
       val prunePreviewTransition: PrunePreviewTransition? = verifiedEvidence
           ?.takeIf { evidence ->
             (canonicalWriteOperation == BaselineWriteOperation.CHECK || prune) &&
+                !certificationActive &&
                 prunePreviewProvenanceValid &&
                 evidence.scope == PitestEvidence.FULL_SCOPE &&
                 !evidence.historyAssisted &&
@@ -4905,11 +4978,15 @@ hardening.mutation.all {
                 "a new fresh full history-free preview before reconsidering these candidates."
           } else {
             val freshFullHistoryFreePreview = verifiedEvidence?.let { evidence ->
-              evidence.scope == PitestEvidence.FULL_SCOPE &&
+              !certificationActive &&
+                  evidence.scope == PitestEvidence.FULL_SCOPE &&
                   !evidence.historyAssisted &&
                   !historyAssistedReport
             } == true
             val currentObservation = when {
+              certificationActive ->
+                "This certification observation does not advance prune-preview state; " +
+                    "release proof is not implicit preparation for a destructive baseline write."
               historyAssistedReport ->
                 "This [history] preview cannot qualify as fresh full history-free absence " +
                     "evidence."

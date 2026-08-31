@@ -44,8 +44,29 @@ internal fun certificationRetryGuidance(projectPath: String): String {
     "that invocation; completed receipts from other projects remain independent."
 }
 
-/** Owns and invalidates durable certification state before any expensive PIT task runs. */
-@UntrackedTask(because = "Certification must invalidate prior evidence on every invocation")
+/**
+ * Root anchor for fail-independent project certifications. Each project wires its
+ * own [HardeningCertificationTask] as a finalizer: Gradle continues with sibling
+ * finalizers after one fails, while preserving the failing build result.
+ */
+@UntrackedTask(because = "Always schedules the registered project certification finalizers")
+abstract class HardeningCertifyAllTask : DefaultTask() {
+  @get:Input abstract val excludedTaskNames: ListProperty<String>
+
+  @TaskAction
+  fun requireCompleteAggregateGraph() {
+    val excluded = excludedTaskNames.get().sorted()
+    if (excluded.isNotEmpty()) {
+      throw GradleException(
+        "hardeningCertifyAll cannot certify every registered project with task exclusion(s): " +
+          excluded.joinToString(", ") { "-x $it" }
+      )
+    }
+  }
+}
+
+/** Owns durable certification state and marks the new attempt before expensive PIT runs. */
+@UntrackedTask(because = "Certification must mark every invocation as incomplete until publication")
 abstract class HardeningCertificationPreflightTask : DefaultTask() {
   @get:Internal abstract val certificationProjectDirectory: DirectoryProperty
   @get:Internal abstract val receiptFile: RegularFileProperty
@@ -105,9 +126,10 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
       val session = certificationSession.get()
       val sessionId = session.activate(projectPath, expectedPlugin, lock)
 
-      // Ownership comes first. A competing process must not invalidate evidence or
-      // overwrite the sentinel belonging to the process that holds the lock.
-      BaselineFiles.deleteIfExists(receipt)
+      // Ownership comes first. A competing process must not overwrite the sentinel
+      // belonging to the process that holds the lock. Keep the previous successful
+      // receipt as last-known-success evidence; the sentinel makes it ineligible as
+      // proof that this newer attempt completed.
       BaselineFiles.writeAtomically(projectDirectory, running, "session\t$sessionId\n")
 
       // Remove the one-generation build-output location. buildDirectory is
@@ -165,12 +187,14 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
       val session = certificationSession.get()
       if (session.ownsCertification(projectPath)) {
         try {
-          BaselineFiles.requireRegularFileOrMissing(projectDirectory, receipt)
-          BaselineFiles.deleteIfExists(receipt)
-          BaselineFiles.requireRegularFileOrMissing(projectDirectory, running)
           val reason = (failure.message ?: failure::class.java.simpleName)
             .replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')
-          BaselineFiles.writeAtomically(projectDirectory, running, "refused\t$reason\n")
+          BaselineFiles.preserveReceiptUnderIncompleteMarker(
+            projectDirectory,
+            receipt,
+            running,
+            "refused\t$reason\n",
+          )
         } catch (stateFailure: Exception) {
           failure.addSuppressed(stateFailure)
         }

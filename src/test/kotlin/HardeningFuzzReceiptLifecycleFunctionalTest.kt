@@ -68,8 +68,9 @@ class HardeningFuzzReceiptLifecycleFunctionalTest {
   }
 
   @Test
-  fun `new campaign invalidates durable and legacy success before later failure`() {
+  fun `failed replacement preserves durable last success under its running sentinel`() {
     runner("fuzzAll", "-PmaxFuzzTime=1").build()
+    val priorReceipt = receipt.readBytes()
     legacyReceipt.apply {
       parentFile.mkdirs()
       writeText("legacy success\n")
@@ -79,7 +80,11 @@ class HardeningFuzzReceiptLifecycleFunctionalTest {
     val failed = runner("fuzzAll", "-PmaxFuzzTime=0").buildAndFail()
 
     assertTrue(failed.output.contains("0 is libFuzzer's run-forever sentinel"), failed.output)
-    assertFalse(receipt.exists(), "failed replacement campaign retained the prior durable success")
+    assertArrayEquals(
+      priorReceipt,
+      receipt.readBytes(),
+      "failed replacement campaign destroyed its last successful receipt",
+    )
     assertFalse(legacyReceipt.exists(), "failed replacement campaign retained legacy success")
     assertFalse(legacyRunning.exists(), "new preflight retained the superseded legacy sentinel")
     assertTrue(running.isFile, "failed replacement campaign did not remain visibly in progress")
@@ -105,6 +110,7 @@ class HardeningFuzzReceiptLifecycleFunctionalTest {
     runner("fuzzAll", "-PmaxFuzzTime=1").build()
 
     assertTrue(receipt.isFile, "external legacy cleanup prevented a new durable receipt")
+    val priorReceipt = receipt.readBytes()
     assertFalse(externalLegacyReceipt.exists(), "external legacy receipt survived replacement")
     assertFalse(externalLegacyRunning.exists(), "external legacy sentinel survived replacement")
 
@@ -112,7 +118,11 @@ class HardeningFuzzReceiptLifecycleFunctionalTest {
     val failed = runner("fuzzAll", "-PmaxFuzzTime=1").buildAndFail()
 
     assertTrue(failed.output.contains("is not a regular file"), failed.output)
-    assertFalse(receipt.exists(), "invalid legacy state left the prior durable success eligible")
+    assertArrayEquals(
+      priorReceipt,
+      receipt.readBytes(),
+      "invalid legacy state destroyed the prior durable success",
+    )
     assertTrue(running.isFile, "invalid legacy state did not leave the new attempt in progress")
   }
 

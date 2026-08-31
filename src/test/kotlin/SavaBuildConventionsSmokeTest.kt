@@ -1,5 +1,7 @@
 import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
+import org.gradle.testkit.runner.TaskOutcome
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -74,6 +76,43 @@ class SavaBuildConventionsSmokeTest {
     assertFalse(result.output.contains(":aggregation"), result.output)
     assertTrue(reused.output.contains("Project ':lib'"), reused.output)
     assertFalse(reused.output.contains(":aggregation"), reused.output)
+  }
+
+  @Test
+  fun `settings entry point provides the root build health aggregate`() {
+    writeFixture(
+      savaProperties = "solanaBOMVersion=0.0.0-smoke\n",
+      settingsSuffix =
+        """
+
+        dependencyResolutionManagement {
+          repositories { maven { url = uri("stub-repo") } }
+        }
+        """.trimIndent() + "\n",
+    )
+    File(
+      fixtureDir,
+      "stub-repo/software/sava/solana-version-catalog/0.0.0-smoke/" +
+        "solana-version-catalog-0.0.0-smoke.pom",
+    ).apply {
+      parentFile.mkdirs()
+      writeText(
+        """
+        <project xmlns="http://maven.apache.org/POM/4.0.0">
+          <modelVersion>4.0.0</modelVersion>
+          <groupId>software.sava</groupId>
+          <artifactId>solana-version-catalog</artifactId>
+          <version>0.0.0-smoke</version>
+          <packaging>pom</packaging>
+        </project>
+        """.trimIndent() + "\n",
+      )
+    }
+    val result = runBuild("buildHealth", "--console=plain")
+
+    assertEquals(TaskOutcome.SUCCESS, result.task(":buildHealth")?.outcome, result.output)
+    assertEquals(TaskOutcome.SUCCESS, result.task(":generateBuildHealth")?.outcome, result.output)
+    assertEquals(TaskOutcome.SUCCESS, result.task(":lib:filterAdvice")?.outcome, result.output)
   }
 
   @Test

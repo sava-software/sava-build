@@ -183,6 +183,7 @@ class HardeningOperationsFunctionalTest {
       "mutationOwnershipAudit",
       "hardeningReadmeAudit",
       "hardeningAgentProseAudit",
+      ":hardeningCertifyAll",
     ).forEach { task -> assertTrue(output.contains(task), "missing $task:\n$output") }
     fun assertSingleEntry(task: String, purpose: String) {
       val entry = Regex(
@@ -215,6 +216,10 @@ class HardeningOperationsFunctionalTest {
       "scaffold config/pitest/README.md and the .pitest-history/ ignore rule",
     )
     assertSingleEntry(
+      ":hardeningCertifyAll",
+      "certify every hardening project; sibling projects continue after failure",
+    )
+    assertSingleEntry(
       "pitestEncoding",
       "run the suite's normal PIT mutation workflow",
     )
@@ -232,6 +237,7 @@ class HardeningOperationsFunctionalTest {
       "agentsTemplateInSync",
       "hardeningReadmeAudit",
       "hardeningAgentProseAudit",
+      ":hardeningCertifyAll",
       "pitestEncoding",
       "pitestEncodingVerify",
     ).forEach { task ->

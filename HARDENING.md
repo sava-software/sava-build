@@ -77,8 +77,10 @@ flags before PIT starts, makes timeout drift and whole-production ownership stri
 requires a provenance-bound report for every suite, and writes
 `.pitest-history/pitest-certification.tsv`. The receipt is machine-local release evidence,
 not a disposable build product: `clean` preserves it, while the next certification owns
-an OS lock, invalidates it before PIT, and leaves a `.running` sentinel on every incomplete
-path. `hardeningCertify` fails before PIT when `.pitest-history/` is not Git-ignored.
+an OS lock and writes a `.running` sentinel before PIT. The prior TSV remains available as
+last-known-success evidence, but it is not evidence that the newer attempt completed while
+the sentinel exists; consumers must treat TSV plus `.running` as an incomplete current
+attempt. `hardeningCertify` fails before PIT when `.pitest-history/` is not Git-ignored.
 Each suite row binds not only the report,
 compiled code, source, configuration, PIT tool classpath, and loaded plugin binary, but
 also the accepted baseline, audited timeout membership, recorded PIT-version and
@@ -106,8 +108,12 @@ ordered after `clean`, then fingerprints the sources and classes produced by the
 task graph. It is useful when validating a new plugin's evidence plumbing, but it is not
 an extra release soak requirement; ordinary `hardeningCertify` is already a fresh PIT
 observation. A later `clean` does not erase the completed receipt; starting another
-certification does invalidate it, because an incomplete replacement must never leave the
-previous success looking current.
+certification preserves its bytes but makes it non-current by publishing the `.running`
+sentinel. Success atomically replaces the TSV and clears that sentinel. Failure keeps both
+the last successful receipt and the sentinel, so evidence is not destroyed and the failed
+attempt cannot masquerade as a success. If unexpected path interference prevents the owned
+sentinel from being restored, the plugin deletes the TSV instead: losing historical evidence
+is safer than leaving a failed attempt apparently current.
 
 Certification receipts are **project-scoped**: each `hardeningCertify` covers one project's
 registered suites and writes an independent receipt. No child receipt claims the repository
@@ -126,6 +132,14 @@ identifies an observation, not an input — PIT's first-kill test ordering races
 so identical inputs legitimately produce different values across runs. Never treat a
 match or mismatch there as evidence about equivalence; the input-identity fields beside
 it are the ones that compare.
+
+For one invocation covering every project that applies hardening, run
+`./gradlew :hardeningCertifyAll`. It schedules each project certification as an independent
+finalizer: one project's failure still leaves the overall build failed, but does not block
+sibling projects from publishing their own successful receipts. Directly selecting several
+`:project:hardeningCertify` tasks retains Gradle's ordinary fail-fast behavior; add
+`--continue` when using that form and sibling completion is required. Neither form claims
+an independent Gradle root that was not part of the invocation.
 
 Generated evidence must never select the configuration-cache task graph. The PIT
 validators are always present and decide at execution time whether `.evidence.tsv`
@@ -758,6 +772,8 @@ of any row's removal criterion. `BaselinePrune` requires those two previews befo
 starts, then makes a distinct third fresh write-boundary observation and refuses if
 that candidate multiset wanders. A row proved to flip belongs in persistent
 `# flip insurance` instead.
+Routine `hardeningCertify` observations report candidates but do not create or advance this
+state: release certification is not implicit preparation for a destructive baseline write.
 Prune also refreshes the `# line` tag of each retained row matched at its own
 key, using line affinity before file order; unmatched rows kept for
 `TIMED_OUT`, a pending flip, or flip insurance retain their prior tags because
@@ -1907,9 +1923,12 @@ target registered in a project with:
 so adding a target cannot leave a hand-maintained task list stale. It writes
 `.pitest-history/local-fuzz.tsv` after all selected targets succeed. That machine-local
 receipt deliberately survives `clean`, including a later `clean hardeningCertify`.
-Starting the next campaign deletes it before any target runs and creates
-`.pitest-history/local-fuzz.running`; failure or interruption leaves the sentinel and
-no valid receipt, while success publishes the new receipt before clearing the sentinel.
+Starting the next campaign creates `.pitest-history/local-fuzz.running` before any target
+runs and preserves the prior TSV as last-known-success evidence. Failure or interruption
+leaves receipt plus sentinel; that pair is not a completed current campaign. Success
+publishes the new receipt before clearing the sentinel. Consumers, including the release
+runner, must require the receipt and the absence of the sentinel. If the owned sentinel
+cannot be restored after path interference, the plugin deletes the TSV fail-closed.
 An OS file lock held for the full aggregate invocation rejects a second `fuzzAll` before it
 can overwrite the first campaign's sentinel or receipt; parallelism belongs inside one
 owned campaign through `-PmaxParallelFuzzTargets`, not through competing Gradle processes.
@@ -1937,7 +1956,7 @@ inconsistent counts or a mismatched parallelism declaration refuse the receipt. 
 iteration but creates no aggregate proof.
 
 A consumer's own fuzz certification must run every registered target against the exact
-candidate plugin binary, invalidate stale aggregate receipts before execution, and retain
+candidate plugin binary, mark the current attempt incomplete before execution, and retain
 immutable, commit-bound evidence. A local campaign is sufficient; no soak window or scheduled
 workflow is required. The `sava-build` owner instead relies on the relevant local adoption
 passes already performed during development; its release mechanics live in the

@@ -1,5 +1,6 @@
 package software.sava.build.hardening
 
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -110,6 +111,103 @@ class BaselineFilesTest {
 
     assertTrue(target.isFile, "the target must still exist")
     assertEquals("", target.readText())
+  }
+
+  @Test
+  fun `last-success receipt is preserved only beneath a restored incomplete marker`() {
+    val receipt = File(tempDir, ".pitest-history/receipt.tsv").apply {
+      parentFile.mkdirs()
+      writeText("last success\n")
+    }
+    val marker = receipt.parentFile.resolve("receipt.running")
+
+    BaselineFiles.preserveReceiptUnderIncompleteMarker(
+      tempDir,
+      receipt,
+      marker,
+      "refused\tsentinel disappeared\n",
+    )
+
+    assertEquals("last success\n", receipt.readText())
+    assertEquals("refused\tsentinel disappeared\n", marker.readText())
+  }
+
+  @Test
+  fun `receipt path interference cannot prevent restoring the incomplete marker`() {
+    val receipt = File(tempDir, ".pitest-history/receipt.tsv").apply { mkdirs() }
+    val marker = receipt.parentFile.resolve("receipt.running")
+
+    BaselineFiles.preserveReceiptUnderIncompleteMarker(
+      tempDir,
+      receipt,
+      marker,
+      "refused\treceipt changed\n",
+    )
+
+    assertTrue(receipt.isDirectory)
+    assertEquals("refused\treceipt changed\n", marker.readText())
+  }
+
+  @Test
+  fun `failed receipt publication restores exact prior bytes beneath its marker`() {
+    val receipt = File(tempDir, ".pitest-history/receipt.tsv").apply {
+      parentFile.mkdirs()
+      writeText("new attempt\n")
+    }
+    val marker = receipt.parentFile.resolve("receipt.running")
+    val prior = byteArrayOf(0, 1, 2, 127, -1)
+
+    BaselineFiles.restoreReceiptSnapshotUnderIncompleteMarker(
+      tempDir,
+      receipt,
+      marker,
+      "refused\tpost-publication check\n",
+      prior,
+    )
+
+    assertArrayEquals(prior, receipt.readBytes())
+    assertEquals("refused\tpost-publication check\n", marker.readText())
+  }
+
+  @Test
+  fun `failed first receipt publication removes its successor beneath its marker`() {
+    val receipt = File(tempDir, ".pitest-history/receipt.tsv").apply {
+      parentFile.mkdirs()
+      writeText("new attempt\n")
+    }
+    val marker = receipt.parentFile.resolve("receipt.running")
+
+    BaselineFiles.restoreReceiptSnapshotUnderIncompleteMarker(
+      tempDir,
+      receipt,
+      marker,
+      "refused\tpost-publication check\n",
+      null,
+    )
+
+    assertFalse(receipt.exists())
+    assertEquals("refused\tpost-publication check\n", marker.readText())
+  }
+
+  @Test
+  fun `unrestorable incomplete marker deletes the receipt fail closed`() {
+    val receipt = File(tempDir, ".pitest-history/receipt.tsv").apply {
+      parentFile.mkdirs()
+      writeText("last success\n")
+    }
+    val marker = receipt.parentFile.resolve("receipt.running").apply { mkdirs() }
+
+    assertThrows(Exception::class.java) {
+      BaselineFiles.preserveReceiptUnderIncompleteMarker(
+        tempDir,
+        receipt,
+        marker,
+        "refused\tunwritable marker\n",
+      )
+    }
+
+    assertFalse(receipt.exists(), "unmarked failed attempt left apparently current evidence")
+    assertTrue(marker.isDirectory, "fallback followed or replaced a non-regular marker")
   }
 
   @Test

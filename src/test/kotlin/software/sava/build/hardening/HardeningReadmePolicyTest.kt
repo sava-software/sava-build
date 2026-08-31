@@ -30,6 +30,50 @@ class HardeningReadmePolicyTest {
   }
 
   @Test
+  fun `source locator audit follows a wrapped Java owner onto the next line`() {
+    val inspection = HardeningReadmePolicy.inspect(
+      """
+      The acceptance belongs to `IncidentIoConfig${'$'}Parser.test`
+      :219 and still exercises the delegate.
+
+      The branch in com.example.Codec.decode
+      > `:341/347` remains equivalent.
+
+      The method `parse`
+      :412 is the semantic branch under review.
+
+      `parseProperties`
+      :517 is the final delegate site.
+
+      The same acceptance is owned by **IncidentIoConfig${'$'}Parser.parse**
+      :619 after Markdown emphasis is removed.
+
+      [parseProperties](#parser-method)
+      :620 is linked from the evidence index.
+
+      __Codec.decode__
+      :621 remains the branch under review.
+
+      **[`Parser.decode`](#decode-branch)**
+      :622 keeps nested Markdown from hiding the owner.
+
+      **Parser.decode**:623 and [Codec.encode](#encode-branch):624 remain source sites.
+      """.trimIndent()
+    )
+
+    assertEquals(
+      listOf(
+        ":219", ":341/347", ":412", ":517", ":619", ":620", ":621", ":622", ":623", ":624",
+      ),
+      inspection.sourceLocators.map { it.matchedText },
+    )
+    assertEquals(
+      listOf(2, 5, 8, 11, 14, 17, 20, 23, 25, 25),
+      inspection.sourceLocators.map { it.lineNumber },
+    )
+  }
+
+  @Test
   fun `structured tags dates versions clocks network ports ratios and map values are excluded`() {
     val inspection = HardeningReadmePolicy.inspect(
       """
@@ -39,6 +83,26 @@ class HardeningReadmePolicyTest {
       Probe https://localhost:8443/a, 127.0.0.1:8899, [::1]:8080, and example.com:443.
       Configuration uses server:8080, port:8899 and dataSlice{offset:0,length:13}.
       A ratio is 1:100; `:10` is a clock-origin shorthand, not a source coordinate.
+      Labels remain `UTC`:30, `version`:30, `timeout`:250, and `Duration`:500.
+      Bare forms UTC:30, version:30, timeout:250, Duration:500, and RFC:3339 are metadata.
+      Configuration keys retryDelay:250, batchSize:100, and maxLen:128 are not source owners.
+
+      Released version
+      :30 with the ordinary notes.
+      Probe example.com
+      :443 only when the service is available.
+      The ratio is
+      :100 in this illustrative notation.
+      `port`
+      :8080 in the wrapped configuration table.
+      `version`
+      :30 in the release index.
+      `UTC`
+      :30 in the clock display.
+      `timeout`
+      :250 in the configuration table.
+      **Duration**
+      :500 in the metrics legend.
       """.trimIndent()
     )
 

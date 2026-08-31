@@ -87,7 +87,11 @@ internal object HardeningReadmePolicy {
     """(?i)\blines?\s+\d{1,6}(?:\s*(?:[-–—/,]|\band\b)\s*\d{1,6})*"""
   )
   private val colonLocator = Regex(""":\d{2,5}(?:(?:[-/,])\d{2,5})*""")
-  private val backtickedIdentifier = Regex("""`[A-Za-z_$<>][A-Za-z0-9_$<>]*`""")
+  private val wrappedCoordinateOwner = Regex(
+    """`?[A-Za-z_$<>][A-Za-z0-9_$<>]*(?:[.$][A-Za-z_$<>][A-Za-z0-9_$<>]*)+`?[),;:]?$"""
+  )
+  private val sourceOwnerVocabulary = Regex("""(?i)\b(?:class|constructor|method|mutator|branch|site)\b""")
+  private val simpleCoordinateOwner = Regex("""`?([A-Za-z_$<>][A-Za-z0-9_$<>]*)`?[),;:]?$""")
   private val mutationVocabulary = Regex(
     """(?:Mutator|ConditionalsBoundary|VoidMethodCall|NullReturnVals|Boolean(?:True|False)ReturnVals|Math|Increments|EQUAL_|ORDER_)"""
   )
@@ -96,7 +100,7 @@ internal object HardeningReadmePolicy {
   fun inspect(text: String): Inspection {
     val lines = text.lines()
     val sourceLocators = lines.flatMapIndexed { index, line ->
-      sourceLocators(line).map { matched ->
+      sourceLocators(line, lines.getOrNull(index - 1)).map { matched ->
         Finding(
           FindingKind.SOURCE_LOCATOR,
           index + 1,
@@ -157,7 +161,7 @@ internal object HardeningReadmePolicy {
       "\n  Disposition: This is a non-failing migration advisory."
   }
 
-  private fun sourceLocators(line: String): List<MatchResult> {
+  private fun sourceLocators(line: String, previousLine: String?): List<MatchResult> {
     val explicit = explicitLineLocator.findAll(line).filterNot { match ->
       isStructuredLineTag(line, match.range.first)
     }
@@ -168,12 +172,65 @@ internal object HardeningReadmePolicy {
       leftIdentifier(line, match.range.first).isNotEmpty() &&
         isSourceColonCandidate(line, match, supportsShorthand = false)
     }
-    val supportsShorthand = hasFullCoordinate ||
-      backtickedIdentifier.containsMatchIn(line) || mutationVocabulary.containsMatchIn(line)
+    val supportsShorthand = hasFullCoordinate || mutationVocabulary.containsMatchIn(line)
     val colon = colonMatches.asSequence().filter { match ->
-      isSourceColonCandidate(line, match, supportsShorthand)
+      val wrappedOwner = leftIdentifier(line, match.range.first).isEmpty() &&
+        hasWrappedCoordinateOwner(line, match.range.first, previousLine)
+      isSourceColonCandidate(line, match, supportsShorthand || wrappedOwner)
     }
     return (explicit + colon).sortedBy { it.range.first }.toList()
+  }
+
+  /**
+   * Markdown reflow can put a Java owner at the end of one line and its `:NNN`
+   * locator at the start of the next. Only carry context across one adjacent line,
+   * require the coordinate to be the first substantive token, and require a
+   * class/method-shaped owner or a source-shaped standalone identifier. Those
+   * constraints keep clocks, ratios, versions, ports, and ordinary prose out of
+   * the audit.
+   */
+  private fun hasWrappedCoordinateOwner(
+    line: String,
+    colon: Int,
+    previousLine: String?,
+  ): Boolean {
+    if (previousLine.isNullOrBlank()) return false
+    val prefix = line.substring(0, colon)
+    if (prefix.any { it !in WRAPPED_PREFIX_CHARS }) return false
+
+    val previous = normalizeWrappedOwnerMarkdown(
+      previousLine.trim().removeSuffix(".").trimEnd()
+    )
+    val shapedOwner = wrappedCoordinateOwner.find(previous)?.value
+    val simpleOwner = simpleCoordinateOwner.find(previous)
+    val simpleName = simpleOwner?.groupValues?.get(1)
+    val standaloneSimpleOwner = simpleOwner?.value == previous
+    return (shapedOwner != null && shapedOwner.any { it.isUpperCase() || it == '$' || it == '<' }) ||
+      (simpleName != null && simpleName.lowercase() !in commonNonSourceLabels &&
+        (sourceOwnerVocabulary.containsMatchIn(previous) ||
+          (standaloneSimpleOwner && looksLikeSimpleSourceOwner(simpleName))))
+  }
+
+  /** Strip only common wrappers around the final owner token; leave prose untouched. */
+  private fun normalizeWrappedOwnerMarkdown(line: String): String {
+    var normalized = line
+    while (true) {
+      val wrapper = markdownLinkAtEnd.find(normalized) ?: markdownOwnerWrappers
+        .firstNotNullOfOrNull { emphasis -> emphasis.find(normalized) }
+        ?: break
+      normalized = normalized.replaceRange(
+        wrapper.range,
+        wrapper.groupValues[1] + wrapper.groupValues[2],
+      )
+    }
+    return normalized
+  }
+
+  private fun looksLikeSimpleSourceOwner(name: String): Boolean {
+    if (name.any { it == '$' || it == '<' || it == '>' }) return true
+    val letters = name.filter { it.isLetter() }
+    if (letters.isEmpty() || letters.all { it.isUpperCase() }) return false
+    return name.first().isUpperCase() || name.drop(1).any { it.isUpperCase() }
   }
 
   private fun isStructuredLineTag(line: String, start: Int): Boolean {
@@ -193,11 +250,46 @@ internal object HardeningReadmePolicy {
     if (insideBraces(line, start)) return false // JSON/properties examples
 
     val token = leftIdentifier(line, start)
-    if (token.isEmpty()) return supportsShorthand
+    if (token.isEmpty()) {
+      val owner = immediateCoordinateOwner(line, start)
+      if (owner != null) {
+        if (isClearlyNonSourceOwner(owner, line)) return false
+        return supportsShorthand || looksLikeInlineSourceOwner(owner) ||
+          sourceOwnerVocabulary.containsMatchIn(line) ||
+          immediateBacktickedOwner.containsMatchIn(line.substring(0, start))
+      }
+      return supportsShorthand
+    }
     val lower = token.lowercase()
-    if (lower in commonPortLabels) return false
+    if (lower in commonPortLabels || isClearlyNonSourceOwner(token, line)) return false
     if (looksLikeUriOrNetworkPort(line, start, token)) return false
-    return true
+    return supportsShorthand || looksLikeInlineSourceOwner(token) ||
+      sourceOwnerVocabulary.containsMatchIn(line) || mutationVocabulary.containsMatchIn(line) ||
+      isInsideInlineCode(line, start)
+  }
+
+  private fun looksLikeInlineSourceOwner(owner: String): Boolean {
+    if (owner.any { it == '.' || it == '$' || it == '<' || it == '>' }) return true
+    val letters = owner.filter(Char::isLetter)
+    return letters.isNotEmpty() && owner.first().isUpperCase() && !letters.all(Char::isUpperCase)
+  }
+
+  private fun isInsideInlineCode(line: String, colon: Int): Boolean {
+    val opening = line.lastIndexOf('`', colon - 1)
+    return opening >= 0 && line.indexOf('`', colon + 1) > colon
+  }
+
+  private fun immediateCoordinateOwner(line: String, colon: Int): String? {
+    val prefix = normalizeWrappedOwnerMarkdown(line.substring(0, colon).trimEnd())
+    return coordinateOwnerAtEnd.find(prefix)?.groupValues?.get(1)
+  }
+
+  private fun isClearlyNonSourceOwner(owner: String, line: String): Boolean {
+    if (owner.lowercase() in commonNonSourceLabels) return true
+    val letters = owner.filter(Char::isLetter)
+    return letters.isNotEmpty() && letters.all(Char::isUpperCase) &&
+      !mutationVocabulary.containsMatchIn(owner) &&
+      !sourceOwnerVocabulary.containsMatchIn(line)
   }
 
   private fun leftIdentifier(line: String, colon: Int): String {
@@ -240,4 +332,21 @@ internal object HardeningReadmePolicy {
 
   private val IDENTIFIER_CHARS =
     (('a'..'z') + ('A'..'Z') + ('0'..'9') + listOf('_', '$', '.', '<', '>', '[', ']')).toSet()
+  private val WRAPPED_PREFIX_CHARS = setOf(' ', '\t', '>', '|', '-', '+', '*', '`', '_', '~')
+  private val commonNonSourceLabels = commonPortLabels +
+    setOf("ratio", "time", "version", "utc", "gmt", "clock", "timeout", "duration")
+  private val markdownLinkAtEnd = Regex("""\[([^]\n]+)]\([^\n]+\)([),;:]?)$""")
+  private val markdownOwnerWrappers = listOf(
+    Regex("""\*\*(.+?)\*\*([),;:]?)$"""),
+    Regex("""__(.+?)__([),;:]?)$"""),
+    Regex("""~~(.+?)~~([),;:]?)$"""),
+    Regex("""\*(.+?)\*([),;:]?)$"""),
+    Regex("""_(.+?)_([),;:]?)$"""),
+  )
+  private val coordinateOwnerAtEnd = Regex(
+    """`?([A-Za-z_$<>][A-Za-z0-9_$<>]*(?:[.$][A-Za-z_$<>][A-Za-z0-9_$<>]*)*)`?[),;:]?$"""
+  )
+  private val immediateBacktickedOwner = Regex(
+    """`[A-Za-z_$<>][A-Za-z0-9_$<>]*(?:[.$][A-Za-z_$<>][A-Za-z0-9_$<>]*)*`\s*$"""
+  )
 }

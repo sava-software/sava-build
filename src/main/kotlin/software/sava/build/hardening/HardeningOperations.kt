@@ -671,6 +671,7 @@ internal object HardeningHelpText {
     appendLine("Read-only and certification workflows:")
     appendLine("  qualityGate                       tests plus every registered mutation suite")
     appendLine("  hardeningCertify                  fresh full release certification; durable receipt in .pitest-history/")
+    appendLine("  :hardeningCertifyAll              certify every hardening project; sibling projects continue after failure")
     appendLine("  pitestConverge                    compare two fresh observations")
     appendLine("  pitestModeSnapshot / pitestModeCompare  compare labeled execution modes")
     appendLine("  pitestMutatorTrial                measure candidate mutators")

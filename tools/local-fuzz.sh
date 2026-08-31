@@ -423,12 +423,6 @@ aggregate_evidence_matches() {
     [ "$actual_targets" = "$expected_targets" ]
 }
 
-aggregate_receipts_to_invalidate() {
-  find "$1" -type f \
-    \( -path '*/.pitest-history/local-fuzz.tsv' -o \
-       -path '*/build/hardening/local-fuzz.tsv' \) -print 2>/dev/null | sort
-}
-
 durable_aggregate_receipts() {
   find "$1" -type f -path '*/.pitest-history/local-fuzz.tsv' -print \
     2>/dev/null | sort
@@ -460,27 +454,6 @@ refuse_aggregate_collection_blockers() {
   if [ -n "$entries" ]; then
     echo "local-fuzz: $slug retained obsolete build-directory fuzz receipt(s):" >&2
     printf '  %s\n' "$entries" >&2
-    return 1
-  fi
-}
-
-invalidate_aggregate_receipts() {
-  local repo=$1 repo_root file remaining discovered
-  repo_root=$(cd "$repo" && pwd -P) || return 1
-  discovered=$(aggregate_receipts_to_invalidate "$repo_root") || return 1
-  if [ -n "$discovered" ]; then
-    while IFS= read -r file; do
-      reject_symlink_components "$file" "prior inner fuzz receipt" || return 1
-      if ! rm -f "$file" || [ -e "$file" ]; then
-        echo "local-fuzz: could not invalidate prior inner fuzz receipt: $file" >&2
-        return 1
-      fi
-    done <<< "$discovered"
-  fi
-  remaining=$(aggregate_receipts_to_invalidate "$repo_root") || return 1
-  if [ -n "$remaining" ]; then
-    echo "local-fuzz: prior inner fuzz receipt(s) survived invalidation:" >&2
-    printf '  %s\n' "$remaining" >&2
     return 1
   fi
 }
@@ -885,8 +858,10 @@ collect_aggregate_receipts() {
   local slug=$1 repo=$2 output_file=$3 safe_slug=$4
   local expected_projects=$5 expected_targets=$6
   local source relative relative_dest destination source_before_hash source_after_hash copy_hash
+  local current_source_hash current_discovered source_index
   local targets target_names project project_key plugin_hash
   local total_executions execution_counts discovered recorded_parallel
+  local -a collected_sources=() collected_source_hashes=()
   local total=0 count=0
   : > "$output_file"
   refuse_aggregate_collection_blockers "$repo" "$slug" || return 1
@@ -922,6 +897,8 @@ collect_aggregate_receipts() {
         echo "local-fuzz: inner fuzz receipt changed while being retained: $source" >&2
         return 1
       fi
+      collected_sources+=("$source")
+      collected_source_hashes+=("$source_after_hash")
       targets=$(validate_aggregate_receipt "$destination" "$seconds" "$parallel_targets") || {
         echo "local-fuzz: invalid retained inner fuzz receipt: $destination" >&2; return 1;
       }
@@ -963,6 +940,25 @@ collect_aggregate_receipts() {
     echo "local-fuzz: $slug aggregate receipts do not exactly cover discovered fuzzAll projects and targets" >&2
     return 1
   fi
+  # A producer may have started after the discovery scan while its prior durable
+  # receipt remained byte-identical. Refuse that historical snapshot before the
+  # caller can publish it as evidence for this run.
+  refuse_aggregate_collection_blockers "$repo" "$slug" || return 1
+  current_discovered=$(durable_aggregate_receipts "$repo") || return 1
+  if [ "$current_discovered" != "$discovered" ]; then
+    echo "local-fuzz: $slug durable fuzz receipt inventory changed while being retained" >&2
+    return 1
+  fi
+  for ((source_index = 0; source_index < ${#collected_sources[@]}; source_index++)); do
+    source=${collected_sources[$source_index]}
+    reject_symlink_components "$source" "inner fuzz receipt" || return 1
+    current_source_hash=$(sha256_file "$source") || return 1
+    if [ "$current_source_hash" != "${collected_source_hashes[$source_index]}" ]; then
+      echo "local-fuzz: inner fuzz receipt changed after retention: $source" >&2
+      return 1
+    fi
+  done
+  refuse_aggregate_collection_blockers "$repo" "$slug" || return 1
 }
 
 self_test() {
@@ -1039,7 +1035,7 @@ self_test() {
     ":alpha:fuzzAll - Runs every registered fuzz target locally; budget and concurrency are explicit." \
     "api+client:fuzzAll - Runs every registered fuzz target locally; budget and concurrency are explicit." \
     "space project:fuzzAll - Runs every registered fuzz target locally; budget and concurrency are explicit." \
-    "fuzzAllPreflight - Invalidates old receipts" \
+    "fuzzAllPreflight - Internal compatibility marker; fuzzAll owns its campaign start boundary." \
     "fuzzFOO - Coverage-guided fuzzing of the 'FOO' target with Jazzer; bounded." \
     "fuzzFoo - Coverage-guided fuzzing of the 'foo' target with Jazzer; bounded." \
     ":alpha:fuzzCodecMinimize - Coverage-guided fuzzing of the 'codecMinimize' target with Jazzer; bounded." \
@@ -1311,6 +1307,17 @@ self_test() {
   fi
   rmdir "$legacy_stale_file"
   running_entry="$path_fixture/repo/module/.pitest-history/local-fuzz.running"
+  printf 'session\tself-test\n' > "$running_entry"
+  if refuse_aggregate_collection_blockers "$path_fixture/repo" self-test \
+      >/dev/null 2>&1; then
+    echo "local-fuzz self-test: regular running sentinel was ignored" >&2
+    return 1
+  fi
+  if ! cmp -s "$stale_file" "$aggregate_file"; then
+    echo "local-fuzz self-test: running-sentinel refusal changed the durable receipt" >&2
+    return 1
+  fi
+  rm -f "$running_entry"
   ln -s "$fixture" "$running_entry"
   if refuse_aggregate_collection_blockers "$path_fixture/repo" self-test \
       >/dev/null 2>&1; then
@@ -1357,6 +1364,48 @@ self_test() {
     echo "local-fuzz self-test: partial durable-receipt scan was accepted" >&2
     return 1
   fi
+
+  run_dir="$path_fixture/collect-race-bundle"
+  mkdir -p "$run_dir"
+  saved_function=$(declare -f refuse_aggregate_collection_blockers)
+  aggregate_blocker_checks=0
+  refuse_aggregate_collection_blockers() {
+    aggregate_blocker_checks=$((aggregate_blocker_checks + 1))
+    [ "$aggregate_blocker_checks" -eq 1 ]
+  }
+  producer_failed=false
+  if collect_aggregate_receipts self-test "$path_fixture/repo" "$records" self-test \
+      ":" ":fuzzCodec" >/dev/null 2>&1; then
+    producer_failed=true
+  fi
+  eval "$saved_function"
+  if $producer_failed; then
+    echo "local-fuzz self-test: producer start during aggregate collection was accepted" >&2
+    return 1
+  fi
+
+  run_dir="$path_fixture/collect-replacement-bundle"
+  mkdir -p "$run_dir"
+  saved_function=$(declare -f refuse_aggregate_collection_blockers)
+  aggregate_blocker_checks=0
+  refuse_aggregate_collection_blockers() {
+    aggregate_blocker_checks=$((aggregate_blocker_checks + 1))
+    if [ "$aggregate_blocker_checks" -eq 2 ]; then
+      printf '\n' >> "$stale_file"
+    fi
+    return 0
+  }
+  producer_failed=false
+  if collect_aggregate_receipts self-test "$path_fixture/repo" "$records" self-test \
+      ":" ":fuzzCodec" >/dev/null 2>&1; then
+    producer_failed=true
+  fi
+  eval "$saved_function"
+  if $producer_failed; then
+    echo "local-fuzz self-test: source receipt replacement after retention was accepted" >&2
+    return 1
+  fi
+  cp "$aggregate_file" "$stale_file"
 
   printf 'legacy stale\n' > "$legacy_stale_file"
   target_hash=$(sha256_file "$target_receipt")
@@ -1489,22 +1538,11 @@ self_test() {
     echo "local-fuzz self-test: superseded canonical pointer remained valid" >&2
     return 1
   fi
-  saved_function=$(declare -f aggregate_receipts_to_invalidate)
-  aggregate_receipts_to_invalidate() { printf '%s\n' "$stale_file"; return 71; }
-  producer_failed=false
-  if invalidate_aggregate_receipts "$path_fixture/repo" >/dev/null 2>&1; then
-    producer_failed=true
-  fi
-  eval "$saved_function"
-  if $producer_failed || [ ! -f "$stale_file" ]; then
-    echo "local-fuzz self-test: partial invalidation scan was accepted or acted upon" >&2
+  if [ ! -f "$stale_file" ]; then
+    echo "local-fuzz self-test: last-success aggregate receipt was destroyed" >&2
     return 1
   fi
-  invalidate_aggregate_receipts "$path_fixture/repo" || return 1
-  if [ -e "$stale_file" ] || [ -e "$legacy_stale_file" ]; then
-    echo "local-fuzz self-test: prior aggregate receipt survived invalidation" >&2
-    return 1
-  fi
+  rm -f "$stale_file"
   [ "$(origin_slug git@github.com:sava-software/sava.git)" = "sava-software/sava" ] || return 1
   slugs=$(manifest_slugs)
   [ "$(printf '%s\n' "$slugs" | sort | uniq -d | wc -l | tr -d ' ')" = 0 ] || {
@@ -1838,12 +1876,6 @@ while read_execution_plan_row slug repo pre_sha pre_origin; do
       fi
     fi
     cat "$out_file" >> "$log_path"
-  fi
-
-  if [ "$repo_result" = passed ]; then
-    if [ "$task_mode" = aggregate ] && ! invalidate_aggregate_receipts "$repo"; then
-      repo_result=aggregate_invalidation_failed
-    fi
   fi
 
   if [ "$repo_result" = passed ]; then

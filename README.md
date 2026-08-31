@@ -208,7 +208,7 @@ known copied plugin mechanics in repository-owned prose outside that bounded blo
 
 | Plugin | Description |
 |---|---|
-| `software.sava.build` | Entry point. Applies centralized repositories and module discovery (`javaModules {}`). Includes the `:aggregation` project when `gradle/aggregation/build.gradle.kts` exists ([Publishing](#publishing)). |
+| `software.sava.build` | Entry point. Applies centralized repositories, module discovery (`javaModules {}`), and build-wide dependency analysis, including the root `buildHealth` aggregate. Includes the `:aggregation` project when `gradle/aggregation/build.gradle.kts` exists ([Publishing](#publishing)). |
 | `software.sava.build.feature.jdk-provisioning` | Auto-provisions JDK toolchains via the [foojay resolver](https://github.com/gradle/foojay-toolchains). Separate from the entry point so provisioning (and its network access) stays opt-in. |
 | `software.sava.build.feature-jdk-provisioning` | **Deprecated** alias for the above. |
 | `software.sava.build.version-catalog` | Standalone: exposes the solana version catalog as `savaCatalog` without the rest of the conventions. |
@@ -239,7 +239,7 @@ project must request its plugin by an explicit version, as in the hardening-only
 | `software.sava.build.feature.test` | JUnit test logging and strict test-dependency analysis. |
 | `software.sava.build.check.attestations` | `verifySavaAttestations` task: verifies the GitHub build-provenance attestations of resolved sava dependencies (sha256 lookup in the org attestation store, cosign verification against the reusable publish workflow's identity), plus their sources/javadoc jars and the sava-build plugin jar in use (attested by `gradle_plugin_publish.yml`). Missing attestations warn until `savaAttestations.requireAttestations = true`; failed verifications always fail. Configure via `savaAttestations {}`; needs a `cosign` executable or a Docker image passed as `-PsavaCosignImage=...`. Applied by `java-module`; not part of `check` (requires network). |
 | `software.sava.build.feature.javadoc` | Lenient javadoc (`Xdoclint:none`, HTML5). |
-| `software.sava.build.check.dependencies` | [Dependency analysis](https://github.com/autonomousapps/dependency-analysis-gradle-plugin) and module-directive scope checks wired into `check`. |
+| `software.sava.build.check.dependencies` | Per-project [dependency analysis](https://github.com/autonomousapps/dependency-analysis-gradle-plugin) (`projectHealth`) and module-directive scope checks wired into `check`; the `software.sava.build` settings entry point supplies the root `buildHealth` aggregate. |
 
 The hardening plugin is not restricted to Sava package names. Any Java project can
 register its own production namespaces, mutation suites, exclusions, and fuzz targets.

@@ -4,17 +4,26 @@ package software.sava.build.hardening
  * Conservative migration audit for repository-owned prose outside the generated
  * hardening block in a consumer `AGENTS.md`.
  *
- * This deliberately matches field-observed descriptions of installed plugin behavior,
- * not arbitrary words such as "fails" or "writes". A free-form prose linter would
- * confuse repository-specific code and workflow facts with copied hardening mechanics.
+ * This deliberately matches field-observed descriptions of installed plugin behavior
+ * and narrowly pairs known plugin/DSL nouns with contract verbs. It does not match
+ * arbitrary words such as "fails" or "writes": a free-form prose linter would confuse
+ * repository-specific code and workflow facts with copied hardening mechanics.
  */
 internal object HardeningAgentProsePolicy {
 
-  internal data class Finding(
+  internal data class RuleEvidence(
     val family: String,
+    val matchedPhrase: String,
+  )
+
+  internal data class Finding(
+    val rules: List<RuleEvidence>,
     val lineNumber: Int,
     val excerpt: String,
-  )
+  ) {
+    val family: String
+      get() = rules.map { it.family }.distinct().joinToString("+")
+  }
 
   internal data class Inspection(val findings: List<Finding>) {
     val isClean: Boolean
@@ -31,6 +40,8 @@ internal object HardeningAgentProsePolicy {
     val normalized: String = lines.joinToString(" ") { normalizeLine(it.text) }
       .replace(WHITESPACE, " ")
       .trim()
+
+    val auditText: String = maskGenericTaskResultPointers(normalized)
 
     fun anchoredLine(anchor: Regex): HardeningAgentTemplateBlock.NumberedLine =
       lines.firstOrNull { anchor.containsMatchIn(normalizeLine(it.text)) } ?: lines.first()
@@ -66,6 +77,16 @@ internal object HardeningAgentProsePolicy {
       regex("""savabuildlocalrepo|pluginmanagement|software\.sava\.build|pinned versions?"""),
     ),
     Signature(
+      "local-repository-settings-contract",
+      regex(
+        """(?:savabuildlocalrepo|local-repo(?:sitory)? redirect)[^.!?]{0,220}(?:""" +
+          """settings-level property|property of the installed plugin|""" +
+          """settings\.gradle\.kts (?:needs?|requires?) no (?:edit|editing|change|changes)|""" +
+          """no (?:edit|editing|change|changes) (?:is|are) (?:needed|required) in settings\.gradle\.kts)"""
+      ),
+      regex("""savabuildlocalrepo|local-repo(?:sitory)? redirect|settings\.gradle\.kts"""),
+    ),
+    Signature(
       "local-repository-cache",
       regex(
         """(?:silently keeps resolving .{0,80}previously published jar|""" +
@@ -88,9 +109,18 @@ internal object HardeningAgentProsePolicy {
       regex("""end-of-build notice|announces? local-repo resolution|prints no notice"""),
     ),
     Signature(
+      "task-output-granularity",
+      regex(
+        """acts? on (?:each|every) changed bullet|""" +
+          """resolves? (?:each|every) prose candidate (?:it|the (?:audit|task)) names?"""
+      ),
+      regex("""acts? on (?:each|every) changed bullet|resolves? (?:each|every) prose candidate"""),
+    ),
+    Signature(
       "installed-help-output",
       regex(
-        """hardeninghelp[^.!?]{0,100}\b(?:prints?|reports?|lists?)\b[^.!?]{0,100}""" +
+        """hardeninghelp[^.!?]{0,100}""" +
+          """\b(?:prints?|reports?|lists?)\b[^.!?]{0,100}""" +
           """\b(?:tasks?|properties|workflows?|outputs?|surface|projects?|suites?)\b|""" +
           """hardeninghelp output[^.!?]{0,100}\b(?:same|uniform|project)\b"""
       ),
@@ -99,7 +129,8 @@ internal object HardeningAgentProsePolicy {
     Signature(
       "installed-template-output",
       regex(
-        """hardeningagenttemplate(?!diff).{0,120}\b(?:prints?|reports?|emits?)\b|""" +
+        """hardeningagenttemplate(?!diff).{0,120}""" +
+          """\b(?:prints?|reports?|emits?)\b|""" +
           """print the installed version with.{0,180}hardeningagenttemplate(?!diff)"""
       ),
       regex("""print the installed version|hardeningagenttemplate(?!diff)"""),
@@ -107,7 +138,8 @@ internal object HardeningAgentProsePolicy {
     Signature(
       "installed-template-diff",
       regex(
-        """hardeningagenttemplatediff.{0,120}\b(?:diffs?|compares?|normalizes?|reports?)\b|""" +
+        """hardeningagenttemplatediff.{0,120}""" +
+          """\b(?:diffs?|compares?|normalizes?|reports?)\b|""" +
           """re-?diff (?:it|this|the (?:bounded )?block).{0,80}(?:with|using)""" +
           """.{0,180}hardeningagenttemplatediff"""
       ),
@@ -140,24 +172,70 @@ internal object HardeningAgentProsePolicy {
       ),
       regex("""(?:pitest(?:<suite>|[a-z0-9]+)?baseline|baseline)(?:rebase|update|union|retag|prune)"""),
     ),
+    Signature(
+      "hardening-dsl-contract",
+      regex(
+        """(?:declineseedcorpus|declinemutator|declineexclusionaudit|excludetestclass)""" +
+          """(?:\s*/\s*(?:declineseedcorpus|declinemutator|declineexclusionaudit|excludetestclass))*""" +
+          """[^.!?]{0,100}(?:requires?|accepts?|takes?|must have|with)""" +
+          """\s+(?:an?\s+)?(?:measured|non-?blank|written|documented|explicit|reason-bearing)?\s*reason\b|""" +
+          """(?:declineseedcorpus|declinemutator|declineexclusionaudit|excludetestclass)""" +
+          """[^.!?]{0,140}\b(?:suppresses?|disables?|omits?|skips?|becomes? a no-op|is a no-op)\b"""
+      ),
+      regex("""declineseedcorpus|declinemutator|declineexclusionaudit|excludetestclass"""),
+    ),
+    Signature(
+      "hardening-dsl-contract",
+      regex(
+        """(?:seedcorpus|excludedclasses|targetclasses|targettests|excludedtestclasses)""" +
+          """[^.!?]{0,120}\b(?:is (?:required|optional)|defaults? to|accepts?|filters?|removes?|""" +
+          """excludes?|selects?|registers?|creates?)\b|""" +
+          """(?:mutation|fuzz)(?: suite| target)? (?:register|registration|block)""" +
+          """[^.!?]{0,120}\b(?:adds?|creates?|registers?|generates?|wires?)\b"""
+      ),
+      regex(
+        """seedcorpus|excludedclasses|targetclasses|targettests|excludedtestclasses|""" +
+          """(?:mutation|fuzz)(?: suite| target)? (?:register|registration|block)"""
+      ),
+    ),
+    Signature(
+      "sibling-plugin-contract",
+      regex(
+        """(?:software\.sava\.build\.(?!feature\.hardening)[a-z0-9_.-]+|""" +
+          """jdk[- ]provisioning|foojay(?: resolver)?)""" +
+          """[^.!?]{0,180}\b(?:is automatic|happens? automatically|automatically (?:provisions?|""" +
+          """downloads?|resolves?|selects?|configures?)|defaults? to|falls? back|""" +
+          """requires?|provides?|registers?|creates?)\b"""
+      ),
+      regex(
+        """software\.sava\.build\.(?!feature\.hardening)[a-z0-9_.-]+|""" +
+          """jdk[- ]provisioning|foojay(?: resolver)?"""
+      ),
+    ),
   )
 
   fun inspect(outsideLines: List<HardeningAgentTemplateBlock.NumberedLine>): Inspection {
     val paragraphs = paragraphs(outsideLines)
-    val findings = paragraphs.flatMap { paragraph ->
-      signatures.asSequence()
-        .filter { it.matcher.containsMatchIn(paragraph.normalized) }
-        .groupBy { it.family }
-        .values
-        .map { matchingFamily ->
-          val signature = matchingFamily.first()
-          val line = paragraph.anchoredLine(signature.lineAnchor)
-          Finding(signature.family, line.lineNumber, excerpt(line.text))
-        }
+    val passages = paragraphs.mapNotNull { paragraph ->
+      val matches = signatures.mapNotNull { signature ->
+        signature.matcher.find(paragraph.auditText)?.let { match -> signature to match }
+      }.sortedBy { (_, match) -> match.range.first }
+      if (matches.isEmpty()) return@mapNotNull null
+
+      // One Markdown paragraph or list item is one review passage even when several
+      // rules match on different wrapped source lines. Retain every rule and phrase,
+      // and anchor the warning at the earliest line that contains a matching noun.
+      val line = matches.map { (signature, _) -> paragraph.anchoredLine(signature.lineAnchor) }
+        .minBy { it.lineNumber }
+      Finding(
+        matches.map { (signature, match) ->
+          RuleEvidence(signature.family, matchedPhrase(match.value))
+        }.distinct(),
+        line.lineNumber,
+        excerpt(line.text),
+      )
     }
-    // Adjacent paragraphs can contain two versions of one copied contract. Keep each
-    // actual passage, but never count several needles in that passage as several debts.
-    return Inspection(findings.sortedBy { it.lineNumber })
+    return Inspection(passages)
   }
 
   fun warning(inspection: Inspection, helpTaskPath: String): String {
@@ -165,7 +243,10 @@ internal object HardeningAgentProsePolicy {
     val count = inspection.findings.size
     val noun = if (count == 1) "passage" else "passages"
     val details = inspection.findings.joinToString("\n") { finding ->
-      "    AGENTS.md:${finding.lineNumber}  ${finding.excerpt}"
+      val rules = finding.rules.joinToString("; ") { rule ->
+        "${rule.family}: \"${rule.matchedPhrase}\""
+      }
+      "    AGENTS.md:${finding.lineNumber}  [$rules] ${finding.excerpt}"
     }
     return "hardeningAgentProseAudit: AGENTS.md carries $count likely copied " +
       "plugin-mechanics $noun outside the generated hardening block.\n" +
@@ -253,10 +334,37 @@ internal object HardeningAgentProsePolicy {
     return if (compact.length <= 180) compact else compact.take(177) + "..."
   }
 
+  private fun matchedPhrase(value: String): String {
+    val compact = value.trim().replace(WHITESPACE, " ")
+    return if (compact.length <= 96) compact
+    else compact.take(45) + " ... " + compact.takeLast(46)
+  }
+
+  /**
+   * A pointer that tells an operator to act on a task's result does not describe that
+   * result's shape or contract. Mask only the reporting word inside those generic
+   * references before applying task-contract signatures; copied descriptions elsewhere
+   * in the same passage remain visible, as does output-granularity wording.
+   */
+  private fun maskGenericTaskResultPointers(value: String): String =
+    GENERIC_TASK_RESULT_POINTERS.fold(value) { masked, pointer ->
+      pointer.replace(masked) { match ->
+        match.value.replace(REPORT_WORD, "result")
+      }
+    }
+
   private fun regex(pattern: String) = Regex(pattern)
 
   private val WHITESPACE = Regex("""\s+""")
   private val MARKDOWN_DECORATION = Regex("""[`*_]+""")
   private val LIST_ITEM = Regex("""^(?:[-+*]|\d+[.)])\s+""")
   private val HEADING = Regex("""^#{1,6}\s+""")
+  private val REPORT_WORD = Regex("""\breports?\b""")
+  private val GENERIC_TASK_RESULT_POINTERS = listOf(
+    Regex(
+      """\bacts? on everything (?:those|both|the|these) tasks? reports?\b"""
+    ),
+    Regex("""\bacts? on (?:everything in )?its reports?\b"""),
+    Regex("""\bacts? on (?:everything|what|whatever) (?:it|they) reports?\b"""),
+  )
 }

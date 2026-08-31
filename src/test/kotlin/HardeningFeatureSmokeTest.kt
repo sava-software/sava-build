@@ -1,4 +1,5 @@
 import org.gradle.testkit.runner.GradleRunner
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -234,13 +235,17 @@ class HardeningFeatureSmokeTest {
     }
     GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments("fuzzAll", "-PmaxFuzzTime=0", "--stacktrace").buildAndFail()
-    assertFalse(oldReceipt.exists(), "invalid fuzzAll budget retained an earlier success receipt")
+    assertEquals(
+      "old success\n",
+      oldReceipt.readText(),
+      "invalid fuzzAll budget destroyed the last successful receipt",
+    )
     assertTrue(
       File(fixtureDir, ".pitest-history/local-fuzz.running").isFile,
       "invalid fuzzAll budget did not leave its incomplete-campaign sentinel")
 
-    // A later failed aggregate must invalidate an earlier success receipt before any
-    // target starts; otherwise the old TSV can be mistaken for the failed campaign.
+    // A later failed aggregate preserves last-success evidence, while the sentinel
+    // prevents that TSV from being mistaken for the failed campaign.
     File(fixtureDir, "build.gradle.kts").appendText(
       """
 
@@ -254,7 +259,11 @@ class HardeningFeatureSmokeTest {
     oldReceipt.writeText("old success\n")
     GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments("fuzzAll", "--stacktrace").buildAndFail()
-    assertFalse(oldReceipt.exists(), "failed fuzzAll retained an earlier success receipt")
+    assertEquals(
+      "old success\n",
+      oldReceipt.readText(),
+      "failed fuzzAll destroyed the last successful receipt",
+    )
     assertTrue(
       File(fixtureDir, ".pitest-history/local-fuzz.running").isFile,
       "failed fuzzAll did not leave its incomplete-campaign sentinel")

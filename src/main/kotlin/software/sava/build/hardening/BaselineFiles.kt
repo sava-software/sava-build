@@ -1,13 +1,17 @@
 package software.sava.build.hardening
 
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.channels.Channels
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.OpenOption
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
@@ -93,6 +97,22 @@ internal object BaselineFiles {
   fun requireRegularFileOrMissing(trustedRoot: File, target: File) {
     requireNoSymbolicLinkComponents(trustedRoot, target)
     requireRegularFileOrMissing(target)
+  }
+
+  /** Checked no-follow snapshot for a small receipt or mutation-record file. */
+  fun readRegularFileSnapshot(trustedRoot: File, target: File): ByteArray? {
+    requireRegularFileOrMissing(trustedRoot, target)
+    val path = target.toPath().toAbsolutePath().normalize()
+    if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return null
+    return Files.newByteChannel(
+      path,
+      setOf<OpenOption>(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS),
+    ).use { channel ->
+      ByteArrayOutputStream().use { output ->
+        Channels.newInputStream(channel).copyTo(output)
+        output.toByteArray()
+      }
+    }
   }
 
   /** Refuses anything except a missing path or a non-link directory leaf. */
@@ -234,6 +254,56 @@ internal object BaselineFiles {
   fun writeAtomically(trustedRoot: File, target: File, content: String) {
     requireRegularFileOrMissing(trustedRoot, target)
     writeAtomically(target, content)
+  }
+
+  /**
+   * Keeps a last-success receipt only when an incomplete-attempt marker can be
+   * made durable beside it. Callers must already own the corresponding process
+   * lock. If a missing, replaced, or unwritable marker cannot be restored, the
+   * receipt is deleted as the fail-closed fallback so no failed attempt can leave
+   * apparently current evidence behind.
+   */
+  fun preserveReceiptUnderIncompleteMarker(
+    trustedRoot: File,
+    receipt: File,
+    marker: File,
+    markerContent: String,
+  ) {
+    try {
+      requireRegularFileOrMissing(trustedRoot, marker)
+      writeAtomically(trustedRoot, marker, markerContent)
+    } catch (markerFailure: Exception) {
+      try {
+        requireRegularFileOrMissing(trustedRoot, receipt)
+        deleteIfExists(receipt)
+      } catch (receiptFailure: Exception) {
+        markerFailure.addSuppressed(receiptFailure)
+      }
+      throw markerFailure
+    }
+  }
+
+  /**
+   * Restores the exact receipt bytes which preceded a failed replacement, but only
+   * after the incomplete marker above is durable. `null` means the attempt began
+   * without a prior receipt and therefore removes any partially published successor.
+   * If marker publication fails, [preserveReceiptUnderIncompleteMarker] deletes the
+   * current receipt and this method deliberately does not recreate the old one.
+   */
+  fun restoreReceiptSnapshotUnderIncompleteMarker(
+    trustedRoot: File,
+    receipt: File,
+    marker: File,
+    markerContent: String,
+    previousReceipt: ByteArray?,
+  ) {
+    preserveReceiptUnderIncompleteMarker(trustedRoot, receipt, marker, markerContent)
+    requireRegularFileOrMissing(trustedRoot, receipt)
+    if (previousReceipt == null) {
+      deleteIfExists(receipt)
+    } else {
+      writeBytesAtomically(receipt, previousReceipt)
+    }
   }
 
   /**
