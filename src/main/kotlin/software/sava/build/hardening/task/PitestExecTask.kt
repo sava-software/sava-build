@@ -37,6 +37,7 @@ import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
 import software.sava.build.hardening.PitestEvidenceSnapshotInput
+import software.sava.build.hardening.qualifiedHardeningTaskPath
 import java.io.File
 import java.io.OutputStream
 import java.nio.file.Files
@@ -51,6 +52,21 @@ private const val ARCMUTATE_MISSING_AUDITED_PIT = "1.25.9"
 
 internal fun shouldAdvisePitestCoverageTestCost(durationMillis: Long): Boolean =
   durationMillis >= PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS
+
+/** Shared closure contract for generated reports discarded by an aggregate workflow. */
+internal fun generatedReportRetryGuidance(
+  retryAction: String,
+  workflowDescription: String,
+  reportDescription: String = "incomplete",
+): String =
+  workflowRetryGuidance(retryAction) + " A later successful, clean " +
+    "$workflowDescription workflow is sufficient closure and replaces the $reportDescription " +
+    "generated report; that report creates no persistent mutation-record debt, and the " +
+    "successful rerun does not diagnose the earlier failure's cause."
+
+/** Shared retry sentence when the caller owns a more specific closure contract. */
+internal fun workflowRetryGuidance(retryAction: String): String =
+  "Retry: after resolving the preceding failure, $retryAction."
 
 /**
  * Common typed PIT process with execution-time lifecycle and evidence ownership.
@@ -295,6 +311,18 @@ abstract class PitestExecTask : JavaExec() {
   /** Optional task-family context for a non-zero exit that this task deliberately tolerates. */
   protected open fun toleratedNonZeroExitContext(): String? = null
 
+  /** Optional aggregate-workflow retry for a failed attempt that left generated partial output. */
+  protected open fun failedGeneratedReportGuidance(): String? = null
+
+  private fun withFailedGeneratedReportGuidance(failure: Throwable): Throwable {
+    val guidance = failedGeneratedReportGuidance() ?: return failure
+    if (!currentReportDirectory().resolve(RUNNING_MARKER).isFile) return failure
+    return GradleException(
+      (failure.message ?: failure::class.java.simpleName) + "\n" + guidance,
+      failure,
+    )
+  }
+
   /**
    * The master JVM's own configuration is not in the evidence and is refused rather
    * than recorded.
@@ -469,14 +497,18 @@ abstract class PitestExecTask : JavaExec() {
       }
     } catch (failure: Throwable) {
       printFailureLogs()
-      throw failure
+      throw withFailedGeneratedReportGuidance(failure)
     }
 
     val result = executionResult.get()
     if (result.exitValue != 0) {
       if (enforceExit.get()) {
         printFailureLogs()
-        result.assertNormalExitValue()
+        try {
+          result.assertNormalExitValue()
+        } catch (failure: Throwable) {
+          throw withFailedGeneratedReportGuidance(failure)
+        }
       } else {
         printAttemptLogs(AttemptLogDisposition.TOLERATED_NON_ZERO, result.exitValue)
       }
@@ -490,7 +522,7 @@ abstract class PitestExecTask : JavaExec() {
       )
     } catch (failure: Throwable) {
       printFailureLogs()
-      throw failure
+      throw withFailedGeneratedReportGuidance(failure)
     }
   }
 
@@ -928,6 +960,14 @@ abstract class PitestRunTask : PitestExecTask() {
 /** Second convergence observation; never valid inside the certification graph. */
 @UntrackedTask(because = "Convergence compares two fresh observations")
 abstract class PitestConvergeTask : PitestExecTask() {
+  override fun failedGeneratedReportGuidance(): String {
+    val workflow = qualifiedHardeningTaskPath(certifyingProjectPath.get(), "pitestConverge")
+    return generatedReportRetryGuidance(
+      retryAction = "run $workflow from the start",
+      workflowDescription = "convergence",
+    )
+  }
+
   override fun beforeAttempt() {
     PitestReportDirectories.normalizedScope(mutateOnly.orNull)?.let { scope ->
       throw GradleException(
@@ -1005,6 +1045,14 @@ abstract class PitestMutatorTrialTask : PitestExecTask() {
     }
     // The common attempt lifecycle clears every known decision-grade leaf without
     // recursively deleting consumer-added report content.
+  }
+
+  override fun failedGeneratedReportGuidance(): String {
+    val workflow = qualifiedHardeningTaskPath(certifyingProjectPath.get(), "pitestMutatorTrial")
+    return generatedReportRetryGuidance(
+      retryAction = "run $workflow again with -PtrialMutators=${mutators.get()}",
+      workflowDescription = "trial",
+    )
   }
 
   override fun toleratedNonZeroExitContext(): String =

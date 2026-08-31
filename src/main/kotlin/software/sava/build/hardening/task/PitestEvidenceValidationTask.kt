@@ -30,10 +30,19 @@ import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
 import software.sava.build.hardening.PitestEvidenceSnapshotInput
 import software.sava.build.hardening.ProjectWriteOperation
+import software.sava.build.hardening.qualifiedHardeningTaskPath
 import java.io.File
 import javax.inject.Inject
 import java.time.Clock
 import java.time.LocalDate
+
+/** One installed authority for restarting an atomic, project-scoped certification receipt. */
+internal fun certificationRetryGuidance(projectPath: String): String {
+  val taskPath = if (projectPath == ":") ":hardeningCertify" else "$projectPath:hardeningCertify"
+  return "\n  Retry: after resolving the condition above, run $taskPath in a new Gradle " +
+    "invocation. Its receipt is project-atomic: every suite in this project re-executes in " +
+    "that invocation; completed receipts from other projects remain independent."
+}
 
 /** Owns and invalidates durable certification state before any expensive PIT task runs. */
 @UntrackedTask(because = "Certification must invalidate prior evidence on every invocation")
@@ -82,7 +91,8 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
         throw IllegalStateException(
           "durable certification state must be machine-local before PIT runs:\n" +
             stateFindings.joinToString("\n") { "  $it" } +
-            "\nRun hardeningInit or add .pitest-history/ to the worktree's Git ignore rules."
+            "\nRun ${qualifiedHardeningTaskPath(projectPath, "hardeningInit")} or add " +
+            ".pitest-history/ to the worktree's Git ignore rules."
         )
       }
       historyDirectory.mkdirs()
@@ -119,7 +129,8 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
           "hardeningCertify: removed superseded legacy build-output certification state; " +
             "replacement evidence is published only after success at " +
             "${receipt.relativeTo(projectDirectory).invariantSeparatorsPath}:\n" +
-            removedLegacyState.joinToString("\n") { "  removed ${it.absolutePath}" }
+            removedLegacyState.joinToString("\n") { "  removed ${it.absolutePath}" } +
+            "\n  Migration notice; not an advisory finding."
         )
       }
 
@@ -164,7 +175,10 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
           failure.addSuppressed(stateFailure)
         }
       }
-      throw GradleException("hardeningCertify: ${failure.message}", failure)
+      throw GradleException(
+        "hardeningCertify: ${failure.message}" + certificationRetryGuidance(projectPath),
+        failure,
+      )
     }
   }
 }
@@ -378,6 +392,7 @@ abstract class PitestDebtTask @Inject constructor(
 abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gradle.api.model.ObjectFactory) : DefaultTask() {
   @get:Nested val evidence: PitestEvidenceSpec = objects.newInstance(PitestEvidenceSpec::class.java, "suite")
   @get:Input abstract val diagnosticPrefix: Property<String>
+  @get:Input abstract val standaloneRetry: Property<String>
   @get:Input abstract val fullEvidenceOnly: Property<Boolean>
 
   @get:ServiceReference("hardeningCertificationSession")
@@ -386,6 +401,13 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
   init {
     fullEvidenceOnly.convention(false)
   }
+
+  private fun retryGuidance(): String =
+    if (certificationSession.get().isActive(evidence.projectPath.get())) {
+      certificationRetryGuidance(evidence.projectPath.get())
+    } else {
+      "\n  Retry: ${standaloneRetry.get()}"
+    }
 
   @TaskAction
   fun validate() {
@@ -408,11 +430,13 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
         MutationToolchainRecord.parse(toolchainFile.readText())
       } catch (e: Exception) {
         throw GradleException(
-          diagnosticPrefix.get() + "  completed mutation-toolchain record is missing or malformed: ${e.message}", e)
+          diagnosticPrefix.get() + "  completed mutation-toolchain record is missing or malformed: " +
+            "${e.message}" + retryGuidance(), e)
       }
       if (toolchain.identitySha256 != recorded.mutationToolchainSha256) {
         throw GradleException(
-          diagnosticPrefix.get() + "  completed mutation-toolchain record differs from evidence"
+          diagnosticPrefix.get() + "  completed mutation-toolchain record differs from evidence" +
+            retryGuidance()
         )
       }
     }
@@ -420,7 +444,7 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
     val differences = recorded.differences(expected)
     if (differences.isNotEmpty()) {
       throw GradleException(
-        diagnosticPrefix.get() + differences.joinToString("\n") { "  $it" }
+        diagnosticPrefix.get() + differences.joinToString("\n") { "  $it" } + retryGuidance()
       )
     }
     certificationSession.get().recordRevalidated(
@@ -570,6 +594,9 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
   @get:Inject
   protected abstract val execOperations: ExecOperations
 
+  private fun retryGuidance(): String =
+    certificationRetryGuidance(hardeningProjectPath.get())
+
   @TaskAction
   fun validateFinalInputs() {
     val projectDirectory = certificationProjectDirectory.get().asFile
@@ -583,7 +610,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
           execOperations,
         )
       } catch (e: IllegalStateException) {
-        throw GradleException("hardeningCertify: ${e.message}", e)
+        throw GradleException("hardeningCertify: ${e.message}" + retryGuidance(), e)
       }
     }
     val pluginBeforeSha256 = currentPluginSha256("before final certification validation")
@@ -608,12 +635,12 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
         } catch (e: Exception) {
           throw GradleException(
             "hardeningCertify: '${evidence.suiteName.get()}' completed mutation-toolchain " +
-              "record is missing or malformed: ${e.message}", e)
+              "record is missing or malformed: ${e.message}" + retryGuidance(), e)
         }
         if (toolchain.identitySha256 != recorded.mutationToolchainSha256) {
           throw GradleException(
             "hardeningCertify: '${evidence.suiteName.get()}' completed mutation-toolchain " +
-              "record differs from evidence"
+              "record differs from evidence" + retryGuidance()
           )
         }
       }
@@ -622,7 +649,8 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
       if (differences.isNotEmpty()) {
         throw GradleException(
           "hardeningCertify: '${evidence.suiteName.get()}' inputs changed after verification — refusing to " +
-            "commit a stale receipt:\n" + differences.joinToString("\n") { "  $it" }
+            "commit a stale receipt:\n" + differences.joinToString("\n") { "  $it" } +
+            retryGuidance()
         )
       }
       val suite = evidence.suiteName.get()
@@ -641,7 +669,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
           execOperations,
         )
       } catch (e: IllegalStateException) {
-        throw GradleException("hardeningCertify: ${e.message}", e)
+        throw GradleException("hardeningCertify: ${e.message}" + retryGuidance(), e)
       }
     }
     val pluginAfterSha256 = currentPluginSha256("after final certification validation")
@@ -656,7 +684,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
         pluginAfterSha256,
       )
     } catch (e: IllegalStateException) {
-      throw GradleException("hardeningCertify: ${e.message}", e)
+      throw GradleException("hardeningCertify: ${e.message}" + retryGuidance(), e)
     }
   }
 
@@ -673,7 +701,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
       )
     } catch (e: IllegalStateException) {
       throw GradleException(
-        "${e.message}; refusing mixed plugin bytes", e)
+        "${e.message}; refusing mixed plugin bytes" + retryGuidance(), e)
     }
     return expected
   }
@@ -729,7 +757,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
       throw GradleException(
         "hardeningCertify: suites do not describe one project-wide tree in $label — " +
           "refusing to commit a mixed-observation receipt:\n" +
-          conflicts.joinToString("\n") { "  $it" }
+          conflicts.joinToString("\n") { "  $it" } + retryGuidance()
       )
     }
   }
@@ -744,7 +772,7 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
       throw GradleException(
         "hardeningCertify: $label for suite(s) ${mismatches.joinToString(", ") { "'$it'" }} " +
           "does not match the project-wide hardening plugin code — refusing to commit a " +
-          "mixed-plugin receipt"
+          "mixed-plugin receipt" + retryGuidance()
       )
     }
   }

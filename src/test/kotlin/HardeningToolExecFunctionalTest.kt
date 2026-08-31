@@ -216,7 +216,8 @@ $buildTail
               System.exit(4);
             }
             String status = mode.equals("timeout") ? "TIMED_OUT" :
-                (mode.equals("survive") ? "SURVIVED" : "KILLED");
+                (mode.equals("survive") ? "SURVIVED" :
+                    (mode.equals("run-error") ? "RUN_ERROR" : "KILLED"));
             Files.writeString(dir.resolve("mutations.csv"),
                 "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12," +
                     status + ",com.example.CodecTest\n");
@@ -597,6 +598,23 @@ $buildTail
 
   private fun occurrences(haystack: String, needle: String) = haystack.split(needle).size - 1
 
+  private fun assertProjectAtomicCertificationRetry(
+    output: String,
+    taskPath: String = ":hardeningCertify",
+  ) {
+    assertTrue(
+      output.contains("run $taskPath in a new Gradle invocation") &&
+          output.contains("receipt is project-atomic") &&
+          output.contains("every suite in this project re-executes in that invocation") &&
+          output.contains("completed receipts from other projects remain independent"),
+      output,
+    )
+    assertFalse(
+      output.contains("run the full suite in this certification invocation"),
+      "certification refusal recommended repairing one suite inside its failed invocation:\n$output",
+    )
+  }
+
   @Test
   fun `the minion filter dedups across both streams and the scoped marker tracks mutateOnly`() {
     writeFixture()
@@ -749,6 +767,8 @@ $buildTail
   @Test
   fun `a process failure before report creation cannot expose the previous report`() {
     writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
     runner("pitestEncoding").build()
 
     val report = File(fixtureDir, "build/reports/pitest/encoding")
@@ -763,6 +783,13 @@ $buildTail
     listOf("mutations.csv", "mutations.xml", "index.html", ".evidence.tsv", ".toolchain.tsv")
       .forEach { stale -> assertFalse(report.resolve(stale).exists(), "stale $stale survived") }
     assertTrue(report.resolve("pitest.stderr.log").readText().endsWith("failed before report"))
+
+    val certificationFailed = runner("hardeningCertify").buildAndFail().output
+    assertProjectAtomicCertificationRetry(certificationFailed)
+    assertFalse(
+      certificationFailed.contains("Retry: run :pitestEncoding in a new Gradle invocation"),
+      "failed certification recommended a one-suite repair:\n$certificationFailed",
+    )
   }
 
   @Test
@@ -896,6 +923,11 @@ $buildTail
           zeroFire.output.contains("0 generated (no report — cannot fire here, or the run failed above)"),
       zeroFire.output,
     )
+    // Intentional marker-only exception: the tolerated candidate-cannot-fire exit returns
+    // before report completion. Its raw output, not `.running` alone, distinguishes this
+    // zero-fire result from another failure before a CSV exists.
+    assertTrue(report.resolve(".running").isFile, "zero-fire marker was unexpectedly cleared")
+    assertFalse(report.resolve("mutations.csv").isFile, "zero-fire trial unexpectedly wrote a report")
     assertTrue(
       zeroFire.output.contains(report.resolve("pitest.stdout.log").absolutePath) &&
           zeroFire.output.contains(report.resolve("pitest.stderr.log").absolutePath),
@@ -1270,7 +1302,7 @@ $buildTail
       "the advisory did not explain the measurement's boundary:\n${result.output}",
     )
     assertTrue(
-      result.output.contains("hardening: 1 advisory finding(s) across 1 scope(s)") &&
+      result.output.contains("hardening: 1 advisory finding across 1 scope") &&
           result.output.contains(
             ":consumer pitest 'encoding': slowest PIT coverage-phase test took 416 ms",
           ),
@@ -1599,6 +1631,8 @@ $buildTail
     val stale = runner("pitestEncodingVerify").buildAndFail().output
     assertTrue(stale.contains("completed report evidence no longer matches the current build"), stale)
     assertTrue(stale.contains("sourceSha256"), stale)
+    assertTrue(stale.contains("Retry: run :pitestEncoding in a new Gradle invocation"), stale)
+    assertFalse(stale.contains("receipt is project-atomic"), stale)
   }
 
   @Test
@@ -1752,6 +1786,7 @@ $buildTail
     val failed = runner("hardeningCertify").buildAndFail().output
 
     assertTrue(failed.contains("does not own the exact durable session sentinel"), failed)
+    assertProjectAtomicCertificationRetry(failed)
     assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists())
     assertTrue(File(fixtureDir, ".pitest-history/pitest-certification.running").isFile)
   }
@@ -1815,7 +1850,7 @@ $buildTail
         .containsMatchIn(receipt),
       receipt,
     )
-    assertTrue(certified.output.contains("suite(s) certified"), certified.output)
+    assertTrue(certified.output.contains("1 suite certified"), certified.output)
   }
 
   @Test
@@ -1905,7 +1940,7 @@ $buildTail
     )
     val certified = runner("clean", "hardeningCertify").build()
     val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv").readText()
-    assertTrue(certified.output.contains("suite(s) certified"), certified.output)
+    assertTrue(certified.output.contains("1 suite certified"), certified.output)
     assertTrue(receipt.contains("gitState\tclean\n"), receipt)
     assertTrue(receipt.contains("gitCommit\t$trackedCommit\n"), receipt)
   }
@@ -2008,7 +2043,16 @@ $buildTail
     assertTrue(receipt.contains("gitTree\t$tree\n"), receipt)
     assertTrue(Regex("(?m)^pluginSha256\\t[0-9a-f]{64}$").containsMatchIn(receipt), receipt)
     assertFalse(receipt.lineSequence().any { it.startsWith("suite\t") }, receipt)
-    assertTrue(certified.output.contains("0 suite(s) certified"), certified.output)
+    assertTrue(certified.output.contains("0 suites certified"), certified.output)
+    val receiptPath = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
+        .canonicalPath
+    assertTrue(
+      certified.output.contains(
+        "hardeningCertify: 1 project-scoped receipt published by this Gradle invocation; " +
+          "0 suites certified total:\n  : — 0 suites — $receiptPath",
+      ),
+      certified.output,
+    )
   }
 
   @Test
@@ -2057,6 +2101,12 @@ $buildTail
 
     assertTrue(stale.contains("report/evidence pair no longer matches the current build"), stale)
     assertTrue(stale.contains("sourceSha256"), stale)
+    assertTrue(
+      stale.contains("re-run the affected suite in the intended mode") &&
+          stale.contains(":pitestModeSnapshot with the same -PpitestMode label"),
+      stale,
+    )
+    assertFalse(stale.contains("receipt is project-atomic"), stale)
   }
 
   @Test
@@ -2085,7 +2135,185 @@ $buildTail
 
     assertTrue(failed.contains("inputs changed after verification"), failed)
     assertTrue(failed.contains("sourceSha256"), failed)
+    assertProjectAtomicCertificationRetry(failed)
     assertFalse(receipt.exists(), "stale-input certification left a passing receipt")
+  }
+
+  @Test
+  fun `certification evidence validation recommends only the project-atomic retry`() {
+    writeFixture(
+      buildTail = """
+        val sourceToChangeBeforeEvidenceValidation =
+          layout.projectDirectory.file("src/main/java/com/example/FakePit.java")
+        tasks.register("changeSourceAfterPit") {
+          mustRunAfter("pitestEncoding")
+          doLast {
+            sourceToChangeBeforeEvidenceValidation.asFile.appendText(
+              "\n// changed before evidence validation\n"
+            )
+          }
+        }
+        tasks.named("pitestEncodingEvidenceValidate") {
+          dependsOn("changeSourceAfterPit")
+        }
+      """.trimIndent(),
+    )
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+
+    assertTrue(failed.contains("completed report evidence no longer matches the current build"), failed)
+    assertTrue(failed.contains("sourceSha256"), failed)
+    assertProjectAtomicCertificationRetry(failed)
+    assertFalse(
+      failed.contains("Retry: run :pitestEncoding in a new Gradle invocation"),
+      "certification evidence validator recommended a one-suite repair:\n$failed",
+    )
+  }
+
+  @Test
+  fun `known invalid status during certification recommends only the project-atomic retry`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "fake-pit-mode.txt").writeText("run-error\n")
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+
+    assertTrue(
+      failed.contains("RUN_ERROR x1") &&
+          failed.contains("RUN_ERROR alone diagnoses neither load nor memory") &&
+          failed.contains("non-recurring known runtime or unfinished outcome") &&
+          failed.contains("history-free, full unscoped run") &&
+          failed.contains("Continued invalid outcomes warrant investigation even when their " +
+              "coordinates move"),
+      failed,
+    )
+    assertProjectAtomicCertificationRetry(failed)
+    assertFalse(
+      failed.contains("run :pitestEncoding") || failed.contains("-PnoMutationHistory"),
+      "certification invalid-status refusal recommended a standalone suite retry:\n$failed",
+    )
+  }
+
+  @Test
+  fun `ordinary ratchet refusal during certification recommends the project-atomic retry`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "fake-pit-mode.txt").writeText("survive\n")
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+
+    assertTrue(failed.contains("unkilled mutant(s) not in the accepted baseline"), failed)
+    assertProjectAtomicCertificationRetry(failed)
+    assertFalse(
+      failed.contains("Retry: run :pitestEncoding in a new Gradle invocation"),
+      "certification ratchet refusal recommended a one-suite repair:\n$failed",
+    )
+  }
+
+  @Test
+  fun `known invalid status follows the explicitly requested aggregate workflow`() {
+    writeFixture()
+    File(fixtureDir, "fake-pit-mode.txt").writeText("run-error\n")
+
+    val converge = runner("pitestConverge").buildAndFail().output
+    assertTrue(
+      converge.contains("RUN_ERROR x1") &&
+          converge.contains("run :pitestConverge from the start") &&
+          converge.contains("non-recurring known runtime or unfinished outcome") &&
+          converge.contains("sufficient closure"),
+      converge,
+    )
+    assertFalse(
+      converge.contains("run :pitestEncoding") ||
+          converge.contains("hardeningCertify") ||
+          converge.contains("replaces the incomplete generated report"),
+      converge,
+    )
+
+    val mode = runner(
+      "pitestEncoding", "pitestModeSnapshot", "-PpitestMode=solo", "-PnoMutationHistory"
+    ).buildAndFail().output
+    assertTrue(
+      mode.contains("RUN_ERROR x1") &&
+          mode.contains("re-run every suite in mode 'solo'") &&
+          mode.contains(":pitestModeSnapshot -PpitestMode=solo") &&
+          mode.contains("non-recurring known runtime or unfinished outcome") &&
+          mode.contains("sufficient closure"),
+      mode,
+    )
+    assertFalse(
+      mode.contains("hardeningCertify") ||
+          mode.contains("run :pitestEncoding") ||
+          mode.contains("replaces the incomplete generated report"),
+      mode,
+    )
+  }
+
+  @Test
+  fun `qualified aggregate intent does not leak into another project`() {
+    writeFixture(settingsTail = "include(\"a\", \"b\")")
+    val sharedBuild = File(fixtureDir, "build.gradle.kts").readText()
+    listOf("a", "b").forEach { name ->
+      val subproject = File(fixtureDir, name).apply { mkdirs() }
+      subproject.resolve("build.gradle.kts").writeText(sharedBuild)
+      File(fixtureDir, "src").copyRecursively(subproject.resolve("src"))
+    }
+    File(fixtureDir, "b/fake-pit-mode.txt").writeText("run-error\n")
+
+    val failed = runner(
+      ":a:pitestConverge",
+      ":b:pitestEncoding",
+      "-PnoMutationHistory",
+    ).buildAndFail().output
+
+    assertTrue(failed.contains("RUN_ERROR x1"), failed)
+    assertTrue(
+      failed.contains(
+        "Retry: in a new Gradle invocation, run :b:pitestEncoding " +
+            "-PnoMutationHistory without -PmutateOnly.",
+      ),
+      failed,
+    )
+    assertFalse(
+      failed.contains("run :b:pitestConverge from the start"),
+      "project :a aggregate selection changed project :b retry guidance:\n$failed",
+    )
+  }
+
+  @Test
+  fun `certification receipt refusal restarts the project when completed evidence disappears`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        val completedEvidenceToRemove =
+          layout.buildDirectory.file("reports/pitest/encoding/.evidence.tsv")
+        tasks.register("removeCompletedEvidenceAfterVerify") {
+          mustRunAfter("pitestEncodingVerify")
+          doLast {
+            check(completedEvidenceToRemove.get().asFile.delete())
+          }
+        }
+        tasks.named("hardeningCertify") {
+          dependsOn("removeCompletedEvidenceAfterVerify")
+        }
+      """.trimIndent() + "\n"
+    )
+
+    val failed = runner("hardeningCertify").buildAndFail().output
+
+    assertTrue(failed.contains("has no completed report/evidence pair"), failed)
+    assertProjectAtomicCertificationRetry(failed)
+    assertFalse(
+      File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists(),
+      "missing-evidence certification left a passing receipt",
+    )
   }
 
   @Test
@@ -2116,6 +2344,7 @@ $buildTail
     assertTrue(failed.contains("'encoding'") && failed.contains("'decoding'"), failed)
     assertTrue(failed.contains("toolClasspathSha256"), failed)
     assertTrue(failed.contains("mutationToolchainSha256"), failed)
+    assertProjectAtomicCertificationRetry(failed)
     assertFalse(receipt.exists(), "mixed-tree certification left a passing receipt")
   }
 
@@ -2257,8 +2486,11 @@ $buildTail
     File(fixtureDir, "fake-pit-mode.txt").writeText("timeout\n")
     val strict = runner("releaseG").buildAndFail().output
     assertTrue(
-      strict.contains("physical TIMED_OUT mutant instance(s) across 1 line-less key(s)") &&
-          strict.contains("and no audited set"),
+      strict.contains(
+        "no audited set covers 1 physical TIMED_OUT mutant instance across 1 line-less key"
+      ) &&
+          strict.contains("  Evidence:") && strict.contains("  Review:") &&
+          strict.contains("  Watchdog context:") && strict.contains("  Remedy:"),
       strict,
     )
     assertFalse(receipt.exists(), "strict verification failure produced a receipt")
@@ -2355,6 +2587,60 @@ $buildTail
     assertTrue(bEvidence.historyAssisted, result.output)
     assertTrue(File(fixtureDir, "a/.pitest-history/pitest-certification.tsv").isFile)
     assertFalse(File(fixtureDir, "b/.pitest-history/pitest-certification.tsv").exists())
+    val aReceipt = File(fixtureDir, "a/.pitest-history/pitest-certification.tsv")
+        .canonicalPath
+    assertTrue(
+      result.output.contains(
+        "hardeningCertify: 1 project-scoped receipt published by this Gradle invocation; " +
+          "1 suite certified total:\n  :a — 1 suite — $aReceipt",
+      ),
+      "the roll-up claimed an unselected project or omitted the completed receipt:\n${result.output}",
+    )
+    assertFalse(result.output.contains("\n  :b —"), result.output)
+  }
+
+  @Test
+  fun `certification closes with one sorted cross-project receipt roll-up`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "settings.gradle.kts").appendText("\ninclude(\"a\", \"b\")\n")
+    enableFakeArcMutate()
+
+    val sharedBuild = File(fixtureDir, "build.gradle.kts").readText()
+    listOf("a", "b").forEach { name ->
+      val subproject = File(fixtureDir, name).apply { mkdirs() }
+      subproject.resolve("build.gradle.kts").writeText(sharedBuild)
+      File(fixtureDir, "src").copyRecursively(subproject.resolve("src"))
+      File(fixtureDir, "corpus").copyRecursively(subproject.resolve("corpus"))
+    }
+    val aReceipt = File(fixtureDir, "a/.pitest-history/pitest-certification.tsv")
+        .canonicalPath
+    val bReceipt = File(fixtureDir, "b/.pitest-history/pitest-certification.tsv")
+        .canonicalPath
+    val header =
+      "hardeningCertify: 2 project-scoped receipts published by this Gradle invocation; " +
+        "2 suites certified total:"
+
+    fun assertRollUp(output: String) {
+      assertEquals(1, output.split(header).size - 1, output)
+      assertTrue(
+        output.contains(":a:hardeningCertify: 1 suite certified; receipt: $aReceipt") &&
+          output.contains(":b:hardeningCertify: 1 suite certified; receipt: $bReceipt"),
+        "the immediate receipt lines were ambiguous or ungrammatical:\n$output",
+      )
+      val aRow = output.indexOf("  :a — 1 suite — $aReceipt")
+      val bRow = output.indexOf("  :b — 1 suite — $bReceipt")
+      assertTrue(aRow >= 0 && bRow > aRow, "the project receipt roll-up was missing or unsorted:\n$output")
+    }
+
+    val first = runner(":b:hardeningCertify", ":a:hardeningCertify").build()
+    assertTrue(File(aReceipt).isFile && File(bReceipt).isFile, first.output)
+    assertRollUp(first.output)
+
+    val reused = runner(":b:hardeningCertify", ":a:hardeningCertify").build()
+    assertTrue(reused.output.contains("Configuration cache entry reused."), reused.output)
+    assertRollUp(reused.output)
   }
 
   @Test
@@ -2854,7 +3140,7 @@ $buildTail
         "pitest 'encoding': slowest PIT coverage-phase test " +
             "'[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:roundTrip()]' " +
             "took 250 ms",
-      ) && boundary.contains("hardening: 1 advisory finding(s) across 1 scope(s)"),
+      ) && boundary.contains("hardening: 1 advisory finding across 1 scope"),
       "the inclusive 250 ms boundary did not produce exactly one advisory:\n$boundary",
     )
   }

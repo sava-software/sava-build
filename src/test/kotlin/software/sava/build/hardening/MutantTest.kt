@@ -88,6 +88,40 @@ class MutantTest {
     }
     assertTrue(failure.message!!.contains("not valid completed evidence"), failure.message)
     assertTrue(failure.message!!.contains("FUTURE_STATUS x1"), failure.message)
+    assertFalse(
+      failure.message!!.contains("sufficient closure") ||
+          failure.message!!.contains("mutation-record debt"),
+      "an unknown PIT vocabulary was incorrectly treated as a retryable execution outcome: " +
+          failure.message,
+    )
+  }
+
+  @Test
+  fun `an unknown status prevents a mixed invalid report from receiving runtime closure`() {
+    val consumerGuidance = "CONSUMER-SPECIFIC-CLOSURE"
+    val failure = assertThrows(IllegalArgumentException::class.java) {
+      Mutant.parseReport(
+        listOf(
+          "C.java,com.example.C,org.pitest.M,m,5,RUN_ERROR,none",
+          "C.java,com.example.C,org.pitest.M,m,6,FUTURE_STATUS,none",
+        ),
+        consumerGuidance,
+      )
+    }
+
+    assertTrue(failure.message!!.contains("FUTURE_STATUS x1, RUN_ERROR x1"), failure.message)
+    assertTrue(
+      failure.message!!.contains("RUN_ERROR alone diagnoses neither load nor memory"),
+      failure.message,
+    )
+    assertFalse(
+      failure.message!!.contains("sufficient closure") ||
+          failure.message!!.contains("mutation-record debt") ||
+          failure.message!!.contains("project-atomic") ||
+          failure.message!!.contains(consumerGuidance),
+      "unknown vocabulary inherited closure meant only for known runtime outcomes: " +
+          failure.message,
+    )
   }
 
   @Test
@@ -132,15 +166,41 @@ class MutantTest {
 
   @Test
   fun `error and unfinished statuses invalidate a complete report`() {
+    val consumerGuidance =
+      "CONSUMER-SPECIFIC-CLOSURE: a later clean workflow is sufficient closure."
     listOf("MEMORY_ERROR", "RUN_ERROR", "NOT_STARTED", "STARTED").forEach { status ->
       val failure = assertThrows(IllegalArgumentException::class.java) {
-        Mutant.parseReport(listOf("C.java,com.example.C,org.pitest.M,m,5,$status,none"))
+        Mutant.parseReport(
+          listOf("C.java,com.example.C,org.pitest.M,m,5,$status,none"),
+          consumerGuidance,
+        )
       }
       assertTrue(failure.message!!.contains("$status x1"), failure.message)
       assertTrue(
           failure.message!!.contains("line 1: C.java,com.example.C,org.pitest.M,m,5,$status,none"),
           failure.message,
       )
+      assertTrue(
+        failure.message!!.contains(consumerGuidance),
+        "known invalid status $status omitted its caller-supplied workflow guidance: " +
+          failure.message,
+      )
     }
+  }
+
+  @Test
+  fun `known invalid reports do not invent a workflow when the consumer supplies none`() {
+    val failure = assertThrows(IllegalArgumentException::class.java) {
+      Mutant.parseReport(
+        listOf("C.java,com.example.C,org.pitest.M,m,5,NOT_STARTED,none")
+      )
+    }
+
+    assertFalse(
+      failure.message!!.contains("hardeningCertify") ||
+          failure.message!!.contains("sufficient closure") ||
+          failure.message!!.contains("mutation-record debt"),
+      failure.message,
+    )
   }
 }

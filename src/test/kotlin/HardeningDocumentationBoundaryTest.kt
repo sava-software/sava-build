@@ -28,20 +28,76 @@ class HardeningDocumentationBoundaryTest {
 
   @Test
   fun `installed plugin owns mechanics and consumer docs own local evidence`() {
-    assertTrue(hardening.contains("run `./gradlew hardeningHelp` against the version in use"))
+    assertTrue(
+      hardening.contains("run `./gradlew :module:hardeningHelp` against the version") &&
+          hardening.contains("`./gradlew :hardeningHelp` when the root project owns the plugin"),
+    )
     assertTrue(
       hardening.contains("Consumer hardening notes contain only local ownership") &&
           hardening.contains("AGENTS.md` carries this exact generated") &&
           hardening.contains("repository-specific facts outside its bounded block") &&
+          hardening.contains("Local prose may name a project-qualified task") &&
+          hardening.contains("descriptions of task output, pass/fail or warning conditions") &&
           hardening.contains("./gradlew :module:hardeningAgentTemplate") &&
           hardening.contains("unqualified task name can select every hardening project"),
       "the generated agent template must distinguish its pinned AGENTS copy from local notes",
     )
     val featureRow = readme.lineSequence()
       .single { it.startsWith("| `software.sava.build.feature.hardening`") }
-    assertTrue(featureRow.contains("hardeningHelp"))
+    assertTrue(
+      featureRow.contains("./gradlew :module:hardeningHelp") &&
+          featureRow.contains("./gradlew :hardeningHelp"),
+    )
     assertFalse(featureRow.contains("-PupdateMutationBaseline"))
     assertFalse(featureRow.contains("configuration cache"))
+  }
+
+  @Test
+  fun `template upgrade prose routes to installed project-qualified task authority`() {
+    val compactReadme = readme.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactReadme.contains(
+        "agentsTemplateInSync` checks the root `AGENTS.md` acknowledgment of the installed agent-instructions template"
+      ) && compactReadme.contains("is used by `check` and `qualityGate`") &&
+          compactReadme.contains("./gradlew :module:hardeningHelp") &&
+          compactReadme.contains("project-qualified `hardeningAgentTemplate` and `hardeningAgentTemplateDiff`") &&
+          compactReadme.contains("one chosen owner reports the installed version's guidance"),
+      "template upgrades must defer to one installed, project-qualified task surface",
+    )
+    assertFalse(readme.contains("`agentsTemplateInSync` fails a consumer"))
+    assertFalse(readme.contains("Recomputed per-tag"))
+  }
+
+  @Test
+  fun `acceptance prose avoids unaudited source-line locators`() {
+    val compactHardening = hardening.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactHardening.contains(
+        "Do not copy source line numbers anywhere in `config/pitest/README.md`"
+      ) && compactHardening.contains(
+        "acceptance and timeout arguments, retired-incident prose, tables, and inline or fenced coordinate rosters"
+      ) && compactHardening.contains(
+        "A roster is narrative evidence, not protected membership"
+      ) && compactHardening.contains(
+        "retain line-less class/method/mutator evidence and meaningful multiplicity as `xN`"
+      ) && compactHardening.contains(
+        "The current PIT report and the row's `# line` tag are the sole transient"
+      ),
+      "all README prose, including coordinate rosters, must avoid a second source-line index",
+    )
+  }
+
+  @Test
+  fun `certification retry policy is project-atomic`() {
+    val compactHardening = hardening.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactHardening.contains("A later clean, history-free, full unscoped run") &&
+          compactHardening.contains("sufficient closure for a non-recurring invalid execution") &&
+          compactHardening.contains("creates no accepted-baseline, timeout-set, provenance, or mutation-record debt") &&
+          compactHardening.contains("all suites in that project intentionally re-run") &&
+          compactHardening.contains("Receipts from other projects are independent"),
+      "invalid-outcome closure and project-atomic certification retry must be explicit",
+    )
   }
 
   @Test

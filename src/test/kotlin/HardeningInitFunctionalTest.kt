@@ -62,50 +62,46 @@ class HardeningInitFunctionalTest {
     val readmeText = readme.readText()
     assertTrue(readmeText.startsWith("# Mutation hardening evidence"), readmeText)
     assertTrue(readmeText.contains("repository-specific evidence and decisions only"), readmeText)
-    assertTrue(readmeText.contains("./gradlew hardeningHelp"), readmeText)
+    assertTrue(readmeText.contains("./gradlew :hardeningHelp"), readmeText)
+    assertTrue(
+      readmeText.contains("inline, fenced, or tabular coordinate rosters source-line-free") &&
+          readmeText.contains("meaningful multiplicity as `xN`"),
+      readmeText,
+    )
     assertTrue(readmeText.contains("## Untriaged debt"), readmeText)
     assertTrue(readmeText.contains("## Accepted mutants"), readmeText)
-    assertTrue(readmeText.contains("exact `# <label>` text"), readmeText)
-    assertTrue(
-      readmeText.contains("A label groups rows; it does not authorize every similar") &&
-          readmeText.contains("Record the property, independent oracle"),
-      readmeText,
-    )
     val normalizedReadme = readmeText.replace(Regex("\\s+"), " ")
     assertTrue(
-      normalizedReadme.contains(
-        "adding those exact rows to `<suite>-timeouts.csv` is also an intentional manual edit"
-      ),
+      normalizedReadme.contains("Name the class, method, and semantic branch") &&
+          normalizedReadme.contains("omit source line numbers"),
       readmeText,
     )
     assertTrue(
-      normalizedReadme.contains(
-        "An ArcMutate `[history]` report is check-only: run `pitest<Suite> -PnoMutationHistory`"
-      ),
+      normalizedReadme.contains("record its exact `# <label>`, local structural reason") &&
+          normalizedReadme.contains("property, independent oracle") &&
+          normalizedReadme.contains("condition that would make the acceptance invalid"),
       readmeText,
     )
     assertTrue(readmeText.contains("## Audited timeout causes"), readmeText)
     assertTrue(
-      readmeText.contains("Only `cause:liveness` is admissible") &&
-          readmeText.contains("seeded file is intentionally uncertifiable") &&
-          readmeText.contains("may be recorded honestly as `cause:harness`") &&
-          readmeText.contains("remains non-certifying") &&
-          readmeText.contains("duration * timeoutFactor + timeoutConst") &&
-          readmeText.contains("a bound that cannot fail first contributes no cause evidence") &&
-          readmeText.contains("not credible liveness evidence") &&
-          readmeText.contains("Treat `# line` comments as diagnostic metadata only") &&
-          readmeText.contains("A finite same-key sibling observed KILLED") &&
-          readmeText.contains("does not itself create mixed timeout causes") &&
-          readmeText.contains("distinct siblings timing out under different cause categories") &&
-          readmeText.contains("status movement alone does not prove it") &&
-          readmeText.contains("repeated fresh history-free non-timeout observations") &&
-          readmeText.contains(
-            "Name the member's class and method together in the same Markdown heading-delimited section"
-          ),
+      normalizedReadme.contains("record the class and method, the observed local behavior") &&
+          normalizedReadme.contains("deterministic seams or budgets tried") &&
+          normalizedReadme.contains("fixture safety bound") &&
+          normalizedReadme.contains("measured structural cause"),
       readmeText,
     )
-    (HardeningOptionNames.removedWriterProperties.map { "-P$it" } +
-        listOf("full update", "green prune")).forEach { copiedMechanic ->
+    (HardeningOptionNames.removedWriterProperties.map { "-P$it" } + listOf(
+      "Preserve row identity",
+      "named writer tasks",
+      "<suite>-timeouts.csv",
+      "ArcMutate `[history]` report",
+      "cause:liveness",
+      "cause:harness",
+      "duration * timeoutFactor + timeoutConst",
+      "sole transient locators",
+      "full update",
+      "green prune",
+    )).forEach { copiedMechanic ->
       assertFalse(
         readmeText.contains(copiedMechanic),
         "seeded consumer evidence copied plugin mechanics '$copiedMechanic':\n$readmeText",
@@ -114,6 +110,12 @@ class HardeningInitFunctionalTest {
     assertTrue(first.output.contains("appended .pitest-history/ to"), first.output)
     assertTrue(gitignore.readText().contains("\n.pitest-history/\n"), gitignore.readText())
     assertTrue(first.output.contains("remaining adoption steps"), first.output)
+    val audit = GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withArguments("hardeningReadmeAudit", "--stacktrace")
+      .build()
+    assertFalse(audit.output.contains("migration advisory"), audit.output)
+    assertFalse(audit.output.contains("advisory finding"), audit.output)
     // the checklist hands over the acknowledgment marker agentsTemplateInSync expects
     assertTrue(
       Regex("<!-- hardening-template sha256:[0-9a-f]{12} -->").containsMatchIn(first.output),
@@ -121,8 +123,12 @@ class HardeningInitFunctionalTest {
     )
     assertTrue(
       first.output.contains("bounded agent-instructions template") &&
+          first.output.contains("./gradlew :pitest<Suite>BaselineUpdate") &&
+          first.output.contains("./gradlew :pitest<Suite>TimeoutAuditInit") &&
           first.output.contains("./gradlew :hardeningAgentTemplate") &&
           first.output.contains("./gradlew :hardeningAgentTemplateDiff") &&
+          first.output.contains("pre-release :hardeningCertify run") &&
+          first.output.contains("local :fuzzAll -PmaxFuzzTime") &&
           first.output.contains("hardeningAgentTemplateDiff") &&
           first.output.contains("review-only diff") &&
           first.output.contains("never edits AGENTS.md"),

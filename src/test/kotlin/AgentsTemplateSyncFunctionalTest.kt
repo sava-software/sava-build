@@ -77,6 +77,26 @@ class AgentsTemplateSyncFunctionalTest {
     .withArguments(*arguments, "--stacktrace")
 
   @Test
+  fun `task descriptions are neutral and disclose quote normalization`() {
+    writeFixture()
+
+    val syncHelp = runner("help", "--task", "agentsTemplateInSync").build().output
+    assertTrue(
+      syncHelp.contains(
+        "Checks the root AGENTS.md bounded acknowledgment of the installed agent-instructions template."
+      ),
+      syncHelp,
+    )
+    assertFalse(syncHelp.contains("Fails when an existing AGENTS.md"), syncHelp)
+
+    val diffHelp = runner("help", "--task", "hardeningAgentTemplateDiff").build().output
+    assertTrue(
+      diffHelp.contains("normalizes one uniform Markdown '> ' quote layer"),
+      diffHelp,
+    )
+  }
+
+  @Test
   fun `missing, marker-less, and stale AGENTS_md warn, fail, and fail naming both digests`() {
     writeFixture()
 
@@ -84,7 +104,7 @@ class AgentsTemplateSyncFunctionalTest {
     // the marker to add instead of failing
     val missing = runner("agentsTemplateInSync").build()
     assertTrue(missing.output.contains("no AGENTS.md"), missing.output)
-    assertTrue(missing.output.contains("hardeningAgentTemplate"), missing.output)
+    assertTrue(missing.output.contains("./gradlew :hardeningAgentTemplate"), missing.output)
     assertTrue(
       missing.output.contains("<!-- hardening-template sha256:$expectedDigest -->"),
       "the warning must hand over the exact marker line:\n" + missing.output
@@ -106,7 +126,7 @@ class AgentsTemplateSyncFunctionalTest {
       "expected the stale/current digest pair:\n" + stale.output
     )
     assertTrue(
-      stale.output.contains("hardeningAgentTemplateDiff") &&
+      stale.output.contains("./gradlew :hardeningAgentTemplateDiff") &&
           stale.output.contains(BLOCK_START) && stale.output.contains(BLOCK_END),
       "the stale-marker failure must route legacy blocks through the bounded diff migration:\n" +
         stale.output,
@@ -147,10 +167,22 @@ class AgentsTemplateSyncFunctionalTest {
       printed.contains("Consumer hardening notes contain only local ownership") &&
           printed.contains("AGENTS.md` carries this exact generated") &&
           printed.contains("repository-specific facts outside its bounded block") &&
+          printed.contains("Local prose may name a project-qualified task") &&
+          printed.contains("task output, pass/fail or warning") &&
+          printed.contains("conditions, refusals, normalization, and fallback behavior") &&
           printed.contains("hardeningAgentTemplateDiff") &&
           printed.contains("against its explicitly") &&
           printed.contains("bounded block"),
       "the version-matched template must distinguish pinned AGENTS instructions from consumer notes:\n$printed",
+    )
+    assertTrue(
+      printed.contains("Do not copy source line numbers anywhere in") &&
+          printed.contains("`config/pitest/README.md`") &&
+          printed.contains("inline or fenced coordinate rosters") &&
+          printed.contains("narrative evidence, not protected membership") &&
+          printed.contains("meaningful multiplicity as `xN`") &&
+          printed.contains("row's `# line` tag are the sole transient locators"),
+      "the version-matched template must keep every README roster free of decaying source-line locators:\n$printed",
     )
     assertTrue(
       printed.contains("A mutant is a question, not a specification") &&
@@ -202,7 +234,13 @@ class AgentsTemplateSyncFunctionalTest {
           printed.contains("pitest<Suite>Diagnostic") &&
           printed.contains("separate raw streams establish no total order") &&
           printed.contains("last announced mutation is context, not cause") &&
-          Regex("Only a clean fresh full\\s+unscoped run").containsMatchIn(printed),
+          Regex("Only a clean fresh full\\s+unscoped run").containsMatchIn(printed) &&
+          printed.contains("sufficient closure for a non-recurring invalid") &&
+          printed.contains("does not diagnose that failure") &&
+          printed.contains("creates no") && printed.contains("mutation-record debt") &&
+          printed.contains("project's whole `hardeningCertify`") &&
+          printed.contains("rather than stitching attempts") &&
+          printed.contains("other project receipts remain independent"),
       "the version-matched template must not turn a repeatable RUN_ERROR coordinate into a cause diagnosis:\n$printed",
     )
     assertFalse(printed.contains("same coordinate is not evidence"), printed)
@@ -476,6 +514,7 @@ class AgentsTemplateSyncFunctionalTest {
     val agentsDoc = File(fixtureDir, "AGENTS.md")
     val missing = runner("hardeningAgentTemplateDiff").buildAndFail()
     assertTrue(missing.output.contains("AGENTS.md does not exist"), missing.output)
+    assertTrue(missing.output.contains("run :hardeningAgentTemplate"), missing.output)
     val malformed = listOf(
       "no boundaries\n" to "must contain exactly one ordered boundary pair",
       "$BLOCK_START\nbody\n$BLOCK_START\nbody\n$BLOCK_END\n" to
@@ -533,18 +572,44 @@ class AgentsTemplateSyncFunctionalTest {
     )
 
     val advisory = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout").build()
+    val claimAndReview =
+      "agentsTemplateInSync: unreleased template digest differs from AGENTS.md.\n" +
+          "  AGENTS.md marker: 000000000000\n" +
+          "  Unreleased checkout: $expectedDigest\n" +
+          "  Review: The marker normally lands with the release that ships this digest, not " +
+          "before it; local candidate validation alone does not require a consumer change."
     assertTrue(
-      advisory.output.contains("the marker dance lands with the release that ships this digest"),
+      advisory.output.contains(claimAndReview),
       "a stale marker under the local-candidate flag must warn, not fail:\n" + advisory.output
     )
+    val rcRemedy =
+      "  Remedy for deliberate RC adoption: Run './gradlew :hardeningAgentTemplateDiff', review " +
+          "or act on the bounded AGENTS.md hardening block, and stage the marker with the new " +
+          "plugin pin.\n" +
+          "  Landing condition: Do not land that consumer commit while it still resolves the " +
+          "older published plugin.\n" +
+          "  Remedy otherwise: When bumping past the release, run " +
+          "'./gradlew :hardeningAgentTemplateDiff', review or act on the diff, and update the " +
+          "marker to:\n" +
+          "    <!-- hardening-template sha256:$expectedDigest -->"
     assertTrue(
-      advisory.output.contains("If this is deliberate RC adoption") &&
-          advisory.output.contains("do not land that consumer commit while it still resolves the older published plugin"),
+      advisory.output.contains(rcRemedy),
       "the advisory must distinguish ordinary candidate validation from a staged RC-adoption change:\n" + advisory.output,
     )
-    assertTrue(advisory.output.contains("sha256:$expectedDigest"), advisory.output)
     assertTrue(
-      advisory.output.contains("acknowledges template digest 000000000000"),
+      advisory.output.contains(
+        "  Remedy prerequisite:\n    Before running the diff, wrap the existing adapted " +
+            "hardening block"
+      ) &&
+          advisory.output.indexOf("  Review:") <
+          advisory.output.indexOf("  Remedy prerequisite:") &&
+          advisory.output.indexOf("  Remedy prerequisite:") <
+          advisory.output.indexOf("  Remedy for deliberate RC adoption:"),
+      "the boundary migration prerequisite must sit between review and either remedy:\n" +
+          advisory.output,
+    )
+    assertTrue(
+      advisory.output.contains("  AGENTS.md marker: 000000000000"),
       "a fenced current-marker example concealed the real stale marker:\n${advisory.output}",
     )
 
@@ -623,6 +688,11 @@ class AgentsTemplateSyncFunctionalTest {
       template.output.contains(":other:hardeningAgentTemplate"),
       "the qualified task unexpectedly selected another hardening project:\n${template.output}",
     )
+
+    assertTrue(File(fixtureDir, "AGENTS.md").delete())
+    val missing = runner(":lib:hardeningAgentTemplateDiff").buildAndFail().output
+    assertTrue(missing.contains("run :lib:hardeningAgentTemplate"), missing)
+    assertFalse(missing.contains("run :hardeningAgentTemplate and"), missing)
   }
 
   @Test
@@ -669,11 +739,13 @@ class AgentsTemplateSyncFunctionalTest {
 
     fun assertOneAdvisory(output: String) {
       assertTrue(
-        output.split("agentsTemplateInSync: AGENTS.md acknowledges template digest").size - 1 == 1,
+        output.split(
+          "agentsTemplateInSync: unreleased template digest differs from AGENTS.md."
+        ).size - 1 == 1,
         "the repository-scoped stale-marker warning was printed more than once:\n$output",
       )
       assertTrue(
-        output.contains("hardening: 1 advisory finding(s) across 1 scope(s)") &&
+        output.contains("hardening: 1 advisory finding across 1 scope") &&
           output.contains("repository AGENTS.md: AGENTS.md acknowledges an older hardening template"),
         "the repository advisory was duplicated or described as suite-scoped:\n$output",
       )

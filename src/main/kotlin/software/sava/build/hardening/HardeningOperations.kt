@@ -619,6 +619,13 @@ internal object HardeningHelpText {
     val fuzzPrefixes = fuzzTargetNames.sorted().map {
       "fuzz" + it.replaceFirstChar(Char::uppercase)
     }
+    val suiteWorkflowTasks = suitePrefixes.flatMap { prefix ->
+      listOf(
+          prefix to "run the suite's normal PIT mutation workflow",
+          "${prefix}Verify" to
+              "check a completed report against the suite ratchet; scoped reports remain diagnostic",
+      )
+    }
     val suiteDebtTasks = suitePrefixes.map { prefix ->
       "${prefix}Debt" to "inspect committed records and latest full-report debt without running PIT"
     }
@@ -630,6 +637,7 @@ internal object HardeningHelpText {
       "-P${option.name}" + (option.value?.let { "=<$it>" } ?: "")
     }
     val generatedNames = buildList {
+      addAll(suiteWorkflowTasks.map { it.first })
       addAll(suiteDebtTasks.map { it.first })
       addAll(suiteDiagnosticTasks.map { it.first })
       suitePrefixes.forEach { prefix ->
@@ -667,10 +675,26 @@ internal object HardeningHelpText {
     appendLine("  pitestModeSnapshot / pitestModeCompare  compare labeled execution modes")
     appendLine("  pitestMutatorTrial                measure candidate mutators")
     appendLine("  mutationOwnershipAudit            cheap whole-production owner/exclusion preflight")
-    appendLine("  hardeningInit / hardeningAgentTemplate / hardeningAgentTemplateDiff")
-    appendLine("                                    scaffold and compare local operator rules")
+    appendGenerated(
+        "hardeningReadmeAudit",
+        "advise on README source coordinates and inherited scaffold mechanics; used by check and qualityGate")
+    appendGenerated(
+        "hardeningAgentTemplate",
+        "print the installed bounded agent-instructions template unquoted")
+    appendGenerated(
+        "hardeningAgentTemplateDiff",
+        "compare the bounded local block; normalizes one uniform Markdown '> ' quote layer")
+    appendGenerated(
+        "agentsTemplateInSync",
+        "check the installed template acknowledgment; used by check and qualityGate")
+    suiteWorkflowTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     suiteDebtTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     suiteDiagnosticTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
+    appendLine()
+    appendLine("Repository scaffolding (may write files):")
+    appendGenerated(
+        "hardeningInit",
+        "scaffold config/pitest/README.md and the .pitest-history/ ignore rule")
     appendLine()
     appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")
     appendLine("  migrateMutationBaselines          stamp substantive accepted baselines; remove empty placeholders")

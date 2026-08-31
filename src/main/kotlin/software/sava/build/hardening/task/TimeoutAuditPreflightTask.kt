@@ -15,6 +15,7 @@ import software.sava.build.hardening.BaselineWriteOperation
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.TimeoutAudit
+import software.sava.build.hardening.qualifiedHardeningTaskPath
 
 /**
  * Cheap committed-file half of the strict timeout audit.
@@ -85,18 +86,27 @@ abstract class TimeoutAuditPreflightTask : DefaultTask() {
       logger.warn(TimeoutAudit.undocumentedCauseWarning(suite, undocumented))
     }
     if (malformed.isNotEmpty() || causeFindings.isNotEmpty() || undocumented.isNotEmpty()) {
-      val pitestTask = "pitest" + suite.replaceFirstChar(Char::uppercase)
+      fun counted(count: Int, singular: String, plural: String = "${singular}s") =
+        "$count ${if (count == 1) singular else plural}"
+      val pitestTask = qualifiedHardeningTaskPath(
+        projectPath,
+        "pitest" + suite.replaceFirstChar(Char::uppercase),
+      )
       val reason =
-        "pitest '$suite': committed timeout audit is not ready for a strict mutation run — " +
-          "${malformed.size} malformed membership row(s), ${causeFindings.size} inadmissible or " +
-          "unfinished cause classification(s), and ${undocumented.size} member(s) without a " +
-          "README cause. Run ${pitestTask}Debt for the same read-only detail. Only cause:liveness " +
-          "may remain in a certifying audited set. Keep finite resource/harness work explicit " +
-          "and non-certifying while fixing it; do not relabel it as liveness or delete it from " +
-          "one quiet run. Finish missing classifications, document every retained liveness member, " +
-          "then use repeated fresh history-free observations under the relevant solo/gate load " +
-          "to prove a repaired row no longer times out before removing it. Run $pitestTask " +
-          "-PnoMutationHistory for those observations. PIT has not run."
+        "pitest '$suite': committed timeout audit is not ready for a strict mutation run:\n" +
+          "  Evidence: ${counted(malformed.size, "malformed membership row")}, " +
+          "${counted(causeFindings.size, "inadmissible or unfinished cause classification")}, " +
+          "and ${counted(undocumented.size, "member")} without a README cause.\n" +
+          "  Review: Only cause:liveness may remain in a certifying audited set. Keep finite " +
+          "resource/harness work explicit and non-certifying while fixing it; do not relabel it " +
+          "as liveness or delete it from one quiet run.\n" +
+          "  Remedy: Run ${pitestTask}Debt for the same read-only detail. Finish missing " +
+          "classifications, document every retained liveness member, then use repeated fresh " +
+          "history-free observations under the relevant solo/gate load to prove a repaired row " +
+          "no longer times out before removing it. Run $pitestTask -PnoMutationHistory for those " +
+          "observations.\n" +
+          "  Execution: PIT has not run." +
+          (if (certificationActive) certificationRetryGuidance(projectPath) else "")
       // Certification is an aggregate release claim, so one invalid suite poisons
       // the project's certification session. A rebase is suite-local: fail that
       // task without poisoning independent suite writers that Gradle may continue

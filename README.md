@@ -151,7 +151,7 @@ hardening {
 The tool-bytecode releases default to the consuming Java toolchain rather than Sava's
 toolchain; lower `bytecodeRelease` or `mutationBytecodeRelease` only if a bundled tool
 cannot yet read that class-file version. Generated corpus replay and shared-support
-sources require Java 17 or newer. Run `./gradlew hardeningInit`, complete its ownership
+sources require Java 17 or newer. Run `./gradlew :hardeningInit`, complete its ownership
 and baseline checklist, then run the template task on exactly one project that applies
 the plugin (for example, `./gradlew :module:hardeningAgentTemplate`, or
 `./gradlew :hardeningAgentTemplate` when the root project owns hardening) and copy the
@@ -191,18 +191,14 @@ org.postgresql.jdbc=org.postgresql:postgresql
 
 ### Upgrading across hardening template versions
 
-`agentsTemplateInSync` fails a consumer whose committed `AGENTS.md` digest marker no
-longer matches the installed plugin's template. The digest moves with doc releases, so a
-version bump can carry template debt the bumped feature did not create. Recomputed
-per-tag: 21.5.23 `d128cb8208fa` (164 quoted lines), 21.5.24 `014396ea56fe` (191),
-21.5.25 `46f7174e51fb` (232), 21.5.26 `90537d1eb1dd` (241), 21.5.27 `f866084114e0`
-(243). A consumer on 21.5.26 bumping to 21.5.27+ crosses one two-line bullet rewrite
-(the timeout-quiet retirement relaxation: a plugin fingerprint change alone no longer
-resets the streak); a consumer still on 21.5.24 also owes the boundary-pair migration
-(`block:start`/`block:end` markers around the template block). Run
-`./gradlew hardeningAgentTemplateDiff`, review, update the marker in the same commit as
-the version pin — and do not size the delta with that diff task in a repo whose block is
-a local rewrite, since it then reports a wholesale replacement regardless.
+`agentsTemplateInSync` checks the root `AGENTS.md` acknowledgment of the installed
+agent-instructions template and is used by `check` and `qualityGate`. Treat the installed
+plugin as the task authority: on an upgrade, run the applying project's `hardeningHelp`
+(for example, `./gradlew :module:hardeningHelp`), then its project-qualified
+`hardeningAgentTemplate` and `hardeningAgentTemplateDiff`. Review or act on the bounded
+diff before moving the digest marker, and move the marker in the same commit as the
+version pin. In a multi-project build, keep all three task names project-qualified so
+one chosen owner reports the installed version's guidance.
 
 ## Plugins
 
@@ -232,7 +228,7 @@ project must request its plugin by an explicit version, as in the hardening-only
 | `software.sava.build.feature.publish` | Maven publishing with sources/javadoc jars, POM metadata from [sava.properties](#gradlesavaproperties), optional GPG signing, and the `savaGithubPackagesPublish` repository. Applied by `java-module`. |
 | `software.sava.build.feature.publish-maven-central` | Maven Central publishing for the `:aggregation` project: stages, bundles (`zipCentralPortalDeployment`), and uploads (`publishCentralPortalDeployment`) deployments straight to the [Central Portal API](https://central.sonatype.org/publish/publish-portal-api/). The `nmcpAggregation` configuration and `publishAggregationToCentralPortal` task from the retired [nmcp](https://github.com/GradleUp/nmcp) plugin remain as deprecated aliases. |
 | `software.sava.build.feature.jmh` | [JMH](https://github.com/melix/jmh-gradle-plugin) benchmarking conventions for standalone benchmark builds: quick-look run defaults (1 fork, 5×1s warmup, 8×1s measurement, fail-on-error), a `jmh` task that is never skipped as `UP-TO-DATE`, per-run results archived timestamped under `<project>/jmh-results/` — outside `build/`, so `clean` keeps measurement history — with `results.txt` re-rendered after each run as the newest-wins merge of all archived runs (subset runs converge on a full scoreboard; delete archive files to drop stale rows), and service-replicating JVM flags (compact object headers, generational ZGC, pinned pre-touched 2g heap, `-XX:+PerfDisableSharedMem`) — override wholesale with `jmh { jvmArgsAppend.set(...) }`. Every default is overridable per invocation: `-PjmhFork`, `-PjmhIncludes=<regex>[,...]`, `-PjmhWarmupIterations`, `-PjmhWarmup`, `-PjmhIterations`, `-PjmhTimeOnIteration`, `-PjmhFailOnError`, and `-PjmhJvmArgsAppend="<flag> <flag>..."` (replaces the service flag list wholesale). Decision-grade comparisons need 3+ forks and isolation from other load. Leaves the toolchain to the consuming build (benchmark harnesses often pin bespoke JDKs). |
-| `software.sava.build.feature.hardening` | Registers configured [PIT](https://pitest.org) mutation suites, [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) fuzz targets, baseline diagnostics and writers, release certification, and optional generated test support through `hardening {}`. It is package-agnostic and works with open-source PIT; an applicable ArcMutate licence is optional. See the [standalone example](#standalone-hardening-only-project), run `./gradlew hardeningHelp` for the installed version's tasks and options, and use [HARDENING.md](HARDENING.md) for policy. |
+| `software.sava.build.feature.hardening` | Registers configured [PIT](https://pitest.org) mutation suites, [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) fuzz targets, baseline diagnostics and writers, release certification, and optional generated test support through `hardening {}`. It is package-agnostic and works with open-source PIT; an applicable ArcMutate licence is optional. See the [standalone example](#standalone-hardening-only-project), run `./gradlew :module:hardeningHelp` for the installed version's tasks and options (or `./gradlew :hardeningHelp` when the root project owns the plugin), and use [HARDENING.md](HARDENING.md) for policy. |
 | `software.sava.build.modules.postgresql` | Opt-in [extra-java-module-info](https://github.com/gradlex-org/extra-java-module-info) patch converting the PostgreSQL JDBC driver into an explicit module (required for jlink). |
 | `software.sava.build.modules.gcp-kms` | Opt-in module patches for the Google Cloud KMS client and its non-modular transitive dependencies. |
 | `software.sava.build.base.dependency-rules` | Consistent resolution against the solana version catalog BOM. |

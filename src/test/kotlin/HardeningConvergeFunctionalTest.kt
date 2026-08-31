@@ -342,6 +342,32 @@ class HardeningConvergeFunctionalTest {
   }
 
   @Test
+  fun `a failed converge process names the whole clean workflow as closure`() {
+    writeFixture()
+    enableFakePitExecutions()
+    val encoding =
+      "Codec.java,com.example.Codec,$mathMutator,encode,12,KILLED,com.example.CodecTest"
+    val parsing =
+      "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest"
+    stageFakeReport("encoding-round1", encoding)
+    stageFakeReport("parsing-round1", parsing)
+    stageFakeReport("encoding-round2", encoding)
+    // No parsing-round2 staging directory: its fake PIT process exits after the
+    // attempt marker exists, before it can publish a completed report.
+
+    val failed = runner("pitestConverge").buildAndFail().output
+
+    assertTrue(failed.contains("run :pitestConverge from the start"), failed)
+    assertTrue(
+      failed.contains("successful, clean convergence workflow") &&
+          failed.contains("creates no persistent mutation-record debt") &&
+          failed.contains("does not diagnose the earlier failure's cause"),
+      failed,
+    )
+    assertFalse(failed.contains("Certification:"), failed)
+  }
+
+  @Test
   fun `converge snapshot refuses history-assisted invocations and missing reports`() {
     writeFixture()
     File(fixtureDir, "arcmutate-licence.txt")
@@ -376,6 +402,8 @@ class HardeningConvergeFunctionalTest {
       "pitestConvergeSnapshot", "-PnoMutationHistory", "-x", "pitestEncoding", "-x", "pitestParsing"
     ).buildAndFail()
     assertTrue(missing.output.contains("no round-one report for 'encoding'"), missing.output)
+    assertTrue(missing.output.contains("run :pitestConverge from the start"), missing.output)
+    assertTrue(missing.output.contains("sufficient closure"), missing.output)
   }
 
   @Test
@@ -442,12 +470,81 @@ class HardeningConvergeFunctionalTest {
     val failed = snapshotRun().buildAndFail()
 
     assertTrue(failed.output.contains("'parsing' round-one report was left"), failed.output)
+    assertTrue(
+      failed.output.contains("run :pitestConverge from the start") &&
+          failed.output.contains("successful, clean convergence workflow") &&
+          failed.output.contains("creates no persistent mutation-record debt") &&
+          failed.output.contains("does not diagnose the earlier failure's cause"),
+      failed.output,
+    )
+    assertFalse(failed.output.contains("Certification:"), failed.output)
     assertEquals("prior snapshot", prior.readText(), "validation destroyed the prior snapshot")
     assertTrue(
       File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile,
       "validation of a later suite deleted the earlier suite report",
     )
     assertTrue(parsingDir.resolve("mutations.csv").isFile)
+
+    assertTrue(parsingDir.resolve("mutations.csv").delete())
+    val markerOnly = snapshotRun().buildAndFail().output
+    assertTrue(markerOnly.contains("'parsing' round-one report was left"), markerOnly)
+    assertTrue(markerOnly.contains("run :pitestConverge from the start"), markerOnly)
+    assertEquals("prior snapshot", prior.readText(), "marker-only failure replaced the prior snapshot")
+
+    parsingDir.resolve(".running").delete()
+    writeReport(
+      "parsing",
+      "Parser.java,com.example.Parser,$mathMutator,parse,8,RUN_ERROR,none",
+    )
+    val invalidRoundOne = snapshotRun().buildAndFail().output
+    assertTrue(
+      invalidRoundOne.contains("pitestConverge: 'parsing' round-one report is invalid") &&
+          invalidRoundOne.contains("RUN_ERROR x1") &&
+          invalidRoundOne.contains("run :pitestConverge from the start") &&
+          invalidRoundOne.contains("history-free, full unscoped run") &&
+          invalidRoundOne.contains("Continued invalid outcomes warrant investigation") &&
+          invalidRoundOne.contains("sufficient closure") &&
+          invalidRoundOne.contains("creates no persistent mutation-record debt"),
+      invalidRoundOne,
+    )
+    assertFalse(invalidRoundOne.contains("hardeningCertify"), invalidRoundOne)
+    assertFalse(invalidRoundOne.contains("incomplete generated report"), invalidRoundOne)
+    assertEquals("prior snapshot", prior.readText(), "invalid status replaced the prior snapshot")
+
+    writeReport(
+      "parsing",
+      "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest",
+    )
+    snapshotRun().build()
+    writeReport(
+      "encoding",
+      "Codec.java,com.example.Codec,$mathMutator,encode,8,KILLED,com.example.CodecTest",
+    )
+    val missingRoundTwo = convergeRun().buildAndFail().output
+    assertTrue(missingRoundTwo.contains("no round-two report for 'parsing'"), missingRoundTwo)
+    assertTrue(missingRoundTwo.contains("run :pitestConverge from the start"), missingRoundTwo)
+    assertTrue(missingRoundTwo.contains("sufficient closure"), missingRoundTwo)
+
+    writeReport(
+      "encoding",
+      "Codec.java,com.example.Codec,$mathMutator,encode,8,KILLED,com.example.CodecTest",
+    )
+    writeReport(
+      "parsing",
+      "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest",
+    )
+    File(fixtureDir, "build/reports/pitest/parsing/.running").writeText("")
+
+    val roundTwoFailed = convergeRun().buildAndFail().output
+    assertTrue(roundTwoFailed.contains("'parsing' round-two report was left"), roundTwoFailed)
+    assertTrue(
+      roundTwoFailed.contains("run :pitestConverge from the start") &&
+          roundTwoFailed.contains("successful, clean convergence workflow") &&
+          roundTwoFailed.contains("creates no persistent mutation-record debt") &&
+          roundTwoFailed.contains("does not diagnose the earlier failure's cause"),
+      roundTwoFailed,
+    )
+    assertFalse(roundTwoFailed.contains("Certification:"), roundTwoFailed)
   }
 
   @Test
@@ -499,5 +596,40 @@ class HardeningConvergeFunctionalTest {
       zeroFire.output.contains("0 generated (no report"),
       "an empty report must not read as a missing one:\n" + zeroFire.output
     )
+
+    val interruptedDir = File(fixtureDir, "build/reports/pitest/parsing-trial")
+    interruptedDir.resolve("mutations.csv").writeText(
+      "Parser.java,com.example.Parser,$mathMutator,parse,8,KILLED,com.example.ParserTest\n",
+    )
+    interruptedDir.resolve(".running").writeText("")
+    val interrupted = runner(*trialArgs).buildAndFail().output
+    assertTrue(
+      interrupted.contains("partial report must not be recorded as trial evidence") &&
+          interrupted.contains("run :pitestMutatorTrial again with the same -PtrialMutators") &&
+          interrupted.contains("successful, clean trial workflow") &&
+          interrupted.contains("creates no persistent mutation-record debt") &&
+          interrupted.contains("does not diagnose the earlier failure's cause"),
+      interrupted,
+    )
+    assertFalse(interrupted.contains("Certification:"), interrupted)
+
+    interruptedDir.resolve(".running").delete()
+    writeReport(
+      "parsing-trial",
+      "Parser.java,com.example.Parser,$mathMutator,parse,8,RUN_ERROR,none",
+    )
+    val invalidStatus = runner(*trialArgs).buildAndFail().output
+    assertTrue(
+      invalidStatus.contains("pitestMutatorTrial: 'parsing' trial report is invalid") &&
+          invalidStatus.contains("RUN_ERROR x1") &&
+          invalidStatus.contains("run :pitestMutatorTrial again with the same -PtrialMutators") &&
+          invalidStatus.contains("history-free, full unscoped run") &&
+          invalidStatus.contains("Continued invalid outcomes warrant investigation") &&
+          invalidStatus.contains("sufficient closure") &&
+          invalidStatus.contains("creates no persistent mutation-record debt"),
+      invalidStatus,
+    )
+    assertFalse(invalidStatus.contains("hardeningCertify"), invalidStatus)
+    assertFalse(invalidStatus.contains("incomplete generated report"), invalidStatus)
   }
 }

@@ -165,10 +165,19 @@ class TimeoutAuditTest {
     )
     val warning = TimeoutAudit.lineMetadataWarning(
       "encoding", "encoding-timeouts.csv", membership.lineMetadataFindings)
-    assertTrue(warning.contains("2 audited-timeout member(s) carry invalid optional line metadata"))
-    assertTrue(warning.contains("does not change membership or cause classification"))
-    assertTrue(warning.contains("block strict certification"))
-    assertTrue(warning.contains("change timeout-retirement eligibility"))
+    assertEquals(
+      "pitest 'encoding': invalid optional line metadata in encoding-timeouts.csv — " +
+          "2 audited-timeout members:\n" +
+          "  Evidence: Invalid metadata by line-less member follows.\n" +
+          "    $resource # ${resourceMetadata.detail}\n" +
+          "    $overflow # ${overflowFinding.detail}\n" +
+          "  Review: Optional line metadata supplies no source-line diagnostic evidence. It " +
+          "does not change membership or cause classification, block strict " +
+          "certification, or change timeout-retirement eligibility.\n" +
+          "  Remedy: Use 'line N' or 'lines N, M' after the cause classification, or remove " +
+          "the optional tag when no exact observation exists.",
+      warning,
+    )
   }
 
   @Test
@@ -230,8 +239,20 @@ class TimeoutAuditTest {
       ),
     )
 
-    assertTrue(warning.contains("no path-owned finite completion guarantee"), warning)
-    assertTrue(warning.contains("a fixture safety exit does not demote it"), warning)
+    assertEquals(
+      "pitest 'encoding': 1 audited-timeout member lacks an admissible cause classification " +
+          "in encoding-timeouts.csv:\n" +
+          "  Evidence: Cause findings by line-less member follow.\n" +
+          "    com.example.Codec,loop,MathMutator # cause:untriaged has not been reviewed\n" +
+          "  Review: Use 'cause:liveness' only when the mutated path has no path-owned finite " +
+          "completion guarantee after deterministic seams/budgets are exhausted. A fixture " +
+          "safety exit does not demote it.\n" +
+          "  Remedy: Classify each member accurately: 'cause:resource' requires either a " +
+          "deterministic resource-contract test/fix or a stable SURVIVED equivalence argument; " +
+          "'cause:harness' records a reviewed finite covering-path/watchdog race while it is " +
+          "being repaired; and 'cause:untriaged' is unfinished. All three are non-certifying.",
+      warning,
+    )
     assertFalse(warning.contains("only when the mutant cannot complete"), warning)
   }
 
@@ -335,10 +356,74 @@ class TimeoutAuditTest {
       populations,
     )
     val detail = TimeoutAudit.memberPopulationDetail("encoding", populations)!!
-    assertTrue(detail.contains("$member — 3 mutants"), detail)
-    assertTrue(detail.contains("line 12 TIMED_OUT x2"), detail)
-    assertTrue(detail.contains("line 20 KILLED x1"), detail)
-    assertTrue(detail.contains("non-timeout siblings are context, not proof"), detail)
+    assertEquals(
+      "pitest 'encoding': 1 audited-timeout key covers multiple mutant copies in the " +
+          "current full report:\n" +
+          "  Evidence: Every key has 2+ physical TIMED_OUT mutants; current copies at each " +
+          "line-less key follow.\n" +
+          "    $member — 3 mutants:\n" +
+          "      line 12 TIMED_OUT x2\n" +
+          "      line 20 KILLED x1\n" +
+          "  Review: Cause is key-level. Inspect keys with multiple TIMED_OUT siblings; " +
+          "KILLED and other " +
+          "non-timeout siblings are context, not proof of a mixed timeout cause.",
+      detail,
+    )
+  }
+
+  @Test
+  fun `member population detail collapses keys with only one timeout copy`() {
+    val expandedMember = "com.example.Codec,wait,MathMutator"
+    val collapsedMember = "com.example.Codec,read,IncrementsMutator"
+    val rows = Mutant.parseReport(listOf(
+      "Codec.java,com.example.Codec,x.MathMutator,wait,12,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,20,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,30,KILLED,CodecTest",
+      "Codec.java,com.example.Codec,x.IncrementsMutator,read,40,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.IncrementsMutator,read,50,KILLED,CodecTest",
+    ))
+    val populations = TimeoutAudit.memberPopulations(
+      rows,
+      setOf(expandedMember, collapsedMember),
+    )
+
+    val detail = TimeoutAudit.memberPopulationDetail("encoding", populations)!!
+
+    assertTrue(
+      detail.contains("1 key with 2+ physical TIMED_OUT mutants is expanded below; " +
+        "1 additional key with exactly 1 physical TIMED_OUT mutant plus non-timeout siblings is collapsed."),
+      detail,
+    )
+    assertTrue(detail.contains("$expandedMember — 3 mutants"), detail)
+    assertTrue(detail.contains("line 12 TIMED_OUT x1") && detail.contains("line 20 TIMED_OUT x1"), detail)
+    assertFalse(detail.contains(collapsedMember), detail)
+    assertFalse(detail.contains("line 40 TIMED_OUT") || detail.contains("line 50 KILLED"), detail)
+  }
+
+  @Test
+  fun `member population detail reduces all single-timeout sibling keys to one aggregate`() {
+    val rows = Mutant.parseReport(listOf(
+      "Codec.java,com.example.Codec,x.MathMutator,wait,12,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,20,KILLED,CodecTest",
+      "Codec.java,com.example.Codec,x.IncrementsMutator,read,30,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.IncrementsMutator,read,40,SURVIVED,none",
+    ))
+    val populations = TimeoutAudit.memberPopulations(
+      rows,
+      setOf(
+        "com.example.Codec,wait,MathMutator",
+        "com.example.Codec,read,IncrementsMutator",
+      ),
+    )
+
+    val detail = TimeoutAudit.memberPopulationDetail("encoding", populations)!!
+
+    assertTrue(
+      detail.contains("2 keys each have exactly 1 physical TIMED_OUT mutant plus non-timeout siblings"),
+      detail,
+    )
+    assertFalse(detail.contains("com.example.Codec,"), detail)
+    assertFalse(detail.contains("line 12") || detail.contains("line 30"), detail)
   }
 
   @Test
@@ -356,8 +441,12 @@ class TimeoutAuditTest {
     assertEquals(4, candidates.instanceCount)
     assertEquals(2, candidates.keyCount)
     assertEquals(
-      "4 physical TIMED_OUT mutant instance(s) across 2 line-less key(s)",
+      "4 physical TIMED_OUT mutant instances across 2 line-less keys",
       TimeoutAudit.timeoutCandidateCount(candidates),
+    )
+    assertEquals(
+      "1 physical TIMED_OUT mutant instance across 1 line-less key",
+      TimeoutAudit.timeoutCandidateCount(TimeoutAudit.timeoutCandidates(listOf(rows.first()))),
     )
     assertEquals(
       listOf(
@@ -400,6 +489,101 @@ class TimeoutAuditTest {
   }
 
   @Test
+  fun `unaudited warning renders claim evidence review and remedy exactly`() {
+    val unaudited = Mutant.parseReport(listOf(
+      "Codec.java,com.example.Codec,x.MathMutator,wait,30,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,10,TIMED_OUT,none",
+      "Codec.java,com.example.Codec,x.MathMutator,wait,30,TIMED_OUT,none",
+    ))
+
+    val warning = TimeoutAudit.unauditedWarning(
+      "encoding",
+      "encoding-timeouts.csv",
+      unaudited,
+      "1.25.9",
+      2.0,
+      1500L,
+      "\nThis [history] result is check-only.",
+    )
+
+    assertEquals(
+      "pitest 'encoding': 3 physical TIMED_OUT mutant instances across 1 line-less key not in " +
+          "the audited set " +
+          "(encoding-timeouts.csv):\n" +
+          "  Evidence: One paste-ready, fail-closed draft row per line-less key follows; nested " +
+          "'# observed' comments preserve line/status multiplicity.\n" +
+          "    com.example.Codec,wait,MathMutator # cause:untriaged lines 10, 30\n" +
+          "      # observed: line 10 TIMED_OUT x1\n" +
+          "      # observed: line 30 TIMED_OUT x2\n" +
+          "  Review: Identify the structural cause (for example, a removed loop exit or " +
+          "reversed cursor). A timeout can hide a weakened-assertion blind spot behind " +
+          "\"detected\".\n" +
+          "  Watchdog context: Configured watchdog " +
+          "(audited PIT 1.25.9): round(testDurationMs × 2.0) + 1500 ms. PIT CSV lacks the active " +
+          "covering test and its recorded duration, so no per-mutant budget can be calculated.\n" +
+          "  Remedy: Replace each deliberate cause:untriaged placeholder with the reviewed " +
+          "classification. Write the structural argument in config/pitest/README.md before " +
+          "committing it. " +
+          "The placeholder is non-certifying; only cause:liveness may remain in a certifying " +
+          "audited set.\n" +
+          "This [history] result is check-only.",
+      warning,
+    )
+  }
+
+  @Test
+  fun `provenance previews render coordinates before review and withheld remedy`() {
+    val unaudited = Mutant.parseReport(listOf(
+      "Codec.java,com.example.Codec,x.VoidMethodCallMutator,other,44,TIMED_OUT,none",
+    ))
+    val stale = listOf("com.example.Codec,gone,IncrementsMutator")
+
+    assertEquals(
+      "pitest 'encoding': the current full report contains 1 physical TIMED_OUT mutant instance " +
+          "across 1 line-less key outside encoding-timeouts.csv, and committed mutation " +
+          "provenance is invalid:\n" +
+          "  Evidence: Triage-only draft rows follow, one per line-less key; nested '# observed' " +
+          "comments preserve line/status multiplicity.\n" +
+          "    com.example.Codec,other,VoidMethodCallMutator # cause:untriaged line 44\n" +
+          "  Review: The population is not bound to valid committed provenance.\n" +
+          "  Watchdog context: Configured watchdog (audited PIT 1.25.9): " +
+          "round(testDurationMs × 2.0) + 1500 ms. PIT CSV lacks the active covering test and its " +
+          "recorded duration, so no per-mutant budget can be calculated.\n" +
+          "  Remedy: Retain these candidates, repair or rebase provenance, and obtain a fresh " +
+          "full observation. Do not add or classify them until that observation confirms them.",
+      TimeoutAudit.unauditedProvenancePreview(
+        "encoding", "encoding-timeouts.csv", unaudited, "1.25.9", 2.0, 1500L),
+    )
+    assertEquals(
+      "pitest 'encoding': provenance-blocked stale-membership preview — the current full " +
+          "report does not contain 1 audited-timeout row:\n" +
+          "  Evidence: Committed coordinates absent from the current population follow.\n" +
+          "    com.example.Codec,gone,IncrementsMutator\n" +
+          "  Review: Committed mutation provenance is invalid, so this absence cannot authorize " +
+          "record changes.\n" +
+          "  Remedy: Retain these candidates for triage; do not retire or rewrite them until " +
+          "provenance is repaired/rebased and a fresh full observation confirms the absence.",
+      TimeoutAudit.staleProvenancePreview("encoding", stale),
+    )
+  }
+
+  @Test
+  fun `stale warning sorts coordinates and uses grammatical plurals`() {
+    assertEquals(
+      "pitest 'encoding': 2 audited-timeout rows match no mutant in this run's report:\n" +
+          "  Evidence: Committed coordinates absent from the current population follow.\n" +
+          "    a.A,first,MathMutator\n" +
+          "    b.B,second,IncrementsMutator\n" +
+          "  Review: The code may have moved, or the mutator set may have changed.\n" +
+          "  Remedy: Retire or fix each stale row.",
+      TimeoutAudit.staleWarning(
+        "encoding",
+        listOf("b.B,second,IncrementsMutator", "a.A,first,MathMutator"),
+      ),
+    )
+  }
+
+  @Test
   fun `watchdog context prints configured arithmetic without inventing a budget`() {
     val context = TimeoutAudit.watchdogFormulaContext("1.25.9", 2.0, 1500L)
 
@@ -436,8 +620,15 @@ class TimeoutAuditTest {
     val warning = TimeoutAudit.malformedWarning(
       "encoding", "encoding-timeouts.csv", listOf("com.example.Codec,encode")
     )
-    assertTrue(warning!!.contains("1 malformed row(s) in encoding-timeouts.csv"), warning)
-    assertTrue(warning.contains("  com.example.Codec,encode"), warning)
+    assertEquals(
+      "pitest 'encoding': 1 malformed row in encoding-timeouts.csv:\n" +
+          "  Evidence: Unparseable rows follow.\n" +
+          "    com.example.Codec,encode\n" +
+          "  Review: Expected 'class,method,mutator' with exactly three non-empty fields; " +
+          "'#' comments are allowed.\n" +
+          "  Remedy: Fix each malformed row; until fixed, it matches no mutant.",
+      warning,
+    )
   }
 
   @Test
@@ -552,10 +743,15 @@ class TimeoutAuditTest {
     val warning = TimeoutAudit.undocumentedCauseWarning(
       "encoding", listOf("b.B,m,MathMutator", "a.A,m,MathMutator")
     )
-    assertTrue(warning.contains("2 audited-timeout member(s)"), warning)
-    assertTrue(
-      warning.indexOf("cause? a.A,m,MathMutator") < warning.indexOf("cause? b.B,m,MathMutator"),
-      warning
+    assertEquals(
+      "pitest 'encoding': missing README cause for 2 audited-timeout members:\n" +
+          "  Evidence: Undocumented line-less members follow.\n" +
+          "    cause? a.A,m,MathMutator\n" +
+          "    cause? b.B,m,MathMutator\n" +
+          "  Review: Each member's class and method must appear together in one " +
+          "config/pitest/README.md section.\n" +
+          "  Remedy: Write the structural cause there (HARDENING.md, the audited-set bullet).",
+      warning,
     )
   }
 

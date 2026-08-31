@@ -57,9 +57,10 @@ abstract class HardeningAgentTemplateDiffTask : DefaultTask() {
       return
     }
     if (!agents.isFile) {
+      val templateTaskPath = path.substringBeforeLast(':') + ":hardeningAgentTemplate"
       throw GradleException(
         "hardeningAgentTemplateDiff: ${agents.absolutePath} does not exist; run " +
-          "hardeningAgentTemplate and add its bounded block first."
+          "$templateTaskPath and add its bounded block first."
       )
     }
 

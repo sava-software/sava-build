@@ -1304,6 +1304,17 @@ metadata transition: it refuses fresh debt, adds and removes nothing, refreshes 
 matched line metadata, and preserves unmatched evidence. A metadata acknowledgement
 no longer has to smuggle in an identity change.
 
+A later canary exposed the final gap in that doctrine. Two solo certifications over
+identical inputs previewed different unmatched multisets — two rows, then three — but
+the verifier printed the same generic evidence checklist after both. Nothing retained
+the first list, so only a human diff of two long logs revealed the wandering mutant,
+and Prune itself could still delete from its first writer run. Candidate previews are
+now persisted as an exact machine-local multiset, with invocation and evidence/record
+identity. Drift names every added and removed row and resets the sequence. Prune
+requires two completed matching previews before it begins and treats its own fresh
+write-boundary result as a third comparison, so selecting the writer cannot make its
+second observation and delete before anyone can review that observation.
+
 Rules: *two mechanisms that share a definition must share the code that
 computes it — the verify counted stale rows one way and prune matched them
 another, and the gap between them was a recommendation that could not work*;
@@ -1837,3 +1848,81 @@ Rules: *evidence lifetime follows the claim it supports, not Gradle's output lay
 *move receipt and incomplete-state marker together*; *a rejected non-owner must not
 invalidate the owner's evidence*; *migration removes legacy success rather than leaving
 two plausible receipts*.
+
+## The adoption whose authority omitted its own gate
+
+Two 21.5.28 adoption reviews exposed the same self-consistency break from opposite
+directions. `agentsTemplateInSync` was wired into both `check` and `qualityGate`, but
+`hardeningHelp` — which the installed template named as the task authority — did not
+list it. One consumer deleted its local mention to comply with the rule against copied
+plugin semantics and was left with no sanctioned place that said the gate existed.
+The same help section grouped `hardeningInit`, which writes a README and `.gitignore`,
+under read-only workflows. Worse, that scaffold copied row-writer, history, and
+timeout-cause mechanics into a README it deliberately never refreshes, manufacturing
+the durable second implementation manual the consumer rule prohibited.
+
+The prose boundary also proved underspecified. A Ravina adopter wrote three seemingly
+helpful local descriptions: that task output was uniform across projects, that the sync
+task failed for missing and stale acknowledgments, and how quote normalization worked.
+The first two were false on some paths; the third was true but was exactly the duplicate
+implementation contract the template prohibited. Incident-client then preserved a
+uniform Markdown quote layer across 243 lines, and the diff normalized it successfully,
+but the installed help never disclosed that supported input shape.
+
+The repair lists each template task explicitly, labels the mutating scaffold separately,
+and reduces its README skeleton to prompts for local ownership, measurements, reasons,
+and provenance. Behavioral contracts stay in installed help and task descriptions.
+Consumer prose may name a project-qualified task and say when local policy invokes it,
+but does not restate output, pass/fail or warning behavior, refusals, normalization, or fallbacks.
+Rules: *a gate named by installed policy must be discoverable in that installed
+version's authority*; *classify a writer as a writer*; *consumer notes may route to a
+task, but must not become a second implementation manual*.
+
+## The invalid attempts that moved and then disappeared
+
+A Ravina certification produced two invalid outcomes at different coordinates in two
+different suites, followed by a clean third project certification. The existing guidance
+only escalated a repeatable coordinate through class scope, isolation, and diagnostic
+execution. It did not say whether the clean full run closed two non-recurring failures,
+or whether the failed reports created record debt. That ambiguity first encouraged a
+load diagnosis even though moving coordinates and a concurrent workload were context,
+not proof.
+
+The retry also re-executed all 17 project suites after each one-mutant failure. This was
+deliberate — one receipt binds one fresh serialized project invocation — but neither the
+refusal nor the policy said so, making the discarded observations look like accidental
+cost or a command-scoping error.
+
+A later clean, history-free, full unscoped run is sufficient closure for a
+non-recurring invalid execution. It neither diagnoses the earlier failure nor creates
+accepted-baseline, timeout, provenance, or mutation-record debt. Operational diagnostics
+may still be retained under the repository's reliability policy, and continued invalid
+executions deserve investigation even when their coordinates move. During certification,
+retry the affected project's whole certification; completed receipts from other projects
+remain independent. Rules: *state the sufficient closure condition for a transient*;
+*invalid execution is operational context, not mutation debt*; *a certification receipt
+is project-atomic and is never stitched from attempts*.
+
+## The acceptance locator that rotted three ways
+
+Incident-client's line-drift advisory correctly remained non-blocking, but presented its
+claim, explanation, and remedy as one roughly 380-character line. The grammar elided the
+relative pronoun in “line(s) no row's tag names,” began the action after a full stop with
+lowercase prose, and buried `pitestConfigBaselineRetag` behind two subordinate clauses.
+The actionable task existed, but the operator had to parse the warning twice to find it.
+
+The acceptance prose had also grown a second locator system. One incident-io argument
+named `IncidentIoConfig$Parser.test:85`, its CSV tag named line 206, and the report and
+source named line 219; line 85 was blank. Two other accepted families had README and CSV
+numbers that agreed with each other but not with source. Auditing those free-form prose
+numbers would formalize an ambiguous second schema — some prose points at a declaration,
+some at a branch, and some at adjacent evidence — while the report and structured row tag
+already carry transient coordinates.
+
+The repair renders the advisory as claim, coordinate rows, review instruction, and a
+conditional remedy. Writer paths label the same information as a pre-write notice. README
+arguments name class, method, semantic branch, property, and oracle without source line
+numbers; the current report and `# line` tag remain the only transient locators. Rules:
+*put an actionable remedy on its own labeled line*; *refresh metadata only after the
+semantic argument still fits*; *do not maintain an unaudited prose copy of source
+coordinates*.

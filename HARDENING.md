@@ -2,7 +2,8 @@
 
 The quality process for repos applying `software.sava.build.feature.hardening`.
 The installed plugin is the authority for exact task names, options, formats,
-and refusal behavior; run `./gradlew hardeningHelp` against the version in use.
+and refusal behavior; run `./gradlew :module:hardeningHelp` against the version
+in use (or `./gradlew :hardeningHelp` when the root project owns the plugin).
 This document owns human policy, interpretation, and safety rules. The
 repository [README](README.md) owns setup and the `sava-build` release procedure,
 and [HARDENING_CASEBOOK.md](HARDENING_CASEBOOK.md) is historical evidence rather
@@ -10,7 +11,11 @@ than current instructions. Consumer notes and `config/pitest/README.md` contain
 only repository-specific ownership, measurements, reasons, and provenance—not
 copied plugin mechanics. A consumer `AGENTS.md` carries the exact generated,
 digest-pinned agent template below plus repository-specific facts; it must not
-grow a second, independently maintained account of plugin behavior.
+grow a second, independently maintained account of plugin behavior. Local prose
+may name a project-qualified task and say when repository policy requires running
+it; descriptions of task output, pass/fail or warning conditions, refusals,
+normalization, and fallback behavior belong only to the installed plugin and its
+`hardeningHelp` output *(casebook: the adoption whose authority omitted its own gate)*.
 
 Every rule here was earned from an observed incident; the incidents live in
 `HARDENING_CASEBOOK.md`, cited as *(casebook: entry)*. Read an entry before
@@ -104,8 +109,16 @@ previous success looking current.
 Certification receipts are **project-scoped**: each `hardeningCertify` covers one project's
 registered suites and writes an independent receipt. No child receipt claims the repository
 ran, and nothing can infer a project or independent Gradle root that was never run, so
-compare the receipts present with the adoption handoff. Project scope also preserves
-targeted module certification. One receipt field is routinely misread: `reportSha256`
+compare the receipts present with the adoption handoff. The end-of-build roll-up names only
+the project receipts published by that Gradle invocation, with their paths and total suite
+count; it is not a repository- or fleet-completeness claim. Project scope also preserves
+targeted module certification. A failed certification attempt deliberately produces no
+partial receipt to stitch into a later attempt: retrying that project's
+`hardeningCertify` re-runs every registered suite in one fresh, serialized invocation.
+Receipts already completed by other projects remain independent. This project-atomic
+re-execution is the cost of claiming one coherent certification observation, not a sign
+that the retry command was scoped incorrectly *(casebook: the invalid attempts that moved
+and then disappeared)*. One receipt field is routinely misread: `reportSha256`
 identifies an observation, not an input — PIT's first-kill test ordering races near-ties,
 so identical inputs legitimately produce different values across runs. Never treat a
 match or mismatch there as evidence about equivalence; the input-identity fields beside
@@ -576,7 +589,15 @@ numbers churn whenever a mutated file is edited, and identity that churns
 makes the ratchet police text moves instead of behavior. Lines still appear
 on rows, demoted to metadata as trailing `# line N` tags (or `# lines N, M`
 for exact observed sites), kept for triage pointers and the line-drift advisory
-below. Ranges such as `# lines 786-800` are invalid: claiming every line in a
+below. Do not copy source line numbers anywhere in `config/pitest/README.md`:
+name the class, method, and semantic branch instead. The ban includes acceptance
+and timeout arguments, retired-incident prose, tables, and inline or fenced
+coordinate rosters. A roster is narrative evidence, not protected membership;
+retain line-less class/method/mutator evidence and meaningful multiplicity as
+`xN`. The current PIT report and the row's `# line` tag are the sole transient
+source locators *(casebook: the acceptance locator that rotted three ways)*.
+Ranges such as `# lines 786-800`
+are invalid: claiming every line in a
 span as observed would weaken affinity and can hide a same-key swap. A
 baseline update rewrites tags for rows matched to this report while protected
 timeout/insurance rows keep their last observed tags; a green prune likewise rewrites
@@ -712,10 +733,17 @@ The shrink transition is mechanically shrink-only, not self-authorizing:
 adds no rows. One run cannot distinguish a stable removal from an uninsured
 load- or mode-dependent flip, so the ordinary verify prints a **preview of the
 exact candidate rows** without treating the preview as deletion authorization.
-Re-measure those rows
-with `-PnoMutationHistory` under the relevant solo/gate load and prune only when
-the same candidates stay
-absent; a row proved to flip belongs in persistent `# flip insurance` instead.
+The verify persists the sorted candidate **multiset** in the machine-local
+`.pitest-history/<suite>.prune-previews`, bound to the exact completed-evidence
+input identity, mutation-record bytes, and invocation. Replaying Verify against one
+report cannot advance it. Fresh gated debt breaks the sequence; candidate additions
+or removals warn with an exact multiset diff and restart at observation one. Re-measure
+with `-PnoMutationHistory` under the relevant solo/gate load. Two completed matching
+previews are a mechanical prerequisite, not proof of that unmodeled load context or
+of any row's removal criterion. `BaselinePrune` requires those two previews before it
+starts, then makes a distinct third fresh write-boundary observation and refuses if
+that candidate multiset wanders. A row proved to flip belongs in persistent
+`# flip insurance` instead.
 Prune also refreshes the `# line` tag of each retained row matched at its own
 key, using line affinity before file order; unmatched rows kept for
 `TIMED_OUT`, a pending flip, or flip insurance retain their prior tags because
@@ -963,7 +991,12 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   separate simultaneous timeout causes. `KILLED`↔`TIMED_OUT` movement alone does not
   prove the conflict. Review positive multiplicity drift and its
   line-full candidates carefully, but do not pretend a source-line number closes the
-  hole. `# line` remains a triage pointer only and changing it never authorizes or
+  hole. Routine population context expands full line/status detail only for keys with two
+  or more current `TIMED_OUT` copies; keys with one timeout plus non-timeout siblings are
+  collapsed to a count because those siblings cannot establish mixed timeout causes. This
+  output compaction does not weaken positive timeout-count drift: a changed count still
+  prints every current `TIMED_OUT` candidate because the line-less stash cannot identify
+  the newcomer. `# line` remains a triage pointer only and changing it never authorizes or
   invalidates evidence. After their cause classification, timeout comments use the
   exact-list spelling `line N` or `lines N, M`; a range is not observed-line evidence.
   Adoption is seeded, not
@@ -1057,7 +1090,9 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   entirely on a scoped report, so a green run would certify nothing while
   reading as a certification of the suite. Because every audit finding is advisory in the default modes,
   the build ends with a one-line-per-scope summary of the advisory findings
-  it printed — a reviewer-stop nobody scrolls back to is not a stop.
+  it printed — a reviewer-stop nobody scrolls back to is not a stop. Self-clearing
+  compatibility or input-identity resets are labeled as state-reset notices at their source
+  and are deliberately excluded from that finding count.
   The audit's static half — row shape, cause category, and README
   presence — reads committed files only. `hardeningCertify`,
   `pitest<Suite>BaselineRebase`, and explicit `-PstrictTimeoutAudit` run that
@@ -1142,8 +1177,9 @@ pass, the pairing-outlier scan and `-PnoDriftTolerance` are all retired —
 there is no drift left to tolerate. What remains of lines is metadata and one
 advisory: a key unkilled *only* at lines its tags do not name draws a
 **line-drift advisory** — the code the acceptance argues about has moved, or
-a new mutant sits under an old acceptance. Re-read the README argument. After
-review, run `pitest<Suite>BaselineRetag`: it refuses fresh debt, preserves every
+a new mutant sits under an old acceptance. Re-read the line-free README argument
+against the coordinates printed by the advisory. If the argument still applies,
+run `pitest<Suite>BaselineRetag`: it refuses fresh debt, preserves every
 accepted row (including unrelated unmatched ArcMutate evidence), and refreshes only
 matched tags. A green `pitest<Suite>BaselinePrune` also refreshes matched tags, but
 its purpose is deletion and it must not be used merely to clear this advisory when
@@ -2063,6 +2099,18 @@ MINION_DIED, worker EOF, and the daemon log)*:
   diagnoses a process-resource or insufficient-memory failure; a generic minion
   death is not that diagnosis.
 
+A later clean, history-free, full unscoped run — or a successful
+`hardeningCertify` — is sufficient closure for a non-recurring invalid execution.
+The clean observation does not diagnose the earlier failure, and the invalid attempt
+creates no accepted-baseline, timeout-set, provenance, or mutation-record debt; retain
+its diagnostics only as operational reliability context under the repository's normal
+policy. Continued invalid attempts still warrant investigation even when their
+coordinates move. When an invalid outcome interrupts certification, retry the affected
+project's `hardeningCertify`: its receipt is project-atomic, so all suites in that
+project intentionally re-run in one invocation rather than stitching observations from
+different attempts. Receipts from other projects are independent
+*(casebook: the invalid attempts that moved and then disappeared)*.
+
 **The evidence usually survives you discarding it.** The Gradle daemon keeps
 complete build output — including PIT minion stack traces — at
 `~/.gradle/daemon/<version>/daemon-<pid>.out.log`, even when the invoking
@@ -2140,10 +2188,13 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    (wildcard targets + exclusions) and fuzz targets. `hardeningInit` scaffolds
    the transcription: the `config/pitest/README.md` skeleton, the
    `.pitest-history/` git-ignore, and the adoption checklist with the current
-   template digest. Run `./gradlew hardeningHelp` for the installed version's
-   exact task and option surface.
+   template digest. Run `./gradlew :module:hardeningHelp` for the installed
+   version's exact task and option surface (or `./gradlew :hardeningHelp` when
+   the root project owns the plugin).
 2. Pin any unseeded randomness in the test suite (see above).
-3. Seed the baselines with `./gradlew pitest<Suite>BaselineUpdate` per suite,
+3. Seed the baselines with the applying project's qualified task (for example,
+   `./gradlew :module:pitest<Suite>BaselineUpdate`, or
+   `./gradlew :pitest<Suite>BaselineUpdate` when the root project owns hardening),
    review the written rows, and commit `config/pitest/`, including each suite's
    PIT-version and mutation-toolchain sidecars.
 4. Review the `config/pitest/README.md` written by `hardeningInit`, then record
@@ -2277,13 +2328,24 @@ to normalize the presentation used by releases before 21.5.25.
 >   setup would otherwise be lost, and never embed PIT coordinates or line numbers.
 > - Baseline keys are line-less (`class,method,mutator,STATUS`) — editing
 >   above a mutated method churns nothing, and `# line` tags are review
->   metadata. A new mutant replacing a killed one at the same key can inherit
+>   metadata. Do not copy source line numbers anywhere in
+>   `config/pitest/README.md`; this includes acceptance and timeout arguments,
+>   retired-incident prose, tables, and inline or fenced coordinate rosters.
+>   A roster is narrative evidence, not protected membership: retain line-less
+>   class/method/mutator evidence and meaningful multiplicity as `xN`. The
+>   current PIT report and the row's `# line` tag are the sole transient locators.
+>   A new mutant replacing a
+>   killed one at the same key can inherit
 >   its acceptance, so treat a line-drift advisory whose written argument no
 >   longer fits the code as that swap until shown otherwise. After review, use
 >   `BaselineRetag` to refresh only matched line metadata while preserving every
 >   accepted row; never use an unrelated acceptance or deletion merely to clear
 >   the advisory. Use the installed plugin's named writer tasks and heed their
->   candidate previews; never hand-edit
+>   candidate previews. Before `BaselinePrune` can delete, two distinct completed
+>   fresh full history-free previews must have the exact same candidate multiset;
+>   its own third fresh write-boundary run must match them too. Candidate drift is a
+>   reviewer-stop, and matching bytes do not replace review of the relevant
+>   solo/gate load context or each removal criterion. Never hand-edit
 >   record structure or provenance stamps. A PIT, PIT-plugin/tool-artifact,
 >   ArcMutate-base, or certificate change uses `pitest<Suite>BaselineRebase`: it
 >   preserves every old row, seeds new rows `# untriaged`, and stamps the reviewed
@@ -2295,7 +2357,10 @@ to normalize the presentation used by releases before 21.5.25.
 >   reasons, and provenance. `AGENTS.md` carries this exact generated,
 >   digest-pinned template with repository-specific facts outside its bounded block,
 >   but no independently maintained
->   copy of plugin task semantics; use `hardeningHelp` and
+>   copy of plugin task semantics. Local prose may name a project-qualified task and
+>   say when repository policy requires it; task output, pass/fail or warning
+>   conditions, refusals, normalization, and fallback behavior stay in the installed
+>   plugin and its help. Use `hardeningHelp` and
 >   project-qualified `hardeningAgentTemplate` as the installed-version authorities,
 >   and run the matching read-only `hardeningAgentTemplateDiff` against its explicitly
 >   bounded block on every template-digest move before acknowledging the new marker.
@@ -2463,7 +2528,13 @@ to normalize the presentation used by releases before 21.5.25.
 >   then packing/process overhead. Run `pitest<Suite>Diagnostic` full and scoped when
 >   per-process progress is missing; its separate raw streams establish no total order,
 >   and the last announced mutation is context, not cause. Only a clean fresh full
->   unscoped run can support records or certification.
+>   unscoped run can support records or certification. Such a later clean run (or a
+>   successful `hardeningCertify`) is sufficient closure for a non-recurring invalid
+>   outcome: it does not diagnose that failure, and the invalid attempt creates no
+>   mutation-record debt. If certification was interrupted, retry the affected
+>   project's whole `hardeningCertify`; its receipt deliberately re-executes every
+>   suite in that project in one invocation rather than stitching attempts, while
+>   other project receipts remain independent.
 >   The daemon log
 >   (`~/.gradle/daemon/<version>/daemon-<pid>.out.log`) keeps a failed build's
 >   full output even when the shell discarded it — read it before calling a

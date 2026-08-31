@@ -162,6 +162,12 @@ class HardeningOperationsFunctionalTest {
     val output = runner("hardeningHelp").build().output
 
     listOf(
+      "hardeningAgentTemplate",
+      "hardeningAgentTemplateDiff",
+      "agentsTemplateInSync",
+      "hardeningInit",
+      "pitestEncoding",
+      "pitestEncodingVerify",
       "pitestEncodingDebt",
       "pitestEncodingDiagnostic",
       "pitestEncodingBaselineRebase",
@@ -174,7 +180,68 @@ class HardeningOperationsFunctionalTest {
       "migrateMutationBaselines",
       "downgradeMutationBaselines",
       "mutationOwnershipAudit",
+      "hardeningReadmeAudit",
     ).forEach { task -> assertTrue(output.contains(task), "missing $task:\n$output") }
+    fun assertSingleEntry(task: String, purpose: String) {
+      val entry = Regex(
+        "(?m)^  ${Regex.escape(task)}\\s{2,}${Regex.escape(purpose)}$"
+      )
+      assertEquals(1, entry.findAll(output).count(), "missing or duplicate '$task' entry:\n$output")
+    }
+    assertSingleEntry(
+      "hardeningAgentTemplate",
+      "print the installed bounded agent-instructions template unquoted",
+    )
+    assertSingleEntry(
+      "hardeningAgentTemplateDiff",
+      "compare the bounded local block; normalizes one uniform Markdown '> ' quote layer",
+    )
+    assertSingleEntry(
+      "agentsTemplateInSync",
+      "check the installed template acknowledgment; used by check and qualityGate",
+    )
+    assertSingleEntry(
+      "hardeningReadmeAudit",
+      "advise on README source coordinates and inherited scaffold mechanics; used by check and qualityGate",
+    )
+    assertSingleEntry(
+      "hardeningInit",
+      "scaffold config/pitest/README.md and the .pitest-history/ ignore rule",
+    )
+    assertSingleEntry(
+      "pitestEncoding",
+      "run the suite's normal PIT mutation workflow",
+    )
+    assertSingleEntry(
+      "pitestEncodingVerify",
+      "check a completed report against the suite ratchet; scoped reports remain diagnostic",
+    )
+    val readOnlySection = Regex(
+      "(?ms)^Read-only and certification workflows:\n(.*?)(?=^Repository scaffolding \\(may write files\\):$)"
+    ).find(output)?.groupValues?.get(1)
+    assertTrue(readOnlySection != null, "missing read-only workflow section:\n$output")
+    listOf(
+      "hardeningAgentTemplate",
+      "hardeningAgentTemplateDiff",
+      "agentsTemplateInSync",
+      "hardeningReadmeAudit",
+      "pitestEncoding",
+      "pitestEncodingVerify",
+    ).forEach { task ->
+      assertTrue(readOnlySection!!.contains(task), "$task is outside the read-only section:\n$output")
+    }
+    assertFalse(
+      readOnlySection!!.contains("hardeningInit"),
+      "hardeningInit must not be presented as read-only:\n$output",
+    )
+    val scaffoldingSection = Regex(
+      "(?ms)^Repository scaffolding \\(may write files\\):\n(.*?)(?=^Accepted-baseline document lifecycle)"
+    ).find(output)?.groupValues?.get(1)
+    assertTrue(scaffoldingSection != null, "missing repository-scaffolding section:\n$output")
+    assertTrue(
+      scaffoldingSection!!.contains("hardeningInit"),
+      "hardeningInit is outside the repository-scaffolding section:\n$output",
+    )
     assertEquals(1, Regex("(?m)^[ \\t]+pitestEncodingDebt\\s+").findAll(output).count(), output)
     assertTrue(
       output.indexOf("pitestEncodingDebt") >
@@ -210,6 +277,20 @@ class HardeningOperationsFunctionalTest {
   fun `installed help separates long generated task names from their descriptions`() {
     val output = HardeningHelpText.render(listOf("valuationManager"), emptyList())
 
+    assertTrue(
+      Regex(
+        "(?m)^[ \\t]+pitestValuationManager\\s{2,}" +
+            "run the suite's normal PIT mutation workflow$"
+      ).containsMatchIn(output),
+      output,
+    )
+    assertTrue(
+      Regex(
+        "(?m)^[ \\t]+pitestValuationManagerVerify\\s{2,}" +
+            "check a completed report against the suite ratchet; scoped reports remain diagnostic$"
+      ).containsMatchIn(output),
+      output,
+    )
     assertTrue(
       Regex(
         "(?m)^[ \\t]+pitestValuationManagerDebt\\s{2,}" +
@@ -471,9 +552,13 @@ class HardeningOperationsFunctionalTest {
     val certify = runner("clean", "hardeningCertify").buildAndFail().output
     assertTrue(certify.contains("committed timeout audit is not ready"), certify)
     assertTrue(certify.contains("cause:untriaged has not been reviewed"), certify)
-    assertTrue(certify.contains("1 malformed row(s)"), certify)
-    assertTrue(certify.contains("1 member(s) without a README cause"), certify)
-    assertTrue(certify.contains("PIT has not run"), certify)
+    assertTrue(certify.contains("Evidence: 1 malformed membership row"), certify)
+    assertTrue(certify.contains("1 member without a README cause"), certify)
+    assertTrue(certify.contains("Execution: PIT has not run"), certify)
+    assertTrue(certify.contains("Run :pitestDecodingDebt"), certify)
+    assertTrue(certify.contains("Run :pitestDecoding -PnoMutationHistory"), certify)
+    assertTrue(certify.contains("run :hardeningCertify in a new Gradle invocation"), certify)
+    assertTrue(certify.contains("receipt is project-atomic"), certify)
     assertFalse(
       runs.exists(),
       "certification ran its first suite before finding later-suite static timeout debt",
@@ -750,6 +835,11 @@ class HardeningOperationsFunctionalTest {
     )
     adoptExistingRecordWithRebase()
 
+    // Prune is deliberately a third observation: establish two completed,
+    // matching read-only previews before selecting the destructive workflow.
+    runner("pitestEncoding", "-PnoMutationHistory").build()
+    runner("pitestEncoding", "-PnoMutationHistory").build()
+
     val cold = runner("pitestEncodingBaselinePrune").build()
     assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
     assertTrue(cold.output.contains("selected baseline prune"), cold.output)
@@ -768,7 +858,7 @@ class HardeningOperationsFunctionalTest {
     assertTrue(reused.contains("Reusing configuration cache"), reused)
     assertTrue(reused.contains("prune dropped nothing"), reused)
     assertEquals(before, baseline.readText())
-    assertEquals(3, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
+    assertEquals(5, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
     val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
     assertFalse(args.contains("arcmutate_history"), args)
     assertFalse(args.contains("--historyInputLocation"), args)

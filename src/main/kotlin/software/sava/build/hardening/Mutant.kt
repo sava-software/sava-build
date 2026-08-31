@@ -47,6 +47,13 @@ internal enum class MutantStatus(
   }
 }
 
+internal fun knownInvalidExecutionClosure(retryGuidance: String): String =
+  "Closure for a non-recurring known runtime or unfinished outcome: a later clean, " +
+    "history-free, full unscoped run that does not reproduce it is sufficient closure. " +
+    "The discarded invalid report creates no persistent mutation-record debt, and the " +
+    "successful run does not diagnose the earlier failure's cause. Continued invalid " +
+    "outcomes warrant investigation even when their coordinates move." + retryGuidance
+
 /**
  * One mutant observation from PIT's CSV report — the single place its columns are
  * split and its identities derived. The fleet casebook's recurring incident class
@@ -115,7 +122,10 @@ internal data class Mutant(
      * a report must never silently turn an unparsable physical row into a smaller
      * mutant population.
      */
-    fun parseReport(csvLines: List<String>): List<Mutant> {
+    fun parseReport(
+      csvLines: List<String>,
+      knownInvalidExecutionGuidance: String? = null,
+    ): List<Mutant> {
       val malformed = mutableListOf<Pair<Int, String>>()
       val parsed = csvLines.mapIndexedNotNull { index, line ->
         val mutant = parse(line)
@@ -140,6 +150,18 @@ internal data class Mutant(
         val statuses = invalid.groupingBy { (_, _, mutant) -> mutant.rawStatus }.eachCount().entries
             .sortedBy { it.key }
             .joinToString(", ") { (status, count) -> "$status x$count" }
+        // Consumers may supply their own workflow closure for the execution
+        // statuses this plugin understands. Unknown statuses stay outside that
+        // guidance: they may instead mean a newer PIT vocabulary that this plugin
+        // must learn before it can interpret the report safely.
+        val hasOnlyKnownInvalidExecutions = invalid.all { (_, _, mutant) ->
+          mutant.status?.validEvidence == false
+        }
+        val invalidExecutionHint = knownInvalidExecutionGuidance
+          ?.trim()
+          ?.takeIf { hasOnlyKnownInvalidExecutions && it.isNotEmpty() }
+          ?.let { "\n$it" }
+          .orEmpty()
         val runErrorHint = if (invalid.any { (_, _, mutant) -> mutant.rawStatus == "RUN_ERROR" }) {
           "\nRUN_ERROR alone diagnoses neither load nor memory and does not justify changing " +
               "suite threads or heap. Retain the coordinate, record system load and PIT/minion " +
@@ -154,7 +176,7 @@ internal data class Mutant(
                   "  line $lineNumber: $line"
                 } + "\n" +
                 "Runtime errors, unfinished mutations, and unknown PIT statuses cannot certify " +
-                "the ratchet or any record writer." + runErrorHint
+                "the ratchet or any record writer." + invalidExecutionHint + runErrorHint
         )
       }
       return parsed.map { (_, _, mutant) -> mutant }

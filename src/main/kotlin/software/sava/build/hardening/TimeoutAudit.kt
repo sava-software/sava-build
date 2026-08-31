@@ -302,8 +302,8 @@ internal object TimeoutAudit {
 
   /** Physical observations and committable keys must never be presented as one count. */
   fun timeoutCandidateCount(candidates: TimeoutCandidates): String =
-      "${candidates.instanceCount} physical TIMED_OUT mutant instance(s) across " +
-          "${candidates.keyCount} line-less key(s)"
+      "${counted(candidates.instanceCount, "physical TIMED_OUT mutant instance")} across " +
+          counted(candidates.keyCount, "line-less key")
 
   /** One paste-ready membership row per line-less key, with sorted distinct line tags. */
   fun timeoutCandidateRows(
@@ -369,15 +369,39 @@ internal object TimeoutAudit {
     reportDescription: String = "current full report",
   ): String? {
     if (populations.isEmpty()) return null
-    return "pitest '$suiteName': ${populations.size} audited-timeout key(s) cover multiple " +
-        "mutant copies in the $reportDescription. Cause is key-level: inspect every TIMED_OUT " +
-        "sibling; KILLED and other non-timeout siblings are context, not proof of a mixed " +
-        "timeout cause:\n" + populations.joinToString("\n") { population ->
-          "  ${population.member} — ${population.mutantCount} mutants:\n" +
-              population.observations.joinToString("\n") { observation ->
-                "    line ${observation.line} ${observation.status} x${observation.copies}"
-              }
-        }
+    val (expanded, collapsed) = populations.partition { population ->
+      population.observations
+          .filter { it.status == MutantStatus.TIMED_OUT.name }
+          .sumOf { it.copies } >= 2
+    }
+    val keyVerb = if (populations.size == 1) "covers" else "cover"
+    val evidence = when {
+      expanded.isEmpty() ->
+        "  Evidence: ${counted(collapsed.size, "key")} " +
+            (if (collapsed.size == 1) "has" else "each have") +
+            " exactly 1 physical TIMED_OUT " +
+            "mutant plus non-timeout siblings; detailed populations are collapsed because those " +
+            "siblings cannot establish mixed timeout causes."
+      collapsed.isEmpty() ->
+        "  Evidence: Every key has 2+ physical TIMED_OUT mutants; current copies at each " +
+            "line-less key follow."
+      else ->
+        "  Evidence: ${counted(expanded.size, "key")} with 2+ physical TIMED_OUT mutants " +
+            "${if (expanded.size == 1) "is" else "are"} expanded below; " +
+            "${counted(collapsed.size, "additional key")} with exactly 1 physical TIMED_OUT " +
+            "mutant plus non-timeout siblings ${if (collapsed.size == 1) "is" else "are"} collapsed."
+    }
+    val detail = expanded.joinToString("\n") { population ->
+      "    ${population.member} — ${counted(population.mutantCount, "mutant")}:\n" +
+          population.observations.joinToString("\n") { observation ->
+            "      line ${observation.line} ${observation.status} x${observation.copies}"
+          }
+    }
+    return "pitest '$suiteName': ${counted(populations.size, "audited-timeout key")} " +
+        "$keyVerb multiple mutant copies in the $reportDescription:\n" +
+        evidence + (if (detail.isEmpty()) "" else "\n$detail") +
+        "\n  Review: Cause is key-level. Inspect keys with multiple TIMED_OUT siblings; KILLED and other " +
+        "non-timeout siblings are context, not proof of a mixed timeout cause."
   }
 
   /** The report-dependent warning for timeouts outside the committed set. */
@@ -392,16 +416,19 @@ internal object TimeoutAudit {
   ): String {
     val candidates = timeoutCandidates(unaudited)
     return "pitest '$suiteName': ${timeoutCandidateCount(candidates)} not in the audited set " +
-          "($fileName) — a new timeout hides a weakened-assertion blind spot " +
-          "behind \"detected\"; identify the structural cause (the removed loop exit, the " +
-          "reversed cursor). Each key below has one paste-ready, fail-closed draft row. Where " +
-          "a key collapses multiple physical instances, nested '# observed' comments preserve " +
-          "line/status multiplicity. Replace " +
-          "each deliberate cause:untriaged placeholder with the reviewed classification and " +
-          "write the structural argument in config/pitest/README.md before committing it. The " +
-          "placeholder is non-certifying; only cause:liveness may remain in a certifying " +
-          "audited set. ${watchdogFormulaContext(pitestVersion, timeoutFactor, timeoutConst)}\n" +
-          timeoutCandidateDetail(candidates) + historyDecisionCaveat
+          "($fileName):\n" +
+          "  Evidence: One paste-ready, fail-closed draft row per line-less key follows; nested " +
+          "'# observed' comments preserve line/status multiplicity.\n" +
+          timeoutCandidateDetail(candidates, indent = "    ") +
+          "\n  Review: Identify the structural cause (for example, a removed loop exit or " +
+          "reversed cursor). A timeout can hide a weakened-assertion blind spot behind " +
+          "\"detected\"." +
+          "\n  Watchdog context: " +
+          watchdogFormulaContext(pitestVersion, timeoutFactor, timeoutConst) +
+          "\n  Remedy: Replace each deliberate cause:untriaged placeholder with the reviewed " +
+          "classification. Write the structural argument in config/pitest/README.md before " +
+          "committing it. The placeholder is non-certifying; only cause:liveness may remain in " +
+          "a certifying audited set." + historyDecisionCaveat
   }
 
   /**
@@ -420,14 +447,17 @@ internal object TimeoutAudit {
   ): String {
     val candidates = timeoutCandidates(unaudited)
     return "pitest '$suiteName': the current full report contains " +
-          "${timeoutCandidateCount(candidates)} outside $fileName, but committed mutation " +
-          "provenance is invalid. Retain " +
-          "these candidates for triage; do not add or classify them until provenance is " +
-          "repaired/rebased and a fresh full observation confirms them. Each line-less key " +
-          "has one draft row. Where a key collapses multiple physical instances, nested " +
-          "'# observed' comments retain line/status multiplicity. " +
-          "${watchdogFormulaContext(pitestVersion, timeoutFactor, timeoutConst)}\n" +
-          timeoutCandidateDetail(candidates) + historyDecisionCaveat
+          "${timeoutCandidateCount(candidates)} outside $fileName, and committed mutation " +
+          "provenance is invalid:\n" +
+          "  Evidence: Triage-only draft rows follow, one per line-less key; nested '# observed' " +
+          "comments preserve line/status multiplicity.\n" +
+          timeoutCandidateDetail(candidates, indent = "    ") +
+          "\n  Review: The population is not bound to valid committed provenance." +
+          "\n  Watchdog context: " +
+          watchdogFormulaContext(pitestVersion, timeoutFactor, timeoutConst) +
+          "\n  Remedy: Retain these candidates, repair or rebase provenance, and obtain a fresh " +
+          "full observation. Do not add or classify them until that observation confirms them." +
+          historyDecisionCaveat
   }
 
   /** The report-dependent warning for committed members absent from the population. */
@@ -436,9 +466,13 @@ internal object TimeoutAudit {
     staleMembers: Collection<String>,
     historyDecisionCaveat: String = "",
   ): String =
-      "pitest '$suiteName': ${staleMembers.size} audited-timeout row(s) match no mutant in " +
-          "this run's report — the code moved or the mutator set changed; retire or fix:\n" +
-          staleMembers.sorted().joinToString("\n") { "  $it" } + historyDecisionCaveat
+      "pitest '$suiteName': ${counted(staleMembers.size, "audited-timeout row")} " +
+          "${if (staleMembers.size == 1) "matches" else "match"} no mutant in this run's " +
+          "report:\n" +
+          "  Evidence: Committed coordinates absent from the current population follow.\n" +
+          staleMembers.sorted().joinToString("\n") { "    $it" } +
+          "\n  Review: The code may have moved, or the mutator set may have changed." +
+          "\n  Remedy: Retire or fix each stale row." + historyDecisionCaveat
 
   /** Stale-member preview that withholds retirement while provenance is invalid. */
   fun staleProvenancePreview(
@@ -446,43 +480,59 @@ internal object TimeoutAudit {
     staleMembers: Collection<String>,
     historyDecisionCaveat: String = "",
   ): String =
-      "pitest '$suiteName': the current full report does not contain " +
-          "${staleMembers.size} audited-timeout row(s), but committed mutation provenance is " +
-          "invalid. Retain these candidates for triage; do not retire or rewrite them until " +
-          "provenance is repaired/rebased and a fresh full observation confirms the absence:\n" +
-          staleMembers.sorted().joinToString("\n") { "  $it" } + historyDecisionCaveat
+      "pitest '$suiteName': provenance-blocked stale-membership preview — the current full " +
+          "report does not contain ${counted(staleMembers.size, "audited-timeout row")}:\n" +
+          "  Evidence: Committed coordinates absent from the current population follow.\n" +
+          staleMembers.sorted().joinToString("\n") { "    $it" } +
+          "\n  Review: Committed mutation provenance is invalid, so this absence cannot authorize " +
+          "record changes." +
+          "\n  Remedy: Retain these candidates for triage; do not retire or rewrite them until " +
+          "provenance is repaired/rebased and a fresh full observation confirms the absence." +
+          historyDecisionCaveat
 
   fun causeFindingWarning(
     suiteName: String,
     fileName: String,
     findings: Collection<CauseFinding>,
   ): String =
-      "pitest '$suiteName': ${findings.size} audited-timeout member(s) lack an admissible cause " +
-          "classification in $fileName — use 'cause:liveness' only when the mutated path has no " +
-          "path-owned finite completion guarantee after deterministic seams/budgets are exhausted " +
-          "(a fixture safety exit does not demote it); 'cause:resource' requires either a " +
-          "deterministic resource-contract test/fix or a stable SURVIVED equivalence argument, " +
+      "pitest '$suiteName': ${counted(findings.size, "audited-timeout member")} " +
+          "${if (findings.size == 1) "lacks" else "lack"} an admissible cause classification " +
+          "in $fileName:\n" +
+          "  Evidence: Cause findings by line-less member follow.\n" +
+          findings.sortedBy { it.member }.joinToString("\n") { "    ${it.member} # ${it.detail}" } +
+          "\n  Review: Use 'cause:liveness' only when the mutated path has no path-owned finite " +
+          "completion guarantee after deterministic seams/budgets are exhausted." +
+          " A fixture safety exit does not demote it." +
+          "\n  Remedy: Classify each member accurately: 'cause:resource' requires either a " +
+          "deterministic resource-contract test/fix or a stable SURVIVED equivalence argument; " +
           "'cause:harness' records a reviewed finite covering-path/watchdog race while it is " +
-          "being repaired, and 'cause:untriaged' is unfinished; all three are non-certifying:\n" +
-          findings.sortedBy { it.member }.joinToString("\n") { "  ${it.member} # ${it.detail}" }
+          "being repaired; and 'cause:untriaged' is unfinished." +
+          " All three are non-certifying."
 
   fun lineMetadataWarning(
     suiteName: String,
     fileName: String,
     findings: Collection<LineMetadataFinding>,
   ): String =
-      "pitest '$suiteName': ${findings.size} audited-timeout member(s) carry invalid optional " +
-          "line metadata in $fileName. This metadata supplies no source-line diagnostic evidence; " +
-          "it does not change membership or cause classification, block strict certification, or " +
-          "change timeout-retirement eligibility:\n" +
-          findings.sortedBy { it.member }.joinToString("\n") { "  ${it.member} # ${it.detail}" }
+      "pitest '$suiteName': invalid optional line metadata in $fileName — " +
+          "${counted(findings.size, "audited-timeout member")}:\n" +
+          "  Evidence: Invalid metadata by line-less member follows.\n" +
+          findings.sortedBy { it.member }.joinToString("\n") { "    ${it.member} # ${it.detail}" } +
+          "\n  Review: Optional line metadata supplies no source-line diagnostic evidence. It " +
+          "does not change membership or cause classification, block strict " +
+          "certification, or change timeout-retirement eligibility." +
+          "\n  Remedy: Use 'line N' or 'lines N, M' after the cause classification, or remove " +
+          "the optional tag when no exact observation exists."
 
   /** The malformed-row warning, or null when every row parses. */
   fun malformedWarning(suiteName: String, fileName: String, malformed: List<String>): String? =
       if (malformed.isEmpty()) null else
-        "pitest '$suiteName': ${malformed.size} malformed row(s) in $fileName — expected " +
-            "'class,method,mutator' (three fields, '#' comments allowed); these match nothing until fixed:\n" +
-            malformed.joinToString("\n") { "  $it" }
+        "pitest '$suiteName': ${counted(malformed.size, "malformed row")} in $fileName:\n" +
+            "  Evidence: Unparseable rows follow.\n" +
+            malformed.joinToString("\n") { "    $it" } +
+            "\n  Review: Expected 'class,method,mutator' with exactly three non-empty fields; " +
+            "'#' comments are allowed." +
+            "\n  Remedy: Fix each malformed row; until fixed, it matches no mutant."
 
   /**
    * The key-level disjointness decision, shared with [BaselineNotes.lineDrift]'s
@@ -567,8 +617,14 @@ internal object TimeoutAudit {
 
   /** The warning naming [undocumented] members; callers pass a non-empty list. */
   fun undocumentedCauseWarning(suiteName: String, undocumented: Collection<String>): String =
-      "pitest '$suiteName': ${undocumented.size} audited-timeout member(s) whose class and method " +
-          "appear nowhere together in config/pitest/README.md — the structural cause belongs there " +
-          "(HARDENING.md, the audited-set bullet):\n" +
-          undocumented.sorted().joinToString("\n") { "  cause? $it" }
+      "pitest '$suiteName': missing README cause for " +
+          "${counted(undocumented.size, "audited-timeout member")}:\n" +
+          "  Evidence: Undocumented line-less members follow.\n" +
+          undocumented.sorted().joinToString("\n") { "    cause? $it" } +
+          "\n  Review: Each member's class and method must appear together in one " +
+          "config/pitest/README.md section." +
+          "\n  Remedy: Write the structural cause there (HARDENING.md, the audited-set bullet)."
+
+  private fun counted(count: Int, singular: String, plural: String = "${singular}s"): String =
+      "$count ${if (count == 1) singular else plural}"
 }
