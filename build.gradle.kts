@@ -24,7 +24,7 @@ dependencies {
   // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
   // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
   // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
-  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.18.0")
+  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.19.1")
 
   // https://github.com/gradle/foojay-toolchains
   // https://plugins.gradle.org/plugin/org.gradle.toolchains.foojay-resolver-convention
@@ -33,7 +33,7 @@ dependencies {
   // https://plugins.gradle.org/plugin/me.champeau.jmh
   implementation("me.champeau.jmh:jmh-gradle-plugin:0.7.3")
   // https://github.com/gradlex-org/java-module-dependencies
-  implementation("org.gradlex:java-module-dependencies:1.13.1")
+  implementation("org.gradlex:java-module-dependencies:1.13.2")
   // https://github.com/gradlex-org/java-module-testing
   implementation("org.gradlex:java-module-testing:1.8.1")
   // https://github.com/gradlex-org/jvm-dependency-conflict-resolution
