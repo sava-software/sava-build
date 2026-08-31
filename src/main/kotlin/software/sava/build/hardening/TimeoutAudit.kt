@@ -122,7 +122,7 @@ internal object TimeoutAudit {
   private val CAUSE_COMMENT = Regex("""\bcause\s*:\s*([A-Za-z][A-Za-z0-9_-]*)\b""")
 
   /** PIT release whose float-rounding watchdog strategy was inspected; re-audit before moving. */
-  private const val WATCHDOG_FORMULA_AUDITED_PITEST = "1.25.9"
+  private const val WATCHDOG_FORMULA_AUDITED_PITEST = "1.30.0"
 
   private data class ParsedRow(
     val key: String,

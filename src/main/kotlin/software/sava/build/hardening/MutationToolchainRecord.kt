@@ -91,7 +91,7 @@ internal data class MutationToolchainRecord(
   companion object {
     const val SCHEMA = "1"
     const val ABSENT = "absent"
-    const val SUPPORTED_ARCMUTATE_BASE_VERSION = "1.7.1"
+    const val SUPPORTED_ARCMUTATE_BASE_VERSION = "1.7.2"
     private const val arcMutatePomProperties =
         "META-INF/maven/com.arcmutate/base/pom.properties"
     private const val pitestPomProperties =
@@ -122,7 +122,7 @@ internal data class MutationToolchainRecord(
       .withResolverStyle(ResolverStyle.STRICT)
 
     /**
-     * Captures one current identity and mirrors ArcMutate 1.7.1's type-specific
+     * Captures one current identity and mirrors ArcMutate 1.7.2's type-specific
      * post-expiry grace boundary. The raw named expiry remains in the identity.
      * [arcMutateBaseVersion] is the configured version; it is recorded only when a
      * certificate is present and the ArcMutate artifact is therefore selected.
@@ -177,7 +177,7 @@ internal data class MutationToolchainRecord(
     }
 
     /**
-     * Reproduces ArcMutate 1.7.1's effective search boundary. Report-local and
+     * Reproduces ArcMutate 1.7.2's effective search boundary. Report-local and
      * `.pitest` stores precede the ancestry certificate and can select among several
      * signed licences using vendor-internal product/expiry rules. Those stores are
      * intentionally refused: the remaining nearest ancestry certificate is then the

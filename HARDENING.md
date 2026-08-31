@@ -250,7 +250,7 @@ run cheaper. The cost model is directly optimisable:
   startup removes only the known decision-grade report leaves and markers, never
   recursively deletes consumer-added report content. On a licensed diagnostic,
   sava-build first validates and names the effective ArcMutate base. That captured
-  toolchain is its activation identity. With the audited default PIT 1.25.9, the raw
+  toolchain is its activation identity. With the audited default PIT 1.30.0, the raw
   `arcmutateMissing` value controls only the HTML promotion.
 - **Tune the per-test timeout to the suite's real runtimes** — PIT's default
   allowance is `recorded time × 1.25 + 4000ms`; every hanging-mutant
@@ -298,8 +298,8 @@ not only run speed. Assisted and fresh runs in that project must therefore retai
 the same base plugin. Without a licence file, no ArcMutate dependency or flags are
 added and PIT runs fully from scratch using its open-source engine.
 
-ArcMutate's subsumption is not necessarily edit-local. With the audited 1.7.1
-engine, changing one candidate in a method has made a different candidate at an
+ArcMutate's subsumption is not necessarily edit-local. With the then-audited 1.7.1
+engine, changing one candidate in a method made a different candidate at an
 unchanged line disappear from the generated population. An unmatched accepted row
 therefore means only that its mutant is absent from this population — not that it was
 killed, or that its own source line changed. Review the whole method and the toolchain
@@ -308,7 +308,7 @@ before pruning it *(casebook: the long retry bound with an int counter)*.
 **With an applicable licence, activation is dropping one file.** The plugin keys
 everything off `arcmutate-licence.txt` at the project or root-project directory:
 when present, `com.arcmutate:base` joins PIT's classpath. Licensed provenance is
-currently audited for base `1.7.1`; overriding `hardening.arcmutateBaseVersion` to a
+currently audited for base `1.7.2`; overriding `hardening.arcmutateBaseVersion` to a
 different licensed engine is refused until its lookup contract is audited. Ordinary suite runs
 also enable `+arcmutate_history` against a rolling per-suite file at
 `<module>/.pitest-history/<suite>.hist` — outside `build/` so `clean` cannot erase
@@ -318,6 +318,12 @@ history. A suite run with `-PnoMutationHistory` or
 inside certification suppresses that feature and its history input/output arguments;
 it does not remove the licensed base plugin. Mode snapshots and convergence refuse
 assisted evidence and direct the operator to that explicit flag.
+
+Base 1.7.2 also registers Groovy support, but its `groovy` feature is off by default
+and sava-build does not enable it. Its assisted-history analyser can reuse a historic
+`EQUIVALENT` result before checking whether the mutated class changed; that is another
+reason assisted output remains check-only and fresh history-free evidence is required
+for rebases and certification.
 
 The certificate committed at the `sava-build` repository root is a signed,
 self-contained OSS certificate scoped to `software.sava.*`. It is not an access token.
@@ -436,7 +442,7 @@ portable PIT artifacts; each completed-run evidence manifest binds them separate
 `javaVersion` and `pluginSha256`, and certification carries those richer per-run
 fingerprints into its receipt.
 
-The sidecar records the certificate's raw named expiry. ArcMutate 1.7.1 gives an OSSS
+The sidecar records the certificate's raw named expiry. ArcMutate 1.7.2 gives an OSSS
 or commercial certificate one calendar month of grace after that date (an evaluation
 certificate gets seven days): the vendor emits its renewal warning during grace but
 continues to supply the same licensed population. Hardening mirrors that effective

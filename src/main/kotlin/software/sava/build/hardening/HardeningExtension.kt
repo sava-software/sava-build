@@ -45,7 +45,7 @@ abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
    *  licensed plugin set, including incremental analysis. Resolved whenever an
    *  'arcmutate-licence.txt' is present at the project or root-project directory, even
    *  when history reuse is disabled, so a fresh run keeps the licensed mutant
-   *  population. Licensed provenance currently audits ArcMutate 1.7.1 and refuses a
+   *  population. Licensed provenance currently audits ArcMutate 1.7.2 and refuses a
    *  different configured/effective version until its lookup contract is reviewed.
    *  Without a licence the dependency is never added and PIT runs exactly as open source. */
   abstract val arcmutateBaseVersion: Property<String>

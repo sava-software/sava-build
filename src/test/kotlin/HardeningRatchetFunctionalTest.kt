@@ -2023,7 +2023,7 @@ $fuzzBlock
       "adoption hint missing:\n$unadopted"
     )
     val missingAuditAction =
-      "  Watchdog context: Configured watchdog (audited PIT 1.25.9): " +
+      "  Watchdog context: Configured watchdog (audited PIT 1.30.0): " +
           "round(testDurationMs × 2.0) + 1500 ms. PIT CSV lacks the active covering test and " +
           "its recorded duration, so no per-mutant budget can be calculated.\n" +
           "  Remedy: Run :pitestEncodingTimeoutAuditInit (seeds " +
@@ -2239,7 +2239,7 @@ $fuzzBlock
         Evidence: Triage-only draft rows follow, one per line-less key; nested '# observed' comments preserve line/status multiplicity.
           com.example.Codec,encode,MathMutator # cause:untriaged line 12
         Review: The population is not bound to valid committed provenance.
-        Watchdog context: Configured watchdog (audited PIT 1.25.9): round(testDurationMs × 1.25) + 4000 ms. PIT CSV lacks the active covering test and its recorded duration, so no per-mutant budget can be calculated.
+        Watchdog context: Configured watchdog (audited PIT 1.30.0): round(testDurationMs × 1.25) + 4000 ms. PIT CSV lacks the active covering test and its recorded duration, so no per-mutant budget can be calculated.
         Remedy: Retain these candidates, repair or rebase provenance, and obtain a fresh full observation. Do not seed, add, or classify them until that observation confirms them.
       """.trimIndent()
     assertTrue(

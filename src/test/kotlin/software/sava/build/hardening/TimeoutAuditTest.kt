@@ -500,7 +500,7 @@ class TimeoutAuditTest {
       "encoding",
       "encoding-timeouts.csv",
       unaudited,
-      "1.25.9",
+      "1.30.0",
       2.0,
       1500L,
       "\nThis [history] result is check-only.",
@@ -519,7 +519,7 @@ class TimeoutAuditTest {
           "reversed cursor). A timeout can hide a weakened-assertion blind spot behind " +
           "\"detected\".\n" +
           "  Watchdog context: Configured watchdog " +
-          "(audited PIT 1.25.9): round(testDurationMs × 2.0) + 1500 ms. PIT CSV lacks the active " +
+          "(audited PIT 1.30.0): round(testDurationMs × 2.0) + 1500 ms. PIT CSV lacks the active " +
           "covering test and its recorded duration, so no per-mutant budget can be calculated.\n" +
           "  Remedy: Replace each deliberate cause:untriaged placeholder with the reviewed " +
           "classification. Write the structural argument in config/pitest/README.md before " +
@@ -546,13 +546,13 @@ class TimeoutAuditTest {
           "comments preserve line/status multiplicity.\n" +
           "    com.example.Codec,other,VoidMethodCallMutator # cause:untriaged line 44\n" +
           "  Review: The population is not bound to valid committed provenance.\n" +
-          "  Watchdog context: Configured watchdog (audited PIT 1.25.9): " +
+          "  Watchdog context: Configured watchdog (audited PIT 1.30.0): " +
           "round(testDurationMs × 2.0) + 1500 ms. PIT CSV lacks the active covering test and its " +
           "recorded duration, so no per-mutant budget can be calculated.\n" +
           "  Remedy: Retain these candidates, repair or rebase provenance, and obtain a fresh " +
           "full observation. Do not add or classify them until that observation confirms them.",
       TimeoutAudit.unauditedProvenancePreview(
-        "encoding", "encoding-timeouts.csv", unaudited, "1.25.9", 2.0, 1500L),
+        "encoding", "encoding-timeouts.csv", unaudited, "1.30.0", 2.0, 1500L),
     )
     assertEquals(
       "pitest 'encoding': provenance-blocked stale-membership preview — the current full " +
@@ -585,13 +585,13 @@ class TimeoutAuditTest {
 
   @Test
   fun `watchdog context prints configured arithmetic without inventing a budget`() {
-    val context = TimeoutAudit.watchdogFormulaContext("1.25.9", 2.0, 1500L)
+    val context = TimeoutAudit.watchdogFormulaContext("1.30.0", 2.0, 1500L)
 
     assertTrue(context.contains("round(testDurationMs × 2.0) + 1500 ms"), context)
-    assertTrue(context.contains("audited PIT 1.25.9"), context)
+    assertTrue(context.contains("audited PIT 1.30.0"), context)
     assertTrue(context.contains("no per-mutant budget can be calculated"), context)
 
-    val unaudited = TimeoutAudit.watchdogFormulaContext("1.26.0", 1.5, 4000L)
+    val unaudited = TimeoutAudit.watchdogFormulaContext("1.30.1", 1.5, 4000L)
     assertTrue(unaudited.contains("has not audited"), unaudited)
     assertTrue(unaudited.contains("timeoutFactor=1.5, timeoutConst=4000 ms"), unaudited)
     assertFalse(unaudited.contains("round("), unaudited)

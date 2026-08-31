@@ -48,7 +48,7 @@ import java.util.UUID
 internal const val PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS = 250L
 
 /** PIT release whose arcmutateMissing meaning was audited; re-audit before changing. */
-private const val ARCMUTATE_MISSING_AUDITED_PIT = "1.25.9"
+private const val ARCMUTATE_MISSING_AUDITED_PIT = "1.30.0"
 
 internal fun shouldAdvisePitestCoverageTestCost(durationMillis: Long): Boolean =
   durationMillis >= PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS

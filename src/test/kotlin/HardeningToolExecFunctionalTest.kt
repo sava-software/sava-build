@@ -330,7 +330,7 @@ $buildTail
       "src/main/resources/META-INF/maven/com.arcmutate/base/pom.properties",
     ).apply {
       parentFile.mkdirs()
-      writeText("groupId=com.arcmutate\nartifactId=base\nversion=1.7.1\n")
+      writeText("groupId=com.arcmutate\nartifactId=base\nversion=1.7.2\n")
     }
   }
 
@@ -848,12 +848,12 @@ $buildTail
 
     val diagnostic = runner("pitestEncodingDiagnostic").build()
     val clarification =
-      "With audited PIT 1.25.9, its raw arcmutateMissing field controls only the HTML promotion"
+      "With audited PIT 1.30.0, its raw arcmutateMissing field controls only the HTML promotion"
     val raw = "ReportOptions [... arcmutateMissing=true ...]"
 
     assertTrue(
       diagnostic.output.contains(
-        "licensed ArcMutate base 1.7.1 was validated on the effective tool classpath"
+        "licensed ArcMutate base 1.7.2 was validated on the effective tool classpath"
       ) && diagnostic.output.contains(clarification),
       diagnostic.output,
     )

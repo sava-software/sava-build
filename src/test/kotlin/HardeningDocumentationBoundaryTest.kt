@@ -117,9 +117,22 @@ class HardeningDocumentationBoundaryTest {
     val compactHardening = hardening.replace(Regex("\\s+"), " ")
     assertTrue(
       compactHardening.contains("captured toolchain is its activation identity") &&
-          compactHardening.contains("audited default PIT 1.25.9") &&
+          compactHardening.contains("audited default PIT 1.30.0") &&
           compactHardening.contains("`arcmutateMissing` value controls only the HTML promotion"),
       "diagnostic doctrine must distinguish PIT's promotion flag from validated tool identity",
+    )
+  }
+
+  @Test
+  fun `ArcMutate 1_7_2 audit keeps opt-in Groovy and assisted history outside fresh evidence`() {
+    val compactHardening = hardening.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactHardening.contains("Base 1.7.2 also registers Groovy support") &&
+          compactHardening.contains("`groovy` feature is off by default") &&
+          compactHardening.contains("historic `EQUIVALENT` result") &&
+          compactHardening.contains("assisted output remains check-only") &&
+          compactHardening.contains("fresh history-free evidence is required"),
+      "the audited ArcMutate boundary must distinguish opt-in and assisted-only behavior",
     )
   }
 }
