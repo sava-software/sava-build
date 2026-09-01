@@ -1,5 +1,14 @@
 # Changelog
 
+## [21.5.30](https://github.com/sava-software/sava-build/compare/21.5.29...21.5.30) (2026-09-01)
+
+
+### Bug Fixes
+
+* **hardening:** close published adoption gaps ([9a9f95f](https://github.com/sava-software/sava-build/commit/9a9f95fca2b2c25cb8b8b95c04e48e08dc70965b))
+* **hardening:** keep adoption checks mechanical ([23dbca5](https://github.com/sava-software/sava-build/commit/23dbca5fe48648804b4169890300acf72617329f))
+* **hardening:** tighten adoption audit boundaries ([10e5b5e](https://github.com/sava-software/sava-build/commit/10e5b5edc2f84aaf48fd8261a09b8b37f207ab91))
+
 ## [21.5.29](https://github.com/sava-software/sava-build/compare/21.5.28...21.5.29) (2026-08-31)
 
 
