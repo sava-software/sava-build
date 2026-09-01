@@ -33,13 +33,14 @@ class HardeningDocumentationBoundaryTest {
           hardening.contains("`./gradlew :hardeningHelp` when the root project owns the plugin"),
     )
     assertTrue(
-      hardening.contains("Consumer hardening notes contain only local ownership") &&
+      hardening.contains("Consumer notes and `config/pitest/README.md` should") &&
+          hardening.contains("Point to") &&
+          hardening.contains("`hardeningHelp` when a detailed copy") &&
+          hardening.contains("writing guidance, not a semantic property") &&
           hardening.contains("AGENTS.md` carries this exact generated") &&
           hardening.contains("repository-specific facts outside its bounded block") &&
-          hardening.contains("Local prose may name a project-qualified task") &&
-          hardening.contains("descriptions of task output, pass/fail or warning conditions") &&
-          hardening.contains("non-failing `hardeningAgentProseAudit`") &&
-          hardening.contains("only repository-owned prose outside the bounded") &&
+          hardening.contains("Prefer a `hardeningHelp` pointer over a detailed copy") &&
+          hardening.contains("do not turn a plugin upgrade into a repository-wide") &&
           hardening.contains("./gradlew :module:hardeningAgentTemplate") &&
           hardening.contains("unqualified task name can select every hardening project"),
       "the generated agent template must distinguish its pinned AGENTS copy from local notes",
@@ -63,7 +64,7 @@ class HardeningDocumentationBoundaryTest {
       ) && compactReadme.contains("is used by `check` and `qualityGate`") &&
           compactReadme.contains("./gradlew :module:hardeningHelp") &&
           compactReadme.contains("project-qualified `hardeningAgentTemplate` and `hardeningAgentTemplateDiff`") &&
-          compactReadme.contains("non-failing `hardeningAgentProseAudit`") &&
+          compactReadme.contains("does not attempt to judge arbitrary repository prose") &&
           compactReadme.contains("one chosen owner reports the installed version's guidance"),
       "template upgrades must defer to one installed, project-qualified task surface",
     )
@@ -72,13 +73,13 @@ class HardeningDocumentationBoundaryTest {
   }
 
   @Test
-  fun `acceptance prose avoids unaudited source-line locators`() {
+  fun `new acceptance prose prefers stable source locators without gating old prose`() {
     val compactHardening = hardening.replace(Regex("\\s+"), " ")
     assertTrue(
       compactHardening.contains(
-        "Do not copy source line numbers anywhere in `config/pitest/README.md`"
+        "New or edited `config/pitest/README.md` arguments should name the class, method, and semantic branch instead of copying source line numbers"
       ) && compactHardening.contains(
-        "acceptance and timeout arguments, retired-incident prose, tables, and inline or fenced coordinate rosters"
+        "This applies to acceptance and timeout arguments, retired-incident prose, tables, and inline or fenced coordinate rosters"
       ) && compactHardening.contains(
         "A roster is narrative evidence, not protected membership"
       ) && compactHardening.contains(
@@ -86,8 +87,10 @@ class HardeningDocumentationBoundaryTest {
             "(typographic `×N` is equivalent)"
       ) && compactHardening.contains(
         "The current PIT report and the row's `# line` tag are the sole transient"
+      ) && compactHardening.contains(
+        "Existing prose is not a plugin-upgrade gate"
       ),
-      "all README prose, including coordinate rosters, must avoid a second source-line index",
+      "new README arguments should avoid a second source-line index without gating old prose",
     )
   }
 

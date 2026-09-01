@@ -1880,13 +1880,11 @@ implementation contract the template prohibited. Incident-client then preserved 
 uniform Markdown quote layer across 243 lines, and the diff normalized it successfully,
 but the installed help never disclosed that supported input shape.
 
-A later incident-client adoption exposed the remaining enforcement gap: three clear
-copies of plugin mechanics and four borderline passages sat in repository-owned
-`AGENTS.md` prose outside a current, correctly bounded template while every installed
-gate passed. The digest gate proves acknowledgment of the shared block, not cleanliness
-of the rest of the document. A repository-scoped, non-failing migration audit now scans
-only that outside prose for conservative field-derived signatures and leaves the shared
-block, arbitrary local facts, and structural failures to their existing authorities.
+A later incident-client adoption exposed the remaining boundary gap: copies of plugin
+mechanics sat in repository-owned `AGENTS.md` prose outside a current, correctly bounded
+template. The digest gate proves acknowledgment of the shared block, not the meaning of
+the rest of the document. An attempted repository-scoped prose audit could match known
+phrases, but the later canaries below showed why it could not close that semantic gap.
 
 The repair lists each template task explicitly, labels the mutating scaffold separately,
 and reduces its README skeleton to prompts for local ownership, measurements, reasons,
@@ -1897,6 +1895,26 @@ Rules: *a gate named by installed policy must be discoverable in that installed
 version's authority*; *classify a writer as a writer*; *consumer notes may route to a
 task, but must not become a second implementation manual*; *a current generated block
 does not certify repository-owned prose outside it*.
+
+## The audit that tried to understand prose
+
+The first README and agent-prose audits found old line locators and copied task contracts,
+then began an open-ended classifier cycle: each field report added a phrase, each clean
+control added an exclusion, and ordinary Markdown reflow changed results. The final
+canaries made the cost decisive. `glam-sdk-java` needed a custom probe harness, still saw
+a configuration key reported as a source coordinate, and found its useful stale contract
+by manual review after the audit reported nothing. Incident-client's audits reported zero
+candidates before six reviewers identified eighteen violations and three borderline
+passages. A green result was not assurance, while obtaining real assurance required work
+no normal adoption should demand.
+
+The tasks and their semantic classifiers were removed rather than softened again.
+Structured facts—template bytes, digests, receipts, baselines, provenance, and writer
+preconditions—remain machine-enforced. Prose remains owner-reviewed writing, with
+`hardeningHelp` as the preferred pointer when detailed installed behavior would otherwise
+be copied. Rules: *enforce structured facts mechanically*; *do not present heuristic
+silence as compliance*; *a plugin upgrade is not a repository-wide prose migration*;
+*when prose meaning matters, leave the judgment with its owner*.
 
 ## The invalid attempts that moved and then disappeared
 

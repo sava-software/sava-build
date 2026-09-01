@@ -7,18 +7,14 @@ in use (or `./gradlew :hardeningHelp` when the root project owns the plugin).
 This document owns human policy, interpretation, and safety rules. The
 repository [README](README.md) owns setup and the `sava-build` release procedure,
 and [HARDENING_CASEBOOK.md](HARDENING_CASEBOOK.md) is historical evidence rather
-than current instructions. Consumer notes and `config/pitest/README.md` contain
-only repository-specific ownership, measurements, reasons, and provenance—not
-copied plugin mechanics. A consumer `AGENTS.md` carries the exact generated,
-digest-pinned agent template below plus repository-specific facts; it must not
-grow a second, independently maintained account of plugin behavior. Local prose
-may name a project-qualified task and say when repository policy requires running
-it; descriptions of task output, pass/fail or warning conditions, refusals,
-normalization, and fallback behavior belong only to the installed plugin and its
-`hardeningHelp` output. The non-failing `hardeningAgentProseAudit`, selected by
-`check` and `qualityGate`, examines only repository-owned prose outside the bounded
-template for known copied-mechanics patterns; the template body itself remains owned
-by its digest/diff workflow *(casebook: the adoption whose authority omitted its own gate)*.
+than current instructions. Consumer notes and `config/pitest/README.md` should focus on
+repository-specific ownership, measurements, reasons, and provenance. Point to
+`hardeningHelp` when a detailed copy of installed behavior would otherwise need
+maintenance. This is writing guidance, not a semantic property that `check` attempts to
+infer from prose *(casebook: the audit that tried to understand prose)*. A consumer
+`AGENTS.md` carries the exact generated, digest-pinned agent template below plus
+repository-specific facts. The template body remains owned by its deterministic
+digest/diff workflow *(casebook: the adoption whose authority omitted its own gate)*.
 
 Every rule here was earned from an observed incident; the incidents live in
 `HARDENING_CASEBOOK.md`, cited as *(casebook: entry)*. Read an entry before
@@ -616,14 +612,17 @@ numbers churn whenever a mutated file is edited, and identity that churns
 makes the ratchet police text moves instead of behavior. Lines still appear
 on rows, demoted to metadata as trailing `# line N` tags (or `# lines N, M`
 for exact observed sites), kept for triage pointers and the line-drift advisory
-below. Do not copy source line numbers anywhere in `config/pitest/README.md`:
-name the class, method, and semantic branch instead. The ban includes acceptance
-and timeout arguments, retired-incident prose, tables, and inline or fenced
-coordinate rosters. A roster is narrative evidence, not protected membership;
+below. New or edited `config/pitest/README.md` arguments should name the class, method,
+and semantic branch instead of copying source line numbers. This applies to acceptance
+and timeout arguments, retired-incident prose, tables, and inline or fenced coordinate
+rosters. A roster is narrative evidence, not protected membership;
 retain line-less class/method/mutator evidence and meaningful multiplicity as
 `xN` (typographic `×N` is equivalent). The current PIT report and the row's `# line`
 tag are the sole transient
-source locators *(casebook: the acceptance locator that rotted three ways)*.
+source locators *(casebook: the acceptance locator that rotted three ways)*. Existing
+prose is not a plugin-upgrade gate; repair a stale locator when ordinary review encounters
+it rather than running a repository-wide semantic audit *(casebook: the audit that tried
+to understand prose)*.
 Ranges such as `# lines 786-800`
 are invalid: claiming every line in a
 span as observed would weaken affinity and can hide a same-key swap. A
@@ -2361,13 +2360,10 @@ to normalize the presentation used by releases before 21.5.25.
 >   setup would otherwise be lost, and never embed PIT coordinates or line numbers.
 > - Baseline keys are line-less (`class,method,mutator,STATUS`) — editing
 >   above a mutated method churns nothing, and `# line` tags are review
->   metadata. Do not copy source line numbers anywhere in
->   `config/pitest/README.md`; this includes acceptance and timeout arguments,
->   retired-incident prose, tables, and inline or fenced coordinate rosters.
->   A roster is narrative evidence, not protected membership: retain line-less
->   class/method/mutator evidence and meaningful multiplicity as `xN`
->   (typographic `×N` is equivalent). The
->   current PIT report and the row's `# line` tag are the sole transient locators.
+>   metadata. New or edited mutation-evidence prose should use line-less
+>   class/method/mutator identifiers rather than source line numbers. Existing prose
+>   is not a plugin-upgrade gate; repair a stale locator when ordinary review encounters
+>   it. The current PIT report and the row's `# line` tag are the sole transient locators.
 >   A new mutant replacing a
 >   killed one at the same key can inherit
 >   its acceptance, so treat a line-drift advisory whose written argument no
@@ -2389,20 +2385,14 @@ to normalize the presentation used by releases before 21.5.25.
 >   migration/rollback only with a fleet pin plan. A `[history]` report may check
 >   the ratchet but cannot support adding, removing, or relabelling
 >   accepted/timeout records; run `pitest<Suite> -PnoMutationHistory` first.
-> - Consumer hardening notes contain only local ownership, measurements, acceptance
->   reasons, and provenance. `AGENTS.md` carries this exact generated,
->   digest-pinned template with repository-specific facts outside its bounded block,
->   but no independently maintained
->   copy of plugin task semantics. Local prose may name a project-qualified task and
->   say when repository policy requires it; task output, pass/fail or warning
->   conditions, refusals, normalization, and fallback behavior stay in the installed
->   plugin and its help. Use `hardeningHelp` and
+> - Consumer hardening notes should focus on local ownership, measurements, acceptance
+>   reasons, and provenance. Prefer a `hardeningHelp` pointer over a detailed copy of
+>   installed task behavior, but do not turn a plugin upgrade into a repository-wide
+>   prose migration. `AGENTS.md` carries this exact generated, digest-pinned template
+>   with repository-specific facts outside its bounded block. Use `hardeningHelp` and
 >   project-qualified `hardeningAgentTemplate` as the installed-version authorities,
 >   and run the matching read-only `hardeningAgentTemplateDiff` against its explicitly
 >   bounded block on every template-digest move before acknowledging the new marker.
->   `hardeningAgentProseAudit` is a non-failing migration audit for known copied
->   mechanics in repository-owned prose outside that block; review every candidate
->   it names rather than treating a current digest as proof that local prose is clean.
 > - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
 >   seconds instead of the full suite — then re-run unscoped with
 >   `-PnoMutationHistory` before any record decision; the tooling refuses to let

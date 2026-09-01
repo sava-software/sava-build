@@ -164,26 +164,23 @@ class AgentsTemplateSyncFunctionalTest {
     assertTrue(printed.lineSequence().count { it == marker } == 1, printed)
     assertFalse(printed.contains("github.com/sava-software/sava-build/blob/main"), printed)
     assertTrue(
-      printed.contains("Consumer hardening notes contain only local ownership") &&
+      printed.contains("Consumer hardening notes should focus on local ownership") &&
           printed.contains("AGENTS.md` carries this exact generated") &&
           printed.contains("repository-specific facts outside its bounded block") &&
-          printed.contains("Local prose may name a project-qualified task") &&
-          printed.contains("task output, pass/fail or warning") &&
-          printed.contains("conditions, refusals, normalization, and fallback behavior") &&
+          printed.contains("Prefer a `hardeningHelp` pointer over a detailed copy") &&
+          printed.contains("do not turn a plugin upgrade into a repository-wide") &&
           printed.contains("hardeningAgentTemplateDiff") &&
           printed.contains("against its explicitly") &&
           printed.contains("bounded block"),
       "the version-matched template must distinguish pinned AGENTS instructions from consumer notes:\n$printed",
     )
     assertTrue(
-      printed.contains("Do not copy source line numbers anywhere in") &&
-          printed.contains("`config/pitest/README.md`") &&
-          printed.contains("inline or fenced coordinate rosters") &&
-          printed.contains("narrative evidence, not protected membership") &&
-          printed.contains("meaningful multiplicity as `xN`") &&
-          printed.contains("typographic `×N` is equivalent") &&
+      printed.contains("New or edited mutation-evidence prose should use line-less") &&
+          printed.contains("class/method/mutator identifiers rather than source line numbers") &&
+          printed.contains("Existing prose") &&
+          printed.contains("is not a plugin-upgrade gate") &&
           printed.contains("row's `# line` tag are the sole transient locators"),
-      "the version-matched template must keep every README roster free of decaying source-line locators:\n$printed",
+      "the version-matched template must prefer stable locators without making old prose an upgrade gate:\n$printed",
     )
     assertTrue(
       printed.contains("A mutant is a question, not a specification") &&
@@ -635,16 +632,8 @@ class AgentsTemplateSyncFunctionalTest {
 
     val check = runner("check", "--dry-run").build()
     assertTrue(check.output.contains(":agentsTemplateInSync"), "check must gate on it:\n" + check.output)
-    assertTrue(
-      check.output.contains(":hardeningAgentProseAudit"),
-      "check must run the local-prose audit:\n" + check.output,
-    )
     val gate = runner("qualityGate", "--dry-run").build()
     assertTrue(gate.output.contains(":agentsTemplateInSync"), "qualityGate must gate on it:\n" + gate.output)
-    assertTrue(
-      gate.output.contains(":hardeningAgentProseAudit"),
-      "qualityGate must run the local-prose audit:\n" + gate.output,
-    )
   }
 
   @Test

@@ -1833,6 +1833,99 @@ $buildTail
       "two routine certifications changed an existing prune-preview sequence",
     )
     assertEquals(1, PrunePreviewState.parse(previewState.readText()).matchingObservations)
+
+    val replay = runner("pitestEncodingVerify").build().output
+    assertArrayEquals(
+      previewBytes,
+      previewState.readBytes(),
+      "standalone Verify recycled certification evidence into a prune preview",
+    )
+    assertTrue(
+      replay.contains(
+        "This revalidated prior-report preview does not advance prune-preview state; " +
+            "replaying Verify is not another PIT observation.",
+      ),
+      replay,
+    )
+  }
+
+  @Test
+  fun `legacy state and a newer certification still require two post-migration previews`() {
+    writeFixture(moneyMath = true)
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "config/pitest/encoding-accepted.csv").apply {
+      parentFile.mkdirs()
+      writeText(
+        "com.example.Codec,gone,MathMutator,SURVIVED # reviewed removal candidate # line 7\n",
+      )
+    }
+    runner("pitestEncodingBaselineRebase").build()
+
+    // P1 represents the last report referenced by a format-1 stash. Format 1 may
+    // also claim two observations because routine certification used to advance it;
+    // neither claim is trusted across the origin-semantics format boundary.
+    runner("pitestEncoding", "-PnoMutationHistory").build()
+    val previewState = File(fixtureDir, ".pitest-history/encoding.prune-previews")
+    val p1 = PrunePreviewState.parse(previewState.readText())
+    val legacy = p1.copy(matchingObservations = 2, qualifies = true).render().replaceFirst(
+      PrunePreviewState.FORMAT_HEADER,
+      PrunePreviewState.LEGACY_FORMAT_1_HEADER,
+    ).replaceFirst(
+      "${PrunePreviewState.OBSERVATION_ELIGIBLE_PREFIX}true",
+      "# qualifies true",
+    )
+    previewState.writeText(legacy)
+
+    // C1 produces a newer full report, but certification and a later standalone
+    // typed revalidation of that report must both leave the legacy stash untouched.
+    val certification = runner("hardeningCertify").build().output
+    assertTrue(
+      certification.contains(
+        "This certification observation does not advance prune-preview state; " +
+            "release proof is not implicit preparation for a destructive baseline write.",
+      ),
+      certification,
+    )
+    assertEquals(legacy, previewState.readText())
+
+    val replay = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      replay.contains(
+        "This revalidated prior-report preview does not advance prune-preview state; " +
+            "replaying Verify is not another PIT observation.",
+      ),
+      replay,
+    )
+    assertEquals(legacy, previewState.readText())
+
+    // P2 is the first trusted post-migration observation. The writer's next fresh
+    // run may become observation two, but it must refuse because two previews were
+    // not complete before that destructive workflow began. A later writer is the
+    // third comparison and may apply the reviewed deletion.
+    runner("pitestEncoding", "-PnoMutationHistory").build()
+    val p2 = PrunePreviewState.parse(previewState.readText())
+    assertEquals(1, p2.matchingObservations)
+    assertTrue(p2.qualifies)
+
+    val refused = runner("pitestEncodingBaselinePrune").buildAndFail().output
+    assertTrue(
+      refused.contains("advances the stored sequence to 2 matching observation(s)") &&
+          refused.contains("were not complete before this destructive workflow began"),
+      refused,
+    )
+    assertTrue(
+      File(fixtureDir, "config/pitest/encoding-accepted.csv").isFile,
+      "the second post-migration observation deleted before review",
+    )
+    assertEquals(2, PrunePreviewState.parse(previewState.readText()).matchingObservations)
+
+    val applied = runner("pitestEncodingBaselinePrune").build().output
+    assertTrue(applied.contains("prune dropped every row unmatched by this run"), applied)
+    assertFalse(
+      File(fixtureDir, "config/pitest/encoding-accepted.csv").exists(),
+      "the reviewed third comparison did not apply the candidate deletion",
+    )
   }
 
   @Test

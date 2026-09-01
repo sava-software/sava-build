@@ -30,10 +30,18 @@ class PrunePreviewStateTest {
         listOf(rowA, rowA, rowB).sorted(),
     )
 
-    assertEquals(state, PrunePreviewState.parse(state.render()))
-    assertEquals(2, PrunePreviewState.parse(state.render()).candidates.count { it == rowA })
+    val rendered = state.render()
+    assertTrue(rendered.contains("${PrunePreviewState.OBSERVATION_ELIGIBLE_PREFIX}true"))
+    assertFalse(rendered.contains("# qualifies "))
+    assertEquals(state, PrunePreviewState.parse(rendered))
+    assertEquals(2, PrunePreviewState.parse(rendered).candidates.count { it == rowA })
     assertThrows(IllegalArgumentException::class.java) {
-      PrunePreviewState.parse(state.render().replace("# qualifies true", "# qualifies maybe"))
+      PrunePreviewState.parse(
+          rendered.replace(
+              "${PrunePreviewState.OBSERVATION_ELIGIBLE_PREFIX}true",
+              "${PrunePreviewState.OBSERVATION_ELIGIBLE_PREFIX}maybe",
+          ),
+      )
     }
   }
 
@@ -57,6 +65,34 @@ class PrunePreviewStateTest {
     assertEquals(PrunePreviewTransitionKind.MATCHED, writer.kind)
     assertEquals(3, writer.state.matchingObservations)
     assertTrue(writer.writerAuthorized)
+  }
+
+  @Test
+  fun `same invocation remains a replay across every reset dimension`() {
+    val first = PrunePreviewHistory.observe(null, observation("one"))
+    val established = PrunePreviewHistory.observe(first.state.render(), observation("two"))
+    assertEquals(2, established.state.matchingObservations)
+
+    val replays = listOf(
+        observation("two", inputs = "c".repeat(64)),
+        observation("two", records = "d".repeat(64)),
+        observation("two", candidates = listOf(rowA, rowB)),
+        observation("two", qualifies = false),
+        observation(
+            "two",
+            candidates = listOf(rowB),
+            qualifies = false,
+            inputs = "c".repeat(64),
+            records = "d".repeat(64),
+        ),
+    )
+
+    replays.forEach { replay ->
+      val transition = PrunePreviewHistory.observe(established.state.render(), replay)
+      assertEquals(PrunePreviewTransitionKind.SAME_INVOCATION, transition.kind)
+      assertEquals(established.state, transition.state)
+      assertFalse(transition.writerAuthorized)
+    }
   }
 
   @Test
@@ -117,7 +153,74 @@ class PrunePreviewStateTest {
 
     val malformed = PrunePreviewHistory.observe("not state\n", observation("two"))
     assertEquals(PrunePreviewTransitionKind.MALFORMED_RESET, malformed.kind)
-    assertEquals(1, malformed.state.matchingObservations)
+    assertEquals(0, malformed.state.matchingObservations)
+    assertFalse(malformed.state.qualifies)
     assertTrue(malformed.malformedDetail!!.isNotBlank())
+  }
+
+  @Test
+  fun `legacy replay resets uncounted before two deliberate previews accumulate`() {
+    val legacy = PrunePreviewState(
+        "a".repeat(64),
+        "b".repeat(64),
+        "legacy-certification-observation",
+        2,
+        true,
+        listOf(rowA),
+    ).render().replaceFirst(
+        PrunePreviewState.FORMAT_HEADER,
+        PrunePreviewState.LEGACY_FORMAT_1_HEADER,
+    ).replaceFirst(
+        "${PrunePreviewState.OBSERVATION_ELIGIBLE_PREFIX}true",
+        "# qualifies true",
+    )
+
+    val reset = PrunePreviewHistory.observe(
+        legacy, observation("legacy-certification-observation"))
+    assertEquals(PrunePreviewTransitionKind.MALFORMED_RESET, reset.kind)
+    assertEquals(0, reset.state.matchingObservations)
+    assertFalse(reset.state.qualifies)
+    assertFalse(reset.writerAuthorized)
+    assertTrue(reset.state.render().startsWith("${PrunePreviewState.FORMAT_HEADER}\n"))
+    assertTrue(reset.malformedDetail!!.contains("unsupported prune-preview format"))
+
+    val replay = PrunePreviewHistory.observe(
+        reset.state.render(), observation("legacy-certification-observation"))
+    assertEquals(PrunePreviewTransitionKind.SAME_INVOCATION, replay.kind)
+    assertEquals(0, replay.state.matchingObservations)
+    assertFalse(replay.state.qualifies)
+
+    val deliberateFirst = PrunePreviewHistory.observe(
+        replay.state.render(), observation("deliberate-one"))
+    assertEquals(PrunePreviewTransitionKind.AFTER_INELIGIBLE, deliberateFirst.kind)
+    assertEquals(1, deliberateFirst.state.matchingObservations)
+    assertTrue(deliberateFirst.state.qualifies)
+    assertFalse(deliberateFirst.writerAuthorized)
+
+    val deliberateSecond = PrunePreviewHistory.observe(
+        deliberateFirst.state.render(), observation("deliberate-two"))
+    assertEquals(PrunePreviewTransitionKind.MATCHED, deliberateSecond.kind)
+    assertEquals(2, deliberateSecond.state.matchingObservations)
+    assertTrue(deliberateSecond.state.qualifies)
+    assertFalse(
+        deliberateSecond.writerAuthorized,
+        "two deliberate previews must complete before a later writer starts",
+    )
+
+    val distinctAtMigration = PrunePreviewHistory.observe(
+        legacy, observation("distinct-fresh-observation"))
+    assertEquals(PrunePreviewTransitionKind.MALFORMED_RESET, distinctAtMigration.kind)
+    assertEquals(1, distinctAtMigration.state.matchingObservations)
+    assertTrue(distinctAtMigration.state.qualifies)
+
+    val untrustedLegacy = legacy.replace(
+        "# last invocation legacy-certification-observation",
+        "# last invocation ",
+    )
+    val untrustedReset = PrunePreviewHistory.observe(
+        untrustedLegacy, observation("distinct-but-unprovable"))
+    assertEquals(PrunePreviewTransitionKind.MALFORMED_RESET, untrustedReset.kind)
+    assertEquals(0, untrustedReset.state.matchingObservations)
+    assertFalse(untrustedReset.state.qualifies)
   }
 }

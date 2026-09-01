@@ -181,8 +181,6 @@ class HardeningOperationsFunctionalTest {
       "migrateMutationBaselines",
       "downgradeMutationBaselines",
       "mutationOwnershipAudit",
-      "hardeningReadmeAudit",
-      "hardeningAgentProseAudit",
       ":hardeningCertifyAll",
     ).forEach { task -> assertTrue(output.contains(task), "missing $task:\n$output") }
     fun assertSingleEntry(task: String, purpose: String) {
@@ -202,14 +200,6 @@ class HardeningOperationsFunctionalTest {
     assertSingleEntry(
       "agentsTemplateInSync",
       "check the installed template acknowledgment; used by check and qualityGate",
-    )
-    assertSingleEntry(
-      "hardeningReadmeAudit",
-      "advise on README source coordinates and inherited scaffold mechanics; used by check and qualityGate",
-    )
-    assertSingleEntry(
-      "hardeningAgentProseAudit",
-      "advise on copied plugin mechanics in root AGENTS.md prose; used by check and qualityGate",
     )
     assertSingleEntry(
       "hardeningInit",
@@ -235,8 +225,6 @@ class HardeningOperationsFunctionalTest {
       "hardeningAgentTemplate",
       "hardeningAgentTemplateDiff",
       "agentsTemplateInSync",
-      "hardeningReadmeAudit",
-      "hardeningAgentProseAudit",
       ":hardeningCertifyAll",
       "pitestEncoding",
       "pitestEncodingVerify",

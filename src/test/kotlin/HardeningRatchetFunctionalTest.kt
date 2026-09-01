@@ -588,6 +588,115 @@ $fuzzBlock
   }
 
   @Test
+  fun `legacy qualifying prune state stays read only until a fresh preview resets it`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val candidate =
+        "com.example.Codec,decode,MathMutator,SURVIVED # family A # line 30"
+    baselineFile().writeText(
+        "$candidate\n" +
+            "com.example.Codec,encode,IncrementsMutator,SURVIVED # family B # line 40\n",
+    )
+    fun mutant(method: String, line: Int, mutator: String, status: String) =
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.$mutator," +
+          "$method,$line,$status," + if (status == "KILLED") "com.example.CodecTest" else "none"
+    writeReport(
+        listOf(
+            mutant("decode", 30, "MathMutator", "KILLED"),
+            mutant("encode", 40, "IncrementsMutator", "SURVIVED"),
+        ),
+        "",
+    )
+    bindLegacyFixtureRecord()
+
+    runner("pitestEncoding", "-PnoMutationHistory").build()
+    val stateFile = File(fixtureDir, ".pitest-history/encoding.prune-previews")
+    val current = PrunePreviewState.parse(stateFile.readText())
+    val legacy = current.copy(
+        matchingObservations = 2,
+        qualifies = true,
+    ).render().replaceFirst(
+        PrunePreviewState.FORMAT_HEADER,
+        PrunePreviewState.LEGACY_FORMAT_1_HEADER,
+    ).replaceFirst(
+        "${PrunePreviewState.OBSERVATION_ELIGIBLE_PREFIX}true",
+        "# qualifies true",
+    )
+    stateFile.writeText(legacy)
+
+    // Revalidating prior output is read-only, including at the format boundary.
+    // Migration belongs to the next PIT attempt so an older report can never seed
+    // destructive evidence merely because Verify was selected again.
+    val replayOutput = runner("pitestEncodingVerify").build().output
+    assertTrue(
+        replayOutput.contains(
+            "This revalidated prior-report preview does not advance prune-preview state; " +
+                "replaying Verify is not another PIT observation."),
+        replayOutput,
+    )
+    assertEquals(legacy, stateFile.readText())
+
+    // Repetition stays byte-for-byte read-only.
+    runner("pitestEncodingVerify").build()
+    assertEquals(legacy, stateFile.readText())
+
+    val firstOutput = runner("pitestEncoding", "-PnoMutationHistory").build().output
+    val first = PrunePreviewState.parse(stateFile.readText())
+    assertTrue(
+        firstOutput.contains(
+            "prune-preview state was missing, malformed, or written by an older format") &&
+            firstOutput.contains("matching observations reset this run") &&
+            firstOutput.contains("not an advisory finding: unsupported prune-preview format"),
+        firstOutput,
+    )
+    assertEquals(1, first.matchingObservations)
+    assertTrue(first.qualifies)
+    assertEquals(listOf(candidate), first.candidates)
+    assertTrue(stateFile.readText().startsWith("${PrunePreviewState.FORMAT_HEADER}\n"))
+
+    val secondOutput = runner("pitestEncoding", "-PnoMutationHistory").build().output
+    val second = PrunePreviewState.parse(stateFile.readText())
+    assertTrue(
+        secondOutput.contains("matches 2 distinct fresh full history-free observation(s)"),
+        secondOutput,
+    )
+    assertEquals(2, second.matchingObservations)
+    assertTrue(second.qualifies)
+  }
+
+  @Test
+  fun `standalone verify does not create missing prune preview state from prior evidence`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+        "com.example.Codec,decode,MathMutator,SURVIVED # reviewed # line 30\n",
+    )
+    writeReport(
+        listOf(
+            "Codec.java,com.example.Codec," +
+                "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+                "decode,30,KILLED,com.example.CodecTest",
+        ),
+        "",
+    )
+    bindLegacyFixtureRecord()
+
+    runner("pitestEncoding", "-PnoMutationHistory").build()
+    val stateFile = File(fixtureDir, ".pitest-history/encoding.prune-previews")
+    assertTrue(stateFile.delete(), "fixture did not remove the existing preview state")
+
+    val replay = runner("pitestEncodingVerify").build().output
+
+    assertFalse(stateFile.exists(), "standalone Verify recreated prune-preview state")
+    assertTrue(
+        replay.contains(
+            "This revalidated prior-report preview does not advance prune-preview state; " +
+                "replaying Verify is not another PIT observation."),
+        replay,
+    )
+  }
+
+  @Test
   fun `prune previews persist exact multiset drift and suppress invocation replay`() {
     writeFixture()
     baselineFile().parentFile.mkdirs()

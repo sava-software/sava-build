@@ -677,12 +677,6 @@ internal object HardeningHelpText {
     appendLine("  pitestMutatorTrial                measure candidate mutators")
     appendLine("  mutationOwnershipAudit            cheap whole-production owner/exclusion preflight")
     appendGenerated(
-        "hardeningReadmeAudit",
-        "advise on README source coordinates and inherited scaffold mechanics; used by check and qualityGate")
-    appendGenerated(
-        "hardeningAgentProseAudit",
-        "advise on copied plugin mechanics in root AGENTS.md prose; used by check and qualityGate")
-    appendGenerated(
         "hardeningAgentTemplate",
         "print the installed bounded agent-instructions template unquoted")
     appendGenerated(

@@ -111,12 +111,6 @@ class HardeningInitFunctionalTest {
     assertTrue(first.output.contains("appended .pitest-history/ to"), first.output)
     assertTrue(gitignore.readText().contains("\n.pitest-history/\n"), gitignore.readText())
     assertTrue(first.output.contains("remaining adoption steps"), first.output)
-    val audit = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("hardeningReadmeAudit", "--stacktrace")
-      .build()
-    assertFalse(audit.output.contains("migration advisory"), audit.output)
-    assertFalse(audit.output.contains("advisory finding"), audit.output)
     // the checklist hands over the acknowledgment marker agentsTemplateInSync expects
     assertTrue(
       Regex("<!-- hardening-template sha256:[0-9a-f]{12} -->").containsMatchIn(first.output),

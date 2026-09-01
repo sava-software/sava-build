@@ -39,12 +39,10 @@ import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.qualifiedHardeningTaskPath
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
-import software.sava.build.hardening.task.HardeningAgentProseAuditTask
 import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
 import software.sava.build.hardening.task.HardeningCertifyAllTask
 import software.sava.build.hardening.task.HardeningCertificationPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationTask
-import software.sava.build.hardening.task.HardeningReadmeAuditTask
 import software.sava.build.hardening.task.PitestConvergeTask
 import software.sava.build.hardening.task.PitestDebtTask
 import software.sava.build.hardening.task.PitestDiagnosticTask
@@ -231,18 +229,6 @@ val hardeningRepositoryCheckCoordinator = gradle.sharedServices.registerIfAbsent
 val hardeningAdvisoryLog = gradle.sharedServices.registerIfAbsent(
     "hardeningAdvisoryLog", HardeningAdvisoryLog::class
 ) {}
-val hardeningReadmeAudit = tasks.register<HardeningReadmeAuditTask>("hardeningReadmeAudit") {
-  group = "verification"
-  description = "Advises when config/pitest/README.md carries source coordinates or inherited scaffold mechanics."
-  hardeningProjectPath.set(project.path)
-  helpTaskPath.set(qualifiedHardeningTaskPath(project.path, "hardeningHelp"))
-  projectDirectory.set(layout.projectDirectory)
-  readmeFile.set(layout.projectDirectory.file("config/pitest/README.md"))
-  advisoryLog.set(hardeningAdvisoryLog)
-  usesService(hardeningAdvisoryLog)
-}
-tasks.named("check") { dependsOn(hardeningReadmeAudit) }
-qualityGate.configure { dependsOn(hardeningReadmeAudit) }
 val hardeningHelpSuiteNames = objects.listProperty<String>()
 val hardeningHelpFuzzTargetNames = objects.listProperty<String>()
 tasks.register<HardeningHelpTask>("hardeningHelp") {
@@ -687,21 +673,6 @@ val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
   repositoryCheckCoordinator.set(hardeningRepositoryCheckCoordinator)
   usesService(hardeningRepositoryCheckCoordinator)
 }
-val hardeningAgentProseAudit = tasks.register<HardeningAgentProseAuditTask>(
-    "hardeningAgentProseAudit"
-) {
-  group = "verification"
-  description = "Advises when root AGENTS.md prose outside the generated block copies installed plugin mechanics."
-  helpTaskPath.set(qualifiedHardeningTaskPath(project.path, "hardeningHelp"))
-  repositoryCheckKey.set(HardeningTemplateDigest.SHA256_12)
-  agentsFile.set(rootProject.layout.projectDirectory.file("AGENTS.md"))
-  advisoryLog.set(hardeningAdvisoryLog)
-  repositoryCheckCoordinator.set(hardeningRepositoryCheckCoordinator)
-  usesService(hardeningAdvisoryLog)
-  usesService(hardeningRepositoryCheckCoordinator)
-}
-tasks.named("check") { dependsOn(hardeningAgentProseAudit) }
-qualityGate.configure { dependsOn(hardeningAgentProseAudit) }
 val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   group = "verification"
   description = "Checks the root AGENTS.md bounded acknowledgment of the installed agent-instructions template."
@@ -2731,7 +2702,6 @@ hardening.mutation.all {
   val verify = tasks.register<PitestVerifyTask>("${pitestTaskName}Verify") {
     group = "verification"
     description = "Checks the '$suiteName' PIT report against its ratchet; scoped reports remain read-only diagnostics."
-    dependsOn(hardeningReadmeAudit)
     dependsOn(evidenceClasspathFiles)
     val fullCsvProvider = layout.buildDirectory.file("reports/pitest/$suiteName/mutations.csv")
     val scopedCsvProvider =
@@ -4293,10 +4263,25 @@ hardening.mutation.all {
               recordedToolchain != null &&
               currentToolchain != null &&
               recordedToolchain.identitySha256 == currentToolchain.identitySha256)
+      // Typed validation proves that an older report still describes the checkout;
+      // it does not turn that report into another observation. Advance destructive
+      // prune preparation only when PIT itself completed matching evidence in this
+      // Gradle invocation. Writers already require the same proof above; ordinary
+      // Verify remains useful and read-only when it merely revalidates prior output.
+      val prunePreviewCompletedThisInvocation = verifiedEvidence?.let { evidence ->
+        try {
+          certificationSession.get().requireCompletedAttempt(
+              evidenceProjectPath, suiteName, evidence)
+          true
+        } catch (_: IllegalStateException) {
+          false
+        }
+      } == true
       val prunePreviewTransition: PrunePreviewTransition? = verifiedEvidence
           ?.takeIf { evidence ->
             (canonicalWriteOperation == BaselineWriteOperation.CHECK || prune) &&
                 !certificationActive &&
+                prunePreviewCompletedThisInvocation &&
                 prunePreviewProvenanceValid &&
                 evidence.scope == PitestEvidence.FULL_SCOPE &&
                 !evidence.historyAssisted &&
@@ -4347,7 +4332,8 @@ hardening.mutation.all {
               PrunePreviewTransitionKind.AFTER_INELIGIBLE -> if (pruneCandidates.isNotEmpty()) {
                 logger.lifecycle(
                     "pitest baseline '$suiteName': stored prune-candidate observation 1 of 2 " +
-                        "after an ineligible report (${pruneCandidates.size} row(s)); deletion " +
+                        "after an ineligible or origin-reset observation " +
+                        "(${pruneCandidates.size} row(s)); deletion " +
                         "remains unauthorized")
               }
               PrunePreviewTransitionKind.SAME_INVOCATION -> Unit
@@ -4979,6 +4965,7 @@ hardening.mutation.all {
           } else {
             val freshFullHistoryFreePreview = verifiedEvidence?.let { evidence ->
               !certificationActive &&
+                  prunePreviewCompletedThisInvocation &&
                   evidence.scope == PitestEvidence.FULL_SCOPE &&
                   !evidence.historyAssisted &&
                   !historyAssistedReport
@@ -4990,6 +4977,9 @@ hardening.mutation.all {
               historyAssistedReport ->
                 "This [history] preview cannot qualify as fresh full history-free absence " +
                     "evidence."
+              verifiedEvidence != null && !prunePreviewCompletedThisInvocation ->
+                "This revalidated prior-report preview does not advance prune-preview state; " +
+                    "replaying Verify is not another PIT observation."
               !freshFullHistoryFreePreview ->
                 "This unbound preview cannot qualify as fresh full history-free absence " +
                     "evidence."
