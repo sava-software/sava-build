@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.31](https://github.com/sava-software/sava-build/compare/21.5.30...21.5.31) (2026-09-04)
+
+
+### Bug Fixes
+
+* **hardening:** close local adoption evidence gaps ([3fe70fd](https://github.com/sava-software/sava-build/commit/3fe70fdab29f5637076793e1ead241039d2631b3))
+
 ## [21.5.30](https://github.com/sava-software/sava-build/compare/21.5.29...21.5.30) (2026-09-01)
 
 
