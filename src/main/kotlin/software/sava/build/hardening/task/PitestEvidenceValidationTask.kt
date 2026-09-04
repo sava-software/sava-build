@@ -27,6 +27,7 @@ import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.CertificationGitIdentity
 import software.sava.build.hardening.CertificationGitIdentityCapture
 import software.sava.build.hardening.CertificationAggregateProjectRegistration
+import software.sava.build.hardening.CommittedMutationProvenance
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
@@ -59,6 +60,7 @@ abstract class HardeningCertifyAllSelectionTask : DefaultTask() {
   @get:Internal abstract val manifestFile: RegularFileProperty
   @get:Internal abstract val runningFile: RegularFileProperty
   @get:Internal abstract val lockFile: RegularFileProperty
+  @get:Input abstract val excludedTaskNames: ListProperty<String>
 
   @get:ServiceReference("hardeningCertificationAggregateSession")
   abstract val aggregateSession: Property<HardeningCertificationAggregateSession>
@@ -83,6 +85,11 @@ abstract class HardeningCertifyAllSelectionTask : DefaultTask() {
         running,
         "session\t$sessionId\n",
       )
+      val excluded = excludedTaskNames.get().sorted()
+      check(excluded.isEmpty()) {
+        "cannot certify the exact registered aggregate inventory with task exclusion(s): " +
+          excluded.joinToString(", ") { "-x $it" }
+      }
     } catch (failure: Exception) {
       session.reject(root)
       markAggregateIncomplete(session, root, manifest, running, failure)
@@ -95,11 +102,11 @@ abstract class HardeningCertifyAllSelectionTask : DefaultTask() {
 }
 
 /**
- * Root anchor for fail-independent project certifications. Each project wires its
- * own [HardeningCertificationTask] as a finalizer.
+ * Dependency of the public aggregate anchor. Keeping every refusal here means a
+ * failed root preflight prevents Gradle from entering the anchor's child finalizers.
  */
-@UntrackedTask(because = "Always schedules the registered project certification finalizers")
-internal abstract class HardeningCertifyAllTask @Inject constructor(
+@UntrackedTask(because = "Every aggregate invocation validates its exact graph and transitions")
+internal abstract class HardeningCertifyAllPreflightTask @Inject constructor(
   objects: org.gradle.api.model.ObjectFactory,
 ) : DefaultTask() {
   @get:Internal abstract val gradleRootDirectory: DirectoryProperty
@@ -111,12 +118,16 @@ internal abstract class HardeningCertifyAllTask @Inject constructor(
   @get:Nested
   internal val projectInventory: NamedDomainObjectContainer<HardeningCertificationAggregateProjectSpec> =
     objects.domainObjectContainer(HardeningCertificationAggregateProjectSpec::class.java)
+  @get:Nested
+  internal val transitionInventory:
+    NamedDomainObjectContainer<HardeningCertificationAggregateTransitionSpec> =
+      objects.domainObjectContainer(HardeningCertificationAggregateTransitionSpec::class.java)
 
   @get:ServiceReference("hardeningCertificationAggregateSession")
   abstract val aggregateSession: Property<HardeningCertificationAggregateSession>
 
   @TaskAction
-  fun requireCompleteAggregateGraph() {
+  fun requireCompleteAggregateGraphAndTransitions() {
     val root = gradleRootDirectory.get().asFile
     val manifest = manifestFile.get().asFile
     val running = runningFile.get().asFile
@@ -138,11 +149,30 @@ internal abstract class HardeningCertifyAllTask @Inject constructor(
         "configuration-on-demand can omit hardening projects from the registered aggregate " +
           "inventory; rerun with --no-configure-on-demand"
       }
-      session.activate(
-        root,
-        expectedPluginSha256.get(),
-        projectInventory.map(HardeningCertificationAggregateProjectSpec::registration),
-      )
+      val projects = projectInventory.map(HardeningCertificationAggregateProjectSpec::registration)
+      // Validate physical Gradle-root containment before any suite path is read.
+      // No child can execute during this task action; a later transition finding
+      // immediately rejects this transient authorization in the catch below.
+      session.activate(root, expectedPluginSha256.get(), projects)
+      val expectedSuites = projects.flatMap { registration ->
+        registration.suites.map { suite -> registration.projectPath to suite }
+      }.sortedWith(compareBy<Pair<String, String>>({ it.first }, { it.second }))
+      val transitionSpecs = transitionInventory.toList()
+      val actualSuites = transitionSpecs.map { it.projectPath.get() to it.suiteName.get() }
+        .sortedWith(compareBy<Pair<String, String>>({ it.first }, { it.second }))
+      check(actualSuites.distinct().size == actualSuites.size) {
+        "hardeningCertifyAll transition inventory contains duplicate project/suite entries"
+      }
+      check(actualSuites == expectedSuites) {
+        "hardeningCertifyAll transition inventory differs from the registered suite inventory: " +
+          "expected ${expectedSuites.joinToString()}, found ${actualSuites.joinToString()}"
+      }
+      val transitionFindings = transitionSpecs
+        .sortedWith(compareBy({ it.projectPath.get() }, { it.suiteName.get() }))
+        .mapNotNull(HardeningCertificationAggregateTransitionSpec::finding)
+      check(transitionFindings.isEmpty()) {
+        renderCertificationTransitionRefusal(transitionFindings)
+      }
     } catch (failure: Exception) {
       session.reject(root)
       markAggregateIncomplete(session, root, manifest, running, failure)
@@ -152,6 +182,13 @@ internal abstract class HardeningCertifyAllTask @Inject constructor(
       )
     }
   }
+}
+
+/** Public no-op anchor whose finalizers run only after the dependency preflight succeeds. */
+@UntrackedTask(because = "Always schedules the registered project certification finalizers")
+internal abstract class HardeningCertifyAllTask : DefaultTask() {
+  @TaskAction
+  fun establishAuthorizedAggregateAnchor() = Unit
 }
 
 /** One explicitly configured project/suite contribution; filesystem discovery is not used. */
@@ -179,6 +216,179 @@ abstract class HardeningCertificationAggregateProjectSpec @Inject constructor(
       runningFile.get().asFile,
       suiteNames.get().sorted(),
     )
+}
+
+/** One suite's committed provenance and configured transition metadata. */
+abstract class HardeningCertificationAggregateTransitionSpec @Inject constructor(
+  private val specName: String,
+) : Named {
+  @Internal
+  override fun getName(): String = specName
+
+  @get:Input abstract val projectPath: Property<String>
+  @get:Input abstract val suiteName: Property<String>
+  @get:Input abstract val pitestTaskPath: Property<String>
+  @get:Input abstract val baselineRebaseTaskPath: Property<String>
+  @get:Internal abstract val projectDirectory: DirectoryProperty
+  @get:Input abstract val pitestVersion: Property<String>
+  @get:Input abstract val junitPluginVersion: Property<String>
+  @get:Input abstract val arcMutateBaseVersion: Property<String>
+  @get:Input abstract val arcMutateLicensed: Property<Boolean>
+
+  internal fun finding(): CertificationTransitionFinding? {
+    val project = projectPath.get()
+    val suite = suiteName.get()
+    val projectRoot = projectDirectory.get().asFile
+    val configDirectory = projectRoot.resolve("config/pitest")
+    val baseline = configDirectory.resolve("$suite-accepted.csv")
+    val timeouts = configDirectory.resolve("$suite-timeouts.csv")
+    val pitVersionFile = configDirectory.resolve("$suite-pitest-version")
+    val toolchainFile = configDirectory.resolve("$suite-pitest-toolchain.tsv")
+    val files = listOf(baseline, timeouts, pitVersionFile, toolchainFile)
+    val pathFailure = runCatching {
+      files.forEach { BaselineFiles.requireRegularFileOrMissing(projectRoot, it) }
+    }.exceptionOrNull()
+    if (pathFailure != null) {
+      return CertificationTransitionFinding(
+        project,
+        suite,
+        CertificationPreflightFindingKind.BLOCKER,
+        listOf("committed mutation provenance path is invalid: ${pathFailure.message}"),
+        null,
+        null,
+      )
+    }
+
+    fun text(file: File): String? = BaselineFiles.readRegularFileSnapshot(projectRoot, file)
+      ?.toString(Charsets.UTF_8)
+
+    val baselineText = text(baseline)
+    val timeoutText = text(timeouts)
+    val provenance = CommittedMutationProvenance.classify(
+      baselineText != null || timeoutText != null,
+      text(pitVersionFile),
+      text(toolchainFile),
+    )
+    val reasons = buildList {
+      provenance.malformedPitVersion?.let {
+        add("malformed committed PIT-version stamp: $it")
+      }
+      provenance.malformedToolchain?.let {
+        add("malformed committed mutation-toolchain record: $it")
+      }
+      if (provenance.orphan) {
+        add("mutation-provenance sidecar(s) exist without an accepted or timeout record")
+      }
+      if (provenance.torn) {
+        add("committed mutation provenance is torn; exactly one required sidecar exists")
+      }
+      if (provenance.disagreement) {
+        add(
+          "committed provenance disagrees: PIT-version stamp says ${provenance.pitVersion}, " +
+            "toolchain record says ${provenance.toolchain?.pitestVersion}",
+        )
+      }
+      provenance.pitVersion?.let { recorded ->
+        val current = pitestVersion.get()
+        if (recorded != current) {
+          add("committed PIT version $recorded differs from configured PIT $current")
+        }
+      }
+    }.toMutableList()
+
+    provenance.toolchain?.let { recorded ->
+      val currentJunit = junitPluginVersion.get()
+      if (recorded.junitPluginVersion != currentJunit) {
+        reasons += "committed PIT JUnit plugin ${recorded.junitPluginVersion} differs from " +
+          "configured plugin $currentJunit"
+      }
+      val currentArcMutate =
+        if (arcMutateLicensed.get()) arcMutateBaseVersion.get() else null
+      if (recorded.arcMutateBaseVersion != currentArcMutate) {
+        reasons += "committed ArcMutate activation/base " +
+          "${recorded.arcMutateBaseVersion ?: MutationToolchainRecord.ABSENT} differs from " +
+          "configured ${currentArcMutate ?: MutationToolchainRecord.ABSENT}"
+      }
+    }
+    return reasons.takeIf { it.isNotEmpty() }?.let {
+      CertificationTransitionFinding(
+        project,
+        suite,
+        CertificationPreflightFindingKind.TRANSITION,
+        it,
+        pitestTaskPath.get(),
+        baselineRebaseTaskPath.get(),
+      )
+    }
+  }
+}
+
+internal enum class CertificationPreflightFindingKind { TRANSITION, BLOCKER }
+
+internal data class CertificationTransitionFinding(
+  val projectPath: String,
+  val suiteName: String,
+  val kind: CertificationPreflightFindingKind,
+  val reasons: List<String>,
+  val pitestTaskPath: String?,
+  val baselineRebaseTaskPath: String?,
+) {
+  init {
+    require(reasons.isNotEmpty()) { "certification preflight finding has no reason" }
+    when (kind) {
+      CertificationPreflightFindingKind.TRANSITION -> {
+        requireNotNull(pitestTaskPath) { "transition finding has no observation task" }
+        requireNotNull(baselineRebaseTaskPath) { "transition finding has no Rebase writer" }
+      }
+      CertificationPreflightFindingKind.BLOCKER -> {
+        require(pitestTaskPath == null && baselineRebaseTaskPath == null) {
+          "configuration/path blocker must not authorize mutation tasks"
+        }
+      }
+    }
+  }
+}
+
+internal fun renderCertificationTransitionRefusal(
+  findings: List<CertificationTransitionFinding>,
+): String = buildString {
+  val transitions = findings.filter { it.kind == CertificationPreflightFindingKind.TRANSITION }
+  val blockers = findings.filter { it.kind == CertificationPreflightFindingKind.BLOCKER }
+  if (blockers.isEmpty()) {
+    val suiteNoun = if (transitions.size == 1) "suite" else "suites"
+    appendLine(
+      "mutation-transition preflight found ${transitions.size} $suiteNoun requiring a reviewed " +
+        "BaselineRebase before certification; the aggregate did not start child PIT or invoke " +
+        "a baseline writer",
+    )
+  } else {
+    appendLine(
+      "aggregate preflight found ${transitions.size} reviewed mutation transition(s) and " +
+        "${blockers.size} configuration/path blocker(s); the aggregate did not start child PIT " +
+        "or invoke a baseline writer",
+    )
+  }
+  findings.forEach { finding ->
+    appendLine("  ${finding.projectPath} :: ${finding.suiteName}")
+    finding.reasons.forEach { appendLine("    reason: $it") }
+    if (finding.kind == CertificationPreflightFindingKind.TRANSITION) {
+      appendLine("    observe: ${finding.pitestTaskPath} -PnoMutationHistory")
+      appendLine("    writer: ${finding.baselineRebaseTaskPath}")
+    } else {
+      appendLine("    remedy: fix the path/configuration error and rerun the aggregate; this " +
+        "finding does not authorize a BaselineRebase writer")
+    }
+  }
+  if (transitions.isNotEmpty()) {
+    append(
+      "This refusal is the expected adoption stopping point for a PIT or mutation-toolchain " +
+        "transition. Review each fresh full history-free observation, run only the listed " +
+        "BaselineRebase writers, review and commit their changes, then rerun " +
+        ":hardeningCertifyAll.",
+    )
+  } else {
+    append("Resolve every blocker above, then rerun :hardeningCertifyAll.")
+  }
 }
 
 /** Publishes only receipts recorded by this invocation's successful child tasks. */

@@ -124,6 +124,50 @@ class HardeningDocumentationBoundaryTest {
   }
 
   @Test
+  fun `running markers distinguish active ownership from retained refusal records`() {
+    val compactHardening = hardening.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactHardening.contains(
+        "Receipt-level `.running` files are structured state records"
+      ) && compactHardening.contains(
+        "`session` (or fuzz bootstrap state `starting`) records that an invocation established ownership"
+      ) && compactHardening.contains(
+        "it can be live or interrupted and is not a process-liveness probe"
+      ) && compactHardening.contains(
+        "`refused` denotes a terminal refusal"
+      ) && compactHardening.contains(
+        "does not mean a process is still running or was abandoned"
+      ) && compactHardening.contains(
+        "This empty report-directory marker is distinct from the structured receipt-level"
+      ),
+      "receipt refusal records must not look like abandoned active processes",
+    )
+  }
+
+  @Test
+  fun `aggregate adoption guidance authorizes reviewed transitions before certification retry`() {
+    val compactHardening = hardening.replace(Regex("\\s+"), " ")
+    val compactReadme = readme.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactHardening.contains(
+        "Before scheduling any child PIT task, its root-level, read-only transition preflight"
+      ) && compactHardening.contains(
+        "reports all affected project/suite pairs together"
+      ) && compactHardening.contains(
+        "toolchain upgrade making this preflight refuse is the expected adoption stopping point"
+      ) && compactHardening.contains(
+        "run only the listed Rebase writers, review and commit those changes"
+      ) && compactHardening.contains(
+        "does not build suite outputs merely to predict an artifact-content identity"
+      ) && compactHardening.contains("`hardeningCertifyAllPreflight`") &&
+        compactReadme.contains(
+          "Its single report is an expected candidate-adoption stop"
+        ),
+      "aggregate adoption must stop cheaply and explicitly authorize its reviewed rebase phase",
+    )
+  }
+
+  @Test
   fun `local validation distinguishes dependency refresh from cache reuse`() {
     val compactReadme = readme.replace(Regex("\\s+"), " ")
     assertTrue(

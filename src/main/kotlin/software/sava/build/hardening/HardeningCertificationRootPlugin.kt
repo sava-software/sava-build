@@ -5,6 +5,7 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.build.event.BuildEventsListenerRegistry
 import software.sava.build.hardening.task.HardeningCertifyAllSelectionTask
+import software.sava.build.hardening.task.HardeningCertifyAllPreflightTask
 import software.sava.build.hardening.task.HardeningCertifyAllTask
 import software.sava.build.hardening.task.HardeningCertificationAggregatePublishTask
 import javax.inject.Inject
@@ -74,16 +75,16 @@ internal class HardeningCertificationRootPlugin @Inject constructor(
       manifestFile.set(manifest)
       runningFile.set(running)
       lockFile.set(lock)
+      excludedTaskNames.set(project.gradle.startParameter.excludedTaskNames.sorted())
     })
 
-    val anchor = project.tasks.register(
-      "hardeningCertifyAll",
-      HardeningCertifyAllTask::class.java,
+    val preflight = project.tasks.register(
+      "hardeningCertifyAllPreflight",
+      HardeningCertifyAllPreflightTask::class.java,
     )
-    anchor.configure(Action<HardeningCertifyAllTask> {
-      group = "verification"
+    preflight.configure(Action<HardeningCertifyAllPreflightTask> {
       description =
-        "Certifies every project using sava hardening and publishes a Gradle-root manifest."
+        "Internal to hardeningCertifyAll: consolidates graph and mutation-transition refusals."
       this.aggregateSession.set(aggregateSession)
       usesService(aggregateSession)
       gradleRootDirectory.set(project.layout.projectDirectory)
@@ -94,6 +95,17 @@ internal class HardeningCertificationRootPlugin @Inject constructor(
       excludedTaskNames.set(project.gradle.startParameter.excludedTaskNames.sorted())
       configureOnDemand.set(project.gradle.startParameter.isConfigureOnDemand)
       dependsOn(selection)
+    })
+
+    val anchor = project.tasks.register(
+      "hardeningCertifyAll",
+      HardeningCertifyAllTask::class.java,
+    )
+    anchor.configure(Action<HardeningCertifyAllTask> {
+      group = "verification"
+      description =
+        "Certifies every project using sava hardening and publishes a Gradle-root manifest."
+      dependsOn(selection, preflight)
       finalizedBy(publish)
     })
   }

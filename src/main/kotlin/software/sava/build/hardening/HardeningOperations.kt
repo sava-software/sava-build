@@ -674,7 +674,7 @@ internal object HardeningHelpText {
     appendLine("Read-only and certification workflows:")
     appendLine("  qualityGate                       tests plus every registered mutation suite")
     appendLine("  hardeningCertify                  fresh full release certification; durable receipt in .pitest-history/")
-    appendLine("  :hardeningCertifyAll              certify this Gradle root's registered hardening projects; publish receipt manifest")
+    appendLine("  :hardeningCertifyAll              preflight transitions, certify this Gradle root, and publish its receipt manifest")
     appendLine("  pitestConverge                    compare two fresh observations")
     appendLine("  pitestModeSnapshot / pitestModeCompare  compare labeled execution modes")
     appendLine("  pitestMutatorTrial                measure candidate mutators")
@@ -691,6 +691,29 @@ internal object HardeningHelpText {
     suiteWorkflowTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     suiteDebtTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     suiteDiagnosticTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
+    appendLine()
+    appendLine("Aggregate transition lifecycle:")
+    appendLine(
+        "  Before child PIT, :hardeningCertifyAll reports every provenance-bound suite " +
+            "whose configured PIT/JUnit/ArcMutate metadata requires reviewed BaselineRebase.")
+    appendLine(
+        "  That consolidated refusal is the expected adoption stop: run each named " +
+            "history-free observation, then its exact listed writer; review and commit the " +
+            "changes before retrying certification.")
+    appendLine()
+    appendLine("Durable receipt-marker lifecycle:")
+    appendLine(
+        "  In .pitest-history/*.running, `starting`/`session` records an attempt that " +
+            "entered ownership but has not published success; it does not prove process liveness.")
+    appendLine(
+        "  `refused` is a deliberately retained terminal refusal record, not a live or " +
+            "abandoned process.")
+    appendLine(
+        "  Any receipt marker makes the sibling TSV historical; success publishes the new " +
+            "TSV and removes the marker.")
+    appendLine(
+        "  A report-directory .running file is different: it is an empty PIT attempt guard " +
+            "left when that report did not complete cleanly.")
     appendLine()
     appendLine("Repository scaffolding (may write files):")
     appendGenerated(

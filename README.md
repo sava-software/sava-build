@@ -515,11 +515,16 @@ manifest hashes the strict child receipts published by that invocation and lists
 project/suite inventory. It verifies child task outcomes and receipt/session identity and
 rehashes the receipt files around atomic manifest replacement. It does not recapture a common
 source state across projects and does not claim independent or included builds elsewhere in
-the repository. Apply the normal
+the repository. A recorded PIT, PIT-JUnit, or ArcMutate activation/base mismatch is discovered
+first by the aggregate's read-only transition preflight. Its single report is an expected
+candidate-adoption stop, not permission to ignore certification: review the named history-free
+observations, run the exact listed `pitest<Suite>BaselineRebase` writers, review and commit
+those transition records, then rerun the aggregate and fuzzing before declaring adoption
+clean. Apply the normal
 `software.sava.build` settings entry point when an empty root must still expose the aggregate
 anchor under configuration-on-demand; standalone hardening-only builds should run the
-aggregate with `--no-configure-on-demand`. Treat the aggregate's selection and completion
-tasks as internal implementation boundaries.
+aggregate with `--no-configure-on-demand`. Treat the aggregate's selection,
+transition-preflight, and completion tasks as internal implementation boundaries.
 
 Releasing is Release Please plus the ordinary check:
 

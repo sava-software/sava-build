@@ -43,6 +43,7 @@ import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
 import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
 import software.sava.build.hardening.task.HardeningCertifyAllTask
+import software.sava.build.hardening.task.HardeningCertifyAllPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationAggregatePublishTask
 import software.sava.build.hardening.task.HardeningCertificationPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationTask
@@ -318,6 +319,7 @@ val hardeningCertifyPreflight =
 tasks.configureEach {
   if (name != "clean" && name != "hardeningCertifyPreflight" &&
       name != "hardeningCertifyAll" &&
+      name != "hardeningCertifyAllPreflight" &&
       name != "hardeningCertifyAllSelected") {
     mustRunAfter(hardeningCertifyPreflight)
   }
@@ -640,6 +642,8 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
 // consumers a configuration-cache-safe installed alternative: project certifications
 // are sibling finalizers, so one project's failure does not stop the remaining
 // projects, while the original failure still makes the aggregate build fail.
+private val hardeningCertifyAllPreflight = rootProject.tasks.named(
+    "hardeningCertifyAllPreflight", HardeningCertifyAllPreflightTask::class.java).get()
 private val hardeningCertifyAll = rootProject.tasks.named(
     "hardeningCertifyAll", HardeningCertifyAllTask::class.java).get()
 // A lifecycle alias can select both the aggregate anchor and project certification.
@@ -648,7 +652,8 @@ private val hardeningCertifyAll = rootProject.tasks.named(
 hardeningCertifyPreflight.configure {
   mustRunAfter(hardeningCertifyAll)
 }
-private val aggregateProjectInventory = hardeningCertifyAll.projectInventory.maybeCreate(project.path)
+private val aggregateProjectInventory =
+    hardeningCertifyAllPreflight.projectInventory.maybeCreate(project.path)
 aggregateProjectInventory.projectPath.set(project.path)
 aggregateProjectInventory.projectDirectory.set(layout.projectDirectory)
 aggregateProjectInventory.receiptFile.set(certificationReceiptFile)
@@ -5656,6 +5661,17 @@ hardening.mutation.all {
   convergeSuiteNames.add(suiteName)
   certificationSuiteNames.add(suiteName)
   aggregateProjectInventory.suiteNames.add(suiteName)
+  val aggregateTransition = hardeningCertifyAllPreflight.transitionInventory.maybeCreate(
+      evidenceBaselineRebaseTaskPath)
+  aggregateTransition.projectPath.set(evidenceProjectPath)
+  aggregateTransition.suiteName.set(suiteName)
+  aggregateTransition.pitestTaskPath.set(evidencePitestTaskPath)
+  aggregateTransition.baselineRebaseTaskPath.set(evidenceBaselineRebaseTaskPath)
+  aggregateTransition.projectDirectory.set(layout.projectDirectory)
+  aggregateTransition.pitestVersion.set(evidencePitestVersion)
+  aggregateTransition.junitPluginVersion.set(evidenceJunitPluginVersion)
+  aggregateTransition.arcMutateBaseVersion.set(evidenceArcMutateBaseVersion)
+  aggregateTransition.arcMutateLicensed.set(arcMutateLicencePresent)
   pitestConvergeSnapshot.configure {
     dependsOn(pitestTaskName)
     // The PIT task's verification finalizer reads the canonical report. A plain

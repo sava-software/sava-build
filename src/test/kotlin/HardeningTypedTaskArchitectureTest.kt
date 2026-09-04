@@ -66,11 +66,13 @@ class HardeningTypedTaskArchitectureTest {
     )
     assertTrue(
       script.contains(
+        "\"hardeningCertifyAllPreflight\", HardeningCertifyAllPreflightTask::class.java"
+      ) && script.contains(
         "\"hardeningCertifyAll\", HardeningCertifyAllTask::class.java"
       ) && script.contains(
         "\"hardeningCertifyAllComplete\", HardeningCertificationAggregatePublishTask::class.java"
       ),
-      "Gradle-root certification start/publication is no longer owned by typed tasks",
+      "Gradle-root certification preflight/anchor/publication is no longer owned by typed tasks",
     )
     assertTrue(
       script.contains("aggregateCertificationSession.get().recordPublished(") &&

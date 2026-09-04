@@ -3183,6 +3183,119 @@ $buildTail
   }
 
   @Test
+  fun `root transition preflight consolidates every required rebase before PIT`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "settings.gradle.kts").appendText("\ninclude(\"a\", \"b\")\n")
+    val sharedBuild = File(fixtureDir, "build.gradle.kts").readText()
+    File(fixtureDir, "build.gradle.kts").writeText("")
+    listOf("a", "b").forEach { name ->
+      val subproject = File(fixtureDir, name).apply { mkdirs() }
+      subproject.resolve("build.gradle.kts").writeText(sharedBuild)
+      File(fixtureDir, "src").copyRecursively(subproject.resolve("src"))
+      File(fixtureDir, "corpus").copyRecursively(subproject.resolve("corpus"))
+      subproject.resolve("config/pitest/encoding-accepted.csv").also { baseline ->
+        baseline.parentFile.mkdirs()
+        baseline.writeText("!sava-hardening-baseline-schema,1\n")
+      }
+    }
+
+    runner(
+      ":a:pitestEncodingBaselineRebase",
+      ":b:pitestEncodingBaselineRebase",
+    ).build()
+    listOf("a", "b").forEach { name ->
+      val config = File(fixtureDir, "$name/config/pitest")
+      val pitVersion = config.resolve("encoding-pitest-version")
+      val toolchain = config.resolve("encoding-pitest-toolchain.tsv")
+      val priorVersion = pitVersion.readText().trim()
+      if (name == "a") {
+        val transitionVersion = "0.0.0-preflight-fixture"
+        pitVersion.writeText("$transitionVersion\n")
+        toolchain.writeText(
+          toolchain.readText().replace(
+            "pitest\t$priorVersion\n",
+            "pitest\t$transitionVersion\n",
+          ),
+        )
+      } else {
+        toolchain.writeText(
+          toolchain.readText().replace(
+            Regex("(?m)^junitPlugin\\t[^\\r\\n]+$"),
+            "junitPlugin\t0.0.0-preflight-fixture",
+          ),
+        )
+      }
+      assertTrue(
+        File(fixtureDir, "$name/build/reports/pitest").deleteRecursively(),
+        "fixture could not clear prior PIT output for $name",
+      )
+    }
+
+    val failed = runner(":hardeningCertifyAll", "--continue").buildAndFail()
+
+    assertEquals(
+      TaskOutcome.FAILED,
+      failed.task(":hardeningCertifyAllPreflight")?.outcome,
+      failed.output,
+    )
+    assertTrue(failed.task(":hardeningCertifyAll") == null, failed.output)
+    listOf("a", "b").forEach { name ->
+      assertTrue(failed.task(":$name:pitestEncoding") == null, failed.output)
+      assertTrue(failed.task(":$name:hardeningCertify") == null, failed.output)
+      assertFalse(
+        File(fixtureDir, "$name/build/reports/pitest/encoding/mutations.csv").exists(),
+        "PIT ran for $name after the root transition refusal",
+      )
+      assertFalse(
+        File(fixtureDir, "$name/.pitest-history/pitest-certification.running").exists(),
+        "child certification started for $name after the root transition refusal",
+      )
+      assertTrue(
+        failed.output.contains(":$name :: encoding") &&
+          failed.output.contains("writer: :$name:pitestEncodingBaselineRebase"),
+        failed.output,
+      )
+    }
+    assertTrue(
+      failed.output.contains(
+        "mutation-transition preflight found 2 suites requiring a reviewed " +
+          "BaselineRebase before certification; the aggregate did not start child PIT or " +
+          "invoke a baseline writer",
+      ) && failed.output.contains("expected adoption stopping point"),
+      failed.output,
+    )
+    assertTrue(
+      failed.output.contains(
+        "reason: committed PIT version 0.0.0-preflight-fixture differs from configured PIT",
+      ) && failed.output.contains(
+        "reason: committed PIT JUnit plugin 0.0.0-preflight-fixture differs from configured plugin",
+      ),
+      failed.output,
+    )
+    assertEquals(
+      2,
+      failed.output
+        .substringAfter("* What went wrong:")
+        .substringBefore("* Try:")
+        .lineSequence()
+        .count { it.trimStart().startsWith("writer: ") },
+      failed.output,
+    )
+    val aggregateRunning =
+      File(fixtureDir, ".pitest-history/pitest-certification-all.running")
+    assertTrue(aggregateRunning.isFile, "root refusal record was not retained")
+    assertTrue(aggregateRunning.readText().startsWith("refused\tmutation-transition preflight"))
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification-all.tsv").exists())
+
+    val repeated = runner(":hardeningCertifyAll", "--continue").buildAndFail()
+    assertTrue(repeated.output.contains("Configuration cache entry reused."), repeated.output)
+    assertTrue(repeated.task(":a:pitestEncoding") == null, repeated.output)
+    assertTrue(repeated.task(":b:pitestEncoding") == null, repeated.output)
+  }
+
+  @Test
   fun `root certification aggregate refuses task exclusions that erase its project proofs`() {
     writeFixture()
     writeSeedCorpus()
@@ -3209,6 +3322,27 @@ $buildTail
       File(fixtureDir, ".pitest-history/pitest-certification-all.running").isFile,
       "excluded aggregate did not durably invalidate any prior root manifest",
     )
+
+    val bypass = runner(
+      ":hardeningCertifyAll",
+      "-x",
+      "hardeningCertifyAllPreflight",
+      "--continue",
+    ).buildAndFail()
+    assertTrue(
+      bypass.output.contains(
+        "cannot certify the exact registered aggregate inventory with task exclusion(s): " +
+          "-x hardeningCertifyAllPreflight",
+      ),
+      bypass.output,
+    )
+    assertEquals(
+      TaskOutcome.FAILED,
+      bypass.task(":hardeningCertifyAllSelected")?.outcome,
+      bypass.output,
+    )
+    assertTrue(bypass.task(":hardeningCertifyAll") == null, bypass.output)
+    assertTrue(bypass.task(":a:pitestEncoding") == null, bypass.output)
   }
 
   @Test

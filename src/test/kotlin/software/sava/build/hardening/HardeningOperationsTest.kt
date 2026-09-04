@@ -80,6 +80,22 @@ class HardeningOperationsTest {
     assertTrue(help.contains("whole-production owner/exclusion preflight"), help)
     assertTrue(help.contains("fuzzWireMinimize"), help)
     assertTrue(help.contains("durable receipt in .pitest-history/"), help)
+    assertTrue(
+      help.contains("Aggregate transition lifecycle:") &&
+        help.contains("Before child PIT, :hardeningCertifyAll reports every provenance-bound suite") &&
+        help.contains("consolidated refusal is the expected adoption stop") &&
+        help.contains("exact listed writer"),
+      help,
+    )
+    assertTrue(help.contains("Durable receipt-marker lifecycle:"), help)
+    assertTrue(
+      help.contains("`starting`/`session` records an attempt that entered ownership") &&
+        help.contains("it does not prove process liveness") &&
+        help.contains("`refused` is a deliberately retained terminal refusal record") &&
+        help.contains("not a live or abandoned process") &&
+        help.contains("report-directory .running file is different"),
+      help,
+    )
     assertTrue(help.contains("-PupdateMutationBaseline"), help)
     assertTrue(help.contains("use pitest<Suite>BaselineUpdate"), help)
     assertTrue(help.contains("refused since sava-build 21.5.22"), help)

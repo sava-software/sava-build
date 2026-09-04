@@ -207,7 +207,7 @@ class HardeningOperationsFunctionalTest {
     )
     assertSingleEntry(
       ":hardeningCertifyAll",
-      "certify this Gradle root's registered hardening projects; publish receipt manifest",
+      "preflight transitions, certify this Gradle root, and publish its receipt manifest",
     )
     assertSingleEntry(
       "pitestEncoding",
@@ -265,6 +265,19 @@ class HardeningOperationsFunctionalTest {
     assertTrue(output.contains("-PupdateMutationBaseline") &&
         output.contains("use pitest<Suite>BaselineUpdate"), output)
     assertTrue(output.contains("Named tasks are the only supported committed-file write interface"), output)
+    assertTrue(
+      output.contains("Aggregate transition lifecycle:") &&
+        output.contains("Before child PIT, :hardeningCertifyAll reports every provenance-bound suite") &&
+        output.contains("consolidated refusal is the expected adoption stop"),
+      output,
+    )
+    assertTrue(
+      output.contains("Durable receipt-marker lifecycle:") &&
+          output.contains("`refused` is a deliberately retained terminal refusal record") &&
+          output.contains("not a live or abandoned process") &&
+          output.contains("report-directory .running file is different"),
+      output,
+    )
     assertTrue(
       output.contains("-PnoMutationHistory") &&
           output.contains("required when an ordinary run supports any accepted-baseline or timeout-audit decision"),

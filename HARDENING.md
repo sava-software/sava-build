@@ -76,7 +76,14 @@ not a disposable build product: `clean` preserves it, while the next certificati
 an OS lock and writes a `.running` sentinel before PIT. The prior TSV remains available as
 last-known-success evidence, but it is not evidence that the newer attempt completed while
 the sentinel exists; consumers must treat TSV plus `.running` as an incomplete current
-attempt. `hardeningCertify` fails before PIT when `.pitest-history/` is not Git-ignored.
+attempt. Receipt-level `.running` files are structured state records: a first field of
+`session` (or fuzz bootstrap state `starting`) records that an invocation established
+ownership but has not published success; it can be live or interrupted and is not a
+process-liveness probe. `refused` denotes a terminal refusal whose reason is stored in the
+second field. The plugin deliberately retains that refusal record after the Gradle process exits;
+its filename does not mean a process is still running or was abandoned. Any of those
+states keeps the sibling TSV historical rather than current. `hardeningCertify` fails before
+PIT when `.pitest-history/` is not Git-ignored.
 Each suite row binds not only the report,
 compiled code, source, configuration, PIT tool classpath, and loaded plugin binary, but
 also the accepted baseline, audited timeout membership, recorded PIT-version and
@@ -127,9 +134,21 @@ match or mismatch there as evidence about equivalence; the input-identity fields
 it are the ones that compare.
 
 For one invocation covering every registered hardening project in this Gradle root, run
-`./gradlew :hardeningCertifyAll`. It schedules each project certification as an independent
-finalizer: one project's failure still leaves the overall build failed, but does not block
-sibling projects from publishing their own successful receipts. Success also writes the
+`./gradlew :hardeningCertifyAll`. Before scheduling any child PIT task, its root-level,
+read-only transition preflight compares every provenance-bound suite with the configured
+PIT, PIT-JUnit plugin, and ArcMutate activation/base metadata. It reports all affected
+project/suite pairs together, including the exact history-free observation and
+`pitest<Suite>BaselineRebase` writer task for each one. A toolchain upgrade making this
+preflight refuse is the expected adoption stopping point: review each named fresh full
+history-free observation, run only the listed Rebase writers, review and commit those
+changes, and then rerun certification. The preflight never runs PIT or writes a baseline.
+It deliberately does not build suite outputs merely to predict an artifact-content
+identity; same-version tool-classpath or licence-content drift remains enforced by the
+suite's normal completed-evidence boundary.
+
+After that preflight succeeds, the aggregate schedules each project certification as an
+independent finalizer: one project's failure still leaves the overall build failed, but does
+not block sibling projects from publishing their own successful receipts. Success also writes the
 machine-local `.pitest-history/pitest-certification-all.tsv` at the Gradle root. That
 canonical manifest lists the exact registered project/suite inventory and hashes every
 complete child receipt, so a handoff can verify the whole Gradle-root result without manual
@@ -150,9 +169,10 @@ separately from this receipt inventory.
 
 `:hardeningCertifyAll` is the only supported aggregate entry point. Do not configure,
 disable, add dependencies/actions to, or select/exclude its internal
-`hardeningCertifyAllSelected` or `hardeningCertifyAllComplete` tasks; those are implementation
-boundaries, not lifecycle hooks. When the public anchor executes, any task exclusion refuses
-the completeness claim.
+`hardeningCertifyAllSelected`, `hardeningCertifyAllPreflight`, or
+`hardeningCertifyAllComplete` tasks; those are implementation boundaries, not lifecycle
+hooks. Aggregate selection refuses any task exclusion before the public anchor can schedule
+child certification, because exclusions make the completeness claim unknowable.
 
 This is a **Gradle-root completeness** claim, not a repository or fleet claim: included or
 independent builds are outside its inventory, and configuration-on-demand is refused because
@@ -289,7 +309,10 @@ run cheaper. The cost model is directly optimisable:
   on a clean exit, and any report still carrying it is refused as evidence
   (the verify runs as the failed task's finalizer, so without this a
   same-invocation prune workflow would rewrite the baseline from whatever
-  fraction of the population PIT reached before dying).
+  fraction of the population PIT reached before dying). This empty
+  report-directory marker is distinct from the structured receipt-level
+  `.pitest-history/*.running` state record described above; it carries no
+  process-liveness claim either.
 - **Use `pitest<Suite>Diagnostic` when PIT itself is the question** — it runs
   `VERBOSE_NO_SPINNER`, history-free, in isolated
   `build/reports/pitest-diagnostic[-scoped]/<suite>` directories. It has no
@@ -1992,7 +2015,9 @@ so adding a target cannot leave a hand-maintained task list stale. It writes
 receipt deliberately survives `clean`, including a later `clean hardeningCertify`.
 Starting the next campaign creates `.pitest-history/local-fuzz.running` before any target
 runs and preserves the prior TSV as last-known-success evidence. Failure or interruption
-leaves receipt plus sentinel; that pair is not a completed current campaign. Success
+replaces its active `starting`/`session` state with a retained `refused` reason; that is a
+terminal campaign record, not evidence of a still-running or abandoned process. Receipt plus
+marker is not a completed current campaign. Success
 publishes the new receipt before clearing the sentinel. Consumers, including the release
 runner, must require the receipt and the absence of the sentinel. If the owned sentinel
 cannot be restored after path interference, the plugin deletes the TSV fail-closed.
