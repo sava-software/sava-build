@@ -400,8 +400,17 @@ resolved, which need not be the one that served the plugins.
 Do not republish the static `0.0.0-test` coordinate while a consumer build is running.
 The plugin freezes both the loaded code SHA-256 and the configured local-repository JAR
 SHA-256 when settings apply, checks them again at evidence boundaries, and refuses PIT,
-fuzz, and certification evidence if either path changes. Start a new consumer invocation
-after every publish.
+fuzz, and certification evidence if either path changes. After Maven publication succeeds,
+the publish task writes a strict out-of-band provenance TSV beside the JAR. It binds that
+JAR digest to the commit and tree, clean/dirty state and Git-status digest, a SHA-256 over
+the names, kinds, and contents of every tracked and non-ignored untracked worktree path,
+and UTC publication time without making reproducible JAR bytes vary. The task always
+executes, so a newer source commit receives a fresh provenance record even when its
+packaged bytes are identical. This is the
+source snapshot observed as publication completed; Gradle's normal inputs remain responsible
+for constructing the JAR, and the sidecar does not claim that the checkout was locked for the
+whole build.
+Start a new consumer invocation after every publish.
 
 When a handoff or a stale-coordinate diagnosis calls for `--refresh-dependencies`, treat
 that invocation as a transport refresh, not a configuration-cache reuse probe. Gradle
@@ -413,8 +422,9 @@ Every build that resolves plugins from the local repo also says so, once, at the
 
 ```
 sava-build: this build resolved every 'software.sava.build*' plugin to 0.0.0-test from
-the local repo /…/build/sava-test-repo (last publish 3 min ago; application-time SHA-256
-012345…cdef), NOT the versions in the plugins block.
+the local repo /…/build/sava-test-repo (published 2026-09-02T12:34:56Z (3 min ago);
+source snapshot at publication: commit 012345…cdef; tree fedcba…543210; clean worktree; source-state SHA-256
+789abc…456def; application-time SHA-256 abcdef…012345), NOT the versions in the plugins block.
 ```
 
 That notice comes from the plugin itself (`SavaBuildLocalRepoNoticePlugin`, applied by
@@ -422,10 +432,17 @@ That notice comes from the plugin itself (`SavaBuildLocalRepoNoticePlugin`, appl
 settings script — a settings script is skipped on a configuration cache hit, which
 silenced the warning in exactly the cases worth warning about: a forgotten publish
 changes nothing, so the entry is reused, and switching back into local-repo mode reuses
-an existing entry too. The publish age is read when the action runs, so it is never a
-value cached from an earlier build. The SHA names the bytes loaded when the settings
-plugin applied; a changed local artifact makes the build fail instead of letting later
-projects or receipts silently describe different bytes.
+an existing entry too. The sidecar content is frozen when settings apply and its UTC
+timestamp is aged when the action runs. A same-JAR republish changes the sidecar, invalidates
+the consumer's configuration-cache entry, and reports the new source snapshot at publication,
+including its commit and complete source-state digest. This snapshot records the checkout
+observed when the publication completed; it does not claim that checkout is still unchanged
+or that it was locked throughout artifact construction. The sidecar does not identify an
+exact producer-checkout path, so the notice deliberately does not
+guess one from the local Maven repository layout or turn later checkout drift into an artifact
+provenance failure. The application-time SHA names
+the bytes loaded when the settings plugin applied; a changed local artifact, sidecar, or
+JAR/sidecar pairing makes the build fail instead of silently reporting mixed provenance.
 
 The canonical consumer-side block, for a `settings.gradle.kts` `pluginManagement {}`
 (copy it whole — the property belongs in `~/.gradle/gradle.properties` or on the CLI,
@@ -490,9 +507,19 @@ Consumers validate an unreleased plugin through the committed `-PsavaBuildLocalR
 support in their settings: publish with
 `./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository`, point the property at
 `build/sava-test-repo`, and confirm the build's own notice names the expected
-application-time SHA-256. Consumer certification receipts
-(`.pitest-history/pitest-certification.tsv`) remain hardening evidence for their own
-repositories; a release does not collect them.
+source snapshot at publication, tree state, and application-time SHA-256. Consumer project receipts
+(`.pitest-history/pitest-certification.tsv`) and a successful `:hardeningCertifyAll`
+Gradle-root manifest (`.pitest-history/pitest-certification-all.tsv`) remain machine-local
+hardening evidence for their own repositories; a release does not collect them. The root
+manifest hashes the strict child receipts published by that invocation and lists their exact
+project/suite inventory. It verifies child task outcomes and receipt/session identity and
+rehashes the receipt files around atomic manifest replacement. It does not recapture a common
+source state across projects and does not claim independent or included builds elsewhere in
+the repository. Apply the normal
+`software.sava.build` settings entry point when an empty root must still expose the aggregate
+anchor under configuration-on-demand; standalone hardening-only builds should run the
+aggregate with `--no-configure-on-demand`. Treat the aggregate's selection and completion
+tasks as internal implementation boundaries.
 
 Releasing is Release Please plus the ordinary check:
 

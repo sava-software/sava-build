@@ -2006,3 +2006,48 @@ Rules: *a safe superset may outlive the tool population that generated a row*;
 *toolchain provenance binds the transition, not a fictional per-row observation date*;
 *trace lineage and compare controlled populations before calling an unmatched family a
 regression*.
+
+## The adoption that proved the JAR but not its source
+
+The http-servers adoption forced a local publication after Gradle first reported the
+static `0.0.0-test` task up-to-date. The republish produced the same JAR SHA-256: the
+packaged bytes were reproducible, but the consumer notice could not say which newer source
+commit had produced them. Maven metadata time was activity, not source provenance. The
+repair keeps the JAR reproducible and writes a strict sidecar after every successful local
+publication, binding commit, tree, clean/dirty state and status digest, a content-complete
+source-state SHA-256, UTC time, and JAR hash. The producer records one checkout snapshot as
+publication completes; it does not try to lock the checkout or claim a continuous
+source-to-JAR transaction. The consumer freezes and revalidates the JAR/sidecar pair and
+reports it explicitly as the source snapshot at publication, including after a same-JAR
+sidecar change invalidates its configuration-cache entry. That label avoids implying that a
+later, possibly dirty publisher checkout still has the recorded state; the portable sidecar
+does not identify an exact checkout path, so the consumer does not guess one from directory
+layout.
+
+The same adoption consolidated an x402 exit path and left five unmatched baseline rows.
+Rebase had correctly preserved a safe superset, but guidance that broadly prohibited Prune
+made a `# rebase refactor` note sound non-authorizing. Notes never change matching: all five
+rows remained active acceptance. A reviewed refactor with a clear gate completes the normal
+two-preview plus third-run Prune protocol; no `# retired` comment state exists.
+
+Repository handoff then required manually opening six project receipts to establish twelve
+suites, while five fuzz targets printed 10,696 `REDUCE`, 698 `NEW`, and only 32 useful
+`pulse` lines. `hardeningCertifyAll` now publishes one Gradle-root manifest containing the
+exact registered project/suite inventory and hashes of every strict child receipt published
+by that invocation. A root ownership lock and sentinel bracket the attempt; invocation-local
+callbacks, child/anchor outcomes, strict receipt/session inspection, and receipt rehashes
+around atomic manifest replacement prevent missing, failed, stale, or mid-publication receipt
+substitution from becoming a successful root inventory. The manifest deliberately does not
+recapture a simultaneous cross-project source state: each child remains the source/input
+authority for its own completion time. A retained prior manifest under a failure sentinel
+preserves its metadata bytes, not an archive of child receipts that successful siblings may
+already have advanced. Aggregate fuzz
+output defaults to task-qualified lifecycle/progress lines while byte-exact per-target
+stdout and stderr remain in collision-free attempt directories under `build/reports/fuzz`;
+standalone tasks and the explicitly file-redirected release runner retain full streaming.
+
+Rules: *reproducible bytes and source provenance are separate evidence*; *a comment cannot
+retire matching authority*; *aggregate completeness needs an exact configured inventory,
+invocation-bound receipt callbacks, and successful task outcomes—not a directory scan or a
+fictional simultaneous source snapshot*; *keep the full diagnostic stream without making it
+the operator console*.

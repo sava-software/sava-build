@@ -113,11 +113,8 @@ is safer than leaving a failed attempt apparently current.
 
 Certification receipts are **project-scoped**: each `hardeningCertify` covers one project's
 registered suites and writes an independent receipt. No child receipt claims the repository
-ran, and nothing can infer a project or independent Gradle root that was never run, so
-compare the receipts present with the adoption handoff. The end-of-build roll-up names only
-the project receipts published by that Gradle invocation, with their paths and total suite
-count; it is not a repository- or fleet-completeness claim. Project scope also preserves
-targeted module certification. A failed certification attempt deliberately produces no
+ran. Project scope also preserves targeted module certification. A failed certification
+attempt deliberately produces no
 partial receipt to stitch into a later attempt: retrying that project's
 `hardeningCertify` re-runs every registered suite in one fresh, serialized invocation.
 Receipts already completed by other projects remain independent. This project-atomic
@@ -129,13 +126,58 @@ so identical inputs legitimately produce different values across runs. Never tre
 match or mismatch there as evidence about equivalence; the input-identity fields beside
 it are the ones that compare.
 
-For one invocation covering every project that applies hardening, run
+For one invocation covering every registered hardening project in this Gradle root, run
 `./gradlew :hardeningCertifyAll`. It schedules each project certification as an independent
 finalizer: one project's failure still leaves the overall build failed, but does not block
-sibling projects from publishing their own successful receipts. Directly selecting several
-`:project:hardeningCertify` tasks retains Gradle's ordinary fail-fast behavior; add
-`--continue` when using that form and sibling completion is required. Neither form claims
-an independent Gradle root that was not part of the invocation.
+sibling projects from publishing their own successful receipts. Success also writes the
+machine-local `.pitest-history/pitest-certification-all.tsv` at the Gradle root. That
+canonical manifest lists the exact registered project/suite inventory and hashes every
+complete child receipt, so a handoff can verify the whole Gradle-root result without manual
+enumeration. The callback that records each receipt is invocation-local, the aggregate checks
+the anchor and every child task outcome, and each trusted child writer's receipt header and
+suite inventory are checked against the registered project, plugin, and child-session identity
+before its exact bytes become SHA-256 authority. The
+aggregate owns a separate root lock and `.running` sentinel. At publication it rehashes every
+child receipt, atomically replaces the manifest, and immediately rehashes them again; a
+failure restores the prior manifest bytes under the retained sentinel.
+
+The manifest is an inventory of strict child receipts, not a new source snapshot. Each child
+receipt retains its own project-level Git and input evidence. Projects finish at different
+times, so the root manifest does not claim that every project observed one simultaneous
+repository state, and it does not recapture ignored sources, classpaths, or worktrees at the
+root boundary. If a handoff requires a single cross-project source snapshot, establish that
+separately from this receipt inventory.
+
+`:hardeningCertifyAll` is the only supported aggregate entry point. Do not configure,
+disable, add dependencies/actions to, or select/exclude its internal
+`hardeningCertifyAllSelected` or `hardeningCertifyAllComplete` tasks; those are implementation
+boundaries, not lifecycle hooks. When the public anchor executes, any task exclusion refuses
+the completeness claim.
+
+This is a **Gradle-root completeness** claim, not a repository or fleet claim: included or
+independent builds are outside its inventory, and configuration-on-demand is refused because
+it can hide projects before registration. The full `software.sava.build` settings entry point
+installs the root anchor before project evaluation, so even an empty root can durably refuse a
+configuration-on-demand request. A standalone build applying only the project hardening plugin
+must invoke the aggregate with `--no-configure-on-demand`; if configuration-on-demand skips
+every hardening project, no project plugin exists from which to install a root task. Directly
+selecting one or several
+`:project:hardeningCertify` tasks never creates or updates the aggregate manifest and retains
+Gradle's ordinary fail-fast behavior; add `--continue` when using that form and sibling
+completion is required. The end-of-build roll-up remains a transient view of child receipts
+published by that invocation. To use the manifest as current evidence, require its `.running`
+sibling to be absent and rehash every named child receipt. A later direct project
+certification can replace a fixed-path child receipt without opening a root aggregate attempt;
+that hash mismatch makes the older manifest stale. After a partial aggregate retry, successful
+child projects may likewise have advanced those paths under the root sentinel. Retained
+manifest bytes are historical metadata, not a content-addressed archive of older child
+receipts.
+
+Every registered hardening project's directory and certification state must be physically
+contained by the Gradle root directory. Gradle builds that relocate a member project's
+`projectDir` outside that root are refused before aggregate authorization. The project
+certifications are fail-independent finalizers, so they can still publish their own receipts
+after this refusal; use those independent receipts for that layout.
 
 Generated evidence must never select the configuration-cache task graph. The PIT
 validators are always present and decide at execution time whether `.evidence.tsv`
@@ -495,7 +537,14 @@ claim provenance that no run earned. Rebase is the sole transition path:
 3. Review its retained/added counts and the complete diff, then triage the additions.
    Rebase removes nothing; only later, repeated
    evidence plus `pitest<Suite>BaselinePrune` may retire old rows. The safe-superset
-   may therefore retain rows from another tool population that were not observed in
+   remains fully authoritative while it is conservative: a note such as
+   `# rebase refactor` or `# retired` is only review prose and never disables matching.
+   If a reviewed refactor makes old rows unmatched and the gate is already clear,
+   completing the normal prune-preview protocol is the intended tightening step; it
+   is not using a writer to excuse fresh debt or make a failing transition green.
+   Do not leave unmatched rows behind as purported non-authorizing history.
+   The safe-superset may therefore retain rows from another tool population that were
+   not observed in
    Rebase's current run:
    provenance binds Rebase's fresh current observation and transition, not a claim
    that every preserved row was generated by that toolchain. The safe-superset
@@ -713,11 +762,13 @@ refresh preserves that state rather than converting it to seeded debt. Rows reta
 by baseline writers preserve their notes and their original document slots; new rows
 append. Whole-line comments are document prose, while a row-specific acceptance
 argument belongs in that row's inline note. Update names every note that actually leaves
-with a row. The verify summary counts notes
-**per label** (`38 rows — 13 '# untriaged', 20 '# race-guard family', 5
-unlabeled`; the debt task prints the same breakdown), so triage state is a
-number the build prints rather than prose that drifts from the CSV it
-describes. Rows that predate seeding
+with a row. The verify summary names both physical multiplicity and distinct
+line-less identities, then counts notes **per label** (`38 rows / 31 unique keys —
+13 '# untriaged', 20 '# race-guard family', 5 unlabeled`; the debt task prints
+the same counts and breakdown). The first number is the ratchet's sibling capacity;
+the second is the inventory of unique keys, so prose cannot silently confuse several
+same-key siblings with several families. Triage state is therefore a number the build
+prints rather than prose that drifts from the CSV it describes. Rows that predate seeding
 print as `unlabeled`; label them when touched. A label is also a pointer to
 its argument: the verify *and* the debt listing warn when a family label has
 no `# <label>` mention in `config/pitest/README.md`, so a typo'd label or an
@@ -771,8 +822,16 @@ of any row's removal criterion. `BaselinePrune` requires those two previews befo
 starts, then makes a distinct third fresh write-boundary observation and refuses if
 that candidate multiset wanders. A row proved to flip belongs in persistent
 `# flip insurance` instead.
+Every row left in the accepted CSV remains active matching authority regardless of
+its note; there is no comment-only retired state. A refactor that removes the mutation
+site therefore finishes with this guarded Prune workflow, not with a `# retired` or
+`# refactor` tombstone inside the accepted record.
 Routine `hardeningCertify` observations report candidates but do not create or advance this
 state: release certification is not implicit preparation for a destructive baseline write.
+Candidate previews and the applied-Prune summary retain the exact physical-row multiset
+but keep it readable: an identical rendered row is printed once as `N × <row>`, followed
+by one shared possible-report-location block per line-less key. Those display groups do
+not collapse the persisted preview state or the rows written to the baseline.
 Prune also refreshes the `# line` tag of each retained row matched at its own
 key, using line affinity before file order; unmatched rows kept for
 `TIMED_OUT`, a pending flip, or flip insurance retain their prior tags because
@@ -1800,12 +1859,21 @@ silence by running the harness and seeing zero lines — never by reading the
 log format *(casebook: the silence that named the wrong logger)*.
 
 **A long campaign writes to a file, and a fuzzer that stops printing may be
-frozen, not finished.** libFuzzer prints progress to the launching pipeline;
+frozen, not finished.** Each installed fuzz task writes byte-exact, separate child
+streams to a fresh
+`build/reports/fuzz/<target>/attempt-<unique>/{jazzer.stdout,jazzer.stderr}.log`
+directory and retains partial logs on failure. Under that trusted Gradle build-output
+directory, `Files.createTempDirectory` allocates each attempt and create-new, no-follow
+opens keep stdout and stderr separate without deleting or truncating a prior or concurrent
+run. This is diagnostic retention, not a hostile-filesystem security boundary. A
+retained-log I/O failure is
+remembered while the child pipe keeps draining, then fails the task instead of allowing a
+successful receipt to advertise a partial file. libFuzzer prints progress to the launching pipeline;
 when the consumer dies, the next progress write blocks forever inside native
 code and the JVM parks `RUNNABLE` in `startLibFuzzer` — by thread state
 alone, indistinguishable from a healthy quiet stretch. The tell is the CPU
 delta: a fuzzing JVM accumulates CPU continuously, a frozen one stops cold.
-Route campaign output straight to a file rather than through any consumer
+Use those direct task-owned files rather than routing the only copy through a consumer
 that can die mid-run. And a killed campaign dumps each in-flight input as a
 `crash-<hash>` artifact — one per parallel target, all stamped the kill
 moment, reproducing nothing: dump-on-death, not findings; replay against the
@@ -1947,9 +2015,14 @@ CPU saturation can turn mutation timeouts into load evidence.
 
 A passing aggregate receipt proves work, not merely task completion. Each campaign target
 must emit exactly one positive libFuzzer terminal `Done N runs in S second(s)` observation.
-The typed task parses that count directly from the live child stdout/stderr while forwarding
-the bytes unchanged; it does not recover evidence from a mutable Gradle log. The ignored
-inner TSV and the release runner's immutable outer bundle bind every target's achieved
+The typed task parses that count directly from the live child stdout/stderr while teeing
+the bytes unchanged to separate per-target logs; it does not recover evidence from those
+mutable diagnostic files. A standalone `fuzz<Target>` still streams every byte to the
+console. `fuzzAll` defaults to task-qualified start, `INITED`/`pulse`/`DONE`, completion,
+failure, and log-path lines so parallel target progress remains useful without thousands of
+`NEW`/`REDUCE` updates. `-PfullFuzzOutput` restores raw aggregate console streaming for an
+outer runner that already redirects it to an immutable file. The ignored inner TSV and the
+release runner's immutable outer bundle bind every target's achieved
 execution count and their exact total. Missing, duplicate, zero, inexact, or cross-layer
 inconsistent counts or a mismatched parallelism declaration refuse the receipt. A standalone `fuzz<Target>` remains useful for
 iteration but creates no aggregate proof.
@@ -2375,7 +2448,12 @@ to normalize the presentation used by releases before 21.5.25.
 >   fresh full history-free previews must have the exact same candidate multiset;
 >   its own third fresh write-boundary run must match them too. Candidate drift is a
 >   reviewer-stop, and matching bytes do not replace review of the relevant
->   solo/gate load context or each removal criterion. Never hand-edit
+>   solo/gate load context or each removal criterion. Every retained row remains
+>   active acceptance authority regardless of a `# retired`, `# refactor`, or other
+>   note. When a reviewed refactor removes the mutation site and the gate is already
+>   clear, finish the normal Prune protocol rather than leaving a purported
+>   non-authorizing history row; this is tightening the ratchet, not excusing fresh
+>   debt. Never hand-edit
 >   record structure or provenance stamps. A PIT, PIT-plugin/tool-artifact,
 >   ArcMutate-base, or certificate change uses `pitest<Suite>BaselineRebase`: it
 >   preserves every old row, seeds new rows `# untriaged`, and stamps the reviewed

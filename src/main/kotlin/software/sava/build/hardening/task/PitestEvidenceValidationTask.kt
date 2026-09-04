@@ -20,11 +20,13 @@ import org.gradle.api.tasks.UntrackedTask
 import org.gradle.jvm.toolchain.JavaLauncher
 import org.gradle.process.ExecOperations
 import software.sava.build.hardening.HardeningCertificationSession
+import software.sava.build.hardening.HardeningCertificationAggregateSession
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.HardeningPluginIdentityGuard
 import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.CertificationGitIdentity
 import software.sava.build.hardening.CertificationGitIdentityCapture
+import software.sava.build.hardening.CertificationAggregateProjectRegistration
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
@@ -44,27 +46,331 @@ internal fun certificationRetryGuidance(projectPath: String): String {
     "that invocation; completed receipts from other projects remain independent."
 }
 
-/**
- * Root anchor for fail-independent project certifications. Each project wires its
- * own [HardeningCertificationTask] as a finalizer: Gradle continues with sibling
- * finalizers after one fails, while preserving the failing build result.
- */
-@UntrackedTask(because = "Always schedules the registered project certification finalizers")
-abstract class HardeningCertifyAllTask : DefaultTask() {
-  @get:Input abstract val excludedTaskNames: ListProperty<String>
+/** Retry contract for evidence covering only the projects registered by this Gradle root. */
+internal fun certificationAggregateRetryGuidance(): String =
+  "\n  Retry: after resolving the condition above, run :hardeningCertifyAll in a new " +
+    "Gradle invocation without configuration-on-demand. The aggregate covers this Gradle " +
+    "root only; it does not certify included builds or every project in the surrounding repository."
+
+/** Establishes the root lock and durable invocation sentinel. */
+@UntrackedTask(because = "Every aggregate invocation must establish fresh cross-process ownership")
+abstract class HardeningCertifyAllSelectionTask : DefaultTask() {
+  @get:Internal abstract val gradleRootDirectory: DirectoryProperty
+  @get:Internal abstract val manifestFile: RegularFileProperty
+  @get:Internal abstract val runningFile: RegularFileProperty
+  @get:Internal abstract val lockFile: RegularFileProperty
+
+  @get:ServiceReference("hardeningCertificationAggregateSession")
+  abstract val aggregateSession: Property<HardeningCertificationAggregateSession>
 
   @TaskAction
-  fun requireCompleteAggregateGraph() {
-    val excluded = excludedTaskNames.get().sorted()
-    if (excluded.isNotEmpty()) {
+  fun establishSelectedAggregateAttempt() {
+    val root = gradleRootDirectory.get().asFile
+    val manifest = manifestFile.get().asFile
+    val running = runningFile.get().asFile
+    val lock = lockFile.get().asFile
+    val stateDirectory = manifest.parentFile ?: throw GradleException(
+      "hardeningCertifyAll: aggregate manifest has no parent directory" +
+        certificationAggregateRetryGuidance())
+    val session = aggregateSession.get()
+    try {
+      prepareAggregateStateDirectoryAndLock(root, stateDirectory, lock)
+      requireAggregateStateLayout(root, stateDirectory, manifest, running, lock)
+      val sessionId = session.start(root, lock)
+      BaselineFiles.preserveReceiptUnderIncompleteMarker(
+        root,
+        manifest,
+        running,
+        "session\t$sessionId\n",
+      )
+    } catch (failure: Exception) {
+      session.reject(root)
+      markAggregateIncomplete(session, root, manifest, running, failure)
       throw GradleException(
-        "hardeningCertifyAll cannot certify every registered project with task exclusion(s): " +
-          excluded.joinToString(", ") { "-x $it" }
+        "hardeningCertifyAll: ${failure.message}" + certificationAggregateRetryGuidance(),
+        failure,
       )
     }
   }
 }
 
+/**
+ * Root anchor for fail-independent project certifications. Each project wires its
+ * own [HardeningCertificationTask] as a finalizer.
+ */
+@UntrackedTask(because = "Always schedules the registered project certification finalizers")
+internal abstract class HardeningCertifyAllTask @Inject constructor(
+  objects: org.gradle.api.model.ObjectFactory,
+) : DefaultTask() {
+  @get:Internal abstract val gradleRootDirectory: DirectoryProperty
+  @get:Internal abstract val manifestFile: RegularFileProperty
+  @get:Internal abstract val runningFile: RegularFileProperty
+  @get:Input abstract val expectedPluginSha256: Property<String>
+  @get:Input abstract val excludedTaskNames: ListProperty<String>
+  @get:Input abstract val configureOnDemand: Property<Boolean>
+  @get:Nested
+  internal val projectInventory: NamedDomainObjectContainer<HardeningCertificationAggregateProjectSpec> =
+    objects.domainObjectContainer(HardeningCertificationAggregateProjectSpec::class.java)
+
+  @get:ServiceReference("hardeningCertificationAggregateSession")
+  abstract val aggregateSession: Property<HardeningCertificationAggregateSession>
+
+  @TaskAction
+  fun requireCompleteAggregateGraph() {
+    val root = gradleRootDirectory.get().asFile
+    val manifest = manifestFile.get().asFile
+    val running = runningFile.get().asFile
+    val session = aggregateSession.get()
+    try {
+      val sessionId = session.sessionId(root) ?: error(
+        "aggregate selection did not establish an invocation session")
+      check(session.ownsAggregate(root) &&
+          BaselineFiles.readRegularFileSnapshot(root, running)
+            ?.contentEquals("session\t$sessionId\n".toByteArray(Charsets.UTF_8)) == true) {
+        "aggregate selection does not own its durable invocation sentinel"
+      }
+      val excluded = excludedTaskNames.get().sorted()
+      check(excluded.isEmpty()) {
+        "cannot certify the exact registered aggregate inventory with task exclusion(s): " +
+          excluded.joinToString(", ") { "-x $it" }
+      }
+      check(!configureOnDemand.get()) {
+        "configuration-on-demand can omit hardening projects from the registered aggregate " +
+          "inventory; rerun with --no-configure-on-demand"
+      }
+      session.activate(
+        root,
+        expectedPluginSha256.get(),
+        projectInventory.map(HardeningCertificationAggregateProjectSpec::registration),
+      )
+    } catch (failure: Exception) {
+      session.reject(root)
+      markAggregateIncomplete(session, root, manifest, running, failure)
+      throw GradleException(
+        "hardeningCertifyAll: ${failure.message}" + certificationAggregateRetryGuidance(),
+        failure,
+      )
+    }
+  }
+}
+
+/** One explicitly configured project/suite contribution; filesystem discovery is not used. */
+abstract class HardeningCertificationAggregateProjectSpec @Inject constructor(
+  private val specName: String,
+) : Named {
+  init {
+    suiteNames.convention(emptyList())
+  }
+
+  @Internal
+  override fun getName(): String = specName
+
+  @get:Input abstract val projectPath: Property<String>
+  @get:Internal abstract val projectDirectory: DirectoryProperty
+  @get:Internal abstract val receiptFile: RegularFileProperty
+  @get:Internal abstract val runningFile: RegularFileProperty
+  @get:Input abstract val suiteNames: ListProperty<String>
+
+  internal fun registration(): CertificationAggregateProjectRegistration =
+    CertificationAggregateProjectRegistration(
+      projectPath.get(),
+      projectDirectory.get().asFile,
+      receiptFile.get().asFile,
+      runningFile.get().asFile,
+      suiteNames.get().sorted(),
+    )
+}
+
+/** Publishes only receipts recorded by this invocation's successful child tasks. */
+@UntrackedTask(because = "Root certification rehashes child receipts at publication time")
+abstract class HardeningCertificationAggregatePublishTask : DefaultTask() {
+  @get:Internal abstract val gradleRootDirectory: DirectoryProperty
+  @get:Internal abstract val manifestFile: RegularFileProperty
+  @get:Internal abstract val runningFile: RegularFileProperty
+
+  @get:ServiceReference("hardeningCertificationAggregateSession")
+  abstract val aggregateSession: Property<HardeningCertificationAggregateSession>
+
+  @TaskAction
+  fun publishAggregateCertification() {
+    val root = gradleRootDirectory.get().asFile
+    val manifest = manifestFile.get().asFile
+    val running = runningFile.get().asFile
+    val session = aggregateSession.get()
+    var previousManifest: ByteArray? = null
+    var replacementAttempted = false
+
+    if (!session.aggregateMayPublish(root)) {
+      if (!session.aggregateWasRejected(root)) {
+        throw GradleException(
+          "hardeningCertifyAllComplete is an internal completion task and has no authorized " +
+            "aggregate attempt; run :hardeningCertifyAll instead" +
+            certificationAggregateRetryGuidance()
+        )
+      }
+      logger.lifecycle(
+        if (session.aggregateAnchorFailed()) {
+          "hardeningCertifyAll: aggregate publication skipped because the root anchor failed"
+        } else {
+          "hardeningCertifyAll: aggregate publication skipped because root preflight was refused"
+        }
+      )
+      return
+    }
+    if (!session.aggregateAnchorCompletedSuccessfully()) {
+      val failure = IllegalStateException(
+        "aggregate anchor did not complete successfully after authorization")
+      session.reject(root)
+      markAggregateIncomplete(session, root, manifest, running, failure)
+      logger.lifecycle(
+        "hardeningCertifyAll: aggregate publication skipped because the root anchor failed")
+      return
+    }
+    val unsuccessfulProjects = session.unsuccessfulProjectTaskPaths(root)
+    if (unsuccessfulProjects.isNotEmpty()) {
+      val failure = IllegalStateException(
+        "project certification task(s) did not complete successfully: " +
+          unsuccessfulProjects.joinToString())
+      session.reject(root)
+      markAggregateIncomplete(session, root, manifest, running, failure)
+      logger.lifecycle(
+        "hardeningCertifyAll: aggregate publication skipped because project certification " +
+          "task(s) failed or were skipped: ${unsuccessfulProjects.joinToString()}")
+      return
+    }
+
+    try {
+      val sessionId = session.sessionId(root) ?: error(
+        "aggregate preflight did not activate a root certification session")
+      val expectedSentinel = "session\t$sessionId\n".toByteArray(Charsets.UTF_8)
+      check(session.ownsAggregate(root) &&
+          BaselineFiles.readRegularFileSnapshot(root, running)
+            ?.contentEquals(expectedSentinel) == true) {
+        "aggregate preflight does not own the exact durable session sentinel"
+      }
+      val prepared = session.prepareManifest(root)
+      check(prepared.sessionId == sessionId) {
+        "aggregate session changed before manifest publication"
+      }
+
+      previousManifest = BaselineFiles.readRegularFileSnapshot(root, manifest)
+      replacementAttempted = true
+      BaselineFiles.writeAtomically(root, manifest, prepared.manifest.render())
+
+      session.requireReceiptsUnchanged(prepared)
+      check(BaselineFiles.readRegularFileSnapshot(root, running)
+          ?.contentEquals(expectedSentinel) == true) {
+        "aggregate ownership sentinel changed during manifest publication"
+      }
+      BaselineFiles.requireRegularFileOrMissing(root, running)
+      check(BaselineFiles.deleteIfExists(running)) {
+        "aggregate ownership sentinel disappeared during completion"
+      }
+      logger.lifecycle(
+        "hardeningCertifyAll: ${prepared.manifest.projects.size} project(s) and " +
+          "${prepared.manifest.suiteCount} suite(s) certified for this Gradle root; " +
+          "aggregate manifest: ${manifest.absoluteFile.normalize().path}"
+      )
+    } catch (failure: Exception) {
+      if (session.ownsAggregate(root)) {
+        try {
+          val reason = aggregateFailureReason(failure)
+          if (replacementAttempted) {
+            BaselineFiles.restoreReceiptSnapshotUnderIncompleteMarker(
+              root,
+              manifest,
+              running,
+              "refused\t$reason\n",
+              previousManifest,
+            )
+          } else {
+            BaselineFiles.preserveReceiptUnderIncompleteMarker(
+              root,
+              manifest,
+              running,
+              "refused\t$reason\n",
+            )
+          }
+        } catch (stateFailure: Exception) {
+          failure.addSuppressed(stateFailure)
+        }
+      }
+      session.reject(root)
+      throw GradleException(
+        "hardeningCertifyAll: ${failure.message}" + certificationAggregateRetryGuidance(),
+        failure,
+      )
+    }
+  }
+}
+
+private fun requireAggregateStateLayout(
+  root: File,
+  stateDirectory: File,
+  manifest: File,
+  running: File,
+  lock: File,
+) {
+  val stateRoot = stateDirectory.toPath().toAbsolutePath().normalize()
+  val stateFiles = listOf(manifest, running, lock)
+  check(stateFiles.map { it.toPath().toAbsolutePath().normalize() }.distinct().size == 3) {
+    "aggregate manifest, running sentinel, and lock must use distinct paths"
+  }
+  check(stateFiles.all { it.toPath().toAbsolutePath().normalize().parent == stateRoot }) {
+    "aggregate manifest, running sentinel, and lock must be siblings"
+  }
+  BaselineFiles.requireDirectoryOrMissing(root, stateDirectory)
+  stateFiles.forEach { BaselineFiles.requireRegularFileOrMissing(root, it) }
+}
+
+private fun prepareAggregateStateDirectoryAndLock(
+  root: File,
+  stateDirectory: File,
+  lock: File,
+) {
+  try {
+    java.nio.file.Files.createDirectory(stateDirectory.toPath())
+  } catch (_: java.nio.file.FileAlreadyExistsException) {
+    // Validated below before creating or opening a child.
+  }
+  BaselineFiles.requireDirectoryOrMissing(root, stateDirectory)
+  check(stateDirectory.isDirectory) {
+    "cannot create aggregate certification state directory $stateDirectory"
+  }
+  try {
+    java.nio.file.Files.createFile(lock.toPath())
+  } catch (_: java.nio.file.FileAlreadyExistsException) {
+    // A regular, non-link ownership file is valid and checked below.
+  }
+  BaselineFiles.requireRegularFileOrMissing(root, lock)
+  check(lock.isFile) { "cannot create aggregate certification ownership lock $lock" }
+}
+
+private fun markAggregateIncomplete(
+  session: HardeningCertificationAggregateSession,
+  root: File,
+  manifest: File,
+  running: File,
+  failure: Exception,
+) {
+  if (!session.ownsAggregate(root)) return
+  try {
+    BaselineFiles.preserveReceiptUnderIncompleteMarker(
+      root,
+      manifest,
+      running,
+      "refused\t${aggregateFailureReason(failure)}\n",
+    )
+  } catch (stateFailure: Exception) {
+    failure.addSuppressed(stateFailure)
+  }
+}
+
+private fun aggregateFailureReason(failure: Throwable): String =
+  (failure.message ?: failure::class.java.simpleName)
+    .replace('\t', ' ')
+    .replace('\r', ' ')
+    .replace('\n', ' ')
 /** Owns durable certification state and marks the new attempt before expensive PIT runs. */
 @UntrackedTask(because = "Certification must mark every invocation as incomplete until publication")
 abstract class HardeningCertificationPreflightTask : DefaultTask() {
@@ -318,12 +624,24 @@ abstract class PitestEvidenceSpec @Inject constructor(private val specName: Stri
     reportSha256: String,
     scope: String,
     historyAssisted: Boolean,
+  ): PitestEvidence = capture(
+    recorded.invocationId,
+    reportSha256,
+    scope,
+    historyAssisted,
+  )
+
+  private fun capture(
+    invocationId: String,
+    reportSha256: String,
+    scope: String,
+    historyAssisted: Boolean,
   ): PitestEvidence {
     requirePluginCodeUnchanged()
     val toolchain = captureMutationToolchain()
     return PitestEvidenceSnapshot.capture(PitestEvidenceSnapshotInput(
       suite = suiteName.get(),
-      invocationId = recorded.invocationId,
+      invocationId = invocationId,
       pitestVersion = pitestVersion.get(),
       junitPluginVersion = junitPluginVersion.get(),
       javaVersion = javaLauncher.get().metadata.javaRuntimeVersion,

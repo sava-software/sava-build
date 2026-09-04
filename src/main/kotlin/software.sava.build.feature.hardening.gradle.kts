@@ -7,6 +7,8 @@ import software.sava.build.hardening.CommittedMutationProvenance
 import software.sava.build.hardening.ExclusionAudit
 import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningAgentTemplateBlock
+import software.sava.build.hardening.HardeningCertificationAggregateSession
+import software.sava.build.hardening.HardeningCertificationRootPlugin
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningExtension
 import software.sava.build.hardening.HardeningFuzzSession
@@ -41,6 +43,7 @@ import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
 import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
 import software.sava.build.hardening.task.HardeningCertifyAllTask
+import software.sava.build.hardening.task.HardeningCertificationAggregatePublishTask
 import software.sava.build.hardening.task.HardeningCertificationPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationTask
 import software.sava.build.hardening.task.PitestConvergeTask
@@ -61,6 +64,11 @@ import software.sava.build.hardening.task.workflowRetryGuidance
 plugins {
   id("java")
 }
+
+// The settings entry point normally installs this before root-project evaluation so
+// configuration-on-demand cannot hide the anchor. Applying by type here retains the
+// standalone feature-plugin fallback and is idempotent when settings already did it.
+rootProject.pluginManager.apply(HardeningCertificationRootPlugin::class.java)
 
 // PIT mutation testing and Jazzer coverage-guided fuzzing with explicit production ownership,
 // configured via the 'hardening' extension. The main and test sources are recompiled into
@@ -215,6 +223,9 @@ val qualityGate = tasks.register("qualityGate") {
 val hardeningCertificationSession = gradle.sharedServices.registerIfAbsent(
     "hardeningCertificationSession", HardeningCertificationSession::class
 ) {}
+val hardeningCertificationAggregateSession = gradle.sharedServices.registerIfAbsent(
+    "hardeningCertificationAggregateSession", HardeningCertificationAggregateSession::class
+) {}
 val hardeningOperationSession = gradle.sharedServices.registerIfAbsent(
     "hardeningOperationSession", HardeningOperationSession::class
 ) {}
@@ -306,7 +317,8 @@ val hardeningCertifyPreflight =
 // incomplete-attempt state are established.
 tasks.configureEach {
   if (name != "clean" && name != "hardeningCertifyPreflight" &&
-      name != "hardeningCertifyAll") {
+      name != "hardeningCertifyAll" &&
+      name != "hardeningCertifyAllSelected") {
     mustRunAfter(hardeningCertifyPreflight)
   }
 }
@@ -330,8 +342,10 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   dependsOn(hardeningCertifyPreflight)
   dependsOn(hardeningCertifyTimeoutAuditPreflight)
   val certificationSession = hardeningCertificationSession
+  val aggregateCertificationSession = hardeningCertificationAggregateSession
   val advisoryLog = hardeningAdvisoryLog
   usesService(certificationSession)
+  usesService(aggregateCertificationSession)
   usesService(advisoryLog)
   this.certificationSession.set(certificationSession)
   hardeningProjectPath.set(project.path)
@@ -344,6 +358,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   val receiptFile = certificationReceiptFile
   val receiptRunning = certificationReceiptRunning
   val configDir = layout.projectDirectory.dir("config/pitest")
+  val certifiedGradleRootDirectory = rootProject.layout.projectDirectory.asFile
   val certifiedProjectDirectory = layout.projectDirectory.asFile
   val certifiedProjectPath = project.path
   val certificationTaskPath = qualifiedHardeningTaskPath(certifiedProjectPath, "hardeningCertify")
@@ -597,6 +612,15 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
               receiptRetry)
     }
     BaselineFiles.deleteIfExists(runningFile)
+    aggregateCertificationSession.get().recordPublished(
+        certifiedGradleRootDirectory,
+        certifiedProjectPath,
+        certifiedProjectDirectory,
+        receiptFile.asFile,
+        certifiedSuiteNames.sorted(),
+        finalProjectIdentity.pluginSha256,
+        sessionId,
+    )
     val publishedReceipt = receiptFile.asFile.absoluteFile.normalize().path
     advisoryLog.get().recordCertification(
         certifiedProjectPath, certifiedSuiteNames.size, publishedReceipt)
@@ -616,12 +640,23 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
 // consumers a configuration-cache-safe installed alternative: project certifications
 // are sibling finalizers, so one project's failure does not stop the remaining
 // projects, while the original failure still makes the aggregate build fail.
-val hardeningCertifyAll = rootProject.tasks.maybeCreate(
-    "hardeningCertifyAll", HardeningCertifyAllTask::class.java)
-hardeningCertifyAll.group = "verification"
-hardeningCertifyAll.description =
-    "Certifies every project using sava hardening; sibling projects continue after a failure."
-hardeningCertifyAll.excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
+private val hardeningCertifyAll = rootProject.tasks.named(
+    "hardeningCertifyAll", HardeningCertifyAllTask::class.java).get()
+// A lifecycle alias can select both the aggregate anchor and project certification.
+// Keep their ordinary preflight ordering deterministic without adding either task
+// to a direct project-only graph.
+hardeningCertifyPreflight.configure {
+  mustRunAfter(hardeningCertifyAll)
+}
+private val aggregateProjectInventory = hardeningCertifyAll.projectInventory.maybeCreate(project.path)
+aggregateProjectInventory.projectPath.set(project.path)
+aggregateProjectInventory.projectDirectory.set(layout.projectDirectory)
+aggregateProjectInventory.receiptFile.set(certificationReceiptFile)
+aggregateProjectInventory.runningFile.set(certificationReceiptRunning)
+
+val hardeningCertifyAllComplete = rootProject.tasks.named(
+    "hardeningCertifyAllComplete", HardeningCertificationAggregatePublishTask::class.java).get()
+hardeningCertifyAllComplete.mustRunAfter(hardeningCertify)
 hardeningCertifyAll.finalizedBy(hardeningCertify)
 
 // `mustRunAfter` only orders tasks within one project. PIT and corpus-rewrite tasks
@@ -3374,7 +3409,7 @@ hardening.mutation.all {
       // needing exactly that. The XML report carries it; keyed like the baseline rows
       // (line-less), with each mutant's line folded into the description text, since
       // the key no longer carries it.
-      val descriptions: Map<String, String> by lazy {
+      val descriptions: Map<String, List<String>> by lazy {
         val xml = (if (scoped) scopedXmlProvider else fullXmlProvider).get().asFile
         if (!xml.isFile) return@lazy emptyMap()
         val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance()
@@ -3394,10 +3429,51 @@ hardening.mutation.all {
           collected.getOrPut("$key,${mutation.getAttribute("status")}") { mutableListOf() }.add(description)
           collected.getOrPut(key) { mutableListOf() }.add(description)
         }
-        collected.mapValues { (_, all) -> all.distinct().joinToString(" | ") }
+        collected.mapValues { (_, all) -> all.distinct() }
       }
-      fun describe(row: String) =
-          (descriptions[row] ?: descriptions[row.substringBeforeLast(',')])?.let { " — $it" } ?: ""
+      fun descriptionLines(row: String): List<String> =
+          descriptions[row] ?: descriptions[row.substringBeforeLast(',')].orEmpty()
+      fun describe(row: String) = descriptionLines(row)
+          .takeIf { it.isNotEmpty() }
+          ?.joinToString(" | ", prefix = " — ")
+          ?: ""
+
+      // Prune candidates are a multiset, but dumping the XML description beside
+      // every physical sibling repeats the same possible locations dozens of
+      // times. Preserve multiplicity explicitly while rendering each distinct row
+      // spelling once, then group the shared report locations by the line-less key
+      // that made those locations ambiguous in the first place. This is display
+      // only: pruneCandidates below remains the complete exact multiset persisted
+      // for authorization.
+      fun renderPruneDiagnosticRows(candidateRows: List<BaselineNotes.Row>): String {
+        val renderedCounts = linkedMapOf<String, Int>()
+        candidateRows.forEach { row ->
+          val rendered = BaselineNotes.render(row)
+          renderedCounts[rendered] = (renderedCounts[rendered] ?: 0) + 1
+        }
+        val locationsByKey = candidateRows.groupBy { it.key }.mapNotNull { (key, keyRows) ->
+          // A dropped row may still have a live same-status sibling. The statusless
+          // coordinate map deliberately includes every XML mutant at the line-less
+          // class/method/mutator coordinate, including KILLED possibilities; an
+          // exact four-field lookup could otherwise show only the live survivor.
+          descriptions[key.substringBeforeLast(',')]
+              ?.takeIf { it.isNotEmpty() }
+              ?.let { key to (keyRows.size to it) }
+        }
+        return buildString {
+          append(renderedCounts.entries.joinToString("\n") { (rendered, copies) ->
+            "  " + (if (copies == 1) "" else "$copies × ") + rendered
+          })
+          if (locationsByKey.isNotEmpty()) {
+            append("\n  possible report locations grouped by line-less key:")
+            locationsByKey.forEach { (key, detail) ->
+              val (physicalRows, locations) = detail
+              append("\n    $key ($physicalRows physical ${if (physicalRows == 1) "row" else "rows"}):")
+              locations.forEach { location -> append("\n      $location") }
+            }
+          }
+        }
+      }
 
       // Kept as a LIST, not a set: a compound condition yields several mutants with
       // identical (class, method, mutator, status) keys — one per operand, branch
@@ -3589,7 +3665,10 @@ hardening.mutation.all {
       // owns the label semantics: carry/flip parentheticals stripped, unlabeled rows —
       // which predate seeding — named rather than folded into a bucket).
       BaselineNotes.summarize(acceptedRows.mapNotNull { it.note }, acceptedRows.count { it.note == null })
-          ?.let { logger.lifecycle("pitest baseline '$suiteName': ${accepted.size} rows — $it") }
+          ?.let {
+            logger.lifecycle(
+                "pitest baseline '$suiteName': ${BaselineNotes.populationSummary(accepted)} — $it")
+          }
       // A family label is a pointer to its argument in config/pitest/README.md (the rule
       // and its message live in BaselineNotes, so this and 'Debt' resolve labels the same
       // way). Warned rather than failed, mirroring the scaffolding check: the gap may
@@ -4239,6 +4318,8 @@ hardening.mutation.all {
       val pruneCandidates = pruneCandidateIndices
           .map { BaselineNotes.render(acceptedRows[it]) }
           .sorted()
+      fun renderedBaselinePopulationSummary(renderedRows: Collection<String>): String =
+          BaselineNotes.populationSummary(renderedRows.map { BaselineNotes.parse(it).key })
 
       // A candidate list is not deletion authority until it repeats. Persist the
       // exact DROP multiset — the same row-level plan BaselinePrune consumes — only
@@ -4312,7 +4393,8 @@ hardening.mutation.all {
               PrunePreviewTransitionKind.FIRST -> if (pruneCandidates.isNotEmpty()) {
                 logger.lifecycle(
                     "pitest baseline '$suiteName': stored prune-candidate observation 1 of 2 " +
-                        "(${pruneCandidates.size} row(s)); this is mechanical preview state, not " +
+                        "(${renderedBaselinePopulationSummary(pruneCandidates)}); this is " +
+                        "mechanical preview state, not " +
                         "deletion authority or a load-context finding")
               }
               PrunePreviewTransitionKind.MALFORMED_RESET -> logger.lifecycle(
@@ -4333,7 +4415,7 @@ hardening.mutation.all {
                 logger.lifecycle(
                     "pitest baseline '$suiteName': stored prune-candidate observation 1 of 2 " +
                         "after an ineligible or origin-reset observation " +
-                        "(${pruneCandidates.size} row(s)); deletion " +
+                        "(${renderedBaselinePopulationSummary(pruneCandidates)}); deletion " +
                         "remains unauthorized")
               }
               PrunePreviewTransitionKind.SAME_INVOCATION -> Unit
@@ -4341,18 +4423,19 @@ hardening.mutation.all {
                 logger.lifecycle(
                     "pitest baseline '$suiteName': prune-candidate preview matches " +
                         "${transition.state.matchingObservations} distinct fresh full history-free " +
-                        "observation(s) (${pruneCandidates.size} row(s)). This satisfies the " +
+                        "observation(s) (${renderedBaselinePopulationSummary(pruneCandidates)}). " +
+                        "This satisfies the " +
                         "mechanical repetition prerequisite once the count reaches 2; confirm the " +
                         "reviewed solo/gate load context and every removal criterion separately.")
               }
               PrunePreviewTransitionKind.MISMATCH -> {
-                val previousCount = transition.previous?.candidates?.size ?: 0
                 val changes = transition.added.size + transition.removed.size
                 logger.warn(
                     "pitest baseline '$suiteName': prune-candidate preview differs from the " +
                         "previous eligible fresh full history-free observation; the " +
                         "two-matching-preview requirement is not met:\n" +
-                        "  Evidence: ${pruneCandidates.size} candidate row(s) now, $previousCount " +
+                        "  Evidence: ${renderedBaselinePopulationSummary(pruneCandidates)} now, " +
+                        "${renderedBaselinePopulationSummary(transition.previous?.candidates.orEmpty())} " +
                         "previously; exact multiset drift:\n" + deltaDetail() + "\n" +
                         "  Review: The candidate population is wandering. Do not infer stable " +
                         "removal or edit the baseline. The plugin does not infer whether the runs " +
@@ -4551,7 +4634,8 @@ hardening.mutation.all {
         if (droppedRows.isNotEmpty()) {
           val transition = prunePreviewTransition ?: throw GradleException(
               "pitest baseline '$suiteName': refusing $evidenceBaselinePruneTaskPath — its " +
-                  "${droppedRows.size}-row write-boundary candidate set is not a provenance-bound " +
+                  "${BaselineNotes.populationSummary(droppedRows.map { it.key })} write-boundary " +
+                  "candidate set is not a provenance-bound " +
                   "fresh full history-free preview; no baseline or provenance changes were made.\n" +
                   "  Remedy: Run $evidencePitestTaskPath -PnoMutationHistory until two distinct " +
                   "matching completed previews exist under the reviewed load context, then run " +
@@ -4586,7 +4670,8 @@ hardening.mutation.all {
             throw GradleException(
                 "pitest baseline '$suiteName': refusing $evidenceBaselinePruneTaskPath — " +
                     "two prior distinct matching qualifying previews are required before its own " +
-                    "fresh write-boundary run may delete ${droppedRows.size} row(s); no baseline " +
+                    "fresh write-boundary run may delete " +
+                    "${BaselineNotes.populationSummary(droppedRows.map { it.key })}; no baseline " +
                     "or provenance changes were made:\n" +
                     "  Evidence: $evidence.\n" +
                     "  Review: Matching candidate bytes are a mechanical prerequisite, not proof " +
@@ -4605,14 +4690,16 @@ hardening.mutation.all {
         val pruneRewrite = BaselineEngine.pruneRewrite(acceptedRows, keepPlan, currentLines)
         val rowSpellingsChanged = pruneRewrite.written != baselineRowLines
         val keptDetail = if (keptUnmatched.isEmpty()) "" else
-          "\n  kept ${keptUnmatched.size} unmatched row(s):\n" +
+          "\n  kept ${BaselineNotes.populationSummary(keptUnmatched.map { it.first.key })} unmatched:\n" +
               keptUnmatched.joinToString("\n") { (row, why) -> "  ${BaselineNotes.render(row)} — $why" }
         val refreshedDetail = if (pruneRewrite.refreshedLineTags == 0) "" else
           "; refreshed ${pruneRewrite.refreshedLineTags} kept row line tag(s) from this run"
+        val droppedPopulation = BaselineNotes.populationSummary(droppedRows.map { it.key })
+        val keptPopulation = BaselineNotes.populationSummary(kept.map { it.key })
         var baselineTransitionCommitted = false
         if (droppedRows.isEmpty() && !rowSpellingsChanged) {
           logger.lifecycle(
-              "pitest baseline '$suiteName': prune dropped nothing — every row matches this run$keptDetail")
+              "pitest baseline '$suiteName': prune dropped nothing — all $keptPopulation match this run$keptDetail")
         } else if (kept.isEmpty()) {
           // If no non-row evidence exists, an empty baseline and no baseline are the
           // same record and the file is removed. Otherwise retain the schema marker,
@@ -4623,9 +4710,7 @@ hardening.mutation.all {
           logger.lifecycle(
               "pitest baseline '$suiteName': prune dropped every row unmatched by this run — " +
                   (if (plan.retainedNonRowEvidence) "non-row baseline material preserved" else "baseline file removed") +
-                  ":\n" + droppedRows.joinToString("\n") { row ->
-                    "  ${BaselineNotes.render(row)}${describe(row.key)}"
-                  })
+                  " ($droppedPopulation):\n" + renderPruneDiagnosticRows(droppedRows))
         } else {
           // Kept rows are re-rendered even when only a matched row's line metadata
           // changed. This also migrates a legacy five-field file to the line-less
@@ -4643,12 +4728,13 @@ hardening.mutation.all {
               "refreshed ${pruneRewrite.refreshedLineTags} line tag(s) from this run"
             }
             logger.lifecycle(
-                "pitest baseline '$suiteName': prune dropped nothing and $action$keptDetail")
+                "pitest baseline '$suiteName': prune dropped nothing and $action; " +
+                    "baseline remains $keptPopulation$keptDetail")
           } else {
             logger.lifecycle(
-                "pitest baseline '$suiteName': prune dropped ${droppedRows.size} row(s) unmatched by this run " +
-                    "(baseline now ${kept.size}$refreshedDetail):\n" +
-                    droppedRows.joinToString("\n") { row -> "  ${BaselineNotes.render(row)}${describe(row.key)}" } +
+                "pitest baseline '$suiteName': prune dropped $droppedPopulation unmatched by this run " +
+                    "(baseline now $keptPopulation$refreshedDetail):\n" +
+                    renderPruneDiagnosticRows(droppedRows) +
                     keptDetail
             )
           }
@@ -5010,9 +5096,11 @@ hardening.mutation.all {
                 "resulting diff."
           }
           logger.lifecycle(
-              "pitest baseline '$suiteName': ${staleGone.size} row(s) are unmatched by this run; " +
+              "pitest baseline '$suiteName': " +
+                  "${BaselineNotes.populationSummary(staleGone.map { acceptedRows[it].key })} " +
+                  "${if (staleGone.size == 1) "is" else "are"} unmatched by this run; " +
                   "$candidateHeading\n" +
-                  staleGone.joinToString("\n") { "  ${BaselineNotes.render(acceptedRows[it])}" } +
+                  renderPruneDiagnosticRows(staleGone.map { acceptedRows[it] }) +
                   "\nOne fresh history-free absence preview cannot distinguish stable removal " +
                   "from an uninsured load- or " +
                   "mode-dependent flip. This preview is evidence to investigate, not authorization " +
@@ -5542,7 +5630,10 @@ hardening.mutation.all {
       // and unlabeled rows predate seeding.
       val baselineNotes = wellFormedRows.mapNotNull { it.note }
       val labelBreakdown = BaselineNotes.summarize(baselineNotes, wellFormedRows.size - baselineNotes.size)
-          ?.let { "\n  baseline labels: $it" } ?: ""
+          ?.let {
+            "\n  baseline: ${BaselineNotes.populationSummary(wellFormedRows.map { row -> row.key })}; " +
+                "baseline labels: $it"
+          } ?: ""
       logger.lifecycle(
           "pitest '$suiteName' debt ($source$age) — $totalSurvived survived, $totalNoCoverage no_coverage " +
               "across ${debt.size} class(es):\n" + lines.joinToString("\n") + labelBreakdown
@@ -5564,6 +5655,7 @@ hardening.mutation.all {
   qualityGate.configure { dependsOn(pitestTaskName) }
   convergeSuiteNames.add(suiteName)
   certificationSuiteNames.add(suiteName)
+  aggregateProjectInventory.suiteNames.add(suiteName)
   pitestConvergeSnapshot.configure {
     dependsOn(pitestTaskName)
     // The PIT task's verification finalizer reads the canonical report. A plain
@@ -5855,7 +5947,6 @@ hardening.mutation.all {
     certificationRecordFiles.from(
         PitestEvidence.mutationRecordFiles(layout.projectDirectory.dir("config/pitest").asFile, suiteName))
   }
-
   // Named writer workflows turn the mutually-exclusive baseline transition into
   // task-graph structure. Every selected preflight is ordered before PIT; a conflict
   // poisons the project so `--continue` cannot consume the surviving request. The
@@ -6065,6 +6156,11 @@ hardening.fuzz.all {
     campaignProjectPath.set(project.path)
     maxLen.set(target.maxLen)
     localCorpus.set(layout.buildDirectory.dir("fuzz/${target.name}-corpus"))
+    logDirectory.set(layout.buildDirectory.dir("reports/fuzz/${target.name}"))
+    fullAggregateOutput.set(
+        providers.gradleProperty(HardeningOptionNames.FULL_FUZZ_OUTPUT)
+            .map { true }
+            .orElse(false))
     seedCorpus.set(target.seedCorpus)
     fuzzSession.set(hardeningFuzzSession)
     usesService(hardeningFuzzSession)
@@ -6364,7 +6460,10 @@ tasks.register("hardeningInit") {
           |For every accepted family, record its exact `# <label>`, local structural reason,
           |property, independent oracle, and the condition that would make the acceptance
           |invalid. Name the class, method, and semantic branch, and omit source line numbers.
-          |Keep retired incidents separate from current acceptance evidence.
+          |Every row retained in an accepted CSV remains active matching authority regardless
+          |of a `# retired`, `# refactor`, or other note. Finish a reviewed refactor removal
+          |through the installed `pitest<Suite>BaselinePrune` protocol, then keep retired
+          |incidents outside the active record and separate from current acceptance evidence.
           |
           |## Audited timeout causes
           |

@@ -366,6 +366,35 @@ class BaselineEngineTest {
   }
 
   @Test
+  fun `retirement prose never changes matching authority or prune classification`() {
+    val retiredKey = "com.example.Codec,decode,NullReturnValsMutator,NO_COVERAGE"
+    val refactorKey = "com.example.Codec,verify,RemoveConditionalMutator_EQUAL_IF,SURVIVED"
+    val rows = listOf(
+      BaselineNotes.parse("$retiredKey # retired"),
+      BaselineNotes.parse("$refactorKey # rebase refactor"),
+    )
+    val observed = mapOf(retiredKey to listOf("10"), refactorKey to listOf("20"))
+
+    assertEquals(
+      listOf(BaselineEngine.Disposition.MATCHED, BaselineEngine.Disposition.MATCHED),
+      BaselineEngine.keepPlan(rows, observed, emptyMap(), emptyMap()),
+      "comment prose must not disable an accepted row that still matches a mutant",
+    )
+
+    val unmatched = BaselineEngine.keepPlan(rows, emptyMap(), emptyMap(), emptyMap())
+    assertEquals(
+      listOf(BaselineEngine.Disposition.DROP, BaselineEngine.Disposition.DROP),
+      unmatched,
+      "comment prose must not create a hidden retired state outside guarded Prune",
+    )
+    assertEquals(
+      emptyList<String>(),
+      BaselineEngine.pruneRewrite(rows, unmatched, emptyMap()).written,
+      "unmatched rows with retirement prose remain ordinary reviewed Prune candidates",
+    )
+  }
+
+  @Test
   fun `prune refreshes matched lines by affinity and preserves unmatched evidence`() {
     val key = "com.example.Codec,encode,MathMutator,SURVIVED"
     val accepted = listOf(

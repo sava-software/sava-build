@@ -5,10 +5,222 @@ import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.ByteBuffer
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.time.Duration
+import java.time.Instant
 import java.util.Base64
 import java.util.UUID
+
+private data class LocalPublicationSourceSnapshot(
+  val gitState: String,
+  val gitCommit: String,
+  val gitTree: String,
+  val gitStatusSha256: String,
+  val sourceStateSha256: String,
+)
+
+private class LocalPublicationSourceSnapshots {
+    fun capture(checkout: File): LocalPublicationSourceSnapshot {
+      val revision = git(checkout, "rev-parse", "HEAD", "HEAD^{tree}")
+        .toString(Charsets.UTF_8)
+        .trimEnd('\n', '\r')
+        .lines()
+      check(revision.size == 2 && revision.all { it.matches(GIT_OBJECT) } &&
+          revision[0].length == revision[1].length) {
+        "local publication did not resolve a full Git commit/tree identity: $revision"
+      }
+      val status = git(
+        checkout,
+        "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none",
+      )
+      return LocalPublicationSourceSnapshot(
+        gitState = if (status.isEmpty()) "clean" else "dirty",
+        gitCommit = revision[0],
+        gitTree = revision[1],
+        gitStatusSha256 = sha256(status),
+        sourceStateSha256 = sourceStateSha256(checkout),
+      )
+    }
+
+    /** Hash every tracked or non-ignored untracked path in this trusted local checkout. */
+    private fun sourceStateSha256(checkout: File): String {
+      val paths = git(checkout, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+        .toString(Charsets.UTF_8)
+        .split('\u0000')
+        .filter(String::isNotEmpty)
+        .sorted()
+      val digest = MessageDigest.getInstance("SHA-256")
+      digest.update("sava-build-local-source-state-v1\u0000".toByteArray(Charsets.UTF_8))
+      paths.forEach { relative ->
+        val path = checkout.toPath().resolve(relative)
+        updateLengthFramed(digest, relative.toByteArray(Charsets.UTF_8))
+        when {
+          !Files.exists(path, LinkOption.NOFOLLOW_LINKS) -> digest.update('m'.code.toByte())
+          Files.isSymbolicLink(path) -> {
+            digest.update('l'.code.toByte())
+            updateLengthFramed(
+              digest,
+              Files.readSymbolicLink(path).toString().toByteArray(Charsets.UTF_8),
+            )
+          }
+          Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) -> {
+            digest.update('f'.code.toByte())
+            updateLengthFramed(digest, fileSha256(path.toFile()))
+          }
+          else -> error("local publication cannot content-hash Git path '$relative'")
+        }
+      }
+      return hex(digest.digest())
+    }
+
+    private fun updateLengthFramed(digest: MessageDigest, bytes: ByteArray) {
+      digest.update(ByteBuffer.allocate(Int.SIZE_BYTES).putInt(bytes.size).array())
+      digest.update(bytes)
+    }
+
+    private val GIT_OBJECT = Regex("(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+    private fun git(checkout: File, vararg arguments: String): ByteArray {
+      val process = ProcessBuilder(listOf("git") + arguments)
+        .directory(checkout)
+        .redirectError(ProcessBuilder.Redirect.INHERIT)
+        .apply { environment()["NO_DNA"] = "1" }
+        .start()
+      val output = process.inputStream.readBytes()
+      val exit = process.waitFor()
+      check(exit == 0) {
+        "local publication could not capture Git provenance: " +
+          (listOf("git") + arguments).joinToString(" ") + " exited $exit"
+      }
+      return output
+    }
+
+    private fun sha256(bytes: ByteArray): String =
+      hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+
+    private fun fileSha256(file: File): ByteArray {
+      val digest = MessageDigest.getInstance("SHA-256")
+      file.inputStream().buffered().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+          val count = input.read(buffer)
+          if (count < 0) break
+          digest.update(buffer, 0, count)
+        }
+      }
+      return digest.digest()
+    }
+
+    private fun hex(bytes: ByteArray): String =
+      bytes.joinToString("") { "%02x".format(it) }
+  }
+
+private class WriteLocalPublicationProvenance(
+  private val checkoutPath: String,
+  private val sourceJarPath: String,
+  private val repositoryJarPath: String,
+  private val provenancePath: String,
+) : Action<Task>, java.io.Serializable {
+
+  override fun execute(task: Task) {
+    val checkout = File(checkoutPath)
+    val sourceJar = File(sourceJarPath)
+    val repoJar = File(repositoryJarPath)
+    val provenance = File(provenancePath)
+    check(sourceJar.isFile) { "local publication source JAR is missing: $sourceJar" }
+    check(repoJar.isFile) { "local publication repository JAR is missing: $repoJar" }
+
+    val sourceJarSha256 = sha256(sourceJar)
+    val repoJarSha256 = sha256(repoJar)
+    check(sourceJarSha256 == repoJarSha256) {
+      "local publication repository JAR does not match its source JAR " +
+        "($sourceJarSha256 != $repoJarSha256): $repoJar"
+    }
+    val sourceSnapshot = LocalPublicationSourceSnapshots().capture(checkout)
+    val provenanceText = buildString {
+      appendLine("schema\t2")
+      appendLine("gitState\t${sourceSnapshot.gitState}")
+      appendLine("gitCommit\t${sourceSnapshot.gitCommit}")
+      appendLine("gitTree\t${sourceSnapshot.gitTree}")
+      appendLine("gitStatusSha256\t${sourceSnapshot.gitStatusSha256}")
+      appendLine("sourceStateSha256\t${sourceSnapshot.sourceStateSha256}")
+      appendLine("publishedAtUtc\t${Instant.now()}")
+      appendLine("jarSha256\t$repoJarSha256")
+    }
+
+    val staging = provenance.parentFile.resolve(".${provenance.name}.${UUID.randomUUID()}.tmp")
+    try {
+      Files.createDirectories(provenance.parentFile.toPath())
+      Files.writeString(
+        staging.toPath(),
+        provenanceText,
+        Charsets.UTF_8,
+        StandardOpenOption.CREATE_NEW,
+        StandardOpenOption.WRITE,
+      )
+      Files.move(
+        staging.toPath(),
+        provenance.toPath(),
+        StandardCopyOption.REPLACE_EXISTING,
+        StandardCopyOption.ATOMIC_MOVE,
+      )
+    } finally {
+      Files.deleteIfExists(staging.toPath())
+    }
+    task.logger.lifecycle(
+      "Local publication provenance: {} (source snapshot at publication: commit {}; {} worktree; " +
+        "source-state SHA-256 {}; JAR SHA-256 {})",
+      provenance,
+      sourceSnapshot.gitCommit,
+      sourceSnapshot.gitState,
+      sourceSnapshot.sourceStateSha256,
+      repoJarSha256,
+    )
+  }
+
+  private fun sha256(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered().use { input ->
+      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+      while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        digest.update(buffer, 0, count)
+      }
+    }
+    return hex(digest.digest())
+  }
+
+  private fun hex(bytes: ByteArray): String =
+    bytes.joinToString("") { "%02x".format(it) }
+
+  companion object {
+    private const val serialVersionUID: Long = 1L
+  }
+}
+
+private class InvalidateLocalPublicationProvenance(
+  private val provenancePath: String,
+) : Action<Task>, java.io.Serializable {
+
+  override fun execute(task: Task) {
+    val provenance = File(provenancePath)
+    Files.deleteIfExists(provenance.toPath())
+    task.logger.info(
+      "Invalidated local publication provenance before replacing the static Maven coordinate: {}",
+      provenance,
+    )
+  }
+
+  companion object {
+    private const val serialVersionUID: Long = 1L
+  }
+}
 
 plugins {
   `kotlin-dsl`
@@ -188,10 +400,13 @@ tasks.test {
       // importantly, ensures the private subscription URL is never pasted beside it.
       arcMutateLicence = layout.projectDirectory.file("arcmutate-licence.txt")
       projectRoot = layout.projectDirectory
-      // Re-run when the published plugin changes; maven-metadata.xml is excluded because
-      // its 'lastUpdated' timestamp changes on every publish and would defeat up-to-date
-      // checks and the build cache.
-      testRepoFiles.from(fileTree(savaTestRepoDir) { exclude("**/maven-metadata.*") })
+      // Re-run when the published plugin changes. Maven metadata and the local
+      // provenance sidecar carry a fresh publication timestamp on every publish, so
+      // neither belongs in the test/cache identity; the JAR bytes already bind the
+      // plugin behavior exercised by these tests.
+      testRepoFiles.from(fileTree(savaTestRepoDir) {
+        exclude("**/maven-metadata.*", "**/*-provenance.tsv")
+      })
       testRepoDir = savaTestRepoDir
       testRepoVersion = savaTestRepoVersion
     }
@@ -362,6 +577,45 @@ publishing {
       version = savaTestRepoVersion
     }
   }
+}
+
+// The static local coordinate intentionally keeps reproducible plugin bytes: a newer
+// source commit can legitimately produce the same JAR. Record the source identity in
+// an out-of-band sidecar after Maven publication instead of embedding it in that JAR.
+// This one local task always executes so an UP-TO-DATE byte-identical publication still
+// advances the source provenance an adopter sees.
+val savaTestRepoSourceJar = tasks.named<Jar>("jar").flatMap { it.archiveFile }
+val savaTestRepoMainArtifact = savaTestRepoDir.map { repo ->
+  repo.file(
+    "software/sava/sava-build/$savaTestRepoVersion/" +
+      "sava-build-$savaTestRepoVersion.jar"
+  )
+}
+val savaTestRepoProvenance = savaTestRepoDir.map { repo ->
+  repo.file(
+    "software/sava/sava-build/$savaTestRepoVersion/" +
+      "sava-build-$savaTestRepoVersion-provenance.tsv"
+  )
+}
+val savaBuildCheckout = layout.projectDirectory.asFile
+tasks.named<PublishToMavenRepository>(savaTestRepoPublishTask) {
+  outputs.file(savaTestRepoProvenance)
+  doNotTrackState("Local source provenance is refreshed after every successful publication")
+  // If Maven fails after replacing only part of the static coordinate, no stale
+  // sidecar may remain to make that partial repository look attributable.
+  doFirst(
+    InvalidateLocalPublicationProvenance(
+      provenancePath = savaTestRepoProvenance.get().asFile.absolutePath,
+    )
+  )
+  doLast(
+    WriteLocalPublicationProvenance(
+      checkoutPath = savaBuildCheckout.absolutePath,
+      sourceJarPath = savaTestRepoSourceJar.get().asFile.absolutePath,
+      repositoryJarPath = savaTestRepoMainArtifact.get().asFile.absolutePath,
+      provenancePath = savaTestRepoProvenance.get().asFile.absolutePath,
+    )
+  )
 }
 
 // --- In-house Central Portal deployment. Keep in sync with

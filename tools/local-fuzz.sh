@@ -100,7 +100,7 @@ run_consumer_fuzz_campaign() {
     fi
     (cd "$repo" && run_consumer_gradle ./gradlew --console=plain --continue --parallel \
         -PsavaBuildLocalRepo="$local_repo" -PmaxFuzzTime="$seconds" \
-        -PmaxParallelFuzzTargets="$parallel_targets" "$@")
+        -PmaxParallelFuzzTargets="$parallel_targets" -PfullFuzzOutput "$@")
   } 3<&- > "$output_file" 2>&1
 }
 
@@ -1664,7 +1664,7 @@ self_test() {
   campaign_probe="$path_fixture/campaign-gradle-called"
   rm -f "$campaign_probe"
   run_consumer_gradle() {
-    printf 'called\n' > "$campaign_probe"
+    printf '%s\n' "$@" > "$campaign_probe"
     printf 'refused\tself-test campaign failed\n' > "$running_entry"
     return 71
   }
@@ -1703,6 +1703,10 @@ self_test() {
   fi
   if ! cmp -s "$stale_file" "$aggregate_file"; then
     echo "local-fuzz self-test: failed campaign changed the last-success receipt" >&2
+    return 1
+  fi
+  if ! grep -qx -- '-PfullFuzzOutput' "$campaign_probe"; then
+    echo "local-fuzz self-test: redirected campaign did not retain full fuzz output" >&2
     return 1
   fi
   if [ ! -f "$running_entry" ] || \

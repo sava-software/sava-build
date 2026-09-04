@@ -1,5 +1,6 @@
 import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -62,23 +63,50 @@ class LocalRepoNoticeFunctionalTest {
       "sava-build-$savaBuildTestRepoVersion.jar"
   )
 
+  private fun publicationProvenance(repo: File): File =
+    SavaBuildLocalPublicationProvenance.sidecarFor(pluginArtifact(repo))
+
   private fun copiedLocalRepo(): File {
     val copy = fixtureDir.resolve("private-test-repo")
     check(File(localRepo).copyRecursively(copy)) { "failed to copy the fixture Maven repository" }
     return copy
   }
 
+  private fun git(checkout: File, vararg arguments: String): ByteArray {
+    val process = ProcessBuilder(listOf("git") + arguments)
+      .directory(checkout)
+      .redirectErrorStream(true)
+      .apply { environment()["NO_DNA"] = "1" }
+      .start()
+    val output = process.inputStream.readBytes()
+    assertEquals(0, process.waitFor(), output.toString(Charsets.UTF_8))
+    return output
+  }
+
   @Test
   fun `notice survives configuration cache reuse`() {
     val privateRepo = copiedLocalRepo()
     val expectedSha256 = PitestEvidence.sha256(pluginArtifact(privateRepo))
+    val provenance = SavaBuildLocalPublicationProvenance.read(publicationProvenance(privateRepo))
     writeFixture(privateRepo)
     val first = runBuild(
       "help", "--configuration-cache",
       "-PsavaBuildLocalRepo=$privateRepo",
     )
     assertTrue(first.output.contains("resolved every 'software.sava.build*' plugin to $savaBuildTestRepoVersion"), first.output)
-    assertTrue(first.output.contains("last publish"), first.output)
+    assertTrue(first.output.contains("published ${provenance.publishedAtUtc}"), first.output)
+    assertTrue(
+      first.output.contains(
+        "source snapshot at publication: commit ${provenance.gitCommit}"
+      ),
+      first.output,
+    )
+    assertTrue(first.output.contains("tree ${provenance.gitTree}"), first.output)
+    assertTrue(first.output.contains("${provenance.gitState.value} worktree"), first.output)
+    assertTrue(
+      first.output.contains("source-state SHA-256 ${provenance.sourceStateSha256}"),
+      first.output,
+    )
     assertTrue(
       first.output.contains("application-time SHA-256 $expectedSha256"),
       first.output,
@@ -95,6 +123,42 @@ class LocalRepoNoticeFunctionalTest {
       second.output.contains("application-time SHA-256 $expectedSha256"),
       second.output,
     )
+    assertTrue(
+      second.output.contains(
+        "source snapshot at publication: commit ${provenance.gitCommit}"
+      ),
+      second.output,
+    )
+  }
+
+  @Test
+  fun `local test publication sidecar binds the repository JAR`() {
+    val repo = File(localRepo)
+    val artifact = pluginArtifact(repo)
+    val sidecar = publicationProvenance(repo)
+    val checkout = File(savaBuildTestProperty("savaBuild.root"))
+
+    assertTrue(sidecar.isFile, "local test publication has no provenance sidecar: $sidecar")
+    val provenance = SavaBuildLocalPublicationProvenance.read(sidecar)
+    val revision = git(checkout, "rev-parse", "HEAD", "HEAD^{tree}")
+      .toString(Charsets.UTF_8)
+      .trim()
+      .lines()
+    val status = git(
+      checkout,
+      "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none",
+    )
+
+    assertEquals(PitestEvidence.sha256(artifact), provenance.jarSha256)
+    assertEquals(revision[0], provenance.gitCommit)
+    assertEquals(revision[1], provenance.gitTree)
+    assertEquals(
+      if (status.isEmpty()) SavaBuildLocalPublicationProvenance.GitState.CLEAN
+      else SavaBuildLocalPublicationProvenance.GitState.DIRTY,
+      provenance.gitState,
+    )
+    assertEquals(PitestEvidence.sha256(status), provenance.gitStatusSha256)
+    assertEquals(provenance, SavaBuildLocalPublicationProvenance.parse(provenance.render()))
   }
 
   @Test
@@ -111,6 +175,15 @@ class LocalRepoNoticeFunctionalTest {
     assertTrue(stored.output.contains("Configuration cache entry stored"), stored.output)
     artifact.appendText("republished after the configuration-cache entry was stored")
     val republishedSha256 = PitestEvidence.sha256(artifact)
+    val priorProvenance = SavaBuildLocalPublicationProvenance.read(
+      publicationProvenance(privateRepo)
+    )
+    publicationProvenance(privateRepo).writeText(
+      priorProvenance.copy(
+        publishedAtUtc = priorProvenance.publishedAtUtc.plusSeconds(1),
+        jarSha256 = republishedSha256,
+      ).render()
+    )
 
     val refreshed = runBuild(*arguments)
 
@@ -124,6 +197,117 @@ class LocalRepoNoticeFunctionalTest {
       refreshed.output,
     )
     assertFalse(refreshed.output.contains("Reusing configuration cache"), refreshed.output)
+  }
+
+  @Test
+  fun `configuration cache invalidates when only publication provenance changes`() {
+    val privateRepo = copiedLocalRepo()
+    val sidecar = publicationProvenance(privateRepo)
+    writeFixture(privateRepo)
+    val arguments = arrayOf(
+      "help", "--configuration-cache",
+      "-PsavaBuildLocalRepo=$privateRepo",
+    )
+
+    val stored = runBuild(*arguments)
+    assertTrue(stored.output.contains("Configuration cache entry stored"), stored.output)
+    val prior = SavaBuildLocalPublicationProvenance.read(sidecar)
+    val nextCommitDigit = if (prior.gitCommit.first() == 'a') "b" else "a"
+    val nextCommit = nextCommitDigit.repeat(prior.gitCommit.length)
+    sidecar.writeText(
+      prior.copy(
+        gitCommit = nextCommit,
+        publishedAtUtc = prior.publishedAtUtc.plusSeconds(1),
+      ).render()
+    )
+
+    val refreshed = runBuild(*arguments)
+
+    assertTrue(
+      refreshed.output.contains("configuration cache cannot be reused because file") &&
+          refreshed.output.contains("sava-build-0.0.0-test-provenance.tsv") &&
+          refreshed.output.contains("has changed"),
+      refreshed.output,
+    )
+    assertTrue(
+      refreshed.output.contains("source snapshot at publication: commit $nextCommit"),
+      refreshed.output,
+    )
+    assertFalse(refreshed.output.contains("Reusing configuration cache"), refreshed.output)
+    assertFalse(
+      refreshed.output.contains("provenance changed after plugin application"),
+      refreshed.output,
+    )
+  }
+
+  @Test
+  fun `notice refuses missing local publication provenance`() {
+    val privateRepo = copiedLocalRepo()
+    assertTrue(publicationProvenance(privateRepo).delete())
+    writeFixture(privateRepo)
+
+    val failed = GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withArguments("help", "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace")
+      .buildAndFail()
+
+    assertTrue(failed.output.contains("local publication provenance is missing"), failed.output)
+    assertTrue(
+      failed.output.contains(SavaBuildLocalRepoNoticePlugin.PUBLISH_TASK),
+      failed.output,
+    )
+  }
+
+  @Test
+  fun `notice refuses provenance for different JAR bytes`() {
+    val privateRepo = copiedLocalRepo()
+    val sidecar = publicationProvenance(privateRepo)
+    val provenance = SavaBuildLocalPublicationProvenance.read(sidecar)
+    sidecar.writeText(provenance.copy(jarSha256 = "0".repeat(64)).render())
+    writeFixture(privateRepo)
+
+    val failed = GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withArguments("help", "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace")
+      .buildAndFail()
+
+    assertTrue(failed.output.contains("provenance claims JAR SHA-256"), failed.output)
+    assertTrue(failed.output.contains(PitestEvidence.sha256(pluginArtifact(privateRepo))), failed.output)
+  }
+
+  @Test
+  fun `notice refuses provenance replaced after application`() {
+    val privateRepo = copiedLocalRepo()
+    val sidecar = publicationProvenance(privateRepo)
+    writeFixture(privateRepo)
+    val escapedSidecar = sidecar.absolutePath.replace("\\", "\\\\")
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        val localPluginProvenance = file("$escapedSidecar")
+        tasks.register("replaceLocalProvenance") {
+          doLast {
+            localPluginProvenance.appendText("replaced after configuration")
+          }
+        }
+      """.trimIndent() + "\n"
+    )
+
+    val failed = GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withArguments(
+        "replaceLocalProvenance", "--configuration-cache", "--refresh-dependencies",
+        "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace",
+      )
+      .buildAndFail()
+
+    assertTrue(
+      failed.output.contains("local publication provenance changed after plugin application"),
+      failed.output,
+    )
+    assertTrue(
+      failed.output.contains("source identity may not describe the loaded plugin"),
+      failed.output,
+    )
   }
 
   @Test

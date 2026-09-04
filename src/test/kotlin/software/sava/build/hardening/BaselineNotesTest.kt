@@ -185,6 +185,25 @@ class BaselineNotesTest {
   }
 
   @Test
+  fun `population summary distinguishes physical sibling rows from unique keys`() {
+    assertEquals(
+        "4 rows / 2 unique keys",
+        BaselineNotes.populationSummary(
+            listOf(
+                "a,b,c,SURVIVED",
+                "a,b,c,SURVIVED",
+                "a,b,c,SURVIVED",
+                "x,y,z,NO_COVERAGE",
+            )),
+    )
+    assertEquals(
+        "1 row / 1 unique key",
+        BaselineNotes.populationSummary(listOf("a,b,c,SURVIVED")),
+    )
+    assertEquals("0 rows / 0 unique keys", BaselineNotes.populationSummary(emptyList()))
+  }
+
+  @Test
   fun `line drift is row-level when every row is tagged and counts match`() {
     fun row(key: String, line: Int?) =
         BaselineNotes.Row(key, null, line?.let { listOf(it) } ?: emptyList())

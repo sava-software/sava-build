@@ -29,6 +29,7 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 
@@ -55,6 +56,14 @@ abstract class FuzzRunTask : JavaExec() {
   @get:LocalState
   abstract val localCorpus: DirectoryProperty
 
+  /** Mutable diagnostic output; aggregate evidence continues to come from the live stream. */
+  @get:LocalState
+  abstract val logDirectory: DirectoryProperty
+
+  /** Restores the pre-concise aggregate console without changing standalone target output. */
+  @get:Input
+  abstract val fullAggregateOutput: Property<Boolean>
+
   @get:InputDirectory
   @get:Optional
   @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -76,6 +85,7 @@ abstract class FuzzRunTask : JavaExec() {
     outputs.upToDateWhen { false }
     mainClass.convention("com.code_intelligence.jazzer.Jazzer")
     jvmArguments.convention(JAZZER_JVM_ARGUMENTS)
+    fullAggregateOutput.convention(false)
     argumentProviders.add(commandLineProvider)
   }
 
@@ -97,28 +107,92 @@ abstract class FuzzRunTask : JavaExec() {
       local = localCorpus.get().asFile,
       seed = seedCorpus.orNull?.asFile,
     )
-    // Capture the native driver's terminal count directly from the live child
-    // streams while forwarding every byte unchanged. A mutable Gradle log is not
-    // evidence: it can be truncated, replaced, or contain output from other tasks.
-    val originalStandardOutput: OutputStream = getStandardOutput() ?: System.out
-    val originalErrorOutput: OutputStream = getErrorOutput() ?: System.err
-    val executionCount = FuzzExecutionCountCapture(originalStandardOutput, originalErrorOutput)
+    val target = targetName.get()
+    val logs = prepareFuzzAttemptLogs(logDirectory.get().asFile)
+    val configuredStandardOutput: OutputStream? = getStandardOutput()
+    val configuredErrorOutput: OutputStream? = getErrorOutput()
+    val originalStandardOutput = configuredStandardOutput ?: System.out
+    val originalErrorOutput = configuredErrorOutput ?: System.err
+    // A standalone fuzz task keeps JavaExec's raw-console contract. Aggregate
+    // campaigns are concise unless their compatibility flag explicitly opts out.
+    // Preserve the public JavaExec customization surface: an explicitly configured
+    // destination still receives every child byte.
+    val commonForwarding = !aggregateCampaign || fullAggregateOutput.get()
+    val executionCount = try {
+      FuzzExecutionCountCapture(
+        standardDelegate = originalStandardOutput,
+        errorDelegate = originalErrorOutput,
+        retainedStandardOutput = logs.standardSink,
+        retainedErrorOutput = logs.errorSink,
+        forwardStandard = commonForwarding || configuredStandardOutput != null,
+        forwardError = commonForwarding || configuredErrorOutput != null,
+        conciseProgress = { line -> logger.lifecycle("$path: $line") },
+      )
+    } catch (failure: Throwable) {
+      listOf(logs.standardSink, logs.errorSink).forEach { output ->
+        try {
+          output.close()
+        } catch (closeFailure: Throwable) {
+          failure.addSuppressed(closeFailure)
+        }
+      }
+      throw failure
+    }
+    if (aggregateCampaign) {
+      logger.lifecycle(
+        "$path: started fuzz '$target' with a ${budget}s budget; raw logs: " +
+          "${logs.standardOutput}, ${logs.errorOutput}",
+      )
+    }
     standardOutput = executionCount.standardOutput
     errorOutput = executionCount.errorOutput
+    var executionFailure: Throwable? = null
     try {
       super.exec()
+      // A consumer may configure this public JavaExec with ignoreExitValue=true.
+      // Campaign completion is stricter than that compatibility knob: a non-zero
+      // Jazzer exit is never a completed fuzz observation and must not earn a receipt.
+      executionResult.get().assertNormalExitValue()
+    } catch (failure: Throwable) {
+      executionFailure = failure
     } finally {
       standardOutput = originalStandardOutput
       errorOutput = originalErrorOutput
-      executionCount.finish()
+      try {
+        executionCount.close()
+      } catch (closeFailure: Throwable) {
+        executionFailure = retainPrimaryFailure(executionFailure, closeFailure)
+      }
     }
-    // A consumer may configure this public JavaExec with ignoreExitValue=true.
-    // Campaign completion is stricter than that compatibility knob: a non-zero
-    // Jazzer exit is never a completed fuzz observation and must not earn a receipt.
-    executionResult.get().assertNormalExitValue()
-    val target = targetName.get()
+    executionFailure?.let { failure ->
+      if (aggregateCampaign) {
+        logger.lifecycle(
+          "$path: failed; raw logs: ${logs.standardOutput}, ${logs.errorOutput}",
+        )
+      }
+      throw failure
+    }
     if (aggregateCampaign) {
-      session.recordCompleted(projectPath, target, executionCount.requireUniquePositive(target))
+      val executions = try {
+        executionCount.requireUniquePositive(target)
+      } catch (failure: Throwable) {
+        logger.lifecycle(
+          "$path: failed; raw logs: ${logs.standardOutput}, ${logs.errorOutput}",
+        )
+        throw failure
+      }
+      try {
+        session.recordCompleted(projectPath, target, executions)
+      } catch (failure: Throwable) {
+        logger.lifecycle(
+          "$path: failed; raw logs: ${logs.standardOutput}, ${logs.errorOutput}",
+        )
+        throw failure
+      }
+      logger.lifecycle(
+        "$path: completed $executions execution(s); raw logs: " +
+          "${logs.standardOutput}, ${logs.errorOutput}",
+      )
     }
   }
 }
@@ -218,24 +292,51 @@ abstract class FuzzMinimizeTask : JavaExec() {
 
 /**
  * Live parser for libFuzzer's canonical successful terminal line:
- * `Done N runs in S second(s)`. Each child stream is forwarded byte-for-byte and
- * buffered only until its next newline; the retained evidence is the parsed count in
- * the invocation-local build service, never a mutable output file.
+ * `Done N runs in S second(s)`. Each child stream is retained byte-for-byte and
+ * buffered only until its next newline. Standalone tasks forward the raw stream;
+ * aggregate tasks can instead surface only concise native progress. The evidence is
+ * always the count parsed live into the invocation-local build service, never a
+ * mutable output file.
  */
 internal class FuzzExecutionCountCapture(
   standardDelegate: OutputStream,
   errorDelegate: OutputStream,
+  retainedStandardOutput: OutputStream? = null,
+  retainedErrorOutput: OutputStream? = null,
+  forwardAll: Boolean = true,
+  forwardStandard: Boolean = forwardAll,
+  forwardError: Boolean = forwardAll,
+  conciseProgress: (String) -> Unit = {},
 ) {
   private val observations = FuzzExecutionCountObservations()
-  private val standardCapture = LineCaptureOutputStream(standardDelegate, observations::observe)
-  private val errorCapture = LineCaptureOutputStream(errorDelegate, observations::observe)
+  private val standardCapture = FuzzLineCaptureOutputStream(
+    standardDelegate,
+    retainedStandardOutput,
+    forwardStandard,
+    observations::observe,
+    conciseProgress,
+  )
+  private val errorCapture = FuzzLineCaptureOutputStream(
+    errorDelegate,
+    retainedErrorOutput,
+    forwardError,
+    observations::observe,
+    conciseProgress,
+  )
 
   val standardOutput: OutputStream = standardCapture
   val errorOutput: OutputStream = errorCapture
 
-  fun finish() {
-    standardCapture.finish()
-    errorCapture.finish()
+  fun close() {
+    var failure: Throwable? = null
+    listOf(standardCapture, errorCapture).forEach { capture ->
+      try {
+        capture.finishAndCloseRetained()
+      } catch (next: Throwable) {
+        failure = retainPrimaryFailure(failure, next)
+      }
+    }
+    failure?.let { throw it }
   }
 
   fun requireUniquePositive(target: String): Long = observations.requireUniquePositive(target)
@@ -286,51 +387,198 @@ private class FuzzExecutionCountObservations {
   }
 }
 
-private class LineCaptureOutputStream(
+private class FuzzLineCaptureOutputStream(
   private val delegate: OutputStream,
+  private val retained: OutputStream?,
+  private val forwardAll: Boolean,
   private val observe: (String) -> Unit,
+  private val conciseProgress: (String) -> Unit,
 ) : OutputStream() {
   private val line = ByteArrayOutputStream()
   private var overflow = false
+  private var retainedFailed = false
+  private var delegateFailed = false
+  private var processingFailed = false
+  private var finished = false
+  private var failure: Throwable? = null
 
   @Synchronized
   override fun write(value: Int) {
-    delegate.write(value)
-    accept(value)
+    writeRetained { it.write(value) }
+    writeDelegate { it.write(value) }
+    process { accept(value) }
   }
 
   @Synchronized
   override fun write(bytes: ByteArray, offset: Int, length: Int) {
-    delegate.write(bytes, offset, length)
-    for (index in offset until offset + length) accept(bytes[index].toInt() and 0xff)
+    checkRange(bytes.size, offset, length)
+    writeRetained { it.write(bytes, offset, length) }
+    writeDelegate { it.write(bytes, offset, length) }
+    process {
+      for (index in offset until offset + length) accept(bytes[index].toInt() and 0xff)
+    }
   }
 
   @Synchronized
   override fun flush() {
-    delegate.flush()
+    writeRetained(OutputStream::flush)
+    writeDelegate(OutputStream::flush)
+  }
+
+  /**
+   * Gradle closes this stream on its background pipe-draining thread and swallows any
+   * throwable. Never throw there: remember every sink/parser failure, stop retrying the
+   * broken sink, and let [finishAndCloseRetained] report it on the task thread.
+   */
+  @Synchronized
+  override fun close() {
+    finishWithoutThrowing()
   }
 
   @Synchronized
-  fun finish() {
-    if (line.size() > 0 && !overflow) observe(line.toString(Charsets.UTF_8))
-    line.reset()
-    overflow = false
+  fun finishAndCloseRetained() {
+    finishWithoutThrowing()
+    failure?.let { throw it }
+  }
+
+  private fun finishWithoutThrowing() {
+    if (finished) return
+    try {
+      flushBufferedLine()
+    } catch (next: Throwable) {
+      processingFailed = true
+      remember(next)
+    }
+    finished = true
+    if (retained != null) {
+      try {
+        retained.close()
+      } catch (next: Throwable) {
+        remember(next)
+      }
+    }
+    if (forwardAll) {
+      try {
+        // The delegate belongs to JavaExec's caller. The pre-retention wrapper never
+        // closed it, and Gradle's output customization surface does not transfer
+        // ownership to this task; flushing preserves compatibility for streams reused
+        // by later tasks or build logic.
+        delegate.flush()
+      } catch (next: Throwable) {
+        remember(next)
+      }
+    }
+  }
+
+  private inline fun writeRetained(write: (OutputStream) -> Unit) {
+    val output = retained ?: return
+    if (retainedFailed || finished) return
+    try {
+      write(output)
+    } catch (next: Throwable) {
+      retainedFailed = true
+      remember(next)
+    }
+  }
+
+  private inline fun writeDelegate(write: (OutputStream) -> Unit) {
+    if (!forwardAll || delegateFailed || finished) return
+    try {
+      write(delegate)
+    } catch (next: Throwable) {
+      delegateFailed = true
+      remember(next)
+    }
+  }
+
+  private inline fun process(block: () -> Unit) {
+    if (processingFailed || finished) return
+    try {
+      block()
+    } catch (next: Throwable) {
+      processingFailed = true
+      remember(next)
+    }
+  }
+
+  private fun remember(next: Throwable) {
+    failure = retainPrimaryFailure(failure, next)
+  }
+
+  private fun checkRange(size: Int, offset: Int, length: Int) {
+    if (offset < 0 || length < 0 || offset > size - length) {
+      throw IndexOutOfBoundsException("size=$size, offset=$offset, length=$length")
+    }
   }
 
   private fun accept(value: Int) {
     if (value == '\n'.code) {
-      if (!overflow) observe(line.toString(Charsets.UTF_8))
-      line.reset()
-      overflow = false
+      flushBufferedLine()
     } else if (!overflow) {
       if (line.size() < MAX_CAPTURED_LINE_BYTES) line.write(value) else overflow = true
     }
   }
 
+  private fun flushBufferedLine() {
+    if (line.size() > 0 && !overflow) {
+      val text = line.toString(Charsets.UTF_8).removeSuffix("\r")
+      observe(text)
+      if (!forwardAll && CONCISE_PROGRESS.matches(text)) conciseProgress(text)
+    }
+    line.reset()
+    overflow = false
+  }
+
   private companion object {
     const val MAX_CAPTURED_LINE_BYTES = 4096
+    val CONCISE_PROGRESS = Regex("#[0-9]+\\s+(?:INITED|pulse|DONE)\\b.*")
   }
 }
+
+private data class FuzzAttemptLogs(
+  val standardOutput: File,
+  val errorOutput: File,
+  val standardSink: OutputStream,
+  val errorSink: OutputStream,
+)
+
+private fun prepareFuzzAttemptLogs(rawDirectory: File): FuzzAttemptLogs {
+  val targetDirectory = rawDirectory.toPath().toAbsolutePath().normalize()
+  Files.createDirectories(targetDirectory)
+  val attemptDirectory = Files.createTempDirectory(targetDirectory, "attempt-")
+  val standardPath = attemptDirectory.resolve(FUZZ_STANDARD_OUTPUT_LOG)
+  val errorPath = attemptDirectory.resolve(FUZZ_ERROR_OUTPUT_LOG)
+  val standardSink = Files.newOutputStream(
+    standardPath,
+    StandardOpenOption.CREATE_NEW,
+    StandardOpenOption.WRITE,
+    LinkOption.NOFOLLOW_LINKS,
+  )
+  val errorSink = try {
+    Files.newOutputStream(
+      errorPath,
+      StandardOpenOption.CREATE_NEW,
+      StandardOpenOption.WRITE,
+      LinkOption.NOFOLLOW_LINKS,
+    )
+  } catch (failure: Throwable) {
+    try {
+      standardSink.close()
+    } catch (closeFailure: Throwable) {
+      failure.addSuppressed(closeFailure)
+    }
+    throw failure
+  }
+  return FuzzAttemptLogs(
+    standardOutput = standardPath.toFile(),
+    errorOutput = errorPath.toFile(),
+    standardSink = standardSink,
+    errorSink = errorSink,
+  )
+}
+
+private const val FUZZ_STANDARD_OUTPUT_LOG = "jazzer.stdout.log"
+private const val FUZZ_ERROR_OUTPUT_LOG = "jazzer.stderr.log"
 
 internal data class FuzzCorpusCommitStats(
   val beforeFiles: Int,

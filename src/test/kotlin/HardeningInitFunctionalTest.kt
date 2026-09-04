@@ -74,7 +74,9 @@ class HardeningInitFunctionalTest {
     val normalizedReadme = readmeText.replace(Regex("\\s+"), " ")
     assertTrue(
       normalizedReadme.contains("Name the class, method, and semantic branch") &&
-          normalizedReadme.contains("omit source line numbers"),
+          normalizedReadme.contains("omit source line numbers") &&
+          normalizedReadme.contains("Every row retained in an accepted CSV remains active") &&
+          normalizedReadme.contains("pitest<Suite>BaselinePrune"),
       readmeText,
     )
     assertTrue(

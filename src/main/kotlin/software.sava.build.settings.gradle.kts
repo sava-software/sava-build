@@ -4,6 +4,18 @@ plugins {
   id("org.gradlex.java-module-dependencies")
 }
 
+// Install the aggregate certification anchor while the root is guaranteed to be
+// configured. Child feature plugins populate its exact inventory later; under
+// configuration-on-demand they may be omitted, but the root task still exists to fail
+// closed with its durable sentinel instead of becoming an unknown task.
+gradle.beforeProject(org.gradle.api.Action<org.gradle.api.Project> {
+  if (this == rootProject) {
+    pluginManager.apply(
+      software.sava.build.hardening.HardeningCertificationRootPlugin::class.java
+    )
+  }
+})
+
 // Announces a build running plugins from a local sava-build checkout instead of a
 // published release. No-op unless '-PsavaBuildLocalRepo' is set; see the plugin's
 // documentation for why the notice cannot live in the consumer's settings script.

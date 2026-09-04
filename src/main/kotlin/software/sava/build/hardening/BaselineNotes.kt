@@ -236,6 +236,24 @@ internal object BaselineNotes {
           (row.invalidLineMetadata?.let { " $it" } ?: "")
 
   /**
+   * Names both physical accepted rows and their distinct line-less identities. A
+   * duplicate-key baseline needs both numbers: the row count is the ratchet's
+   * sibling multiplicity, while the unique-key count is the inventory a reader can
+   * compare with prose without accidentally treating three sibling rows as three
+   * different mutant families.
+   *
+   * [keys] must contain one normalized key per physical row. The empty summary is
+   * useful for before/after diagnostics and deliberately reads `0 rows / 0 unique
+   * keys` rather than disappearing.
+   */
+  fun populationSummary(keys: Collection<String>): String {
+    val rowNoun = if (keys.size == 1) "row" else "rows"
+    val uniqueKeys = keys.toSet().size
+    val keyNoun = if (uniqueKeys == 1) "key" else "keys"
+    return "${keys.size} $rowNoun / $uniqueKeys unique $keyNoun"
+  }
+
+  /**
    * The line-drift check, row-level where the data supports it: for each key in
    * [observed] (its unkilled mutants' lines, one entry per mutant), the recorded
    * side is the union of that key's rows' `# line` tags. When every row of the key

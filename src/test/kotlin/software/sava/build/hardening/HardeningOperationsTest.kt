@@ -19,10 +19,11 @@ class HardeningOperationsTest {
 
   @Test
   fun `the central option inventory separates active and removed properties`() {
-    assertEquals(11, HardeningOptionNames.descriptors.size)
+    assertEquals(12, HardeningOptionNames.descriptors.size)
     assertEquals(
       setOf(
         HardeningOptionNames.ADOPT_LOCAL_CORPUS,
+        HardeningOptionNames.FULL_FUZZ_OUTPUT,
         HardeningOptionNames.ISOLATE_MUTANTS,
         HardeningOptionNames.LIST_UNKILLED,
         HardeningOptionNames.MAX_FUZZ_TIME,
@@ -67,6 +68,12 @@ class HardeningOperationsTest {
     assertTrue(help.contains("pitestEncodingBaselineUnion"), help)
     assertTrue(help.contains("pitestEncodingBaselineRetag"), help)
     assertTrue(help.contains("pitestEncodingBaselinePrune"), help)
+    assertTrue(
+      help.contains("Every retained row remains active matching authority") &&
+        help.contains("A # retired/# refactor note never removes or disables it") &&
+        help.contains("use guarded BaselinePrune to retire a reviewed unmatched row"),
+      help,
+    )
     assertTrue(help.contains("pitestEncodingTimeoutAuditInit"), help)
     assertTrue(help.contains("pitestModeCompareUnion"), help)
     assertTrue(help.contains("mutationOwnershipAudit"), help)

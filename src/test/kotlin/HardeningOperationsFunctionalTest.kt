@@ -207,7 +207,7 @@ class HardeningOperationsFunctionalTest {
     )
     assertSingleEntry(
       ":hardeningCertifyAll",
-      "certify every hardening project; sibling projects continue after failure",
+      "certify this Gradle root's registered hardening projects; publish receipt manifest",
     )
     assertSingleEntry(
       "pitestEncoding",
@@ -253,6 +253,12 @@ class HardeningOperationsFunctionalTest {
     )
     assertTrue(
       output.contains("remove schema 1 from substantive baselines; empty placeholders stay absent"),
+      output,
+    )
+    assertTrue(
+      output.contains("Every retained row remains active matching authority") &&
+        output.contains("A # retired/# refactor note never removes or disables it") &&
+        output.contains("use guarded BaselinePrune to retire a reviewed unmatched row"),
       output,
     )
     assertTrue(output.contains("Removed writer properties (refused since sava-build 21.5.22)"), output)
@@ -864,7 +870,7 @@ class HardeningOperationsFunctionalTest {
     val cold = runner("pitestEncodingBaselinePrune").build()
     assertFalse(cold.output.contains("Reusing configuration cache"), cold.output)
     assertTrue(cold.output.contains("selected baseline prune"), cold.output)
-    assertTrue(cold.output.contains("prune dropped 1 row(s)"), cold.output)
+    assertTrue(cold.output.contains("prune dropped 1 row / 1 unique key"), cold.output)
     assertEquals(
       BaselineDocument.CURRENT_HEADER + "\n" +
           "com.example.FakePit,main,MathMutator,SURVIVED # line 12\n",

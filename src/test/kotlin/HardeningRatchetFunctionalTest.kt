@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.hardening.BaselineNotes
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PrunePreviewState
 import java.io.File
@@ -343,7 +344,10 @@ $fuzzBlock
     // is stale — the run passes with no prune-candidate preview at all; only the line-drift
     // advisory asks for a re-read, since the recorded anchor no longer matches
     val moved = runner("pitestEncodingVerify", "-PlistUnkilled").build().output
-    assertTrue(moved.contains("1 rows — 1 '# untriaged'"), "per-label count missing:\n$moved")
+    assertTrue(
+        moved.contains("1 row / 1 unique key — 1 '# untriaged'"),
+        "per-label count missing:\n$moved",
+    )
     assertTrue(moved.contains("pitest 'encoding' unkilled:"), "-PlistUnkilled listing missing:\n$moved")
     val expectedDriftAdvisory =
       """
@@ -544,7 +548,7 @@ $fuzzBlock
 
     val output = runner("pitestEncoding").build().output
     assertTrue(
-      output.contains("1 row(s) are unmatched by this run") &&
+      output.contains("1 row / 1 unique key is unmatched by this run") &&
           output.contains("pitestEncodingBaselinePrune classifier marks exactly these row(s)") &&
           output.contains("com.example.Codec,decode,MathMutator,SURVIVED # line 30"),
       "conditional candidate preview missing or did not name the exact row:\n$output"
@@ -744,7 +748,7 @@ $fuzzBlock
     val reset = PrunePreviewState.parse(stateFile.readText())
     assertTrue(
         wandered.contains("prune-candidate preview differs from the previous eligible") &&
-            wandered.contains("2 candidate row(s) now, 1 previously") &&
+            wandered.contains("2 rows / 2 unique keys now, 1 row / 1 unique key previously") &&
             wandered.contains("added: $rowB") &&
             wandered.contains("two-matching-preview requirement is not met") &&
             wandered.contains("prune-candidate row change(s) vs previous eligible preview"),
@@ -784,6 +788,109 @@ $fuzzBlock
     val third = rawBaselinePruneRunner().build().output
     assertTrue(third.contains("prune dropped every row unmatched by this run"), third)
     assertFalse(baselineFile().exists(), "authorized prune left the deleted baseline row on disk")
+  }
+
+  @Test
+  fun `prune groups duplicate rows and possible locations without collapsing its multiset`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val survivedKey = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val noCoverageKey = "com.example.Codec,encode,NullReturnValsMutator,NO_COVERAGE"
+    val survivedRow = "$survivedKey # untriaged # line 99"
+    val noCoverageRow = "$noCoverageKey # untriaged # line 88"
+    baselineFile().writeText(
+        List(4) { survivedRow }.joinToString("\n", postfix = "\n") +
+            List(3) { noCoverageRow }.joinToString("\n", postfix = "\n"),
+    )
+
+    fun csv(method: String, line: Int, mutator: String, status: String): String =
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+            "$mutator,$method,$line,$status," +
+            if (status == "KILLED") "com.example.CodecTest" else "none"
+    fun xml(method: String, line: Int, mutator: String, status: String, description: String) =
+        """
+        <mutation status="$status" detected="${status == "KILLED"}">
+          <sourceFile>Codec.java</sourceFile>
+          <mutatedClass>com.example.Codec</mutatedClass>
+          <mutatedMethod>$method</mutatedMethod>
+          <lineNumber>$line</lineNumber>
+          <mutator>org.pitest.mutationtest.engine.gregor.mutators.$mutator</mutator>
+          <description>$description</description>
+        </mutation>
+        """.trimIndent()
+    writeReport(
+        listOf(
+            csv("decode", 30, "MathMutator", "SURVIVED"),
+            csv("decode", 31, "MathMutator", "KILLED"),
+            csv("decode", 32, "MathMutator", "KILLED"),
+            csv("encode", 40, "NullReturnValsMutator", "NO_COVERAGE"),
+            csv("encode", 41, "NullReturnValsMutator", "KILLED"),
+            csv("encode", 42, "NullReturnValsMutator", "KILLED"),
+        ),
+        listOf(
+            xml("decode", 30, "MathMutator", "SURVIVED", "live survived sibling"),
+            xml("decode", 31, "MathMutator", "KILLED", "first killed possibility"),
+            xml("decode", 32, "MathMutator", "KILLED", "second killed possibility"),
+            xml("encode", 40, "NullReturnValsMutator", "NO_COVERAGE", "live uncovered sibling"),
+            xml("encode", 41, "NullReturnValsMutator", "KILLED", "third killed possibility"),
+            xml("encode", 42, "NullReturnValsMutator", "KILLED", "fourth killed possibility"),
+        ).joinToString("\n"),
+    )
+    bindLegacyFixtureRecord()
+
+    fun assertGrouped(output: String) {
+      assertTrue(output.contains("3 × $survivedRow"), output)
+      assertTrue(output.contains("2 × $noCoverageRow"), output)
+      assertTrue(
+          output.contains("possible report locations grouped by line-less key:") &&
+              output.contains("$survivedKey (3 physical rows):") &&
+              output.contains("$noCoverageKey (2 physical rows):"),
+          output,
+      )
+      listOf(
+          "line 30: live survived sibling",
+          "line 31: first killed possibility",
+          "line 32: second killed possibility",
+          "line 40: live uncovered sibling",
+          "line 41: third killed possibility",
+          "line 42: fourth killed possibility",
+      ).forEach { location ->
+        assertEquals(
+            1,
+            Regex(Regex.escape(location)).findAll(output).count(),
+            "location should print once in a shared key block:\n$output",
+        )
+      }
+    }
+
+    val first = runner("pitestEncoding", "-PnoMutationHistory").build().output
+    assertTrue(first.contains("7 rows / 2 unique keys — 7 '# untriaged'"), first)
+    assertTrue(first.contains("5 rows / 2 unique keys are unmatched by this run"), first)
+    assertTrue(first.contains("stored prune-candidate observation 1 of 2 (5 rows / 2 unique keys)"), first)
+    assertGrouped(first)
+    val previewState = PrunePreviewState.parse(
+        File(fixtureDir, ".pitest-history/encoding.prune-previews").readText(),
+    )
+    assertEquals(5, previewState.candidates.size, "diagnostic grouping collapsed preview authority")
+    assertEquals(3, previewState.candidates.count { BaselineNotes.parse(it).key == survivedKey })
+    assertEquals(2, previewState.candidates.count { BaselineNotes.parse(it).key == noCoverageKey })
+
+    val second = runner("pitestEncoding", "-PnoMutationHistory").build().output
+    assertTrue(
+        second.contains("observation(s) (5 rows / 2 unique keys)"),
+        second,
+    )
+    val applied = rawBaselinePruneRunner().build().output
+    assertTrue(
+        applied.contains(
+            "prune dropped 5 rows / 2 unique keys unmatched by this run " +
+                "(baseline now 2 rows / 2 unique keys"),
+        applied,
+    )
+    assertGrouped(applied)
+    val remaining = baselineFile().readLines().filter { it.isNotBlank() }
+    assertEquals(2, remaining.size)
+    assertEquals(setOf(survivedKey, noCoverageKey), remaining.map { BaselineNotes.parse(it).key }.toSet())
   }
 
   @Test
@@ -1078,7 +1185,7 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(
-      output.contains("1 row(s) are unmatched by this run") &&
+      output.contains("1 row / 1 unique key is unmatched by this run") &&
           output.contains("com.example.Codec,decode,MathMutator,SURVIVED # since killed # line 30"),
       "the unmarked row must still appear in the prune-candidate preview:\n$output"
     )
@@ -1094,7 +1201,7 @@ $fuzzBlock
       baselineFile().readLines().filter { it.isNotBlank() }
     )
     assertTrue(pruned.contains("flip insurance at this key"), pruned)
-    assertTrue(pruned.contains("prune dropped 1 row(s)"), pruned)
+    assertTrue(pruned.contains("prune dropped 1 row / 1 unique key"), pruned)
 
     val updated = baselineUpdateRunner().build().output
     assertEquals(
@@ -1169,7 +1276,7 @@ $fuzzBlock
       ),
       baselineFile().readLines().filter { it.isNotBlank() }
     )
-    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("prune dropped 1 row / 1 unique key"), output)
     assertTrue(output.contains("# since killed # line 20"), output)
     assertFalse(output.contains("flip pending triage"), "same-status siblings misread as a cross-status flip:\n$output")
 
@@ -1206,7 +1313,7 @@ $fuzzBlock
       listOf("com.example.Codec,encode,MathMutator,NO_COVERAGE # unreachable claim # line 20"),
       baselineFile().readLines().filter { it.isNotBlank() }
     )
-    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("prune dropped 1 row / 1 unique key"), output)
     assertTrue(output.contains("# since killed # line 10"), output)
     assertFalse(output.contains("flip pending triage"), "a matched mutant vouched for a killed sibling:\n$output")
   }
@@ -1234,7 +1341,7 @@ $fuzzBlock
     // TIMED_OUT-kept and the excess is the exact row prune would remove
     val hinted = runner("pitestEncodingVerify").build().output
     assertTrue(
-      hinted.contains("1 row(s) are unmatched by this run") &&
+      hinted.contains("1 row / 1 unique key is unmatched by this run") &&
           hinted.contains("com.example.Codec,encode,MathMutator,SURVIVED # second # line 24"),
       "the excess row must be named as the exact candidate:\n$hinted"
     )
@@ -1246,8 +1353,8 @@ $fuzzBlock
       baselineFile().readLines().filter { it.isNotBlank() },
       "one timeout budget must keep exactly one row:\n$output"
     )
-    assertTrue(output.contains("prune dropped 1 row(s)"), output)
-    assertTrue(output.contains("kept 1 unmatched row(s)"), output)
+    assertTrue(output.contains("prune dropped 1 row / 1 unique key"), output)
+    assertTrue(output.contains("kept 1 row / 1 unique key unmatched"), output)
     assertTrue(
       output.contains("preserved by this run's TIMED_OUT budget") &&
           output.contains("same-mutant versus sibling identity remains ambiguous"),
@@ -1286,7 +1393,7 @@ $fuzzBlock
       baselineFile().readLines().filter { it.isNotBlank() },
       "the budget must follow the timed-out line, not file order:\n$output"
     )
-    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("prune dropped 1 row / 1 unique key"), output)
     assertTrue(output.contains("# since killed # line 20"), output)
   }
 
@@ -1315,7 +1422,7 @@ $fuzzBlock
       "the hint must name the affine row as kept:\n$hinted"
     )
     assertTrue(
-      hinted.contains("1 row(s) are unmatched by this run") &&
+      hinted.contains("1 row / 1 unique key is unmatched by this run") &&
           hinted.contains("com.example.Codec,encode,MathMutator,SURVIVED # a # line 20"),
       "the unmatched row must be named as the exact candidate:\n$hinted"
     )
@@ -1351,7 +1458,7 @@ $fuzzBlock
       baselineFile().readLines().filter { it.isNotBlank() },
       "the killed-line row must not outrank the bare row for the timeout budget:\n$output"
     )
-    assertTrue(output.contains("prune dropped 1 row(s)"), output)
+    assertTrue(output.contains("prune dropped 1 row / 1 unique key"), output)
     assertTrue(output.contains("# since killed # line 20"), output)
   }
 
@@ -2556,7 +2663,7 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(
-      output.contains("1 row(s) are unmatched by this run") &&
+      output.contains("1 row / 1 unique key is unmatched by this run") &&
           output.contains("com.example.Codec,decode,MathMutator,SURVIVED # line 40"),
       "unmatched row not previewed exactly:\n$output"
     )
@@ -4208,7 +4315,7 @@ $fuzzBlock
 
     val preview = runner("pitestEncoding", "-PnoMutationHistory").build().output
     assertTrue(
-      preview.contains("2 row(s) are unmatched by this run") &&
+      preview.contains("2 rows / 2 unique keys are unmatched by this run") &&
           preview.contains("pitestEncodingBaselinePrune classifier marks exactly these row(s)") &&
           preview.contains(
             "com.example.Codec,encode,MathMutator,SURVIVED # encoding family # line 10") &&
@@ -4218,7 +4325,7 @@ $fuzzBlock
     )
 
     val prune = baselinePruneRunner().build().output
-    assertTrue(prune.contains("prune dropped 2 row(s)"), prune)
+    assertTrue(prune.contains("prune dropped 2 rows / 2 unique keys"), prune)
     assertTrue(
       prune.contains("com.example.Codec,encode,MathMutator,SURVIVED # encoding family # line 10"),
       prune
@@ -5839,7 +5946,8 @@ $fuzzBlock
 
     val output = runner("pitestEncodingVerify").build().output
     assertTrue(
-      output.contains("4 rows — 2 '# untriaged', 1 '# race guard family', 1 unlabeled"),
+      output.contains(
+          "4 rows / 2 unique keys — 2 '# untriaged', 1 '# race guard family', 1 unlabeled"),
       output
     )
   }
@@ -5864,7 +5972,7 @@ $fuzzBlock
     )
 
     val output = runner("pitestEncodingVerify").build().output
-    assertTrue(output.contains("2 rows — 2 unlabeled"), output)
+    assertTrue(output.contains("2 rows / 1 unique key — 2 unlabeled"), output)
   }
 
   @Test

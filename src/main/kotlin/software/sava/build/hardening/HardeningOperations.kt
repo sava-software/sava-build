@@ -21,6 +21,7 @@ internal object HardeningOptionNames {
   )
 
   const val ADOPT_LOCAL_CORPUS = "adoptLocalCorpus"
+  const val FULL_FUZZ_OUTPUT = "fullFuzzOutput"
   const val INIT_TIMEOUT_AUDIT = "initTimeoutAudit"
   const val ISOLATE_MUTANTS = "isolateMutants"
   const val LIST_UNKILLED = "listUnkilled"
@@ -67,6 +68,8 @@ internal object HardeningOptionNames {
   val descriptors = listOf(
     Descriptor(ADOPT_LOCAL_CORPUS, null,
         "include build/fuzz local findings when minimizing a committed corpus"),
+    Descriptor(FULL_FUZZ_OUTPUT, null,
+        "stream full Jazzer output during fuzzAll; byte-exact per-target logs are always retained"),
     Descriptor(ISOLATE_MUTANTS, null,
         "run one mutant per PIT unit to diagnose inter-mutant contamination; " +
             "requires -PmutateOnly and disables history"),
@@ -671,7 +674,7 @@ internal object HardeningHelpText {
     appendLine("Read-only and certification workflows:")
     appendLine("  qualityGate                       tests plus every registered mutation suite")
     appendLine("  hardeningCertify                  fresh full release certification; durable receipt in .pitest-history/")
-    appendLine("  :hardeningCertifyAll              certify every hardening project; sibling projects continue after failure")
+    appendLine("  :hardeningCertifyAll              certify this Gradle root's registered hardening projects; publish receipt manifest")
     appendLine("  pitestConverge                    compare two fresh observations")
     appendLine("  pitestModeSnapshot / pitestModeCompare  compare labeled execution modes")
     appendLine("  pitestMutatorTrial                measure candidate mutators")
@@ -695,6 +698,10 @@ internal object HardeningHelpText {
         "scaffold config/pitest/README.md and the .pitest-history/ ignore rule")
     appendLine()
     appendLine("Accepted-baseline document lifecycle (timeout audit sets retain their stable unversioned format):")
+    appendLine(
+        "  Every retained row remains active matching authority. A # retired/# refactor note " +
+            "never removes or disables it; use guarded BaselinePrune to retire a reviewed " +
+            "unmatched row.")
     appendLine("  migrateMutationBaselines          stamp substantive accepted baselines; remove empty placeholders")
     appendLine("  downgradeMutationBaselines        remove schema 1 from substantive baselines; empty placeholders stay absent")
     suitePrefixes.forEach { prefix ->
@@ -708,7 +715,9 @@ internal object HardeningHelpText {
       appendGenerated(
           "${prefix}BaselineRetag",
           "refresh matched line metadata without adding or removing accepted rows")
-      appendGenerated("${prefix}BaselinePrune", "apply the reviewed shrink-only candidate set")
+      appendGenerated(
+          "${prefix}BaselinePrune",
+          "retire reviewed unmatched rows through the guarded shrink-only protocol")
       appendGenerated(
           "${prefix}TimeoutAuditInit",
           "seed the suite timeout audit (uncertifiable until classified)")

@@ -324,6 +324,10 @@ $buildTail
               throw new IllegalStateException("writable corpus was not prepared: " + corpus);
             }
             System.out.println("fixture fuzz executed");
+            System.err.println("#1\tINITED cov: 1 ft: 1");
+            System.err.println("#2\tNEW cov: 2 ft: 2");
+            System.err.println("#3\tpulse  cov: 2 ft: 2");
+            System.err.println("#4\tREDUCE cov: 2 ft: 2");
             Path modeFile = Path.of("fake-fuzz-mode.txt");
             String mode = Files.exists(modeFile) ? Files.readString(modeFile).trim() : "ok";
             if (mode.equals("delete-fuzz-sentinel")) {
@@ -344,10 +348,47 @@ $buildTail
                 System.err.println("Done 1 runs in 1 second(s)");
               }
             }
+            System.err.println("#" + executions + "\tDONE cov: 2 ft: 2");
             System.err.println("Done " + executions + " runs in 1 second(s)");
           }
         }
       """.trimIndent() + "\n"
+    )
+  }
+
+  private fun writeCompositeAggregateSelectorFixture() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "main"
+        includeBuild("included")
+      """.trimIndent() + "\n",
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+      """.trimIndent() + "\n",
+    )
+
+    val included = File(fixtureDir, "included").apply { mkdirs() }
+    included.resolve("settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "included"
+      """.trimIndent() + "\n",
+    )
+    included.resolve("build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+      """.trimIndent() + "\n",
     )
   }
 
@@ -386,8 +427,10 @@ $buildTail
     return git("rev-parse", "HEAD") to git("rev-parse", "HEAD^{tree}")
   }
 
-  private fun git(vararg arguments: String): String {
-    val process = ProcessBuilder(listOf("git", "-C", fixtureDir.absolutePath) + arguments)
+  private fun git(vararg arguments: String): String = git(fixtureDir, *arguments)
+
+  private fun git(directory: File, vararg arguments: String): String {
+    val process = ProcessBuilder(listOf("git", "-C", directory.absolutePath) + arguments)
       .redirectErrorStream(true)
       .apply {
         environment()["GIT_CONFIG_GLOBAL"] = "/dev/null"
@@ -396,7 +439,11 @@ $buildTail
       }
       .start()
     val output = process.inputStream.bufferedReader().readText()
-    assertEquals(0, process.waitFor(), "git ${arguments.joinToString(" ")} failed:\n$output")
+    assertEquals(
+      0,
+      process.waitFor(),
+      "git -C ${directory.absolutePath} ${arguments.joinToString(" ")} failed:\n$output",
+    )
     return output.trim()
   }
 
@@ -1094,6 +1141,13 @@ $buildTail
 
     val first = runner("fuzzPlain", "-PmaxFuzzTime=1").build()
     assertTrue(first.output.contains("fixture fuzz executed"), first.output)
+    val firstAttempt = fuzzAttemptDirectories("plain").single()
+    val stdoutLog = firstAttempt.resolve("jazzer.stdout.log")
+    val stderrLog = firstAttempt.resolve("jazzer.stderr.log")
+    assertTrue(stdoutLog.readText().contains("fixture fuzz executed"), stdoutLog.readText())
+    assertTrue(stderrLog.readText().contains("\tNEW "), stderrLog.readText())
+    stdoutLog.appendText("stale stdout bytes\n")
+    stderrLog.appendText("stale stderr bytes\n")
     assertFalse(
       File(fixtureDir, ".pitest-history/local-fuzz.tsv").exists(),
       "a standalone fuzz target must not create an aggregate receipt",
@@ -1106,6 +1160,15 @@ $buildTail
     val second = runner("fuzzPlain", "-PmaxFuzzTime=1").build()
     assertTrue(second.output.contains("Configuration cache entry reused."), second.output)
     assertTrue(second.output.contains("fixture fuzz executed"), second.output)
+    val attempts = fuzzAttemptDirectories("plain")
+    assertEquals(2, attempts.size, "each invocation must retain its own raw-log attempt")
+    val secondAttempt = attempts.single { it != firstAttempt }
+    val secondStdout = secondAttempt.resolve("jazzer.stdout.log")
+    val secondStderr = secondAttempt.resolve("jazzer.stderr.log")
+    assertTrue(stdoutLog.readText().contains("stale stdout bytes"), stdoutLog.readText())
+    assertTrue(stderrLog.readText().contains("stale stderr bytes"), stderrLog.readText())
+    assertFalse(secondStdout.readText().contains("stale stdout bytes"), secondStdout.readText())
+    assertFalse(secondStderr.readText().contains("stale stderr bytes"), secondStderr.readText())
   }
 
   @Test
@@ -1117,7 +1180,28 @@ $buildTail
     val result = runner("fuzzAll", "-PmaxFuzzTime=1").build()
     val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
 
-    assertEquals(3, occurrences(result.output, "fixture fuzz executed"), result.output)
+    assertFalse(result.output.contains("fixture fuzz executed"), result.output)
+    assertFalse(result.output.contains("\tNEW "), result.output)
+    assertFalse(result.output.contains("\tREDUCE "), result.output)
+    mapOf("fuzzCodec" to 101L, "fuzzHollow" to 202L, "fuzzPlain" to 303L)
+        .forEach { (taskName, executions) ->
+      assertTrue(result.output.contains(":$taskName: #1\tINITED"), result.output)
+      assertTrue(result.output.contains(":$taskName: #3\tpulse"), result.output)
+      assertTrue(
+        result.output.contains(":$taskName: #$executions\tDONE cov: 2 ft: 2"),
+        result.output,
+      )
+      val target = taskName.removePrefix("fuzz").replaceFirstChar(Char::lowercase)
+      val attempt = fuzzAttemptDirectories(target).single()
+      val stdout = attempt.resolve("jazzer.stdout.log")
+      val stderr = attempt.resolve("jazzer.stderr.log")
+      assertTrue(stdout.isFile, "missing retained stdout for $taskName:\n${result.output}")
+      assertTrue(stderr.isFile, "missing retained stderr for $taskName:\n${result.output}")
+      assertTrue(stdout.readText().contains("fixture fuzz executed"), stdout.readText())
+      assertTrue(stderr.readText().contains("\tNEW "), stderr.readText())
+      assertTrue(stderr.readText().contains("\tREDUCE "), stderr.readText())
+      assertTrue(stderr.readText().contains("Done "), stderr.readText())
+    }
     assertTrue(receipt.isFile, "fuzzAll did not write its receipt:\n${result.output}")
     assertEquals(
       listOf(
@@ -1138,6 +1222,25 @@ $buildTail
       File(fixtureDir, ".pitest-history/local-fuzz.running").exists(),
       "successful campaign retained its running sentinel",
     )
+  }
+
+  @Test
+  fun `fuzzAll full-output compatibility flag restores raw console while retaining logs`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+
+    val result = runner("fuzzAll", "-PmaxFuzzTime=1", "-PfullFuzzOutput").build()
+
+    assertEquals(3, occurrences(result.output, "fixture fuzz executed"), result.output)
+    assertEquals(3, occurrences(result.output, "\tNEW cov: 2 ft: 2"), result.output)
+    assertEquals(3, occurrences(result.output, "\tREDUCE cov: 2 ft: 2"), result.output)
+    listOf("codec", "hollow", "plain").forEach { target ->
+      assertTrue(
+        fuzzAttemptDirectories(target).single().resolve("jazzer.stderr.log").isFile,
+        "missing retained stderr for $target:\n${result.output}",
+      )
+    }
   }
 
   @Test
@@ -1214,8 +1317,16 @@ $buildTail
     File(fixtureDir, "fake-fuzz-mode.txt").writeText("fail\n")
 
     val failed = runner("fuzzAll", "-PmaxFuzzTime=1").buildAndFail()
+    val attempt = fuzzAttemptDirectories("plain").single()
+    val stdoutLog = attempt.resolve("jazzer.stdout.log")
+    val stderrLog = attempt.resolve("jazzer.stderr.log")
 
     assertTrue(failed.output.contains("non-zero exit value 4"), failed.output)
+    assertTrue(failed.output.contains("failed; raw logs:"), failed.output)
+    assertTrue(failed.output.contains(stdoutLog.absolutePath), failed.output)
+    assertTrue(failed.output.contains(stderrLog.absolutePath), failed.output)
+    assertTrue(stdoutLog.readText().contains("fixture fuzz executed"), stdoutLog.readText())
+    assertTrue(stderrLog.readText().contains("\tREDUCE "), stderrLog.readText())
     assertFalse(
       File(fixtureDir, ".pitest-history/local-fuzz.tsv").exists(),
       "a failed target earned a fuzzAll receipt",
@@ -2357,6 +2468,48 @@ $buildTail
   }
 
   @Test
+  fun `zero-suite aggregate publishes and replaces a prior manifest with configuration cache`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "hardening-zero-suite-aggregate-smoke-test"
+      """.trimIndent() + "\n",
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+      """.trimIndent() + "\n",
+    )
+    initializeGitFixture()
+    val manifest = File(fixtureDir, ".pitest-history/pitest-certification-all.tsv").apply {
+      parentFile.mkdirs()
+      writeText("prior aggregate success\n")
+    }
+
+    val first = runner(":hardeningCertifyAll").build()
+    val manifestText = manifest.readText()
+
+    assertTrue(manifestText.contains("projectCount\t1\n"), manifestText)
+    assertTrue(manifestText.contains("suiteCount\t0\n"), manifestText)
+    assertTrue(manifestText.lineSequence().any { it.startsWith("project\t:\troot:") })
+    assertFalse(manifestText.lineSequence().any { it.startsWith("suite\t") })
+    assertFalse(manifest.readText() == "prior aggregate success\n")
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification-all.running").exists())
+    assertTrue(first.output.contains("1 project(s) and 0 suite(s) certified"), first.output)
+
+    val second = runner(":hardeningCertifyAll").build()
+    assertTrue(
+      second.output.contains("Configuration cache entry reused."),
+      "zero-suite aggregate did not reuse its configuration graph:\n${second.output}",
+    )
+    assertTrue(manifest.readText().contains("suiteCount\t0\n"))
+  }
+
+  @Test
   fun `PIT evidence creation and removal do not invalidate the configuration cache`() {
     writeFixture()
     // `check` replays every declared corpus. Seed both corpus-backed fixture targets
@@ -2895,6 +3048,10 @@ $buildTail
     assertTrue(bEvidence.historyAssisted, result.output)
     assertTrue(File(fixtureDir, "a/.pitest-history/pitest-certification.tsv").isFile)
     assertFalse(File(fixtureDir, "b/.pitest-history/pitest-certification.tsv").exists())
+    assertFalse(
+      File(fixtureDir, ".pitest-history/pitest-certification-all.tsv").exists(),
+      "direct project certification must not publish a Gradle-root aggregate manifest",
+    )
     val aReceipt = File(fixtureDir, "a/.pitest-history/pitest-certification.tsv")
         .canonicalPath
     assertTrue(
@@ -2932,7 +3089,29 @@ $buildTail
       File(fixtureDir, "src").copyRecursively(subproject.resolve("src"))
       File(fixtureDir, "corpus").copyRecursively(subproject.resolve("corpus"))
     }
-    runner(":a:hardeningCertify").build()
+    initializeGitFixture()
+    val initial = runner(":hardeningCertifyAll").build()
+    val aggregateManifest =
+        File(fixtureDir, ".pitest-history/pitest-certification-all.tsv")
+    val aggregateRunning =
+        File(fixtureDir, ".pitest-history/pitest-certification-all.running")
+    assertTrue(aggregateManifest.isFile, "aggregate manifest was not published:\n${initial.output}")
+    assertFalse(aggregateRunning.exists(), "successful aggregate retained its running sentinel")
+    val initialManifestBytes = aggregateManifest.readBytes()
+    val initialManifestText = initialManifestBytes.toString(Charsets.UTF_8)
+    val initialProjects = aggregateProjectRows(initialManifestText)
+    assertEquals(listOf(":a", ":b"), initialProjects.map { it[1] })
+    assertTrue(initialManifestText.contains("suiteCount\t2\n"), initialManifestText)
+    assertEquals(
+      listOf("suite\t:a\tencoding", "suite\t:b\tencoding"),
+      initialManifestText.lineSequence().filter { it.startsWith("suite\t") }.toList(),
+    )
+    initialProjects.forEach { project ->
+      assertEquals("1", project[4])
+      assertTrue(project[2].startsWith("root:"), project[2])
+      val childReceipt = fixtureDir.resolve(project[2].removePrefix("root:"))
+      assertEquals(PitestEvidence.sha256(childReceipt), project[3])
+    }
     val aReceipt = File(fixtureDir, "a/.pitest-history/pitest-certification.tsv")
     val aLastSuccess = aReceipt.readBytes()
     File(fixtureDir, "a/fake-pit-mode.txt").writeText("timeout\n")
@@ -2966,6 +3145,12 @@ $buildTail
       failed.output.contains(":b:hardeningCertify: 1 suite certified"),
       "successful sibling did not finish visibly:\n${failed.output}",
     )
+    assertArrayEquals(
+      initialManifestBytes,
+      aggregateManifest.readBytes(),
+      "failing aggregate replaced its last successful root manifest",
+    )
+    assertTrue(aggregateRunning.isFile, "failing aggregate did not retain its root sentinel")
     val bReceipt = File(fixtureDir, "b/.pitest-history/pitest-certification.tsv")
     val bFirstSuccess = bReceipt.readBytes()
 
@@ -2986,89 +3171,15 @@ $buildTail
       "aggregate retry reused the sibling project's earlier receipt",
     )
     assertFalse(File(fixtureDir, "a/.pitest-history/pitest-certification.running").exists())
-  }
-
-  @Test
-  fun `root certification aggregate continues a sibling after the later project fails first`() {
-    writeFixture()
-    writeSeedCorpus()
-    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
-    File(fixtureDir, "settings.gradle.kts").appendText("\ninclude(\"a\", \"b\")\n")
-    val sharedBuild = File(fixtureDir, "build.gradle.kts").readText()
-    File(fixtureDir, "build.gradle.kts").writeText("")
-    listOf("a", "b").forEach { name ->
-      val subproject = File(fixtureDir, name).apply { mkdirs() }
-      subproject.resolve("build.gradle.kts").writeText(
-        sharedBuild + if (name == "a") {
-          """
-
-            tasks.named("hardeningCertifyPreflight") {
-              mustRunAfter(":b:pitestEncodingVerify")
-            }
-          """.trimIndent() + "\n"
-        } else {
-          ""
-        },
-      )
-      File(fixtureDir, "src").copyRecursively(subproject.resolve("src"))
-      File(fixtureDir, "corpus").copyRecursively(subproject.resolve("corpus"))
+    assertFalse(aggregateRunning.exists(), "successful aggregate retry retained its root sentinel")
+    assertFalse(
+      initialManifestBytes.contentEquals(aggregateManifest.readBytes()),
+      "successful aggregate retry reused the prior root manifest",
+    )
+    aggregateProjectRows(aggregateManifest.readText()).forEach { project ->
+      val childReceipt = fixtureDir.resolve(project[2].removePrefix("root:"))
+      assertEquals(PitestEvidence.sha256(childReceipt), project[3])
     }
-    File(fixtureDir, "b/fake-pit-mode.txt").writeText("timeout\n")
-
-    val failed = runner(":hardeningCertifyAll").buildAndFail()
-
-    assertTrue(
-      failed.output.contains(
-        "no audited set covers 1 physical TIMED_OUT mutant instance across 1 line-less key",
-      ),
-      failed.output,
-    )
-    assertTrue(
-      File(fixtureDir, "a/.pitest-history/pitest-certification.tsv").isFile,
-      "the sibling scheduled after project b's failure did not certify:\n${failed.output}",
-    )
-    assertFalse(File(fixtureDir, "a/.pitest-history/pitest-certification.running").exists())
-    assertTrue(File(fixtureDir, "b/.pitest-history/pitest-certification.running").isFile)
-    assertFalse(File(fixtureDir, "b/.pitest-history/pitest-certification.tsv").exists())
-    assertTrue(failed.output.contains(":a:hardeningCertify: 1 suite certified"), failed.output)
-  }
-
-  @Test
-  fun `root certification aggregate continues a child after the hardening root fails`() {
-    writeFixture()
-    writeSeedCorpus()
-    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
-    File(fixtureDir, "settings.gradle.kts").appendText("\ninclude(\"a\")\n")
-    val child = File(fixtureDir, "a").apply { mkdirs() }
-    child.resolve("build.gradle.kts").writeText(
-      File(fixtureDir, "build.gradle.kts").readText() +
-        """
-
-          tasks.named("hardeningCertifyPreflight") {
-            mustRunAfter(":pitestEncodingVerify")
-          }
-        """.trimIndent() + "\n",
-    )
-    File(fixtureDir, "src").copyRecursively(child.resolve("src"))
-    File(fixtureDir, "corpus").copyRecursively(child.resolve("corpus"))
-    File(fixtureDir, "fake-pit-mode.txt").writeText("timeout\n")
-
-    val failed = runner(":hardeningCertifyAll").buildAndFail()
-
-    assertTrue(
-      failed.output.contains(
-        "no audited set covers 1 physical TIMED_OUT mutant instance across 1 line-less key",
-      ),
-      failed.output,
-    )
-    assertTrue(File(fixtureDir, ".pitest-history/pitest-certification.running").isFile)
-    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists())
-    assertTrue(
-      File(fixtureDir, "a/.pitest-history/pitest-certification.tsv").isFile,
-      "root failure blocked the child finalizer:\n${failed.output}",
-    )
-    assertFalse(File(fixtureDir, "a/.pitest-history/pitest-certification.running").exists())
-    assertTrue(failed.output.contains(":a:hardeningCertify: 1 suite certified"), failed.output)
   }
 
   @Test
@@ -3086,13 +3197,198 @@ $buildTail
 
     assertTrue(
       failed.contains(
-        "hardeningCertifyAll cannot certify every registered project with task exclusion(s): " +
+        "cannot certify the exact registered aggregate inventory with task exclusion(s): " +
           "-x hardeningCertify",
       ),
       failed,
     )
     assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists())
     assertFalse(File(fixtureDir, "a/.pitest-history/pitest-certification.tsv").exists())
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification-all.tsv").exists())
+    assertTrue(
+      File(fixtureDir, ".pitest-history/pitest-certification-all.running").isFile,
+      "excluded aggregate did not durably invalidate any prior root manifest",
+    )
+  }
+
+  @Test
+  fun `aggregate completion task refuses direct selection without an authorized attempt`() {
+    writeFixture()
+
+    val failed = runner(":hardeningCertifyAllComplete").buildAndFail().output
+
+    assertTrue(
+      failed.contains("internal completion task") &&
+        failed.contains("run :hardeningCertifyAll instead"),
+      failed,
+    )
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification-all.tsv").exists())
+  }
+
+  @Test
+  fun `aggregate lock conflict preserves the owners manifest and sentinel`() {
+    writeFixture()
+    val history = File(fixtureDir, ".pitest-history").apply { mkdirs() }
+    val manifest = history.resolve("pitest-certification-all.tsv").apply {
+      writeText("aggregate receipt published by the owning process\n")
+    }
+    val ownerBytes = manifest.readBytes()
+    val lockFile = history.resolve("pitest-certification-all.lock")
+
+    FileChannel.open(
+      lockFile.toPath(),
+      StandardOpenOption.CREATE,
+      StandardOpenOption.WRITE,
+    ).use { channel ->
+      channel.lock().use {
+        val failed = runner(":hardeningCertifyAll").buildAndFail().output
+        assertTrue(failed.contains("another hardeningCertifyAll invocation owns"), failed)
+      }
+    }
+
+    assertArrayEquals(ownerBytes, manifest.readBytes())
+    assertFalse(
+      history.resolve("pitest-certification-all.running").exists(),
+      "non-owner overwrote the aggregate owner's sentinel",
+    )
+  }
+
+  @Test
+  fun `consumer doLast failure on aggregate anchor cannot publish a manifest`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "hardening-anchor-do-last-smoke-test"
+      """.trimIndent() + "\n",
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+        tasks.named("hardeningCertifyAll") {
+          doLast {
+            throw GradleException("custom aggregate anchor doLast failure")
+          }
+        }
+      """.trimIndent() + "\n",
+    )
+    initializeGitFixture()
+    val manifest = File(
+      fixtureDir,
+      ".pitest-history/pitest-certification-all.tsv",
+    ).apply {
+      parentFile.mkdirs()
+      writeText("prior aggregate success\n")
+    }
+    val priorManifest = manifest.readBytes()
+
+    val failed = runner(":hardeningCertifyAll", "--continue").buildAndFail().output
+
+    assertTrue(failed.contains("custom aggregate anchor doLast failure"), failed)
+    assertTrue(
+      failed.contains("aggregate publication skipped because the root anchor failed"),
+      failed,
+    )
+    assertArrayEquals(
+      priorManifest,
+      manifest.readBytes(),
+      "a consumer action failed after authorization but aggregate publication replaced prior proof",
+    )
+    assertTrue(
+      File(fixtureDir, ".pitest-history/pitest-certification-all.running").isFile,
+      "a post-authorization anchor failure did not preserve aggregate ineligibility",
+    )
+  }
+
+  @Test
+  fun `consumer doLast failure on child certification cannot publish an aggregate manifest`() {
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "hardening-child-do-last-smoke-test"
+      """.trimIndent() + "\n",
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+        tasks.named("hardeningCertify") {
+          doLast {
+            throw GradleException("custom child certification doLast failure")
+          }
+        }
+      """.trimIndent() + "\n",
+    )
+    initializeGitFixture()
+    val manifest = File(
+      fixtureDir,
+      ".pitest-history/pitest-certification-all.tsv",
+    ).apply {
+      parentFile.mkdirs()
+      writeText("prior aggregate success\n")
+    }
+    val priorManifest = manifest.readBytes()
+
+    val failed = runner(":hardeningCertifyAll", "--continue").buildAndFail().output
+
+    assertTrue(failed.contains("custom child certification doLast failure"), failed)
+    assertTrue(
+      failed.contains("project certification task(s) failed or were skipped: :"),
+      failed,
+    )
+    assertArrayEquals(
+      priorManifest,
+      manifest.readBytes(),
+      "a child task failed after receipt recording but aggregate publication replaced prior proof",
+    )
+    assertTrue(
+      File(fixtureDir, ".pitest-history/pitest-certification-all.running").isFile,
+      "a post-record child failure did not preserve aggregate ineligibility",
+    )
+  }
+
+  @Test
+  fun `root certification aggregate refuses configuration on demand under a durable sentinel`() {
+    writeFixture(projectRepositories = "")
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val sharedBuild = File(fixtureDir, "build.gradle.kts").readText()
+    File(fixtureDir, "build.gradle.kts").writeText("")
+    val child = File(fixtureDir, "a").apply { mkdirs() }
+    child.resolve("build.gradle.kts").writeText(sharedBuild)
+    File(fixtureDir, "src").copyRecursively(child.resolve("src"))
+    File(fixtureDir, "corpus").copyRecursively(child.resolve("corpus"))
+    val settings = File(fixtureDir, "settings.gradle.kts")
+    settings.writeText(
+      settings.readText()
+        .replace(
+          "rootProject.name =",
+          "plugins { id(\"software.sava.build\") }\n\nrootProject.name =",
+        ) + "\ninclude(\"a\")\n"
+    )
+    initializeGitFixture()
+
+    val failed = runner(
+      ":hardeningCertifyAll",
+      "--configure-on-demand",
+      "--continue",
+    ).buildAndFail().output
+
+    assertTrue(
+      failed.contains("configuration-on-demand can omit hardening projects"),
+      failed,
+    )
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification-all.tsv").exists())
+    assertTrue(
+      File(fixtureDir, ".pitest-history/pitest-certification-all.running").isFile,
+      "configuration-on-demand refusal did not invalidate prior aggregate evidence",
+    )
   }
 
   @Test
@@ -4030,5 +4326,23 @@ $buildTail
     assertTrue(events[1].startsWith("end "), events.toString())
     assertTrue(events[2].startsWith("start "), events.toString())
     assertTrue(events[3].startsWith("end "), events.toString())
+  }
+
+  private fun aggregateProjectRows(manifest: String): List<List<String>> =
+    manifest.lineSequence()
+      .filter { it.startsWith("project\t") }
+      .map { row ->
+        row.split('\t').also { columns ->
+          assertEquals(5, columns.size, "invalid aggregate project row: $row")
+        }
+      }
+      .toList()
+
+  private fun fuzzAttemptDirectories(target: String): List<File> {
+    val directory = File(fixtureDir, "build/reports/fuzz/$target")
+    return directory.listFiles()
+      .orEmpty()
+      .filter { it.isDirectory && it.name.startsWith("attempt-") }
+      .sortedBy { it.name }
   }
 }

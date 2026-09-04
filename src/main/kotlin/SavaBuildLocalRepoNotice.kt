@@ -30,8 +30,10 @@ import javax.inject.Inject
  * cases worth warning about (a forgotten publish changes nothing, so the entry is
  * reused; and switching back to an existing local-repo entry re-uses it too). A
  * dataflow action is stored in the cache entry and replayed on a hit, so this fires on
- * every build, and it reads the publish timestamp when it runs rather than reporting a
- * value captured at configuration time.
+ * every build. The source-provenance sidecar is frozen with the JAR when settings apply
+ * and re-read by that action, while its recorded UTC timestamp is aged at execution.
+ * Its identity is a snapshot at publication, not a claim about the publisher checkout's
+ * later state.
  */
 abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
   private val flowScope: FlowScope
@@ -51,6 +53,7 @@ abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
         "software/sava/sava-build/$TEST_VERSION/sava-build-$TEST_VERSION.jar",
       ).absoluteFile.normalize()
     }
+    val repoProvenance = repoArtifact?.let(SavaBuildLocalPublicationProvenance::sidecarFor)
     val repoArtifactSha256 = when {
       repoArtifact == null -> HardeningPluginIdentityService.NO_LOCAL_ARTIFACT
       repoArtifact.isFile -> PitestEvidence.sha256(repoArtifact)
@@ -71,6 +74,8 @@ abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
     // property value to.
     val configuredRepoDir = checkNotNull(repoDir)
     val configuredRepoArtifact = checkNotNull(repoArtifact)
+    val configuredRepoProvenance = checkNotNull(repoProvenance)
+    var localPublicationProvenance: SavaBuildLocalPublicationProvenance? = null
     if (configuredRepoArtifact.isFile) {
       repoArtifactSha256.also { sha256 ->
         if (sha256 != pluginIdentity.sha256) {
@@ -81,13 +86,35 @@ abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
           )
         }
       }
+      if (!configuredRepoProvenance.isFile) {
+        throw GradleException(
+          "sava-build: local publication provenance is missing at " +
+            "$configuredRepoProvenance; re-run sava-build's '$PUBLISH_TASK'"
+        )
+      }
+      localPublicationProvenance = readLocalPublicationProvenance(configuredRepoProvenance)
+      if (localPublicationProvenance.jarSha256 != repoArtifactSha256) {
+        throw GradleException(
+          "sava-build: local publication provenance claims JAR SHA-256 " +
+            "${localPublicationProvenance.jarSha256}, but the configured local-repo artifact is " +
+            "$repoArtifactSha256 at $configuredRepoArtifact; re-run sava-build's '$PUBLISH_TASK'"
+        )
+      }
     }
     flowScope.always(SavaBuildLocalRepoNotice::class.java) {
       parameters.localRepo.set(configuredRepoDir)
       parameters.pluginCodePath.set(pluginIdentity.codePath.absolutePath)
       parameters.repoArtifactPath.set(configuredRepoArtifact.absolutePath)
+      parameters.repoProvenancePath.set(configuredRepoProvenance.absolutePath)
       parameters.applicationPluginSha256.set(pluginIdentity.sha256)
       parameters.applicationRepoArtifactSha256.set(repoArtifactSha256)
+      parameters.applicationRepoProvenanceSha256.set(
+        localPublicationProvenance?.let { PitestEvidence.sha256(configuredRepoProvenance) }
+          ?: NO_LOCAL_PROVENANCE
+      )
+      parameters.applicationRepoProvenance.set(
+        localPublicationProvenance?.render() ?: NO_LOCAL_PROVENANCE
+      )
     }
   }
 
@@ -98,6 +125,8 @@ abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
     const val TEST_VERSION: String = "0.0.0-test"
 
     const val PUBLISH_TASK: String = "publishSavaBuildTestPublicationToSavaTestRepoRepository"
+
+    const val NO_LOCAL_PROVENANCE: String = "none"
   }
 }
 
@@ -122,6 +151,10 @@ class SavaBuildLocalRepoNotice : FlowAction<SavaBuildLocalRepoNotice.Parameters>
     @get:Input
     val repoArtifactPath: Property<String>
 
+    /** Source-provenance sidecar beside [repoArtifactPath]. */
+    @get:Input
+    val repoProvenancePath: Property<String>
+
     /** SHA-256 frozen when this plugin was applied (or restored from the cache entry). */
     @get:Input
     val applicationPluginSha256: Property<String>
@@ -129,6 +162,14 @@ class SavaBuildLocalRepoNotice : FlowAction<SavaBuildLocalRepoNotice.Parameters>
     /** Application-time repository SHA, or the missing-artifact sentinel. */
     @get:Input
     val applicationRepoArtifactSha256: Property<String>
+
+    /** SHA-256 of the canonical provenance sidecar frozen at plugin application. */
+    @get:Input
+    val applicationRepoProvenanceSha256: Property<String>
+
+    /** Canonical provenance fields frozen at plugin application for cache replay. */
+    @get:Input
+    val applicationRepoProvenance: Property<String>
   }
 
   override fun execute(parameters: Parameters) {
@@ -157,14 +198,50 @@ class SavaBuildLocalRepoNotice : FlowAction<SavaBuildLocalRepoNotice.Parameters>
           "refusing a build whose projects may have resolved different plugin bytes"
       )
     }
-    // Read now, not at configuration time: on a configuration cache hit the settings
-    // script never runs, so a timestamp captured there would be as old as the entry.
-    val metadata = File(repo, "software/sava/sava-build/maven-metadata.xml")
-    val publishState = if (metadata.isFile) {
-      "last publish ${age(System.currentTimeMillis() - metadata.lastModified())} ago"
+    val applicationProvenance = parameters.applicationRepoProvenance.get()
+    val expectedProvenance = if (
+      applicationProvenance == SavaBuildLocalRepoNoticePlugin.NO_LOCAL_PROVENANCE
+    ) {
+      null
     } else {
-      "NO $version PUBLISH FOUND THERE"
+      try {
+        SavaBuildLocalPublicationProvenance.parse(applicationProvenance)
+      } catch (failure: IllegalArgumentException) {
+        throw GradleException(
+          "sava-build: cached local publication provenance is invalid: ${failure.message}",
+          failure,
+        )
+      }
     }
+    val provenanceFile = File(parameters.repoProvenancePath.get())
+    if (expectedProvenance != null) {
+      val expectedProvenanceSha256 = parameters.applicationRepoProvenanceSha256.get()
+      val currentProvenanceSha256 = if (provenanceFile.isFile) {
+        PitestEvidence.sha256(provenanceFile)
+      } else {
+        HardeningPluginIdentityService.MISSING_LOCAL_ARTIFACT
+      }
+      if (currentProvenanceSha256 != expectedProvenanceSha256) {
+        throw GradleException(
+          "sava-build: local publication provenance changed after plugin application " +
+            "($expectedProvenanceSha256 -> $currentProvenanceSha256 at $provenanceFile); " +
+            "refusing a build whose source identity may not describe the loaded plugin"
+        )
+      }
+      val currentProvenance = readLocalPublicationProvenance(provenanceFile)
+      if (currentProvenance != expectedProvenance ||
+          currentProvenance.jarSha256 != currentRepoSha256) {
+        throw GradleException(
+          "sava-build: local publication provenance no longer describes the configured " +
+            "local-repo artifact at $repoArtifact"
+        )
+      }
+    }
+    val publishState = expectedProvenance?.let { provenance ->
+      val elapsed = System.currentTimeMillis() - provenance.publishedAtUtc.toEpochMilli()
+      "published ${provenance.publishedAtUtc} (${age(maxOf(0L, elapsed))} ago); " +
+        provenance.describeSourceSnapshotAtPublication()
+    } ?: "NO $version PUBLISH FOUND THERE"
     Logging.getLogger(SavaBuildLocalRepoNotice::class.java).warn(
       "sava-build: this build resolved every 'software.sava.build*' plugin to $version from the local " +
         "repo $repo ($publishState; application-time SHA-256 $expectedSha256), NOT the versions in the " +
@@ -182,4 +259,16 @@ class SavaBuildLocalRepoNotice : FlowAction<SavaBuildLocalRepoNotice.Parameters>
       else -> "${minutes / 1440} d ${minutes % 1440 / 60} h"
     }
   }
+}
+
+private fun readLocalPublicationProvenance(
+  file: File,
+): SavaBuildLocalPublicationProvenance = try {
+  SavaBuildLocalPublicationProvenance.read(file)
+} catch (failure: Exception) {
+  throw GradleException(
+    "sava-build: local publication provenance is malformed at $file: ${failure.message}; " +
+      "re-run sava-build's '${SavaBuildLocalRepoNoticePlugin.PUBLISH_TASK}'",
+    failure,
+  )
 }
