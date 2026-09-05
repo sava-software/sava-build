@@ -791,6 +791,96 @@ $fuzzBlock
   }
 
   @Test
+  fun `selective prune refuses mixed siblings even with distinct labels and line tags`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val key = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val before = "$key # reviewed retirement # line 10\n" +
+        "$key # keep this sibling # line 20\n"
+    baselineFile().writeText(before)
+    File(fixtureDir, "prune.keys").writeText("$key\n")
+    writeReport(listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+            "MathMutator,decode,10,KILLED,com.example.CodecTest",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+            "MathMutator,decode,20,SURVIVED,none",
+    ), "")
+    val output = rawBaselinePruneRunner("-PpruneBaselineKeys=prune.keys").buildAndFail().output
+    assertTrue(output.contains("same-key sibling retirement is ambiguous"), output)
+    assertTrue(output.contains("1 candidate row(s), 1 protected row(s)"), output)
+    assertEquals(before, baselineFile().readText())
+    assertFalse(File(fixtureDir, ".pitest-history/encoding.prune-previews").exists())
+  }
+
+  @Test
+  fun `selective prune still rejects unselected candidate drift and fresh gated debt`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val selected = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val unselected = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val before = "$selected # reviewed # line 10\n$unselected # retained # line 20\n"
+    baselineFile().writeText(before)
+    File(fixtureDir, "prune.keys").writeText("$selected\n")
+    fun report(unselectedStatus: String, newDebt: Boolean = false) = writeReport(buildList {
+      add("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+          "MathMutator,decode,10,KILLED,com.example.CodecTest")
+      add("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+          "MathMutator,encode,20,$unselectedStatus," +
+          if (unselectedStatus == "KILLED") "com.example.CodecTest" else "none")
+      if (newDebt) add("Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+          "MathMutator,fresh,30,SURVIVED,none")
+    }, "")
+    report("SURVIVED")
+    bindLegacyFixtureRecord()
+    repeat(2) {
+      runner("pitestEncoding", "-PnoMutationHistory", "-PpruneBaselineKeys=prune.keys").build()
+    }
+    report("KILLED")
+    val drift = rawBaselinePruneRunner("-PpruneBaselineKeys=prune.keys").buildAndFail().output
+    assertTrue(drift.contains("current candidate multiset differs"), drift)
+    assertTrue(drift.contains("added: $unselected"), drift)
+    assertEquals(before, baselineFile().readText())
+
+    report("KILLED", newDebt = true)
+    val debt = rawBaselinePruneRunner("-PpruneBaselineKeys=prune.keys").buildAndFail().output
+    assertTrue(debt.contains("not a green shrink-only transition"), debt)
+    assertTrue(debt.contains("com.example.Codec,fresh,MathMutator,SURVIVED"), debt)
+    assertEquals(before, baselineFile().readText())
+  }
+
+  @Test
+  fun `omitting selective prune option cannot promote subset previews to full deletion`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val key = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val before = "$key # reviewed # line 10\n" +
+        "com.example.Codec,old,MathMutator,SURVIVED # unlicensed retained # line 20\n"
+    baselineFile().writeText(before)
+    // Already part of main.allSource and the resource classpath even without the
+    // option: only the explicit selection-presence fence distinguishes this mode.
+    val selectorPath = "src/main/resources/prune.keys"
+    File(fixtureDir, selectorPath).apply {
+      parentFile.mkdirs()
+      writeText("$key\n")
+    }
+    writeReport(listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+            "MathMutator,decode,10,KILLED,com.example.CodecTest",
+    ), "")
+    bindLegacyFixtureRecord()
+    repeat(2) {
+      runner("pitestEncoding", "-PnoMutationHistory", "-PpruneBaselineKeys=$selectorPath").build()
+    }
+    val evidenceFile = File(fixtureDir, "build/reports/pitest/encoding/.evidence.tsv")
+    val previewInputs = PitestEvidence.parse(evidenceFile.readText()).inputIdentitySha256()
+    val output = rawBaselinePruneRunner().buildAndFail().output
+    assertEquals(previewInputs, PitestEvidence.parse(evidenceFile.readText()).inputIdentitySha256(),
+        "ordinary input identity changed; this fixture must specifically exercise the selection-presence fence")
+    assertTrue(output.contains("execution-input identity changed and reset the sequence"), output)
+    assertEquals(before, baselineFile().readText())
+  }
+
+  @Test
   fun `prune groups duplicate rows and possible locations without collapsing its multiset`() {
     writeFixture()
     baselineFile().parentFile.mkdirs()

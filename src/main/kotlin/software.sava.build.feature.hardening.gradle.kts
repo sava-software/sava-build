@@ -35,6 +35,7 @@ import software.sava.build.hardening.PrunePreviewHistory
 import software.sava.build.hardening.PrunePreviewObservation
 import software.sava.build.hardening.PrunePreviewTransition
 import software.sava.build.hardening.PrunePreviewTransitionKind
+import software.sava.build.hardening.PruneSelection
 import software.sava.build.hardening.ProjectWriteOperation
 import software.sava.build.hardening.RecordedLineMetadata
 import software.sava.build.hardening.TimeoutAudit
@@ -1393,6 +1394,9 @@ private val pitestModeCompareUnionPreflight = tasks.register<HardeningOperationR
   description = "Internal to pitestModeCompareUnion: selects one fresh mode-insurance write."
   hardeningProjectPath.set(project.path)
   request.set(HardeningWriteRequest.MODE_FLIP_INSURANCE)
+  presentIncompatibleProperties.set(listOf(HardeningOptionNames.PRUNE_BASELINE_KEYS).filter {
+    providers.gradleProperty(it).isPresent
+  })
   excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
   operationSession.set(hardeningOperationSession)
   certificationSession.set(hardeningCertificationSession)
@@ -2002,6 +2006,9 @@ private fun registerSchemaOperationPreflight(
   description = "Internal baseline-schema writer preflight."
   hardeningProjectPath.set(project.path)
   request.set(requestValue)
+  presentIncompatibleProperties.set(listOf(HardeningOptionNames.PRUNE_BASELINE_KEYS).filter {
+    providers.gradleProperty(it).isPresent
+  })
   excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
   operationSession.set(hardeningOperationSession)
   certificationSession.set(hardeningCertificationSession)
@@ -2635,11 +2642,27 @@ hardening.mutation.all {
   // compiled classes, dependencies, suite targeting, or tool/plugin bytes makes the
   // old report stale instead of silently authoritative.
   val evidenceProjectDir = layout.projectDirectory.asFile
+  val pruneSelectionRoot = rootProject.layout.projectDirectory.asFile
+  val pruneSelectionFile = providers.gradleProperty(HardeningOptionNames.PRUNE_BASELINE_KEYS)
+      .orNull?.let { requested ->
+        require(requested.isNotBlank()) {
+          "-PpruneBaselineKeys requires a nonblank file path; omit it to review the full candidate set"
+        }
+        rootProject.layout.projectDirectory.file(requested).asFile
+      }
+  val pruneSelectionArgument = pruneSelectionFile?.let {
+    " '-PpruneBaselineKeys=" +
+        it.relativeTo(pruneSelectionRoot).invariantSeparatorsPath.replace("'", "'\\''") + "'"
+  }.orEmpty()
   val evidenceSourceFiles = files(
       sourceSets.main.get().allSource,
       sourceSets.test.get().allSource,
       layout.projectDirectory.file("build.gradle.kts"),
       rootProject.layout.projectDirectory.file("settings.gradle.kts"),
+      // Selection is a decision input, not mutant identity. Binding its exact bytes
+      // and path here resets previews on any edit and catches changes during PIT or
+      // after dependency validation, including configuration-cache reuse.
+      pruneSelectionFile?.let { listOf(it) }.orEmpty(),
   )
   val evidenceClassFiles = fileTree(mutationClassesDir)
   val pitestBuildDirPath = layout.buildDirectory.get().asFile.absolutePath + File.separator
@@ -2798,6 +2821,22 @@ hardening.mutation.all {
                 verifyExcludedTaskNames.joinToString { "-x $it" })
       }
       val certificationActive = certificationSession.get().isActive(evidenceProjectPath)
+      val pruneSelectionBytes = pruneSelectionFile?.let { selectionFile ->
+        require(!certificationActive && (writeOperation == BaselineWriteOperation.CHECK || prune)) {
+          "-PpruneBaselineKeys is only supported for deliberate history-free previews and BaselinePrune"
+        }
+        BaselineFiles.readRegularFileSnapshot(pruneSelectionRoot, selectionFile)
+            ?: throw GradleException("-PpruneBaselineKeys selection file is missing: $selectionFile")
+      }
+      val pruneSelection = pruneSelectionBytes?.let { PruneSelection.parse(it.toString(Charsets.UTF_8)) }
+      fun requirePruneSelectionUnchanged() {
+        if (pruneSelectionFile != null && pruneSelectionBytes != null) {
+          require(BaselineFiles.readRegularFileSnapshot(pruneSelectionRoot, pruneSelectionFile)
+              ?.contentEquals(pruneSelectionBytes) == true) {
+            "prune selection changed at the write boundary; no baseline or provenance changes were made"
+          }
+        }
+      }
       val strictTimeoutAudit = strictTimeoutAuditRequested.get() || certificationActive || rebase
       val requestedMutationScope = mutationScopeProperty.orNull?.trim()?.also { scope ->
         if (scope.isEmpty()) {
@@ -4330,6 +4369,26 @@ hardening.mutation.all {
       val pruneCandidates = pruneCandidateIndices
           .map { BaselineNotes.render(acceptedRows[it]) }
           .sorted()
+      val selectivePrunePlan = pruneSelection?.plan(acceptedRows, keepPlan)
+      if (selectivePrunePlan != null) {
+        require(!scoped && !historyAssistedReport &&
+            verifiedEvidence?.scope == PitestEvidence.FULL_SCOPE &&
+            verifiedEvidence?.historyAssisted == false) {
+          "-PpruneBaselineKeys requires fresh full history-free evidence; run " +
+              "$evidencePitestTaskPath -PnoMutationHistory with the same selection file"
+        }
+        val removals = selectivePrunePlan.removedRowIndices.map { acceptedRows[it] }
+        val retained = selectivePrunePlan.retainedRowIndices.map { acceptedRows[it] }
+        logger.lifecycle(
+            "pitest baseline '$suiteName': selective prune preview — remove " +
+                "${BaselineNotes.populationSummary(removals.map { it.key })}; retain " +
+                "${BaselineNotes.populationSummary(retained.map { it.key })} active acceptance capacity " +
+                "byte-for-byte (including unselected candidates).\n" +
+                "  Exact selected removals:\n" + renderPruneDiagnosticRows(removals) +
+                "\n  Retained capacity by line-less key:\n" +
+                retained.groupingBy { it.key }.eachCount().toSortedMap().entries
+                    .joinToString("\n") { (key, count) -> "    $count × $key" })
+      }
       fun renderedBaselinePopulationSummary(renderedRows: Collection<String>): String =
           BaselineNotes.populationSummary(renderedRows.map { BaselineNotes.parse(it).key })
 
@@ -4386,13 +4445,23 @@ hardening.mutation.all {
             val transition = PrunePreviewHistory.observe(
                 prunePreviewFile.takeIf(File::isFile)?.readText(),
                 PrunePreviewObservation(
-                    inputIdentitySha256 = evidence.inputIdentitySha256(),
+                    inputIdentitySha256 = if (pruneSelectionBytes == null) {
+                      evidence.inputIdentitySha256()
+                    } else {
+                      // Explicit presence also matters when the selected file was
+                      // already among ordinary source inputs. Omitting the option
+                      // must never let subset previews authorize full-set deletion.
+                      PitestEvidence.sha256("prune-selection-v1\n" +
+                          evidence.inputIdentitySha256() + "\n" +
+                          PitestEvidence.sha256(pruneSelectionBytes))
+                    },
                     mutationRecordFingerprint = recordFingerprint,
                     invocationId = evidence.invocationId,
                     qualifies = fresh.isEmpty(),
                     candidates = pruneCandidates,
                 ),
             )
+            requirePruneSelectionUnchanged()
             BaselineFiles.writeAtomically(
                 evidenceProjectDir, prunePreviewFile, transition.state.render())
 
@@ -4452,7 +4521,7 @@ hardening.mutation.all {
                         "  Review: The candidate population is wandering. Do not infer stable " +
                         "removal or edit the baseline. The plugin does not infer whether the runs " +
                         "shared the reviewed solo/gate load context.\n" +
-                        "  Remedy: Obtain another $evidencePitestTaskPath -PnoMutationHistory " +
+                        "  Remedy: Obtain another $evidencePitestTaskPath -PnoMutationHistory$pruneSelectionArgument " +
                         "preview under the reviewed load context. Two distinct matching completed " +
                         "previews must exist before $evidenceBaselinePruneTaskPath can write.")
                 advisoryLog.get().record(
@@ -4624,7 +4693,14 @@ hardening.mutation.all {
               kept.add(row)
               keptUnmatched.add(row to "flip insurance at this key (remove by its written criterion, not a refresh)")
             }
-            BaselineEngine.Disposition.DROP -> droppedRows.add(row)
+            BaselineEngine.Disposition.DROP -> {
+              if (selectivePrunePlan == null || rowIndex in selectivePrunePlan.removedRowIndices) {
+                droppedRows.add(row)
+              } else {
+                kept.add(row)
+                keptUnmatched.add(row to "unselected; remains active acceptance capacity")
+              }
+            }
           }
         }
         // Prune is shrink-only, not gate-free. Validate the complete current gated
@@ -4640,7 +4716,9 @@ hardening.mutation.all {
                   unacceptedAfterPrune.joinToString("\n") { "  $it" }
           )
         }
-        require(droppedRows.map(BaselineNotes::render).sorted() == pruneCandidates) {
+        val selectedCandidates = selectivePrunePlan?.removedRowIndices
+            ?.map { BaselineNotes.render(acceptedRows[it]) }?.sorted() ?: pruneCandidates
+        require(droppedRows.map(BaselineNotes::render).sorted() == selectedCandidates) {
           "pitest baseline '$suiteName': prune writer and persisted candidate preview disagreed"
         }
         if (droppedRows.isNotEmpty()) {
@@ -4649,9 +4727,9 @@ hardening.mutation.all {
                   "${BaselineNotes.populationSummary(droppedRows.map { it.key })} write-boundary " +
                   "candidate set is not a provenance-bound " +
                   "fresh full history-free preview; no baseline or provenance changes were made.\n" +
-                  "  Remedy: Run $evidencePitestTaskPath -PnoMutationHistory until two distinct " +
+                  "  Remedy: Run $evidencePitestTaskPath -PnoMutationHistory$pruneSelectionArgument until two distinct " +
                   "matching completed previews exist under the reviewed load context, then run " +
-                  "$evidenceBaselinePruneTaskPath again.")
+                  "$evidenceBaselinePruneTaskPath$pruneSelectionArgument again.")
           if (!transition.writerAuthorized) {
             val exactDrift = buildList {
               transition.added.forEach { add("    added: $it") }
@@ -4690,9 +4768,24 @@ hardening.mutation.all {
                     "that the runs shared the relevant solo/gate load context or that each written " +
                     "removal criterion is satisfied.\n" +
                     "  Remedy: Review this completed preview, obtain another " +
-                    "$evidencePitestTaskPath -PnoMutationHistory preview if needed, then run " +
-                    "$evidenceBaselinePruneTaskPath again only after two completed previews match.")
+                    "$evidencePitestTaskPath -PnoMutationHistory$pruneSelectionArgument preview if needed, then run " +
+                    "$evidenceBaselinePruneTaskPath$pruneSelectionArgument again only after two completed previews match.")
           }
+        }
+        if (selectivePrunePlan != null) {
+          // Removing original physical slots is deliberately separate from the full
+          // prune's retag/canonicalization rewrite: no unselected byte is acknowledged
+          // or reformatted as a side effect of selecting other acceptance capacity.
+          val content = baselineDocument.removeRowsPreservingRaw(
+              selectivePrunePlan.removedRowIndices.toSet())
+          requirePruneSelectionUnchanged()
+          commitBaselinePlan(BaselineWritePlan(content.takeIf(String::isNotEmpty), content.isNotEmpty()))
+          logger.lifecycle(
+              "pitest baseline '$suiteName': selective prune dropped " +
+                  "${BaselineNotes.populationSummary(droppedRows.map { it.key })}; retained " +
+                  "${BaselineNotes.populationSummary(kept.map { it.key })} active acceptance capacity " +
+                  "byte-for-byte; no retained line tags refreshed")
+          return@doLast
         }
         reportLineDrift(
             "Pre-write notice",
@@ -5048,7 +5141,10 @@ hardening.mutation.all {
         val staleInsured = acceptedRows.indices.filter { keepPlan[it] == BaselineEngine.Disposition.INSURED }
         val staleGone = acceptedRows.indices.filter { keepPlan[it] == BaselineEngine.Disposition.DROP }
         if (staleGone.isNotEmpty()) {
-          val candidateHeading = if (fresh.isEmpty()) {
+          val candidateHeading = if (selectivePrunePlan != null) {
+            "Complete candidate inventory for drift detection (not the selected removal set); " +
+                "only the exact selected removals above are proposed for deletion:"
+          } else if (fresh.isEmpty()) {
             "The $evidenceBaselinePruneTaskPath classifier marks exactly these row(s) as " +
                 "candidates in this preview (no baseline change):"
           } else {
@@ -5092,16 +5188,16 @@ hardening.mutation.all {
             val nextStep = if (freshFullHistoryFreePreview && observations >= 2) {
               "The mechanical two-preview prerequisite is met. After review confirms the load " +
                   "context, every removal criterion, and the absence of fresh gated rows, run:\n" +
-                  "  ./gradlew $evidenceBaselinePruneTaskPath --console=plain\n"
+                  "  ./gradlew $evidenceBaselinePruneTaskPath$pruneSelectionArgument --console=plain\n"
             } else {
               "Obtain the next qualifying preview with:\n" +
-                  "  ./gradlew $evidencePitestTaskPath -PnoMutationHistory --console=plain\n" +
+                  "  ./gradlew $evidencePitestTaskPath -PnoMutationHistory$pruneSelectionArgument --console=plain\n" +
                   "Do not run $evidenceBaselinePruneTaskPath until two completed previews match.\n"
             }
             "\n$currentObservation\nEvidence required before deletion: at least two distinct, " +
                 "matching fresh full history-free previews under the relevant solo/gate " +
-                "conditions, with every listed row absent, plus row-by-row confirmation that " +
-                "each written removal criterion is met. The plugin does not persist or infer " +
+                "conditions, with the complete candidate multiset stable, plus row-by-row confirmation that " +
+                "each selected removal criterion is met. The plugin does not persist or infer " +
                 "that reviewed load context. $nextStep" +
                 "$evidenceBaselinePruneTaskPath performs another fresh full history-free " +
                 "write-boundary run and changes the baseline only from that run; review the " +
@@ -5995,6 +6091,9 @@ hardening.mutation.all {
       this.suiteName.set(writerSuiteName)
       request.set(requestValue)
       presentIncompatibleProperties.set(presentWriterIncompatibleProperties)
+      if (requestValue != HardeningWriteRequest.BASELINE_PRUNE && pruneSelectionFile != null) {
+        presentIncompatibleProperties.add(HardeningOptionNames.PRUNE_BASELINE_KEYS)
+      }
       excludedTaskNames.set(requestedExcludedTaskNames)
       operationSession.set(hardeningOperationSession)
       certificationSession.set(hardeningCertificationSession)

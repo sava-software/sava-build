@@ -19,7 +19,7 @@ class HardeningOperationsTest {
 
   @Test
   fun `the central option inventory separates active and removed properties`() {
-    assertEquals(12, HardeningOptionNames.descriptors.size)
+    assertEquals(13, HardeningOptionNames.descriptors.size)
     assertEquals(
       setOf(
         HardeningOptionNames.ADOPT_LOCAL_CORPUS,
@@ -31,6 +31,7 @@ class HardeningOperationsTest {
         HardeningOptionNames.MUTATE_ONLY,
         HardeningOptionNames.NO_MUTATION_HISTORY,
         HardeningOptionNames.PITEST_MODE,
+        HardeningOptionNames.PRUNE_BASELINE_KEYS,
         HardeningOptionNames.SAVA_BUILD_LOCAL_REPO,
         HardeningOptionNames.STRICT_TIMEOUT_AUDIT,
         HardeningOptionNames.TRIAL_MUTATORS,
@@ -68,6 +69,9 @@ class HardeningOperationsTest {
     assertTrue(help.contains("pitestEncodingBaselineUnion"), help)
     assertTrue(help.contains("pitestEncodingBaselineRetag"), help)
     assertTrue(help.contains("pitestEncodingBaselinePrune"), help)
+    assertTrue(help.contains("-PpruneBaselineKeys=<file>"), help)
+    assertTrue(help.contains("No labels, line tags, globs, or partial sibling counts"), help)
+    assertTrue(help.contains("unselected rows remain byte-for-byte active capacity, without retagging"), help)
     assertTrue(
       help.contains("Every retained row remains active matching authority") &&
         help.contains("A # retired/# refactor note never removes or disables it") &&

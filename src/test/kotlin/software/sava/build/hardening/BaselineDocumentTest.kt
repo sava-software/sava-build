@@ -13,6 +13,48 @@ class BaselineDocumentTest {
   private val second = "com.example.Codec,decode,VoidMethodCallMutator,NO_COVERAGE"
 
   @Test
+  fun `selective removal preserves exact unselected row slots and mixed line endings`() {
+    val legacy = "  com.example.Codec,decode,41,VoidMethodCallMutator,NO_COVERAGE  # keep original  "
+    val source = "${BaselineDocument.CURRENT_HEADER}\r\n" +
+        "# before\n$first # retire\r\n  # between\r$legacy\n" +
+        "$first # retire other sibling # line 30\r\n\t\n$legacy\r\n# after"
+    val expected = "${BaselineDocument.CURRENT_HEADER}\r\n" +
+        "# before\n  # between\r$legacy\n\t\n$legacy\r\n# after"
+
+    val result = BaselineDocument.parse(source).removeRowsPreservingRaw(setOf(0, 2))
+
+    assertEquals(expected, result)
+    assertEquals(listOf(legacy, legacy), BaselineDocument.parse(result).rowEntries.map { it.raw })
+    assertEquals(source, BaselineDocument.parse(source).removeRowsPreservingRaw(emptySet()))
+  }
+
+  @Test
+  fun `selective removal handles final unterminated rows and retains non-row evidence`() {
+    assertEquals("# evidence\r\n", BaselineDocument.parse("# evidence\r\n$first")
+        .removeRowsPreservingRaw(setOf(0)))
+    assertEquals("$second\n", BaselineDocument.parse("$second\n$first")
+        .removeRowsPreservingRaw(setOf(1)))
+    assertEquals("", BaselineDocument.parse(first).removeRowsPreservingRaw(setOf(0)))
+    assertEquals(BaselineDocument.CURRENT_HEADER + "\n# evidence\n\n",
+        BaselineDocument.parse(BaselineDocument.CURRENT_HEADER + "\n# evidence\n$first\n\n")
+            .removeRowsPreservingRaw(setOf(0)))
+  }
+
+  @Test
+  fun `selective removal refuses invalid slots malformed rows and invalid line metadata`() {
+    val document = BaselineDocument.parse("$first\n$second\n")
+    listOf(setOf(-1), setOf(2), setOf(0, 2)).forEach { indices ->
+      assertThrows(IllegalArgumentException::class.java) { document.removeRowsPreservingRaw(indices) }
+    }
+    assertThrows(IllegalArgumentException::class.java) {
+      BaselineDocument.parse("not,a,baseline\n$first\n").removeRowsPreservingRaw(setOf(0))
+    }
+    assertThrows(IllegalArgumentException::class.java) {
+      BaselineDocument.parse("$first # lines 10-30\n$second\n").removeRowsPreservingRaw(setOf(1))
+    }
+  }
+
+  @Test
   fun `only explicitly reviewed schemas may downgrade to N minus one`() {
     assertTrue(BaselineDocument.hasLosslessNMinusOneDowngrade("1"))
     assertFalse(BaselineDocument.hasLosslessNMinusOneDowngrade("2"))

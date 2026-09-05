@@ -10,6 +10,19 @@ class HardeningDocumentationBoundaryTest {
   private val hardening = projectRoot.resolve("HARDENING.md").readText()
 
   @Test
+  fun `selective prune is whole-key capacity retirement without weaker evidence or retagging`() {
+    val compact = hardening.replace(Regex("\\s+"), " ")
+    listOf(
+        "-PpruneBaselineKeys=<file>",
+        "Selecting a key selects **all** baseline rows at that key",
+        "omit the whole key if the repository must retain any of its capacity",
+        "preserved byte-for-byte; this mode performs no incidental retag",
+        "**complete** candidate multiset must still match, including unselected candidates",
+        "Failure leaves baseline and provenance unchanged",
+    ).forEach { assertTrue(compact.contains(it), it) }
+  }
+
+  @Test
   fun `release mechanics live in the sava-build README only`() {
     assertTrue(readme.contains("Releasing is Release Please plus the ordinary check"))
     assertTrue(readme.contains("optional diagnostic, not a tag or publication prerequisite"))

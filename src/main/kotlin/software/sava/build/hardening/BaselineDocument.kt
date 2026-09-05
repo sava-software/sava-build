@@ -110,6 +110,40 @@ internal class BaselineDocument private constructor(
   fun renderOriginal(): String = original
 
   /**
+   * Removes only the selected original row slots. Unlike a report-driven rewrite,
+   * selective capacity retirement must not retag or canonicalize any unselected
+   * row. Copy exact physical-line spans from the original so mixed line endings,
+   * legacy row spellings, the schema marker, and surrounding prose all survive.
+   *
+   * Indices identify document slots only after the caller has selected complete
+   * line-less keys; this helper does not establish same-mutant sibling identity.
+   */
+  fun removeRowsPreservingRaw(rowIndices: Set<Int>): String {
+    requireNoMalformedRows("selectively prune accepted-baseline rows")
+    requireNoInvalidLineMetadata("selectively prune accepted-baseline rows")
+    require(rowIndices.all { it in rowEntries.indices }) {
+      "selective prune row index is outside 0..${rowEntries.lastIndex}"
+    }
+    if (rowIndices.isEmpty()) return original
+    val removedLineNumbers = rowIndices.mapTo(HashSet()) { rowEntries[it].lineNumber }
+    return buildString {
+      var start = 0
+      var lineNumber = 1
+      while (start < original.length) {
+        var end = start
+        while (end < original.length && original[end] != '\r' && original[end] != '\n') end++
+        if (end < original.length) {
+          if (original[end] == '\r' && end + 1 < original.length && original[end + 1] == '\n') end++
+          end++
+        }
+        if (lineNumber !in removedLineNumbers) append(original, start, end)
+        start = end
+        lineNumber++
+      }
+    }
+  }
+
+  /**
    * Adds the current schema marker and canonicalizes valid rows through
    * [BaselineNotes], while preserving every comment and blank line in its original
    * position. A malformed row prevents the migration: carrying it into a marked

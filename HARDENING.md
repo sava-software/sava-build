@@ -858,7 +858,54 @@ Candidate previews and the applied-Prune summary retain the exact physical-row m
 but keep it readable: an identical rendered row is printed once as `N × <row>`, followed
 by one shared possible-report-location block per line-less key. Those display groups do
 not collapse the persisted preview state or the rows written to the baseline.
-Prune also refreshes the `# line` tag of each retained row matched at its own
+
+**Retiring a reviewed subset.** When a repository must keep unrelated unmatched
+evidence, use `-PpruneBaselineKeys=<file>` with the ordinary history-free previews
+and the named `BaselinePrune` writer. The file is relative to this Gradle root
+(not the selected module), must stay within that root without symlinks, and names
+one unique canonical `class,method,mutator,STATUS` key per line. Blank lines and
+whole-line `#` comments are allowed. Empty files, duplicate keys, labels, `# line`
+tags, legacy line-full rows, globs, and sibling counts are refused, never interpreted
+as a request to prune everything. For example, a reviewed
+`.pitest-history/ws-prune.keys` file might contain:
+
+```text
+com.example.Socket,oldHandler,MathMutator,SURVIVED
+```
+
+Selecting a key selects **all** baseline rows at that key, including duplicate
+capacity; every row must be an eligible candidate. If any sibling is matched,
+timeout-protected, pending a status flip, or flip-insured, selection refuses.
+Even when every sibling is a candidate, omit the whole key if the repository must
+retain any of its capacity: a label or line tag cannot identify just the sibling
+the operator wants to retire. This deliberately conservative interface can leave
+some reviewed rows pending; it does not manufacture same-mutant identity.
+
+Run the same project-qualified command twice, reviewing each completed preview:
+
+```sh
+./gradlew :module:pitestWs -PnoMutationHistory -PpruneBaselineKeys=.pitest-history/ws-prune.keys
+```
+
+Then select the writer, which runs its own third full observation:
+
+```sh
+./gradlew :module:pitestWsBaselinePrune -PpruneBaselineKeys=.pitest-history/ws-prune.keys
+```
+
+Every selective preview lists exact removals and retained capacity by key.
+Unselected rows, their duplicate multiplicity, spelling, line tags, comments, and
+line endings are preserved byte-for-byte; this mode performs no incidental retag.
+The exact selection bytes and presence are bound to the preview sequence, and the
+**complete** candidate multiset must still match, including unselected candidates.
+Changing or omitting the selector resets the sequence; changing it during PIT or
+at the final write boundary refuses the write. All existing provenance, full-population
+gate, timeout/flip protections, and two-prior-preview requirements remain in force.
+Failure leaves baseline and provenance unchanged; machine-local preview state may
+record a reset as usual. The selector is review input, not a new accepted record or
+authority for another writer or certification. Run one suite's workflow at a time.
+
+Without a selector, Prune also refreshes the `# line` tag of each retained row matched at its own
 key, using line affinity before file order; unmatched rows kept for
 `TIMED_OUT`, a pending flip, or flip insurance retain their prior tags because
 that run did not observe them at their own key. Before Prune refreshes any drifted

@@ -156,6 +156,36 @@ class HardeningOperationsFunctionalTest {
     File(fixtureDir, "build/fake-pit/runs.txt").delete()
   }
 
+  private data class SelectivePruneRecords(
+    val baseline: File,
+    val before: String,
+    val after: String,
+    val selector: File,
+    val argument: String,
+  )
+
+  private fun selectivePruneRecords(): SelectivePruneRecords {
+    val (baseline, _) = acceptedBaseline()
+    adoptExistingRecordWithRebase()
+    val selected =
+      "com.example.Removed,oldMethod,MathMutator,SURVIVED # reviewed retirement # line 99\r\n"
+    val prefix = BaselineDocument.CURRENT_HEADER + "\r\n" +
+        "com.example.FakePit,main,MathMutator,SURVIVED  # current acceptance  # line 10  \r\n" +
+        "# Keep this context in its original document slot.  \r\n\r\n"
+    val suffix = "# Protected evidence still grants acceptance capacity.\r\n" +
+        "com.example.OldTool,unlicensed,MathMutator,SURVIVED  # protected evidence # line 81  \r\n" +
+        "com.example.OldTool,unlicensed,MathMutator,SURVIVED  # protected evidence # line 81  \r\n"
+    val before = prefix + selected + selected + suffix
+    baseline.writeText(before)
+    val selectorPath = "config/pitest/encoding-prune-keys.csv"
+    val selector = File(fixtureDir, selectorPath).apply {
+      writeText("com.example.Removed,oldMethod,MathMutator,SURVIVED\n")
+    }
+    return SelectivePruneRecords(
+      baseline, before, prefix + suffix, selector, "-PpruneBaselineKeys=$selectorPath",
+    )
+  }
+
   @Test
   fun `installed help exposes read-only and writer workflows plus removed property mappings`() {
     writeFixture()
@@ -903,6 +933,143 @@ class HardeningOperationsFunctionalTest {
     assertFalse(args.contains("arcmutate_history"), args)
     assertFalse(args.contains("--historyInputLocation"), args)
     assertFalse(args.contains("--historyOutputLocation"), args)
+  }
+
+  @Test
+  fun `selective prune preserves raw unselected rows and siblings on cold and reused writer graphs`() {
+    writeFixture()
+    val records = selectivePruneRecords()
+    val provenance = listOf("encoding-pitest-version", "encoding-pitest-toolchain.tsv")
+      .associateWith { File(fixtureDir, "config/pitest/$it").readText() }
+
+    repeat(2) { cycle ->
+      // Reconstituting the test input exercises the same writer graph twice. The
+      // ordinary previews still have to finish before each destructive invocation.
+      if (cycle > 0) records.baseline.writeText(records.before)
+      val first = runner("pitestEncoding", "-PnoMutationHistory", records.argument).build()
+      assertEquals(records.before, records.baseline.readText(), first.output)
+      if (cycle == 0) assertTrue(first.output.contains(
+          "pitestEncoding -PnoMutationHistory '${records.argument}' --console=plain"), first.output)
+      val second = runner("pitestEncoding", "-PnoMutationHistory", records.argument).build()
+      assertTrue(second.output.contains("Reusing configuration cache"), second.output)
+      assertEquals(records.before, records.baseline.readText(), second.output)
+      assertTrue(second.output.contains(
+          "pitestEncodingBaselinePrune '${records.argument}' --console=plain"), second.output)
+      assertTrue(second.output.contains("not the selected removal set"), second.output)
+
+      val written = runner("pitestEncodingBaselinePrune", records.argument).build()
+      assertEquals(cycle > 0, written.output.contains("Reusing configuration cache"), written.output)
+      assertTrue(written.output.contains("prune dropped 2 rows / 1 unique key"), written.output)
+      // This is a byte-for-byte expectation, including CRLF, whitespace, comments,
+      // duplicate protected rows, and the matched row's deliberately stale line 10.
+      assertEquals(records.after, records.baseline.readText(), written.output)
+      provenance.forEach { (name, before) ->
+        assertEquals(before, File(fixtureDir, "config/pitest/$name").readText(), name)
+      }
+    }
+    assertEquals(6, File(fixtureDir, "build/fake-pit/runs.txt").readLines().size)
+    val args = File(fixtureDir, "build/fake-pit/args.txt").readText()
+    assertFalse(args.contains("arcmutate_history"), args)
+    assertFalse(args.contains("--historyInputLocation"), args)
+    assertFalse(args.contains("--historyOutputLocation"), args)
+  }
+
+  @Test
+  fun `selective prune binds selector raw bytes and resets matching previews when they change`() {
+    writeFixture()
+    val records = selectivePruneRecords()
+    runner("pitestEncoding", "-PnoMutationHistory", records.argument).build()
+    runner("pitestEncoding", "-PnoMutationHistory", records.argument).build()
+
+    // The selected keys are identical; only their serialized bytes change. The
+    // original review must not authorize a differently fingerprinted selector.
+    records.selector.writeText(records.selector.readText().replace("\n", "\r\n"))
+    val output = runner("pitestEncodingBaselinePrune", records.argument).buildAndFail().output
+
+    assertTrue(output.contains("execution-input identity changed and reset the sequence"), output)
+    assertTrue(output.contains("two prior distinct matching qualifying previews"), output)
+    assertEquals(records.before, records.baseline.readText(), output)
+    val preview = File(fixtureDir, ".pitest-history/encoding.prune-previews").readText()
+    assertTrue(preview.contains("# matching observations 1\n"), preview)
+  }
+
+  @Test
+  fun `selective prune refuses a missing selector instead of falling back to all candidates`() {
+    writeFixture()
+    val records = selectivePruneRecords()
+    runner("pitestEncoding", "-PnoMutationHistory", records.argument).build()
+    runner("pitestEncoding", "-PnoMutationHistory", records.argument).build()
+    assertTrue(records.selector.delete())
+
+    val output = runner("pitestEncodingBaselinePrune", records.argument).buildAndFail().output
+
+    assertTrue(output.contains("pruneBaselineKeys"), output)
+    assertTrue(output.contains(records.selector.name), output)
+    assertEquals(records.before, records.baseline.readText(), output)
+  }
+
+  @Test
+  fun `selective prune recaptures selector bytes after the dependency validator`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+
+        val tamperPruneSelection = tasks.register("tamperPruneSelection") {
+          dependsOn("pitestEncodingEvidenceValidate")
+          val selector = layout.projectDirectory.file("config/pitest/encoding-prune-keys.csv")
+          val trigger = layout.projectDirectory.file("tamper-prune-selection.flag")
+          doLast {
+            if (trigger.asFile.isFile) {
+              selector.asFile.apply {
+                writeText(readText().replace("\n", "\r\n"))
+              }
+            }
+          }
+        }
+        tasks.named("pitestEncodingVerify") {
+          dependsOn(tamperPruneSelection)
+        }
+      """.trimIndent() + "\n",
+    )
+    val records = selectivePruneRecords()
+    runner("pitestEncoding", "-PnoMutationHistory", records.argument).build()
+    runner("pitestEncoding", "-PnoMutationHistory", records.argument).build()
+    File(fixtureDir, "tamper-prune-selection.flag").writeText("tamper after validation\n")
+    val provenance = listOf("encoding-pitest-version", "encoding-pitest-toolchain.tsv")
+      .associateWith { File(fixtureDir, "config/pitest/$it").readText() }
+
+    val output = runner("pitestEncodingBaselinePrune", records.argument).buildAndFail().output
+
+    assertTrue(output.contains(":tamperPruneSelection"), output)
+    assertTrue(output.contains("inputs changed after evidence validation"), output)
+    assertTrue(output.contains("sourceSha256"), output)
+    assertEquals(records.before, records.baseline.readText(), output)
+    provenance.forEach { (name, before) ->
+      assertEquals(before, File(fixtureDir, "config/pitest/$name").readText(), name)
+    }
+  }
+
+  @Test
+  fun `selective prune option refuses unrelated writers and certification before PIT`() {
+    writeFixture()
+    val (baseline, before) = acceptedBaseline()
+    val selector = File(fixtureDir, "selected-prune-keys.csv").apply {
+      writeText("com.example.FakePit,main,MathMutator,SURVIVED\n")
+    }
+    listOf(
+      "pitestEncodingBaselineRetag",
+      "pitestEncodingBaselineUnion",
+      "pitestModeCompareUnion",
+      "migrateMutationBaselines",
+      "downgradeMutationBaselines",
+      "hardeningCertify",
+      ":hardeningCertifyAll",
+    ).forEach { task ->
+      val output = runner(task, "-PpruneBaselineKeys=${selector.name}").buildAndFail().output
+      assertTrue(output.contains("pruneBaselineKeys"), output)
+      assertEquals(before, baseline.readText(), output)
+      assertFalse(File(fixtureDir, "build/fake-pit/runs.txt").exists(), output)
+    }
   }
 
   @Test
