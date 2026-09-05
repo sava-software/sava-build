@@ -1,5 +1,13 @@
 # Changelog
 
+## [21.5.32](https://github.com/sava-software/sava-build/compare/21.5.31...21.5.32) (2026-09-05)
+
+
+### Bug Fixes
+
+* **hardening:** finish selected tests before PIT ([0976f9e](https://github.com/sava-software/sava-build/commit/0976f9e27b06a54cd1f10a1ba81a71d80752d929))
+* **hardening:** preflight adoption transitions ([00fee51](https://github.com/sava-software/sava-build/commit/00fee512c8d3f57320f5254646a55fc50444f6a6))
+
 ## [21.5.31](https://github.com/sava-software/sava-build/compare/21.5.30...21.5.31) (2026-09-04)
 
 
