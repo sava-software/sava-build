@@ -3078,7 +3078,7 @@ $buildTail
         sharedBuild + if (name == "b") {
           """
 
-            tasks.named("hardeningCertifyPreflight") {
+            tasks.named("pitestEncoding") {
               mustRunAfter(":a:pitestEncodingVerify")
             }
           """.trimIndent() + "\n"

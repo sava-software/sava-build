@@ -66,8 +66,11 @@ campaign; its Release Please mechanics live only in the README's
 [Local adoption and releasing](README.md#local-adoption-and-releasing)
 section.
 
-`qualityGate` = `test` + every registered `pitest<Suite>`, serialized, each
-finalized by its baseline verification. `hardeningCertify` is the release form:
+`qualityGate` = `test` + every registered `pitest<Suite>`, each finalized by its
+baseline verification. Ordinary tests selected in the Gradle root finish before any PIT
+process starts, including with configuration-cache reuse; PIT processes then retain their
+build-wide serialization. This is an ordering rule, so invoking a standalone PIT suite does
+not also select ordinary tests. `hardeningCertify` is the release form:
 it automatically disables mutation history, rejects scoped and record-changing
 flags before PIT starts, makes timeout drift and whole-production ownership strict,
 requires a provenance-bound report for every suite, and writes

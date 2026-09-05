@@ -664,9 +664,16 @@ val hardeningCertifyAllComplete = rootProject.tasks.named(
 hardeningCertifyAllComplete.mustRunAfter(hardeningCertify)
 hardeningCertifyAll.finalizedBy(hardeningCertify)
 
-// `mustRunAfter` only orders tasks within one project. PIT and corpus-rewrite tasks
-// retain an exclusive build-wide slot so mutation timeout evidence and source writes
-// are not load-dependent. Fuzz exploration has a separate, explicitly bounded pool:
+// Order PIT after every ordinary test already selected in this Gradle root, including
+// tests in sibling projects. Configuration caching can schedule these tasks concurrently
+// even without --parallel. Live collections include later-registered Test tasks, and
+// mustRunAfter does not add any test task to a standalone PIT invocation.
+val hardeningOrdinaryTests = rootProject.allprojects.map {
+  it.tasks.withType<org.gradle.api.tasks.testing.Test>()
+}
+
+// Keep PIT processes and corpus rewrites in one exclusive build-wide slot.
+// Fuzz exploration has a separate, explicitly bounded pool:
 // release owners can trade wall time for throughput, while the configured width and
 // every achieved execution count are bound into the campaign receipt.
 val hardeningExecutionLock = gradle.sharedServices.registerIfAbsent(
@@ -5710,6 +5717,7 @@ hardening.mutation.all {
     task.javaLauncher.convention(defaultPitestJavaLauncher)
     task.classpath = pitest
     task.mustRunAfter(hardeningCertifyPreflight)
+    task.mustRunAfter(hardeningOrdinaryTests)
 
     task.usesService(hardeningExecutionLock)
     task.usesService(hardeningCertificationSession)
