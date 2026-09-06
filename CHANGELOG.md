@@ -1,5 +1,18 @@
 # Changelog
 
+## [21.5.33](https://github.com/sava-software/sava-build/compare/21.5.32...21.5.33) (2026-09-06)
+
+
+### Features
+
+* **hardening:** support reviewed prune key subsets ([ac40b1d](https://github.com/sava-software/sava-build/commit/ac40b1db18941be19f31bd99b4891b8f314e2a8c))
+
+
+### Bug Fixes
+
+* **hardening:** address consumer adoption feedback ([29768d6](https://github.com/sava-software/sava-build/commit/29768d65774ea411a4011e7374900a91edbd4b55))
+* **hardening:** preserve template digest for adoption fixes ([535e7f0](https://github.com/sava-software/sava-build/commit/535e7f084f04481f25f5656aaaa11ed63b381fe3))
+
 ## [21.5.32](https://github.com/sava-software/sava-build/compare/21.5.31...21.5.32) (2026-09-05)
 
 
