@@ -2519,8 +2519,9 @@ to normalize the presentation used by releases before 21.5.25.
 >   class/method/mutator identifiers rather than source line numbers. Existing prose
 >   is not a plugin-upgrade gate; repair a stale locator when ordinary review encounters
 >   it. The current PIT report and the row's `# line` tag are the sole transient locators.
->   A new mutant replacing a killed one at the same key can inherit its acceptance,
->   so treat a line-drift advisory whose written argument no
+>   A new mutant replacing a
+>   killed one at the same key can inherit
+>   its acceptance, so treat a line-drift advisory whose written argument no
 >   longer fits the code as that swap until shown otherwise. After review, use
 >   `BaselineRetag` to refresh only matched line metadata while preserving every
 >   accepted row; never use an unrelated acceptance or deletion merely to clear
