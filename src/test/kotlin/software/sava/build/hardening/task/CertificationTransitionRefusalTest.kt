@@ -23,7 +23,10 @@ class CertificationTransitionRefusalTest {
     assertTrue(
       report.contains("observe: :ravina-solana:pitestEpoch -PnoMutationHistory") &&
         report.contains("writer: :ravina-solana:pitestEpochBaselineRebase") &&
-        report.contains("expected adoption stopping point"),
+        report.contains("expected adoption stopping point") &&
+        report.contains("two fresh full observations per transitioning suite") &&
+        report.contains("BaselineRebase's own write-boundary run") &&
+        report.contains("Final certification observes every suite again"),
       report,
     )
   }

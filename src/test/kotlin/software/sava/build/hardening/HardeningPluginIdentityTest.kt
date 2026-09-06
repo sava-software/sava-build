@@ -1,6 +1,7 @@
 package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertDoesNotThrow
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -11,6 +12,28 @@ class HardeningPluginIdentityTest {
 
   @TempDir
   lateinit var tempDir: File
+
+  @Test
+  fun `local artifact status requires the loaded bytes rather than property-shaped paths`() {
+    val loadedCode = tempDir.resolve("cache/sava-build.jar").apply {
+      parentFile.mkdirs()
+      writeText("published bytes")
+    }
+    val sameBytes = tempDir.resolve("local/software/sava/sava-build/0.0.0-test/sava-build-0.0.0-test.jar")
+      .apply {
+        parentFile.mkdirs()
+        writeText("published bytes")
+      }
+    val differentBytes = tempDir.resolve("other/sava-build-0.0.0-test.jar").apply {
+      parentFile.mkdirs()
+      writeText("candidate bytes")
+    }
+    val identity = HardeningPluginIdentity(loadedCode, PitestEvidence.sha256(loadedCode))
+
+    assertTrue(identity.matchesLoadedArtifact(sameBytes))
+    assertFalse(identity.matchesLoadedArtifact(differentBytes))
+    assertFalse(identity.matchesLoadedArtifact(tempDir.resolve("missing.jar")))
+  }
 
   @Test
   fun `guard binds both loaded code and the mutable local repository artifact`() {

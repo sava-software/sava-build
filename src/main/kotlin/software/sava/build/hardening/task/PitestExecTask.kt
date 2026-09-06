@@ -40,6 +40,7 @@ import software.sava.build.hardening.PitestEvidenceSnapshotInput
 import software.sava.build.hardening.qualifiedHardeningTaskPath
 import java.io.File
 import java.io.OutputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.time.Clock
 import java.time.LocalDate
@@ -656,6 +657,8 @@ abstract class PitestExecTask : JavaExec() {
     mutateOnly.orNull,
   )
 
+  protected fun currentCsvReport(): File = currentReportDirectory().resolve(REPORT_FILE)
+
   /** Direct PIT arguments/providers would bypass managed configuration and evidence identity. */
   private fun unmanagedPitArgumentsPresent(): Boolean =
     getArgs().isNotEmpty() || argumentProviders.any { it !== commandLineProvider }
@@ -948,12 +951,27 @@ abstract class PitestRunTask : PitestExecTask() {
     if (!shouldAdvisePitestCoverageTestCost(durationMillis)) return
 
     val scope = adviceAdvisoryScope.get()
+    val recordedKill = try {
+      pitestSlowTestHasRecordedKill(name, currentCsvReport().readLines())
+    } catch (_: IOException) {
+      false
+    }
+    if (!recordedKill) {
+      logger.info(
+        "$scope: slowest PIT coverage-phase test '$name' took $durationMillis ms. " +
+          "No matching killing-test identity was established in the current report; " +
+          "this does not establish whether it covers mutated code. Retained as a runtime " +
+          "diagnostic, without adding a hardening advisory."
+      )
+      return
+    }
     logger.warn(
       "$scope: slowest PIT coverage-phase test '$name' took $durationMillis ms " +
           "(advisory threshold ${PITEST_COVERAGE_TEST_COST_ADVISORY_MILLIS} ms) — potential " +
-          "repeated harness cost. This measurement does not prove the test covers a target mutant " +
-          "or prescribe a remedy; when it does cover mutated code, PIT can repay its wall-clock " +
-          "work across those mutants and produce load-dependent TIMED_OUT results."
+          "repeated harness cost. The current report names this test as a target mutant's " +
+          "killing test. Its coverage-phase duration does not diagnose a timeout cause or " +
+          "prescribe a remedy; investigate unnecessary harness work on the covering path " +
+          "and remeasure."
     )
     advisoryLog.get().record(
       scope,

@@ -81,6 +81,7 @@ class HardeningOperationsTest {
     assertTrue(help.contains("pitestEncodingTimeoutAuditInit"), help)
     assertTrue(help.contains("pitestModeCompareUnion"), help)
     assertTrue(help.contains("mutationOwnershipAudit"), help)
+    assertTrue(help.contains("savaBuildIdentity"), help)
     assertTrue(help.contains("whole-production owner/exclusion preflight"), help)
     assertTrue(help.contains("fuzzWireMinimize"), help)
     assertTrue(help.contains("durable receipt in .pitest-history/"), help)
@@ -88,7 +89,10 @@ class HardeningOperationsTest {
       help.contains("Aggregate transition lifecycle:") &&
         help.contains("Before child PIT, :hardeningCertifyAll reports every provenance-bound suite") &&
         help.contains("consolidated refusal is the expected adoption stop") &&
-        help.contains("exact listed writer"),
+        help.contains("exact listed writer") &&
+        help.contains("two fresh full observations per transitioning suite") &&
+        help.contains("BaselineRebase's own write-boundary run") &&
+        help.contains("Final certification observes every suite again"),
       help,
     )
     assertTrue(help.contains("Durable receipt-marker lifecycle:"), help)

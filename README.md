@@ -201,6 +201,13 @@ version pin. In a multi-project build, keep all three task names project-qualifi
 one chosen owner reports the installed version's guidance. Template synchronization is
 deliberately structural: the plugin does not attempt to judge arbitrary repository prose.
 
+Run that project's `savaBuildIdentity` (for example,
+`./gradlew :module:savaBuildIdentity`) to inspect the loaded plugin coordinates, code
+path, SHA-256, and local validation state without running PIT. Use this identity when
+checking a published upgrade: a version pin alone does not prove what Gradle loaded.
+An empty `-PsavaBuildLocalRepo=` clears an inherited override in the consumer setup
+shown below; it does not make a published plugin's stale template acknowledgment advisory.
+
 ## Plugins
 
 ### Settings plugins

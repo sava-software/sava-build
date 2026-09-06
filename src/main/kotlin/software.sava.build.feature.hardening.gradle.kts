@@ -19,8 +19,10 @@ import software.sava.build.hardening.HardeningOperationRequestTask
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.HardeningRepositoryCheckCoordinator
 import software.sava.build.hardening.HardeningOptionNames
+import software.sava.build.hardening.HardeningPluginIdentity
 import software.sava.build.hardening.HardeningPluginIdentityGuard
 import software.sava.build.hardening.HardeningPluginIdentityService
+import software.sava.build.hardening.SavaBuildIdentityTask
 import software.sava.build.hardening.HardeningTemplateDigest
 import software.sava.build.hardening.HardeningToolDefaults
 import software.sava.build.hardening.HardeningWriteRequest
@@ -266,14 +268,32 @@ val legacyCertificationReceiptRunning =
 // Freeze the bytes which applied this convention now. The settings plugin normally
 // registered the shared identity first; this registration is the direct-feature-plugin
 // fallback. The path remains only so execution boundaries can detect replacement.
-val hardeningImplementationCode =
-    File(PitestEvidence::class.java.protectionDomain.codeSource.location.toURI())
-val hardeningImplementationSha256AtProjectApplication =
-    PitestEvidence.fingerprintTree(hardeningImplementationCode)
+private val hardeningImplementationIdentity =
+    HardeningPluginIdentity.capture(PitestEvidence::class.java)
+val hardeningImplementationCode = hardeningImplementationIdentity.codePath
+val hardeningImplementationSha256AtProjectApplication = hardeningImplementationIdentity.sha256
+// A standalone hardening project has no settings identity service. Its project
+// buildscript classpath is already the plugin-resolution classpath; capture only the
+// matching sava-build artifact so identity output retains actual public coordinates.
+val hardeningProjectClasspathArtifact = buildscript.configurations.findByName("classpath")
+    ?.resolvedConfiguration?.resolvedArtifacts
+    ?.firstOrNull { artifact ->
+      artifact.moduleVersion.id.group == "software.sava" &&
+          artifact.moduleVersion.id.name == "sava-build" &&
+          hardeningImplementationIdentity.matchesLoadedArtifact(artifact.file)
+    }
+val hardeningProjectClasspathCoordinates =
+    hardeningProjectClasspathArtifact?.moduleVersion?.id?.toString()
+        ?: HardeningPluginIdentityService.UNAVAILABLE
+val hardeningProjectClasspathArtifactPath =
+    hardeningProjectClasspathArtifact?.file?.absoluteFile?.normalize()?.path
+        ?: HardeningPluginIdentityService.UNAVAILABLE
 private val hardeningPluginIdentityService = gradle.sharedServices.registerIfAbsent(
     HardeningPluginIdentityService.SERVICE_NAME, HardeningPluginIdentityService::class
 ) {
   parameters.applicationPluginSha256.set(hardeningImplementationSha256AtProjectApplication)
+  parameters.applicationPluginArtifactPath.set(hardeningProjectClasspathArtifactPath)
+  parameters.applicationPluginCoordinates.set(hardeningProjectClasspathCoordinates)
   parameters.localRepoArtifactPath.set(HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
   parameters.applicationLocalRepoArtifactSha256.set(HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
 }
@@ -283,6 +303,53 @@ val hardeningLocalRepoArtifactPath: Provider<String> =
     hardeningPluginIdentityService.map { it.parameters.localRepoArtifactPath.get() }
 val hardeningExpectedLocalRepoArtifactSha256: Provider<String> =
     hardeningPluginIdentityService.map { it.parameters.applicationLocalRepoArtifactSha256.get() }
+// The settings-level notice can name a local candidate only after matching its own
+// loaded bytes. Match the hardening feature's loaded bytes too: plugin requests may be
+// resolved independently, and a property or configured path alone does not prove this
+// project loaded the unpublished test publication.
+private val hardeningLoadedIdentity = hardeningPluginIdentityService.get().parameters
+val hardeningIdentityMatchesSettingsClasspath =
+    hardeningLoadedIdentity.applicationPluginSha256.get() == hardeningImplementationSha256AtProjectApplication
+val hardeningServiceCoordinates = hardeningLoadedIdentity.applicationPluginCoordinates.get()
+val hardeningServiceArtifactPath = hardeningLoadedIdentity.applicationPluginArtifactPath.get()
+val hardeningResolvedCoordinates = when {
+  !hardeningIdentityMatchesSettingsClasspath -> HardeningPluginIdentityService.UNAVAILABLE
+  hardeningServiceCoordinates != HardeningPluginIdentityService.UNAVAILABLE -> hardeningServiceCoordinates
+  else -> hardeningProjectClasspathCoordinates
+}
+val hardeningResolvedArtifactPath = when {
+  !hardeningIdentityMatchesSettingsClasspath -> HardeningPluginIdentityService.UNAVAILABLE
+  hardeningServiceArtifactPath != HardeningPluginIdentityService.UNAVAILABLE -> hardeningServiceArtifactPath
+  else -> hardeningProjectClasspathArtifactPath
+}
+val hardeningLoadedLocalArtifactPath = run {
+  val candidatePath = hardeningLoadedIdentity.localRepoArtifactPath.get()
+  if (hardeningResolvedCoordinates == "software.sava:sava-build:0.0.0-test" &&
+      candidatePath != HardeningPluginIdentityService.NO_LOCAL_ARTIFACT &&
+      hardeningImplementationIdentity.matchesLoadedArtifact(File(candidatePath))) {
+    candidatePath
+  } else {
+    HardeningPluginIdentityService.NO_LOCAL_ARTIFACT
+  }
+}
+val hardeningLoadedLocalArtifactSha256 = if (
+    hardeningLoadedLocalArtifactPath == HardeningPluginIdentityService.NO_LOCAL_ARTIFACT
+) HardeningPluginIdentityService.NO_LOCAL_ARTIFACT
+else PitestEvidence.sha256(File(hardeningLoadedLocalArtifactPath))
+tasks.register<SavaBuildIdentityTask>("savaBuildIdentity") {
+  group = "help"
+  description = "Prints the loaded hardening plugin identity and verified local-artifact state."
+  requestedCoordinates.set("unavailable at plugin application")
+  resolvedCoordinates.set(hardeningResolvedCoordinates)
+  resolvedArtifactPath.set(hardeningResolvedArtifactPath)
+  loadedCodePath.set(hardeningImplementationCode.absolutePath)
+  loadedSha256.set(hardeningImplementationSha256AtProjectApplication)
+  localOverrideState.set(
+      if (hardeningLoadedLocalArtifactPath == HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
+        "not verified" else "verified resolved local test publication")
+  localArtifactPath.set(hardeningLoadedLocalArtifactPath)
+  localArtifactSha256.set(hardeningLoadedLocalArtifactSha256)
+}
 val hardeningCertifyPreflight =
     tasks.register<HardeningCertificationPreflightTask>("hardeningCertifyPreflight") {
   description = "Internal to hardeningCertify: refuses flags that make the run partial or state-changing."
@@ -732,8 +799,10 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   } else {
     "${project.path}:hardeningAgentTemplateDiff"
   }
-  // Set when a build resolves an unreleased sava-build checkout through
-  // '-PsavaBuildLocalRepo'. A stale marker under that flag is the expected state,
+  // Set only when this feature plugin's loaded bytes match the configured local test
+  // publication. A property or configured repository is not enough: a custom
+  // settings script can leave it present while resolving a published plugin. A stale
+  // marker under verified local candidate validation is the expected state,
   // not a defect: the repo acknowledges the digest of a RELEASED plugin, and this
   // checkout's digest has not shipped yet. Failing here forced repos to acknowledge
   // unreleased digests ahead of the release — which then wedged their 'check'
@@ -741,7 +810,7 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   // A deliberate RC-adoption change may prepare the new block and marker now, but
   // that consumer commit must land only with or after the release pin it acknowledges.
   val validatingUnreleased =
-      providers.gradleProperty(HardeningOptionNames.SAVA_BUILD_LOCAL_REPO).isPresent
+      hardeningLoadedLocalArtifactPath != HardeningPluginIdentityService.NO_LOCAL_ARTIFACT
   val advisoryLog = hardeningAdvisoryLog
   val advisoryScope = "repository AGENTS.md"
   val repositoryCoordinator = hardeningRepositoryCheckCoordinator
@@ -751,11 +820,12 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
   inputs.property("templateDigest", expected)
   inputs.property("validatingUnreleased", validatingUnreleased)
   doLast {
+    val isValidatingUnreleased = validatingUnreleased
     if (!repositoryCoordinator.get().claim(
         "agentsTemplateInSync",
         agentsDoc.absoluteFile.normalize().path,
         expected,
-        if (validatingUnreleased) "unreleased" else "published",
+        if (isValidatingUnreleased) "unreleased" else "published",
       )) {
       logger.info("agentsTemplateInSync: repository-scoped check already ran in this build")
       return@doLast
@@ -794,7 +864,7 @@ val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
       HardeningAgentTemplateBlock.boundaryMigrationGuidance()
     }
     val stale = inspection.marker
-    if (stale != null && validatingUnreleased) {
+    if (stale != null && isValidatingUnreleased) {
       val boundaryMigrationNotice = if (boundaryMigration.isEmpty()) {
         ""
       } else {
@@ -4625,25 +4695,28 @@ hardening.mutation.all {
         }
       }
 
+      fun lineDrift(rows: List<BaselineNotes.Row>) = BaselineNotes.lineDrift(
+          rows,
+          currentLines.mapValues { (_, lines) -> lines.mapNotNull { it.toIntOrNull() } },
+      )
       // A line-drift signal must be observable before any operation that refreshes
       // the tags. Update and Prune are broader reviewed transitions, while Retag is
       // the metadata-only acknowledgement; all three print the pre-write evidence.
-      // Rebase and Union preserve existing tags, so an ordinary check still sees the
-      // signal after either additive transition.
-      val driftedBaselineLines = BaselineNotes.lineDrift(
-          acceptedRows,
-          currentLines.mapValues { (_, lines) -> lines.mapNotNull { it.toIntOrNull() } },
-      )
+      // Rebase, Union, and selective Prune can preserve existing tags, so calculate
+      // their warning from the committed result and print it only when that result
+      // still needs Retag.
+      val driftedBaselineLines = lineDrift(acceptedRows)
       fun reportLineDrift(
         followUpLabel: String,
         followUp: String,
         recordOutstanding: Boolean,
+        driftedLines: Map<String, Pair<Set<Int>, Set<Int>>> = driftedBaselineLines,
       ) {
-        if (driftedBaselineLines.isEmpty()) return
-        val keyCount = driftedBaselineLines.size
+        if (driftedLines.isEmpty()) return
+        val keyCount = driftedLines.size
         val keyNoun = if (keyCount == 1) "key" else "keys"
         val coordinates =
-            driftedBaselineLines.entries.sortedBy { it.key }.joinToString("\n") { (key, lines) ->
+            driftedLines.entries.sortedBy { it.key }.joinToString("\n") { (key, lines) ->
               val (recordedLines, observedLines) = lines
               "  $key # recorded tag line(s): ${recordedLines.sorted().joinToString(", ")}; " +
                   "unmatched observed line(s): ${observedLines.sorted().joinToString(", ")}"
@@ -4785,6 +4858,13 @@ hardening.mutation.all {
                   "${BaselineNotes.populationSummary(droppedRows.map { it.key })}; retained " +
                   "${BaselineNotes.populationSummary(kept.map { it.key })} active acceptance capacity " +
                   "byte-for-byte; no retained line tags refreshed")
+          reportLineDrift(
+              "Remedy if the argument still applies",
+              "Run $evidenceBaselineRetagTaskPath — it rewrites only matched line metadata, preserves " +
+                  "every accepted row, including unmatched licensed-engine evidence, and refuses any " +
+                  "fresh gated row.",
+              recordOutstanding = true,
+              driftedLines = lineDrift(kept))
           return@doLast
         }
         reportLineDrift(
@@ -4894,6 +4974,8 @@ hardening.mutation.all {
         // every missing current gated copy as explicit triage debt. Provenance and
         // the safe-superset record are one exception-transactional commit plan.
         val merge = BaselineEngine.rebaseMerge(acceptedRows, current, currentLines)
+        val rebasedRows = if (merge.added.isEmpty()) acceptedRows
+        else merge.merged.map(BaselineNotes::parse)
         if (merge.added.isNotEmpty()) {
           val plan = planBaseline(
               merge.merged.map(BaselineNotes::parse),
@@ -4925,6 +5007,13 @@ hardening.mutation.all {
                     "${baselineFile.name} absent and no provenance files written")
           }
         }
+        reportLineDrift(
+            "Remedy if the argument still applies",
+            "Run $evidenceBaselineRetagTaskPath — it rewrites only matched line metadata, preserves " +
+                "every accepted row, including unmatched licensed-engine evidence, and refuses any " +
+                "fresh gated row.",
+            recordOutstanding = true,
+            driftedLines = lineDrift(rebasedRows))
         return@doLast
       }
       if (update) {
@@ -5045,6 +5134,8 @@ hardening.mutation.all {
         // seeded '# untriaged' with the genuinely unclaimed lines — lives in
         // BaselineEngine.unionMerge
         val merge = BaselineEngine.unionMerge(acceptedRows, current, currentLines)
+        val unionRows = if (merge.added.isEmpty()) acceptedRows
+        else merge.merged.map(BaselineNotes::parse)
         if (merge.added.isEmpty()) {
           logger.lifecycle("pitest baseline '$suiteName': union added nothing new")
         } else {
@@ -5065,6 +5156,13 @@ hardening.mutation.all {
         if (merge.added.isEmpty()) {
           if (baselineFile.isFile) stampProvenance() else stampOrRetireProvenance()
         }
+        reportLineDrift(
+            "Remedy if the argument still applies",
+            "Run $evidenceBaselineRetagTaskPath — it rewrites only matched line metadata, preserves " +
+                "every accepted row, including unmatched licensed-engine evidence, and refuses any " +
+                "fresh gated row.",
+            recordOutstanding = true,
+            driftedLines = lineDrift(unionRows))
         return@doLast
       }
       // Line-drift advisory: an unkilled mutant at a line no row's '# line' tag

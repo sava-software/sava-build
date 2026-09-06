@@ -960,6 +960,14 @@ class HardeningOperationsFunctionalTest {
       val written = runner("pitestEncodingBaselinePrune", records.argument).build()
       assertEquals(cycle > 0, written.output.contains("Reusing configuration cache"), written.output)
       assertTrue(written.output.contains("prune dropped 2 rows / 1 unique key"), written.output)
+      val selectiveWriteAt = written.output.indexOf("selective prune dropped 2 rows / 1 unique key")
+      val retainedDriftAt = written.output.indexOf("line drift detected for 1 accepted key")
+      assertTrue(
+        selectiveWriteAt >= 0 && selectiveWriteAt < retainedDriftAt &&
+            written.output.contains("Run :pitestEncodingBaselineRetag") &&
+            written.output.contains("1 line-drifted baseline key"),
+        "selective Prune hid retained line drift after its byte-preserving write:\n${written.output}",
+      )
       // This is a byte-for-byte expectation, including CRLF, whitespace, comments,
       // duplicate protected rows, and the matched row's deliberately stale line 10.
       assertEquals(records.after, records.baseline.readText(), written.output)

@@ -509,6 +509,77 @@ $fuzzBlock
   }
 
   @Test
+  fun `rebase and union hand remaining line drift to retag after successful writes`() {
+    // Rebase changes provenance while retaining acceptance capacity. A matching
+    // line-less key can therefore keep its old tag after the fresh run: print the
+    // same Retag handoff only after that write succeeds, not as a pre-write claim.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 10\n",
+    )
+    File(fixtureDir, "config/pitest/encoding-timeouts.csv").writeText(
+      "com.example.Codec,encode,MathMutator # cause:liveness line 12\n",
+    )
+    File(fixtureDir, "config/pitest/README.md").writeText(
+      "## Codec.encode\n\n`Codec.encode`: removing progress strands the loop.\n",
+    )
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
+      ),
+      "",
+    )
+
+    // Seed the quiet counter, then make Rebase's new PIT observation differ. The
+    // reset notice is still observation-derived and must print for that real reset.
+    runner("pitestEncoding").build()
+    File(fixtureDir, "src/main/java/com/example/FakePit.java")
+      .appendText("\n// changed timeout-retirement inputs\n")
+
+    val rebased = runner("pitestEncodingBaselineRebase").build().output
+    val rebaseWriteAt = rebased.indexOf("BaselineRebase retained all 1 accepted row(s)")
+    val rebaseDriftAt = rebased.indexOf("line drift detected for 1 accepted key")
+    assertTrue(
+      rebaseWriteAt >= 0 && rebaseWriteAt < rebaseDriftAt &&
+          rebased.contains("timeout-retirement execution inputs changed") &&
+          rebased.contains("the quiet-run counter resets this run") &&
+          rebased.contains("Run :pitestEncodingBaselineRetag") &&
+          rebased.contains("1 line-drifted baseline key"),
+      "successful Rebase hid its remaining Retag handoff:\n$rebased",
+    )
+    assertEquals(
+      "com.example.Codec,encode,MathMutator,SURVIVED # untriaged # line 10\n",
+      baselineFile().readText(),
+      "Rebase must retain the line metadata it tells the operator to review",
+    )
+
+    // Union retains the old tag too. Its fresh observation has the same inputs, so
+    // it repeats the outstanding handoff without inventing a quiet-counter reset.
+    val union = baselineUnionRunner().build().output
+    val unionWriteAt = union.indexOf("union added nothing new")
+    val unionDriftAt = union.indexOf("line drift detected for 1 accepted key")
+    assertTrue(
+      unionWriteAt >= 0 && unionWriteAt < unionDriftAt &&
+          union.contains("Run :pitestEncodingBaselineRetag") &&
+          union.contains("1 line-drifted baseline key"),
+      "successful Union hid its remaining Retag handoff:\n$union",
+    )
+    assertFalse(
+      union.contains("timeout-retirement execution inputs changed"),
+      "a same-input writer invented a quiet-counter reset:\n$union",
+    )
+
+    val retagged = baselineRetagRunner().build().output
+    assertTrue(retagged.contains("retag refreshed 1 matched row line tag(s)"), retagged)
+    assertFalse(
+      retagged.contains("line-drifted baseline key"),
+      "successful Retag was presented as still owing Retag:\n$retagged",
+    )
+  }
+
+  @Test
   fun `retag refuses fresh debt before promising a pre-write drift diff`() {
     writeFixture()
     baselineFile().parentFile.mkdirs()

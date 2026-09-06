@@ -3,6 +3,10 @@ package software.sava.build.hardening
 import org.gradle.api.provider.Property
 import org.gradle.api.services.BuildService
 import org.gradle.api.services.BuildServiceParameters
+import org.gradle.api.DefaultTask
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.TaskAction
+import org.gradle.api.tasks.UntrackedTask
 import java.io.File
 
 /**
@@ -16,6 +20,17 @@ internal data class HardeningPluginIdentity(
   val codePath: File,
   val sha256: String,
 ) {
+
+  /**
+   * Whether an artifact is byte-for-byte the code this plugin classloader loaded.
+   *
+   * A local-repository property is only a request to redirect plugin resolution. It
+   * is not evidence that the request took effect, so callers must compare the loaded
+   * code with the configured artifact before describing a build as local.
+   */
+  fun matchesLoadedArtifact(artifact: File): Boolean =
+      artifact.isFile && sha256 == PitestEvidence.sha256(artifact)
+
   companion object {
 
     fun capture(owner: Class<*>): HardeningPluginIdentity {
@@ -33,6 +48,8 @@ internal abstract class HardeningPluginIdentityService :
 
   interface Parameters : BuildServiceParameters {
     val applicationPluginSha256: Property<String>
+    val applicationPluginArtifactPath: Property<String>
+    val applicationPluginCoordinates: Property<String>
     val localRepoArtifactPath: Property<String>
     val applicationLocalRepoArtifactSha256: Property<String>
   }
@@ -41,6 +58,34 @@ internal abstract class HardeningPluginIdentityService :
     const val SERVICE_NAME: String = "savaBuildHardeningPluginIdentity"
     const val NO_LOCAL_ARTIFACT: String = "none"
     const val MISSING_LOCAL_ARTIFACT: String = "missing"
+    const val UNAVAILABLE: String = "unavailable"
+  }
+}
+
+/** Prints frozen loaded-plugin identity information without resolving another configuration. */
+@UntrackedTask(because = "Prints identity captured when the plugin applied")
+internal abstract class SavaBuildIdentityTask : DefaultTask() {
+  @get:Input abstract val requestedCoordinates: Property<String>
+  @get:Input abstract val resolvedCoordinates: Property<String>
+  @get:Input abstract val resolvedArtifactPath: Property<String>
+  @get:Input abstract val loadedCodePath: Property<String>
+  @get:Input abstract val loadedSha256: Property<String>
+  @get:Input abstract val localOverrideState: Property<String>
+  @get:Input abstract val localArtifactPath: Property<String>
+  @get:Input abstract val localArtifactSha256: Property<String>
+
+  @TaskAction
+  fun printIdentity() {
+    logger.quiet(
+        "savaBuildIdentity:\n" +
+            "  requested coordinates: ${requestedCoordinates.get()}\n" +
+            "  resolved coordinates: ${resolvedCoordinates.get()}\n" +
+            "  resolved artifact path: ${resolvedArtifactPath.get()}\n" +
+            "  loaded code path: ${loadedCodePath.get()}\n" +
+            "  loaded SHA-256: ${loadedSha256.get()}\n" +
+            "  local override: ${localOverrideState.get()}\n" +
+            "  local artifact path: ${localArtifactPath.get()}\n" +
+            "  local artifact SHA-256: ${localArtifactSha256.get()}")
   }
 }
 

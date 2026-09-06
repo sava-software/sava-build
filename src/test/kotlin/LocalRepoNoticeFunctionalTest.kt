@@ -276,6 +276,22 @@ class LocalRepoNoticeFunctionalTest {
   }
 
   @Test
+  fun `resolved local-test coordinates refuse a configured existing JAR with different bytes`() {
+    val configuredRepo = copiedLocalRepo()
+    pluginArtifact(configuredRepo).appendText("different configured candidate")
+    writeFixture() // Resolve the plugin from the untouched fixture publication.
+
+    val failed = GradleRunner.create()
+      .withProjectDir(fixtureDir)
+      .withArguments("help", "-PsavaBuildLocalRepo=$configuredRepo", "--stacktrace")
+      .buildAndFail()
+
+    assertTrue(failed.output.contains("loaded local plugin"), failed.output)
+    assertTrue(failed.output.contains("does not match the configured local-repo artifact"), failed.output)
+    assertFalse(failed.output.contains("local override is inactive"), failed.output)
+  }
+
+  @Test
   fun `notice refuses provenance replaced after application`() {
     val privateRepo = copiedLocalRepo()
     val sidecar = publicationProvenance(privateRepo)
@@ -384,11 +400,12 @@ class LocalRepoNoticeFunctionalTest {
   }
 
   @Test
-  fun `notice names a local repo that was never published to`() {
+  fun `nonblank local-repo property stays truthful when settings did not resolve its publication`() {
     writeFixture()
     val unpublished = File(fixtureDir, "never-published").absolutePath
     val result = runBuild("help", "-PsavaBuildLocalRepo=$unpublished")
-    assertTrue(result.output.contains("NO $savaBuildTestRepoVersion PUBLISH FOUND THERE"), result.output)
+    assertTrue(result.output.contains("local override is inactive"), result.output)
+    assertFalse(result.output.contains("resolved every 'software.sava.build*' plugin"), result.output)
   }
 
   @Test

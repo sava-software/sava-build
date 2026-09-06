@@ -59,16 +59,56 @@ abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
       repoArtifact.isFile -> PitestEvidence.sha256(repoArtifact)
       else -> HardeningPluginIdentityService.MISSING_LOCAL_ARTIFACT
     }
+    // Plugin resolution has already populated this classpath. Read only that resolved
+    // configuration and retain the module metadata whose artifact contains the code
+    // that applied this settings plugin; do not infer a version from a cache path.
+    val loadedArtifact = settings.buildscript.configurations.getByName("classpath")
+      .resolvedConfiguration.resolvedArtifacts
+      .firstOrNull { artifact ->
+        artifact.moduleVersion.id.group == "software.sava" &&
+            artifact.moduleVersion.id.name == "sava-build" &&
+            pluginIdentity.matchesLoadedArtifact(artifact.file)
+      }
+    val loadedCoordinates = loadedArtifact?.moduleVersion?.id?.toString()
+      ?: HardeningPluginIdentityService.UNAVAILABLE
+    val loadedArtifactPath = loadedArtifact?.file?.absoluteFile?.normalize()?.path
+      ?: HardeningPluginIdentityService.UNAVAILABLE
+    // A custom settings script can leave a nonblank property in place while resolving
+    // a published plugin. Local mode therefore requires the actual resolved local
+    // coordinate as well as a byte-for-byte match to its configured test artifact.
+    val loadedLocalArtifact = repoArtifact?.takeIf {
+      loadedCoordinates == "software.sava:sava-build:$TEST_VERSION" &&
+          pluginIdentity.matchesLoadedArtifact(it)
+    }
     settings.gradle.sharedServices.registerIfAbsent(
       HardeningPluginIdentityService.SERVICE_NAME,
       HardeningPluginIdentityService::class.java,
     ) {
       parameters.applicationPluginSha256.set(pluginIdentity.sha256)
+      parameters.applicationPluginArtifactPath.set(loadedArtifactPath)
+      parameters.applicationPluginCoordinates.set(loadedCoordinates)
       parameters.localRepoArtifactPath.set(
-        repoArtifact?.absolutePath ?: HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
-      parameters.applicationLocalRepoArtifactSha256.set(repoArtifactSha256)
+        loadedLocalArtifact?.absolutePath ?: HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
+      parameters.applicationLocalRepoArtifactSha256.set(
+        if (loadedLocalArtifact != null) repoArtifactSha256
+        else HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
     }
     if (localRepo == null) return
+    if (loadedLocalArtifact == null) {
+      if (loadedCoordinates == "software.sava:sava-build:$TEST_VERSION" && repoArtifact?.isFile == true) {
+        throw GradleException(
+          "sava-build: the loaded local plugin ${pluginIdentity.sha256} does not match " +
+            "the configured local-repo artifact $repoArtifactSha256 at $repoArtifact; re-run with " +
+            "--refresh-dependencies after publishing the static $TEST_VERSION coordinate"
+        )
+      }
+      Logging.getLogger(SavaBuildLocalRepoNoticePlugin::class.java).warn(
+        "sava-build: -P$LOCAL_REPO_PROPERTY is configured, but the loaded plugin is " +
+          "$loadedCoordinates at $loadedArtifactPath rather than the verified local " +
+          "$TEST_VERSION publication; local override is inactive."
+      )
+      return
+    }
     // Resolved here, against the consumer's settings dir, so the action reports the
     // same directory the 'pluginManagement' repository declaration resolves a relative
     // property value to.

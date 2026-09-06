@@ -145,6 +145,8 @@ project/suite pairs together, including the exact history-free observation and
 preflight refuse is the expected adoption stopping point: review each named fresh full
 history-free observation, run only the listed Rebase writers, review and commit those
 changes, and then rerun certification. The preflight never runs PIT or writes a baseline.
+Budget two fresh full observations per transitioning suite: the review run and Rebase's
+own write-boundary run. Final certification observes every suite again.
 It deliberately does not build suite outputs merely to predict an artifact-content
 identity; same-version tool-classpath or licence-content drift remains enforced by the
 suite's normal completed-evidence boundary.
@@ -344,10 +346,12 @@ run cheaper. The cost model is directly optimisable:
   suspecting the code.
 - **Use the coverage-phase cost advisory as a lead, not a verdict** — after a
   successful `pitest<Suite>` execution, the plugin repeats PIT's slowest coverage-phase
-  test when it takes at least 250ms, qualified by project and suite. The line
-  names the test and measured duration; it does not prove that test covers a
-  target mutant. When it does, PIT can repay that wall-clock work across the
-  mutants it covers, making real waits, executors, or spins a source of
+  test when it takes at least 250ms and its full JUnit identity matches a `KILLED`
+  row in the valid current report, qualified by project and suite. Unattributed
+  timings remain available with `--info` and in the raw PIT output. A missing
+  first-killer match does not prove absence of coverage; it only withholds the
+  prominent advisory. PIT can repay a covering test's wall-clock work across
+  mutants, making real waits, executors, or spins a source of
   load-dependent `TIMED_OUT` flips. Preserve the behavior and path the test is
   meant to exercise, remove only irrelevant harness cost, and remeasure — the
   advisory is deliberately non-blocking and cannot prescribe a safe mechanical
@@ -2448,8 +2452,8 @@ block: update it only after re-diffing the block against the release-matched tem
 and syncing or **acting on** each changed bullet — a new requirement may mean new
 code, not just new prose; that is how sava's corpus-replay gap went unnoticed until
 an unrelated repo's agent tripped over it. The warning or failure prints the digest
-to paste. One softening: under `-PsavaBuildLocalRepo` (any build validating an
-unreleased checkout) a stale marker warns instead of failing — the repo
+to paste. One softening: when the loaded plugin is verified as the configured
+local `0.0.0-test` publication, a stale marker warns instead of failing — the repo
 acknowledges a *released* digest and the checkout's has not shipped, so the marker
 dance normally lands with the release, never before it. A deliberate RC-adoption
 change may re-diff and stage the candidate block and marker now only when that consumer
@@ -2457,6 +2461,9 @@ commit will land with or after the published plugin pin it acknowledges; landing
 candidate marker while the older plugin remains selected would wedge ordinary checks.
 A marker-less existing file still fails in local-repo mode; it is unadopted, not
 merely waiting for a release.
+Property presence, a blank override, or a matching JAR hash without the resolved
+local-test coordinate cannot relax the gate. Use the applying project's
+`savaBuildIdentity` to inspect the loaded identity without running mutation tests.
 
 The source block below is quoted only so it renders as one unit in this document.
 The project-qualified `hardeningAgentTemplate` removes the leading `> ` markers and
@@ -2512,9 +2519,8 @@ to normalize the presentation used by releases before 21.5.25.
 >   class/method/mutator identifiers rather than source line numbers. Existing prose
 >   is not a plugin-upgrade gate; repair a stale locator when ordinary review encounters
 >   it. The current PIT report and the row's `# line` tag are the sole transient locators.
->   A new mutant replacing a
->   killed one at the same key can inherit
->   its acceptance, so treat a line-drift advisory whose written argument no
+>   A new mutant replacing a killed one at the same key can inherit its acceptance,
+>   so treat a line-drift advisory whose written argument no
 >   longer fits the code as that swap until shown otherwise. After review, use
 >   `BaselineRetag` to refresh only matched line metadata while preserving every
 >   accepted row; never use an unrelated acceptance or deletion merely to clear

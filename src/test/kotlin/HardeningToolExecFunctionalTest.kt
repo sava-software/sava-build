@@ -202,7 +202,7 @@ $buildTail
             Path modeFile = Path.of("fake-pit-mode.txt");
             if (Files.exists(modeFile)) mode = Files.readString(modeFile).trim();
             if (mode.equals("below-cost-threshold") || mode.equals("at-cost-threshold") ||
-                mode.equals("slow-fail")) {
+                mode.equals("slow-fail") || mode.equals("unattributed-slow-test")) {
               int millis = mode.equals("below-cost-threshold") ? 249 :
                   (mode.equals("at-cost-threshold") ? 250 : 416);
               String slowest = "Slowest test ([engine:junit-jupiter]/" +
@@ -237,9 +237,12 @@ $buildTail
             String status = mode.equals("timeout") ? "TIMED_OUT" :
                 (mode.equals("survive") ? "SURVIVED" :
                     (mode.equals("run-error") ? "RUN_ERROR" : "KILLED"));
+            String killer = mode.equals("below-cost-threshold") || mode.equals("at-cost-threshold")
+                ? "com.example.CodecTest.[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:roundTrip()]"
+                : "com.example.CodecTest";
             Files.writeString(dir.resolve("mutations.csv"),
                 "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12," +
-                    status + ",com.example.CodecTest\n");
+                    status + "," + killer + "\n");
             if (mode.equals("mutate-plugin")) {
               Files.writeString(Path.of(System.getenv("FIXTURE_PLUGIN_ARTIFACT")),
                   "replaced while PIT was running",
@@ -646,7 +649,9 @@ $buildTail
               Files.writeString(dir.resolve("mutations.csv"),
                   "Consumer.java,com.example.consumer.Consumer," +
                       "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
-                      "value,7,KILLED,com.example.consumer.ConsumerTest\\n");
+                      "value,7,KILLED,com.example.consumer.ConsumerTest." +
+                      "[engine:junit-jupiter]/[class:com.example.consumer.ConsumerTest]/" +
+                      "[method:roundTrip(java.lang.String)]\n");
             }
           }
         """.trimIndent() + "\n"
@@ -1452,9 +1457,9 @@ $buildTail
     )
     assertTrue(
       result.output.contains("advisory threshold 250 ms") &&
-          result.output.contains("does not prove the test covers a target mutant") &&
-          result.output.contains("or prescribe a remedy") &&
-          result.output.contains("when it does cover mutated code"),
+          result.output.contains("current report names this test as a target mutant's killing test") &&
+          result.output.contains("does not diagnose a timeout cause") &&
+          result.output.contains("prescribe a remedy"),
       "the advisory did not explain the measurement's boundary:\n${result.output}",
     )
     assertTrue(
@@ -4073,6 +4078,26 @@ $buildTail
       ) && boundary.contains("hardening: 1 advisory finding across 1 scope"),
       "the inclusive 250 ms boundary did not produce exactly one advisory:\n$boundary",
     )
+  }
+
+  @Test
+  fun `an unattributed slow coverage test stays diagnostic and out of the advisory summary`() {
+    writeFixture()
+    File(fixtureDir, "fake-pit-mode.txt").writeText("unattributed-slow-test\n")
+
+    val ordinary = runner("pitestEncoding").build().output
+    assertTrue(ordinary.contains("Slowest test ("), "PIT timing was lost:\n$ordinary")
+    assertFalse(ordinary.contains("slowest PIT coverage-phase test"), ordinary)
+    // This fixture also has a legitimate missing-fuzz-corpus advisory. Only the
+    // unattributed timing must stay out of the summary; other advice must survive.
+    assertFalse(ordinary.contains("slowest PIT coverage-phase test took"), ordinary)
+    val raw = File(fixtureDir, "build/reports/pitest/encoding/pitest.stdout.log").readText()
+    assertTrue(raw.contains("Slowest test (") && raw.contains("took 416 ms"), raw)
+
+    val detailed = runner("pitestEncoding", "--info").build().output
+    assertTrue(detailed.contains("slowest PIT coverage-phase test"), detailed)
+    assertTrue(detailed.contains("this does not establish whether it covers mutated code"), detailed)
+    assertFalse(detailed.contains("slowest PIT coverage-phase test took"), detailed)
   }
 
   @Test

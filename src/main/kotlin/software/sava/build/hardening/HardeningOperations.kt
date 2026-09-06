@@ -684,6 +684,7 @@ internal object HardeningHelpText {
     appendLine("  pitestModeSnapshot / pitestModeCompare  compare labeled execution modes")
     appendLine("  pitestMutatorTrial                measure candidate mutators")
     appendLine("  mutationOwnershipAudit            cheap whole-production owner/exclusion preflight")
+    appendLine("  savaBuildIdentity                 loaded plugin coordinates, code path, SHA-256, and local validation state")
     appendGenerated(
         "hardeningAgentTemplate",
         "print the installed bounded agent-instructions template unquoted")
@@ -705,6 +706,10 @@ internal object HardeningHelpText {
         "  That consolidated refusal is the expected adoption stop: run each named " +
             "history-free observation, then its exact listed writer; review and commit the " +
             "changes before retrying certification.")
+    appendLine(
+        "  Budget two fresh full observations per transitioning suite: the review run, " +
+            "then BaselineRebase's own write-boundary run. Final certification observes " +
+            "every suite again.")
     appendLine()
     appendLine("Durable receipt-marker lifecycle:")
     appendLine(

@@ -561,7 +561,34 @@ class AgentsTemplateSyncFunctionalTest {
     // Failing forced repos to acknowledge unreleased digests ahead of the release,
     // which wedged their 'check' against every published plugin until the release
     // landed and the pin was bumped.
-    writeFixture()
+    // Apply the settings entry point as a consumer does. Its local-artifact identity
+    // is only trusted when the hardening feature's loaded JAR has the same SHA-256.
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        pluginManagement {
+          repositories { maven(url = "${File(savaBuildTestProperty("savaBuild.testRepo")).absolutePath}"); gradlePluginPortal() }
+          resolutionStrategy.eachPlugin {
+            if (requested.id.id.startsWith("software.sava.build")) {
+              useModule("software.sava:sava-build:$savaBuildTestRepoVersion")
+            }
+          }
+        }
+
+        plugins {
+          id("software.sava.build")
+        }
+
+        rootProject.name = "agents-template-local-identity-smoke-test"
+      """.trimIndent() + "\n"
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+      """.trimIndent() + "\n"
+    )
     val agentsDoc = File(fixtureDir, "AGENTS.md")
     agentsDoc.writeText(
       "# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n" +
@@ -569,7 +596,23 @@ class AgentsTemplateSyncFunctionalTest {
           "$BLOCK_START\nexample\n$BLOCK_END\n```\n",
     )
 
-    val advisory = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout").build()
+    val localRepo = File(savaBuildTestProperty("savaBuild.testRepo")).absolutePath
+    val identity = runner("savaBuildIdentity", "-PsavaBuildLocalRepo=$localRepo").build().output
+    assertTrue(
+      identity.contains("resolved coordinates: software.sava:sava-build:$savaBuildTestRepoVersion"),
+      identity,
+    )
+    assertTrue(identity.contains("local override: verified resolved local test publication"), identity)
+    assertTrue(identity.contains("local artifact path:"), identity)
+    assertTrue(Regex("local artifact SHA-256: [0-9a-f]{64}").containsMatchIn(identity), identity)
+    assertFalse(identity.contains("pitest"), "identity must not select PIT:\n$identity")
+    val reusedIdentity = runner("savaBuildIdentity", "-PsavaBuildLocalRepo=$localRepo").build().output
+    assertTrue(reusedIdentity.contains("Reusing configuration cache"), reusedIdentity)
+    assertTrue(
+      reusedIdentity.contains("local override: verified resolved local test publication"),
+      reusedIdentity,
+    )
+    val advisory = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=$localRepo").build()
     val claimAndReview =
       "agentsTemplateInSync: unreleased template digest differs from AGENTS.md.\n" +
           "  AGENTS.md marker: 000000000000\n" +
@@ -614,8 +657,113 @@ class AgentsTemplateSyncFunctionalTest {
     // a marker-less AGENTS.md is an unadopted repo, not a pending marker dance —
     // the flag does not soften that failure
     agentsDoc.writeText("# Agents\n\nNo marker.\n")
-    val unmarked = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout").buildAndFail()
+    val unmarked = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=$localRepo").buildAndFail()
     assertTrue(unmarked.output.contains("has no 'hardening-template' marker"), unmarked.output)
+  }
+
+  @Test
+  fun `a blank local-repo property keeps a stale published-plugin marker as a failure`() {
+    writeFixture()
+    File(fixtureDir, "AGENTS.md").writeText(
+      "# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n"
+    )
+
+    val failed = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=").buildAndFail()
+
+    assertTrue(
+      failed.output.contains("marker 000000000000, current $expectedDigest"),
+      failed.output,
+    )
+    assertFalse(
+      failed.output.contains("unreleased template digest differs"),
+      "a blank property must not disarm the published-template gate:\n${failed.output}",
+    )
+  }
+
+  @Test
+  fun `published-shaped coordinates keep a byte-identical local candidate from softening the gate`() {
+    val localVersion = savaBuildTestRepoVersion
+    val publishedVersion = "99.0.0-published-shape"
+    val repo = fixtureDir.resolve("same-bytes-repository")
+    val sourceRepo = File(savaBuildTestProperty("savaBuild.testRepo"))
+    check(sourceRepo.copyRecursively(repo)) { "could not copy test plugin repository" }
+    val moduleRoot = repo.resolve("software/sava/sava-build")
+    val localPublication = moduleRoot.resolve(localVersion)
+    val publishedPublication = moduleRoot.resolve(publishedVersion)
+    check(localPublication.copyRecursively(publishedPublication)) {
+      "could not create a published-shaped test plugin publication"
+    }
+    publishedPublication.walkBottomUp().filter(File::isFile).toList().forEach { file ->
+      val renamed = file.parentFile.resolve(file.name.replace(localVersion, publishedVersion))
+      if (file.extension in setOf("pom", "module")) {
+        file.writeText(file.readText().replace(localVersion, publishedVersion))
+      }
+      if (renamed != file) {
+        file.copyTo(renamed)
+        check(file.delete()) { "could not rename $file" }
+      }
+    }
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        pluginManagement {
+          repositories { maven(url = "${repo.absolutePath}"); gradlePluginPortal() }
+          resolutionStrategy.eachPlugin {
+            if (requested.id.id.startsWith("software.sava.build")) {
+              useModule("software.sava:sava-build:$publishedVersion")
+            }
+          }
+        }
+
+        plugins { id("software.sava.build") }
+
+        rootProject.name = "published-shaped-hardening-identity"
+      """.trimIndent() + "\n"
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        plugins {
+          java
+          id("software.sava.build.feature.hardening")
+        }
+      """.trimIndent() + "\n"
+    )
+    File(fixtureDir, "AGENTS.md").writeText(
+      "# Agents\n\n<!-- hardening-template sha256:000000000000 -->\n"
+    )
+
+    val failed = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=${repo.absolutePath}").buildAndFail()
+
+    assertTrue(
+      failed.output.contains("marker 000000000000, current $expectedDigest"),
+      failed.output,
+    )
+    assertFalse(failed.output.contains("unreleased template digest differs"), failed.output)
+    assertTrue(failed.output.contains("local override is inactive"), failed.output)
+    assertFalse(failed.output.contains("resolved every 'software.sava.build*' plugin"), failed.output)
+  }
+
+  @Test
+  fun `identity task reports standalone resolved coordinates and does not infer local override`() {
+    writeFixture()
+
+    val identity = runner("savaBuildIdentity").build().output
+    assertTrue(identity.contains("requested coordinates: unavailable at plugin application"), identity)
+    assertTrue(
+      identity.contains("resolved coordinates: software.sava:sava-build:$savaBuildTestRepoVersion"),
+      identity,
+    )
+    assertTrue(identity.contains("loaded code path:"), identity)
+    assertTrue(Regex("loaded SHA-256: [0-9a-f]{64}").containsMatchIn(identity), identity)
+    assertTrue(identity.contains("local override: not verified"), identity)
+    assertFalse(identity.contains("pitest"), "identity must not select PIT:\n$identity")
+    val reused = runner("savaBuildIdentity").build().output
+    assertTrue(reused.contains("Reusing configuration cache"), reused)
+
+    val localRepo = File(savaBuildTestProperty("savaBuild.testRepo")).absolutePath
+    // Direct feature application has no settings-level local identity. The task must
+    // not convert a matching-looking property into a claimed override.
+    val unverified = runner("savaBuildIdentity", "-PsavaBuildLocalRepo=$localRepo").build().output
+    assertTrue(unverified.contains("local override: not verified"), unverified)
   }
 
   @Test
@@ -699,6 +847,8 @@ class AgentsTemplateSyncFunctionalTest {
       """
         $savaBuildPluginManagement
 
+        plugins { id("software.sava.build") }
+
         rootProject.name = "agents-template-repository-scope-test"
         include("a", "b")
       """.trimIndent() + "\n"
@@ -709,8 +859,6 @@ class AgentsTemplateSyncFunctionalTest {
           java
           id("software.sava.build.feature.hardening")
         }
-
-        repositories { mavenCentral() }
       """.trimIndent() + "\n"
     listOf("a", "b").forEach { name ->
       File(fixtureDir, name).apply { mkdirs() }
@@ -749,13 +897,14 @@ class AgentsTemplateSyncFunctionalTest {
       )
     }
 
+    val localRepo = File(savaBuildTestProperty("savaBuild.testRepo")).absolutePath
     assertOneAdvisory(
       runner(
-        "agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout", "--parallel",
+        "agentsTemplateInSync", "-PsavaBuildLocalRepo=$localRepo", "--parallel",
       ).build().output,
     )
     val reused = runner(
-      "agentsTemplateInSync", "-PsavaBuildLocalRepo=unreleased-checkout", "--parallel",
+      "agentsTemplateInSync", "-PsavaBuildLocalRepo=$localRepo", "--parallel",
     ).build().output
     assertTrue(reused.contains("Configuration cache entry reused."), reused)
     assertOneAdvisory(reused)

@@ -25,6 +25,8 @@ internal class HardeningCertificationRootPlugin @Inject constructor(
       HardeningPluginIdentityService::class.java,
     ) {
       parameters.applicationPluginSha256.set(identity.sha256)
+      parameters.applicationPluginArtifactPath.set(HardeningPluginIdentityService.UNAVAILABLE)
+      parameters.applicationPluginCoordinates.set(HardeningPluginIdentityService.UNAVAILABLE)
       parameters.localRepoArtifactPath.set(HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
       parameters.applicationLocalRepoArtifactSha256.set(
         HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)

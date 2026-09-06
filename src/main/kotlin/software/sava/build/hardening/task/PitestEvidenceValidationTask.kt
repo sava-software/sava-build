@@ -384,7 +384,9 @@ internal fun renderCertificationTransitionRefusal(
       "This refusal is the expected adoption stopping point for a PIT or mutation-toolchain " +
         "transition. Review each fresh full history-free observation, run only the listed " +
         "BaselineRebase writers, review and commit their changes, then rerun " +
-        ":hardeningCertifyAll.",
+        ":hardeningCertifyAll. Budget two fresh full observations per transitioning suite: " +
+        "the review run, then BaselineRebase's own write-boundary run. Final certification " +
+        "observes every suite again.",
     )
   } else {
     append("Resolve every blocker above, then rerun :hardeningCertifyAll.")
