@@ -429,29 +429,39 @@ abstract class HardeningCertificationAggregatePublishTask : DefaultTask() {
       )
       return
     }
-    if (!session.aggregateAnchorCompletedSuccessfully()) {
-      val failure = IllegalStateException(
-        "aggregate anchor did not complete successfully after authorization")
-      session.reject(root)
-      markAggregateIncomplete(session, root, manifest, running, failure)
-      logger.lifecycle(
-        "hardeningCertifyAll: aggregate publication skipped because the root anchor failed")
-      return
-    }
-    val unsuccessfulProjects = session.unsuccessfulProjectTaskPaths(root)
-    if (unsuccessfulProjects.isNotEmpty()) {
-      val failure = IllegalStateException(
-        "project certification task(s) did not complete successfully: " +
-          unsuccessfulProjects.joinToString())
-      session.reject(root)
-      markAggregateIncomplete(session, root, manifest, running, failure)
-      logger.lifecycle(
-        "hardeningCertifyAll: aggregate publication skipped because project certification " +
-          "task(s) failed or were skipped: ${unsuccessfulProjects.joinToString()}")
-      return
-    }
-
     try {
+      session.awaitPublicationEvidence()
+      if (!session.aggregateMayPublish(root)) {
+        logger.lifecycle(
+          if (session.aggregateAnchorFailed()) {
+            "hardeningCertifyAll: aggregate publication skipped because the root anchor failed"
+          } else {
+            "hardeningCertifyAll: aggregate publication skipped because root preflight was refused"
+          }
+        )
+        return
+      }
+      if (!session.aggregateAnchorCompletedSuccessfully()) {
+        val failure = IllegalStateException(
+          "aggregate anchor did not complete successfully after authorization")
+        session.reject(root)
+        markAggregateIncomplete(session, root, manifest, running, failure)
+        logger.lifecycle(
+          "hardeningCertifyAll: aggregate publication skipped because the root anchor failed")
+        return
+      }
+      val unsuccessfulProjects = session.unsuccessfulProjectTaskPaths(root)
+      if (unsuccessfulProjects.isNotEmpty()) {
+        val failure = IllegalStateException(
+          "project certification task(s) did not complete successfully: " +
+            unsuccessfulProjects.joinToString())
+        session.reject(root)
+        markAggregateIncomplete(session, root, manifest, running, failure)
+        logger.lifecycle(
+          "hardeningCertifyAll: aggregate publication skipped because project certification " +
+            "task(s) failed or were skipped: ${unsuccessfulProjects.joinToString()}")
+        return
+      }
       val sessionId = session.sessionId(root) ?: error(
         "aggregate preflight did not activate a root certification session")
       val expectedSentinel = "session\t$sessionId\n".toByteArray(Charsets.UTF_8)

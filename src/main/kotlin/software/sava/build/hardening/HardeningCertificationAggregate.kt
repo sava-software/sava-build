@@ -15,7 +15,10 @@ import java.nio.channels.OverlappingFileLockException
 import java.nio.charset.CodingErrorAction
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 import java.util.UUID
+import kotlin.concurrent.withLock
 
 /** One configured hardening project's contribution to the Gradle-root inventory. */
 internal data class CertificationAggregateProjectRegistration(
@@ -178,17 +181,17 @@ abstract class HardeningCertificationAggregateSession :
   private val registry = CertificationAggregateRegistry()
   private val fileLocks = CertificationAggregateFileLocks()
   private val attempts = mutableMapOf<String, Attempt>()
-  private var aggregateAnchorSucceeded: Boolean? = null
   private val expectedChildTaskPaths = linkedMapOf<String, String>()
-  private val childTaskSucceeded = linkedMapOf<String, Boolean>()
+  private val completionBarrier = CertificationAggregateCompletionBarrier()
 
   @Synchronized
   override fun onFinish(event: FinishEvent) {
     val task = event as? TaskFinishEvent ?: return
     val taskPath = task.descriptor.taskPath
     if (taskPath == parameters.aggregateTaskPath.get()) {
-      aggregateAnchorSucceeded = task.result is TaskSuccessResult
-      if (aggregateAnchorSucceeded == false) {
+      val succeeded = task.result is TaskSuccessResult
+      completionBarrier.recordAggregateAnchorFinished(succeeded)
+      if (!succeeded) {
         attempts.values.forEach { attempt ->
           if (attempt.state != AttemptState.REJECTED) {
             attempt.state = AttemptState.REJECTED
@@ -198,7 +201,7 @@ abstract class HardeningCertificationAggregateSession :
       return
     }
     val projectPath = expectedChildTaskPaths[taskPath] ?: return
-    childTaskSucceeded[projectPath] = task.result is TaskSuccessResult
+    completionBarrier.recordProjectTaskFinished(projectPath, task.result is TaskSuccessResult)
   }
 
   @Synchronized
@@ -246,7 +249,7 @@ abstract class HardeningCertificationAggregateSession :
       )
       expectedChildTaskPaths.clear()
       expectedChildTaskPaths.putAll(taskPaths)
-      childTaskSucceeded.clear()
+      completionBarrier.activate(normalizedProjects.map { it.projectPath })
       attempt.state = AttemptState.AUTHORIZED
       attempt.sessionId
     } catch (failure: Throwable) {
@@ -280,17 +283,24 @@ abstract class HardeningCertificationAggregateSession :
     attempts[normalizedAbsolutePath(gradleRootDirectory).toString()]?.state ==
       AttemptState.REJECTED
 
-  @Synchronized
-  fun aggregateAnchorCompletedSuccessfully(): Boolean = aggregateAnchorSucceeded == true
+  fun aggregateAnchorCompletedSuccessfully(): Boolean =
+    completionBarrier.aggregateAnchorCompletedSuccessfully()
 
-  @Synchronized
-  fun aggregateAnchorFailed(): Boolean = aggregateAnchorSucceeded == false
+  fun aggregateAnchorFailed(): Boolean = completionBarrier.aggregateAnchorFailed()
 
-  @Synchronized
   fun unsuccessfulProjectTaskPaths(gradleRootDirectory: File): List<String> =
     registry.registeredProjects(gradleRootDirectory)
       .map(CertificationAggregateProjectRegistration::projectPath)
-      .filter { childTaskSucceeded[it] != true }
+      .filter { completionBarrier.projectTaskSucceeded(it) != true }
+
+  /**
+   * Waits for the root anchor and the task finish event of each child that published a receipt.
+   *
+   * This deliberately does not wait for a finish event from a child that never published a
+   * receipt. Gradle can omit that event for a dependency-skipped task; the existing outcome and
+   * manifest checks turn that absence into a refused aggregate without holding the service.
+   */
+  fun awaitPublicationEvidence() = completionBarrier.awaitPublicationEvidence()
 
   @Synchronized
   fun sessionId(gradleRootDirectory: File): String? =
@@ -311,7 +321,7 @@ abstract class HardeningCertificationAggregateSession :
     childSessionId: String,
   ): Boolean {
     if (!aggregateMayPublish(gradleRootDirectory)) return false
-    return registry.recordPublished(
+    val recorded = registry.recordPublished(
       gradleRootDirectory,
       projectPath,
       projectDirectory,
@@ -320,6 +330,8 @@ abstract class HardeningCertificationAggregateSession :
       pluginSha256,
       childSessionId,
     )
+    if (recorded) completionBarrier.recordReceiptPublished(projectPath)
+    return recorded
   }
 
   internal fun prepareManifest(gradleRootDirectory: File): PreparedCertificationAggregate =
@@ -334,6 +346,122 @@ abstract class HardeningCertificationAggregateSession :
     registry.registeredProjects(gradleRootDirectory)
 
   override fun close() = fileLocks.close()
+}
+
+/**
+ * Bounded, signaled hand-off between Gradle's operation listener and the aggregate publisher.
+ * A receipt callback proves only that the child wrote its receipt; its task still has to finish
+ * successfully because a later `doLast` action can fail after the callback was recorded.
+ */
+internal class CertificationAggregateCompletionBarrier(
+  private val timeoutNanos: Long = DEFAULT_TIMEOUT_NANOS,
+  private val nanoTime: () -> Long = System::nanoTime,
+  private val beforeWait: (() -> Unit)? = null,
+) {
+  private val lock = ReentrantLock()
+  private val changed = lock.newCondition()
+  private var aggregateAnchorSucceeded: Boolean? = null
+  private val expectedProjects = linkedSetOf<String>()
+  private val receiptPublished = mutableSetOf<String>()
+  private val projectTaskSucceeded = mutableMapOf<String, Boolean>()
+
+  init {
+    require(timeoutNanos >= 0) { "aggregate publication wait timeout must not be negative" }
+  }
+
+  fun activate(projectPaths: Collection<String>) {
+    lock.withLock {
+      check(expectedProjects.isEmpty()) { "aggregate completion barrier was activated more than once" }
+      expectedProjects += projectPaths
+      check(expectedProjects.size == projectPaths.size) {
+        "aggregate completion barrier received duplicate project paths"
+      }
+      aggregateAnchorSucceeded = null
+      receiptPublished.clear()
+      projectTaskSucceeded.clear()
+    }
+  }
+
+  fun recordAggregateAnchorFinished(succeeded: Boolean) {
+    lock.withLock {
+      aggregateAnchorSucceeded = succeeded
+      changed.signalAll()
+    }
+  }
+
+  fun recordProjectTaskFinished(projectPath: String, succeeded: Boolean) {
+    lock.withLock {
+      if (projectPath !in expectedProjects) return
+      projectTaskSucceeded[projectPath] = succeeded
+      changed.signalAll()
+    }
+  }
+
+  fun recordReceiptPublished(projectPath: String) {
+    lock.withLock {
+      check(projectPath in expectedProjects) {
+        "aggregate completion barrier received an unregistered receipt publication for '$projectPath'"
+      }
+      receiptPublished += projectPath
+      changed.signalAll()
+    }
+  }
+
+  fun aggregateAnchorCompletedSuccessfully(): Boolean = lock.withLock {
+    aggregateAnchorSucceeded == true
+  }
+
+  fun aggregateAnchorFailed(): Boolean = lock.withLock { aggregateAnchorSucceeded == false }
+
+  fun projectTaskSucceeded(projectPath: String): Boolean? = lock.withLock {
+    projectTaskSucceeded[projectPath]
+  }
+
+  /**
+   * Releases its condition lock while waiting so completion callbacks can signal progress.
+   * Once the anchor result is known, a false child result settles immediately. Children without
+   * a receipt are not waited on: the publisher's outcome or manifest validation refuses them.
+   */
+  fun awaitPublicationEvidence() {
+    lock.withLock {
+      val startedAt = nanoTime()
+      while (true) {
+        if (!hasPendingRelevantCompletionEvent()) return
+        val remainingNanos = timeoutNanos - (nanoTime() - startedAt)
+        if (remainingNanos <= 0) {
+          throw IllegalStateException(
+            "timed out after ${TimeUnit.NANOSECONDS.toSeconds(timeoutNanos)} seconds waiting for " +
+              "aggregate anchor completion and receipt-published child task completion"
+          )
+        }
+        beforeWait?.invoke()
+        try {
+          changed.awaitNanos(remainingNanos)
+        } catch (interrupted: InterruptedException) {
+          Thread.currentThread().interrupt()
+          throw IllegalStateException(
+            "interrupted while waiting for aggregate anchor completion and receipt-published " +
+              "child task completion",
+            interrupted,
+          )
+        }
+      }
+    }
+  }
+
+  private fun hasPendingRelevantCompletionEvent(): Boolean {
+    when (aggregateAnchorSucceeded) {
+      null -> return true
+      false -> return false
+      true -> Unit
+    }
+    if (expectedProjects.any { projectTaskSucceeded[it] == false }) return false
+    return receiptPublished.any { projectTaskSucceeded[it] == null }
+  }
+
+  private companion object {
+    val DEFAULT_TIMEOUT_NANOS: Long = TimeUnit.SECONDS.toNanos(30)
+  }
 }
 
 internal data class PreparedCertificationAggregate(

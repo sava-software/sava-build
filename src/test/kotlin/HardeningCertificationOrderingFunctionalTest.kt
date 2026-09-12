@@ -47,6 +47,10 @@ class HardeningCertificationOrderingFunctionalTest {
       runner(":hardeningCertifyAll").build().also { result ->
         assertCompletedPhases(result, projects)
         projects.forEach { assertChildReceipt(it, result) }
+        assertFalse(
+          fixtureDir.resolve(".pitest-history/pitest-certification-all.running").exists(),
+          result.output,
+        )
         val manifest = fixtureDir.resolve(".pitest-history/pitest-certification-all.tsv")
         assertTrue(manifest.isFile, result.output)
         val contents = manifest.readText()
@@ -62,7 +66,7 @@ class HardeningCertificationOrderingFunctionalTest {
           assertEquals(
             PitestEvidence.sha256(fixtureDir.resolve(row[2].removePrefix("root:"))),
             row[3],
-            contents,
+            "$contents\n${result.output}",
           )
         }
         assertEquals(
@@ -70,7 +74,6 @@ class HardeningCertificationOrderingFunctionalTest {
           contents.lineSequence().filter { it.startsWith("suite\t") }.toList(),
           contents,
         )
-        assertFalse(fixtureDir.resolve(".pitest-history/pitest-certification-all.running").exists())
       }
     }
   }

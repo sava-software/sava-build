@@ -165,6 +165,9 @@ before its exact bytes become SHA-256 authority. The
 aggregate owns a separate root lock and `.running` sentinel. At publication it rehashes every
 child receipt, atomically replaces the manifest, and immediately rehashes them again; a
 failure restores the prior manifest bytes under the retained sentinel.
+Gradle delivers task completion events asynchronously, so publication waits for those events
+before deciding task success. If delivery times out or the wait is interrupted, certification
+fails and retains the incomplete sentinel.
 
 The manifest is an inventory of strict child receipts, not a new source snapshot. Each child
 receipt retains its own project-level Git and input evidence. Projects finish at different
