@@ -1,5 +1,17 @@
 # Changelog
 
+## [21.5.34](https://github.com/sava-software/sava-build/compare/21.5.33...21.5.34) (2026-09-12)
+
+
+### Features
+
+* **hardening:** capture fuzz source and log evidence ([552aa9b](https://github.com/sava-software/sava-build/commit/552aa9b31b7a1aae50c0aff6e7788eb311f7bbe7))
+
+
+### Build System
+
+* **deps:** bump docker/setup-qemu-action ([#112](https://github.com/sava-software/sava-build/issues/112)) ([832f9a7](https://github.com/sava-software/sava-build/commit/832f9a756645ef98e98f602f2a5392243624e616))
+
 ## [21.5.33](https://github.com/sava-software/sava-build/compare/21.5.32...21.5.33) (2026-09-06)
 
 
