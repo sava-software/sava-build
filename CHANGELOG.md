@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.35](https://github.com/sava-software/sava-build/compare/21.5.34...21.5.35) (2026-09-12)
+
+
+### Bug Fixes
+
+* **hardening:** await certification completion events ([f8ba7a3](https://github.com/sava-software/sava-build/commit/f8ba7a3631436bf2da3ab969ff7d06b208143942))
+
 ## [21.5.34](https://github.com/sava-software/sava-build/compare/21.5.33...21.5.34) (2026-09-12)
 
 
