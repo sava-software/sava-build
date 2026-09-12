@@ -313,7 +313,7 @@ class HardeningFeatureSmokeTest {
     assertTrue(result.output.contains("fuzzAll: 0 local target(s) completed"), result.output)
     assertTrue(receipt.isFile, "zero-target campaign did not write a receipt")
     val receiptText = receipt.readText()
-    assertTrue(receiptText.contains("schema\t4"), receiptText)
+    assertTrue(receiptText.contains("schema\t5"), receiptText)
     assertTrue(
       Regex("(?m)^pluginSha256\\t[0-9a-f]{64}$").containsMatchIn(receiptText),
       "zero-target receipt did not bind the loaded plugin binary:\n$receiptText",

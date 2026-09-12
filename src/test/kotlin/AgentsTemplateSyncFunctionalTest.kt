@@ -603,6 +603,10 @@ class AgentsTemplateSyncFunctionalTest {
       identity,
     )
     assertTrue(identity.contains("local override: verified resolved local test publication"), identity)
+    assertTrue(
+      identity.lineSequence().any { it == "  local override: verified resolved local test publication" },
+      identity,
+    )
     assertTrue(identity.contains("local artifact path:"), identity)
     assertTrue(Regex("local artifact SHA-256: [0-9a-f]{64}").containsMatchIn(identity), identity)
     assertFalse(identity.contains("pitest"), "identity must not select PIT:\n$identity")
@@ -610,6 +614,10 @@ class AgentsTemplateSyncFunctionalTest {
     assertTrue(reusedIdentity.contains("Reusing configuration cache"), reusedIdentity)
     assertTrue(
       reusedIdentity.contains("local override: verified resolved local test publication"),
+      reusedIdentity,
+    )
+    assertTrue(
+      reusedIdentity.lineSequence().any { it == "  local override: verified resolved local test publication" },
       reusedIdentity,
     )
     val advisory = runner("agentsTemplateInSync", "-PsavaBuildLocalRepo=$localRepo").build()
@@ -754,16 +762,19 @@ class AgentsTemplateSyncFunctionalTest {
     )
     assertTrue(identity.contains("loaded code path:"), identity)
     assertTrue(Regex("loaded SHA-256: [0-9a-f]{64}").containsMatchIn(identity), identity)
-    assertTrue(identity.contains("local override: not verified"), identity)
+    val unverifiedExplanation =
+      "local override: not verified (no resolved local test publication verified; see loaded coordinates and SHA-256)"
+    assertTrue(identity.contains(unverifiedExplanation), identity)
     assertFalse(identity.contains("pitest"), "identity must not select PIT:\n$identity")
     val reused = runner("savaBuildIdentity").build().output
     assertTrue(reused.contains("Reusing configuration cache"), reused)
+    assertTrue(reused.contains(unverifiedExplanation), reused)
 
     val localRepo = File(savaBuildTestProperty("savaBuild.testRepo")).absolutePath
     // Direct feature application has no settings-level local identity. The task must
     // not convert a matching-looking property into a claimed override.
     val unverified = runner("savaBuildIdentity", "-PsavaBuildLocalRepo=$localRepo").build().output
-    assertTrue(unverified.contains("local override: not verified"), unverified)
+    assertTrue(unverified.contains(unverifiedExplanation), unverified)
   }
 
   @Test

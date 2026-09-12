@@ -126,4 +126,35 @@ class HardeningFuzzSessionTest {
     assertEquals(sessionId, completed.sessionId)
     assertTrue(completed.targets.isEmpty())
   }
+
+  @Test
+  fun `execution counts alone cannot publish expanded receipt evidence`() {
+    session.activate(":", listOf("codec"))
+    session.recordCompleted(":", "codec", 17)
+
+    val failure = assertThrows(IllegalStateException::class.java) {
+      session.requireObservations(":", listOf("codec"))
+    }
+    assertTrue(failure.message.orEmpty().contains("without captured source/log evidence"))
+  }
+
+  @Test
+  fun `completed observation stays paired with its target and count`() {
+    session.activate(":", listOf("codec"))
+    val attempt = temporaryDirectory.resolve("attempt-one")
+    val observation = FuzzTargetObservation(
+      1234,
+      FuzzSourceIdentity("a".repeat(64), CertificationGitIdentity.unavailable()),
+      attempt.absolutePath,
+      FuzzCapturedLog(attempt.resolve("jazzer.stdout.log").absolutePath, 11, "b".repeat(64)),
+      FuzzCapturedLog(attempt.resolve("jazzer.stderr.log").absolutePath, 22, "c".repeat(64)),
+    )
+    assertTrue(session.recordObservation(":", "codec", 17, observation))
+    assertEquals(mapOf("codec" to observation), session.requireObservations(":", listOf("codec")))
+    assertThrows(IllegalStateException::class.java) {
+      session.recordObservation(":", "codec", 18, observation.copy(elapsedMillis = 2000))
+    }
+    assertEquals(17L, session.requireCompleted(":", listOf("codec")).totalExecutions)
+    assertEquals(observation, session.requireObservations(":", listOf("codec")).getValue("codec"))
+  }
 }

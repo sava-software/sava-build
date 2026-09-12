@@ -131,7 +131,8 @@ Receipts already completed by other projects remain independent. This project-at
 re-execution is the cost of claiming one coherent certification observation, not a sign
 that the retry command was scoped incorrectly *(casebook: the invalid attempts that moved
 and then disappeared)*. One receipt field is routinely misread: `reportSha256`
-identifies an observation, not an input — PIT's first-kill test ordering races near-ties,
+is the SHA-256 of the exact `mutations.csv` bytes, not the HTML report, report directory,
+or certification receipt. It identifies an observation — PIT's first-kill test ordering races near-ties,
 so identical inputs legitimately produce different values across runs. Never treat a
 match or mismatch there as evidence about equivalence; the input-identity fields beside
 it are the ones that compare.
@@ -1945,7 +1946,13 @@ opens keep stdout and stderr separate without deleting or truncating a prior or 
 run. This is diagnostic retention, not a hostile-filesystem security boundary. A
 retained-log I/O failure is
 remembered while the child pipe keeps draining, then fails the task instead of allowing a
-successful receipt to advertise a partial file. libFuzzer prints progress to the launching pipeline;
+successful receipt to advertise a partial file. SHA-256 and byte counts are accumulated
+as each raw stream is retained, avoiding a second read of potentially very large logs
+when the receipt is written. Once a stream reaches 1 GiB (1,073,741,824 bytes), the task
+prints one large-log advisory with its path and byte count and continues retaining every
+byte. Configure suppression of expected fuzz-input warnings in the consumer's fuzz
+harness or logging configuration; the plugin does not filter retained evidence.
+libFuzzer prints progress to the launching pipeline;
 when the consumer dies, the next progress write blocks forever inside native
 code and the JVM parks `RUNNABLE` in `startLibFuzzer` — by thread state
 alone, indistinguishable from a healthy quiet stretch. The tell is the CPU
@@ -2082,6 +2089,41 @@ The release runner requires the receipt without the sentinel and copies it into 
 immutable bundle. `--continue` lets independent targets finish after one finds a failure;
 Gradle still exits non-zero.
 Run one `fuzz<Target>` directly for focused iteration.
+
+Schema 5 retains the existing `target` execution-count rows and adds two rows per target:
+
+| Row | Fields after the target task name |
+| --- | --- |
+| `targetObservation` | Elapsed milliseconds, absolute attempt directory, stdout bytes, stdout SHA-256, stderr bytes, stderr SHA-256 |
+| `targetSource` | Source SHA-256, Git state, Git commit, Git tree, Git status SHA-256, Git-relative project directory |
+
+Elapsed time uses a monotonic clock around child execution through pipe closure; it
+excludes compilation, source fingerprinting and waiting for an execution slot. It is
+separate from Jazzer's configured budget and its rounded terminal duration. The attempt
+directory contains `jazzer.stdout.log` and `jazzer.stderr.log`, including when the Gradle
+build directory is configured outside the checkout. These are machine-local paths.
+
+Source identity hashes the names and bytes of main/test source-set files (including
+resources), the configured committed seed corpus, project/root build scripts and
+`gradle.properties`, root settings scripts, and the conventional root
+`gradle/libs.versions.toml`. The content fingerprint uses `PitestEvidence.fingerprint`
+with paths relative to the applying project. It includes dirty file contents; Git status
+SHA-256 hashes porcelain status only. Git state may be `clean`, `dirty`, or `unavailable`;
+the latter uses `unavailable` for all four remaining Git fields. Each target checks its
+source identity before and after execution and refuses a receipt when those observations
+differ. Targets carry separate identities because generated sources can change between
+targets. This inventory is not a complete snapshot of dependency jars, compiler inputs,
+custom build logic or the evolving local corpus, and endpoint checks do not prove files
+stayed unchanged throughout a run.
+
+Raw-log hashes identify bytes retained during capture. The files remain mutable diagnostic
+outputs and may be removed by `clean` even though the receipt survives. Receipt publication
+does not reread them or claim they are immutable. A later independent verification of
+retained files must hash their current bytes. The local campaign wrapper accepts schemas
+4 and 5 so existing bundles remain verifiable, and copies the receipt without copying or
+rehashing these per-target files. The wrapper still retains and hashes its own full
+console log separately. Older wrappers that accept only schema 4 need the updated parser
+for new campaigns.
 
 `-PmaxFuzzTime` is a budget **for each target**, not for the aggregate.
 `-PmaxParallelFuzzTargets` explicitly bounds concurrent fuzz children across all selected

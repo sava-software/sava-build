@@ -2267,7 +2267,7 @@ hardening.fuzz.all {
 // Local fuzzing is the canonical execution path. The aggregate is derived directly
 // from the registered targets, so it cannot drift the way a hand-written scheduled
 // workflow task list can. A successful local run writes a small receipt; the fleet
-// wrapper adds repository SHAs and collects those receipts for release review. The
+// wrapper collects those receipts with repository SHAs for release review. The
 // receipt and its in-progress sentinel are machine-local campaign state, not build
 // outputs: keeping them in the already-ignored `.pitest-history/` directory lets a
 // later `clean hardeningCertify` preserve a completed fuzz campaign. Starting the next
@@ -2475,17 +2475,20 @@ val fuzzAllComplete = tasks.register("fuzzAllComplete") {
     } catch (failure: IllegalStateException) {
       throw GradleException("fuzzAll: ${failure.message}; refusing to write a receipt", failure)
     }
+    val observations = session.requireObservations(receiptProjectPath, names.get())
     val receipt = buildString {
-      appendLine("schema\t4")
+      appendLine("schema\t5")
       appendLine("project\t$receiptProjectPath")
       appendLine("pluginSha256\t$appliedPluginSha256")
       appendLine("maxFuzzTimeSeconds\t${maxTime.get()}")
       appendLine("maxParallelTargets\t${parallelism.get()}")
       appendLine("totalExecutions\t$totalExecutions")
       names.get().sorted().forEach { target ->
+        val taskName = "fuzz${target.replaceFirstChar(Char::uppercase)}"
         appendLine(
-            "target\tfuzz${target.replaceFirstChar(Char::uppercase)}\t" +
+            "target\t$taskName\t" +
                 completed.executionsByTarget.getValue(target))
+        append(observations.getValue(target).receiptRows(taskName))
       }
     }
     BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, runningFile)
@@ -6375,6 +6378,20 @@ hardening.fuzz.all {
     targetClass.set(target.targetClass)
     maxFuzzTimeSeconds.set(maxFuzzTime.map { it.toInt() })
     campaignProjectPath.set(project.path)
+    evidenceProjectDirectory.set(layout.projectDirectory)
+    evidenceSourceFiles.from(
+        sourceSets.main.get().allSource,
+        sourceSets.test.get().allSource,
+        layout.projectDirectory.file("build.gradle.kts"),
+        layout.projectDirectory.file("build.gradle"),
+        layout.projectDirectory.file("gradle.properties"),
+        rootProject.layout.projectDirectory.file("build.gradle.kts"),
+        rootProject.layout.projectDirectory.file("build.gradle"),
+        rootProject.layout.projectDirectory.file("settings.gradle.kts"),
+        rootProject.layout.projectDirectory.file("settings.gradle"),
+        rootProject.layout.projectDirectory.file("gradle.properties"),
+        rootProject.layout.projectDirectory.file("gradle/libs.versions.toml"),
+    )
     maxLen.set(target.maxLen)
     localCorpus.set(layout.buildDirectory.dir("fuzz/${target.name}-corpus"))
     logDirectory.set(layout.buildDirectory.dir("reports/fuzz/${target.name}"))

@@ -67,6 +67,18 @@ abstract class HardeningFuzzSession :
   fun recordCompleted(projectPath: String, target: String, executions: Long): Boolean =
     registry.recordCompleted(projectPath, target, executions)
 
+  internal fun recordObservation(
+    projectPath: String,
+    target: String,
+    executions: Long,
+    observation: FuzzTargetObservation,
+  ): Boolean = registry.recordObservation(projectPath, target, executions, observation)
+
+  internal fun requireObservations(
+    projectPath: String,
+    expectedTargets: Collection<String>,
+  ): Map<String, FuzzTargetObservation> = registry.requireObservations(projectPath, expectedTargets)
+
   fun requireCompleted(
     projectPath: String,
     expectedTargets: Collection<String>,
@@ -154,6 +166,7 @@ internal class FuzzCampaignRegistry {
     val sessionId: String,
     val expectedTargets: Set<String>,
     val executionsByTarget: MutableMap<String, Long> = linkedMapOf(),
+    val observationsByTarget: MutableMap<String, FuzzTargetObservation> = linkedMapOf(),
     var refusalReason: String? = null,
   )
 
@@ -213,6 +226,33 @@ internal class FuzzCampaignRegistry {
       "fuzz target '$projectPath:$target' completed more than once in one fuzzAll campaign"
     }
     return true
+  }
+
+  @Synchronized
+  fun recordObservation(
+    projectPath: String,
+    target: String,
+    executions: Long,
+    observation: FuzzTargetObservation,
+  ): Boolean {
+    if (!recordCompleted(projectPath, target, executions)) return false
+    campaigns.getValue(projectPath).observationsByTarget[target] = observation
+    return true
+  }
+
+  @Synchronized
+  fun requireObservations(
+    projectPath: String,
+    expectedTargets: Collection<String>,
+  ): Map<String, FuzzTargetObservation> {
+    requireCompleted(projectPath, expectedTargets)
+    val campaign = campaigns.getValue(projectPath)
+    val missing = campaign.expectedTargets - campaign.observationsByTarget.keys
+    check(missing.isEmpty()) {
+      "fuzzAll completed target(s) without captured source/log evidence: " +
+        missing.joinToString { "fuzz${it.replaceFirstChar(Char::uppercase)}" }
+    }
+    return campaign.observationsByTarget.toSortedMap()
   }
 
   @Synchronized

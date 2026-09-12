@@ -9,8 +9,124 @@ import org.junit.jupiter.api.Test
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.security.MessageDigest
 
 class FuzzExecutionCountCaptureTest {
+
+  @Test
+  fun `retained log hashes and counts streamed bytes and advises once`() {
+    val retained = ByteArrayOutputStream()
+    val advisories = mutableListOf<Pair<String, Long>>()
+    val evidence = FuzzLogEvidenceOutputStream(
+      path = "/raw/jazzer.stdout.log",
+      sink = retained,
+      largeLogThresholdBytes = 5,
+      onLargeLog = { path, bytes -> advisories += path to bytes },
+    )
+
+    evidence.write("abc".toByteArray())
+    assertThrows(IllegalStateException::class.java, evidence::capturedLog)
+    evidence.write("def".toByteArray())
+    evidence.write('g'.code)
+    evidence.close()
+
+    val captured = evidence.capturedLog()
+    val expected = "abcdefg".toByteArray()
+    assertEquals("/raw/jazzer.stdout.log", captured.path)
+    assertEquals(expected.size.toLong(), captured.bytes)
+    assertEquals(MessageDigest.getInstance("SHA-256").digest(expected).toHex(), captured.sha256)
+    assertEquals(expected.toList(), retained.toByteArray().toList())
+    assertEquals(listOf("/raw/jazzer.stdout.log" to 6L), advisories)
+  }
+
+  @Test
+  fun `retained log refuses evidence after partial write flush or close failure`() {
+    class PartialWriteOutput : OutputStream() {
+      val retained = ByteArrayOutputStream()
+
+      override fun write(value: Int) = error("single-byte writes are not used by this test")
+
+      override fun write(bytes: ByteArray, offset: Int, length: Int) {
+        retained.write(bytes, offset, 2)
+        throw IOException("partial write failed")
+      }
+    }
+    class FlushAndCloseFailingOutput : ByteArrayOutputStream() {
+      override fun flush() = throw IOException("flush failed")
+      override fun close() = throw IOException("close failed")
+    }
+
+    val partialSink = PartialWriteOutput()
+    val partial = FuzzLogEvidenceOutputStream("/raw/partial.log", partialSink)
+    assertThrows(IOException::class.java) { partial.write("abc".toByteArray()) }
+    assertThrows(IOException::class.java, partial::close)
+    assertEquals("ab", partialSink.retained.toString(Charsets.UTF_8))
+    assertThrows(IllegalStateException::class.java, partial::capturedLog)
+
+    val flushAndClose = FuzzLogEvidenceOutputStream(
+      "/raw/flush-close.log", FlushAndCloseFailingOutput())
+    flushAndClose.write("abc".toByteArray())
+    assertEquals("flush failed", assertThrows(IOException::class.java, flushAndClose::flush).message)
+    val close = assertThrows(IOException::class.java, flushAndClose::close)
+    assertEquals("flush failed", close.message)
+    assertEquals(listOf("close failed"), close.suppressed.map { it.message })
+    assertThrows(IllegalStateException::class.java, flushAndClose::capturedLog)
+  }
+
+  @Test
+  fun `background pipe close defers retained close until task thread finalization`() {
+    class CloseTrackingOutput : ByteArrayOutputStream() {
+      var closeAttempted = false
+
+      override fun close() {
+        closeAttempted = true
+        super.close()
+      }
+    }
+
+    val retained = CloseTrackingOutput()
+    val capture = FuzzExecutionCountCapture(
+      ByteArrayOutputStream(), ByteArrayOutputStream(), retained, ByteArrayOutputStream())
+
+    capture.standardOutput.write("Done 1 runs in 1 second(s)\n".toByteArray())
+    capture.standardOutput.close()
+    assertFalse(retained.closeAttempted)
+    capture.close()
+
+    assertTrue(retained.closeAttempted)
+    assertEquals(1L, capture.requireUniquePositive("codec"))
+  }
+
+  @Test
+  fun `parser and caller delegate failures refuse completion after retained streams close`() {
+    class FailingDelegate : OutputStream() {
+      override fun write(value: Int) = throw IOException("delegate write failed")
+    }
+
+    val parserRetained = ByteArrayOutputStream()
+    val parserFailure = FuzzExecutionCountCapture(
+      ByteArrayOutputStream(),
+      ByteArrayOutputStream(),
+      parserRetained,
+      ByteArrayOutputStream(),
+      forwardAll = false,
+      conciseProgress = { throw IllegalStateException("progress parser failed") },
+    )
+    parserFailure.standardOutput.write("#1 INITED cov: 3 ft: 4\n".toByteArray())
+    assertEquals(
+      "progress parser failed",
+      assertThrows(IllegalStateException::class.java, parserFailure::close).message,
+    )
+    assertTrue(parserRetained.toString(Charsets.UTF_8).contains("INITED"))
+
+    val delegateFailure = FuzzExecutionCountCapture(
+      FailingDelegate(), ByteArrayOutputStream(), ByteArrayOutputStream(), ByteArrayOutputStream())
+    delegateFailure.standardOutput.write("Done 2 runs in 1 second(s)\n".toByteArray())
+    assertEquals(
+      "delegate write failed",
+      assertThrows(IOException::class.java, delegateFailure::close).message,
+    )
+  }
 
   @Test
   fun `standalone capture retains and forwards both streams byte exactly`() {
@@ -232,3 +348,5 @@ class FuzzExecutionCountCaptureTest {
     assertEquals(9L, capture.requireUniquePositive("codec"))
   }
 }
+
+private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

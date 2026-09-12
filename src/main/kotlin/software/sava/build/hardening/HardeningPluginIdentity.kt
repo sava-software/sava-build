@@ -76,6 +76,12 @@ internal abstract class SavaBuildIdentityTask : DefaultTask() {
 
   @TaskAction
   fun printIdentity() {
+    val localOverride = localOverrideState.get()
+    val localOverrideExplanation = if (localOverride == "not verified") {
+      " (no resolved local test publication verified; see loaded coordinates and SHA-256)"
+    } else {
+      ""
+    }
     logger.quiet(
         "savaBuildIdentity:\n" +
             "  requested coordinates: ${requestedCoordinates.get()}\n" +
@@ -83,7 +89,7 @@ internal abstract class SavaBuildIdentityTask : DefaultTask() {
             "  resolved artifact path: ${resolvedArtifactPath.get()}\n" +
             "  loaded code path: ${loadedCodePath.get()}\n" +
             "  loaded SHA-256: ${loadedSha256.get()}\n" +
-            "  local override: ${localOverrideState.get()}\n" +
+            "  local override: $localOverride$localOverrideExplanation\n" +
             "  local artifact path: ${localArtifactPath.get()}\n" +
             "  local artifact SHA-256: ${localArtifactSha256.get()}")
   }

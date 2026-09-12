@@ -286,6 +286,38 @@ validate_aggregate_receipt() {
     function withinExactJsonInteger(value) {
       return decimalLe(value, "9007199254740991")
     }
+    function canonicalNonnegativeLong(value) {
+      return value ~ /^(0|[1-9][0-9]*)$/ && decimalLe(value, "9223372036854775807")
+    }
+    function sha256(value) {
+      return length(value) == 64 && value !~ /[^0-9a-f]/
+    }
+    function fullGitObject(value) {
+      return length(value) == 40 && value !~ /[^0-9a-f]/
+    }
+    function hasControl(value) {
+      return value ~ /[\001-\037\177]/
+    }
+    function absolutePath(value,    part, parts, position) {
+      if (value !~ /^\// || hasControl(value)) return 0
+      if (value == "/") return 1
+      split(value, parts, "/")
+      for (position=2; position in parts; position++) {
+        part=parts[position]
+        if (part == "" || part == "." || part == "..") return 0
+      }
+      return 1
+    }
+    function gitRelativePath(value,    part, parts, position) {
+      if (value == ".") return 1
+      if (value == "" || value ~ /^\// || hasControl(value)) return 0
+      split(value, parts, "/")
+      for (position=1; position in parts; position++) {
+        part=parts[position]
+        if (part == "" || part == "." || part == "..") return 0
+      }
+      return 1
+    }
     function decimalAdd(left, right,    carry, li, ri, digit, result) {
       carry=0; result=""; li=length(left); ri=length(right)
       while (li > 0 || ri > 0 || carry > 0) {
@@ -299,7 +331,7 @@ validate_aggregate_receipt() {
     }
     BEGIN { observedTotal="0" }
     $1 == "schema" {
-      schemaRows++; if (NF != 2 || $2 != "4") invalid=1; next
+      schemaRows++; if (NF != 2 || ($2 != "4" && $2 != "5")) invalid=1; schema=$2; next
     }
     $1 == "project" {
       projectRows++
@@ -314,7 +346,7 @@ validate_aggregate_receipt() {
     }
     $1 == "pluginSha256" {
       pluginRows++
-      if (NF != 2 || length($2) != 64 || $2 ~ /[^0-9a-f]/) invalid=1
+      if (NF != 2 || !sha256($2)) invalid=1
       next
     }
     $1 == "totalExecutions" {
@@ -327,13 +359,50 @@ validate_aggregate_receipt() {
       targets++
       if (NF != 3 || $2 !~ /^fuzz./ || seen[$2]++ ||
           $3 !~ /^[1-9][0-9]*$/ || !withinExactJsonInteger($3)) invalid=1
-      else observedTotal=decimalAdd(observedTotal, $3)
+      else { observedTotal=decimalAdd(observedTotal, $3); targetSeen[$2]=1 }
+      next
+    }
+    # Schema 5 deliberately records only local Jazzer log metadata.  The log
+    # filenames are fixed by the producer (jazzer.stdout.log and jazzer.stderr.log)
+    # beneath the attempt directory; this wrapper must not reread or retain them.
+    $1 == "targetObservation" {
+      observationRows++
+      if (NF != 8 || $2 !~ /^fuzz./ || observationSeen[$2]++ ||
+          !canonicalNonnegativeLong($3) || !absolutePath($4) ||
+          !canonicalNonnegativeLong($5) || !sha256($6) ||
+          !canonicalNonnegativeLong($7) || !sha256($8)) invalid=1
+      next
+    }
+    $1 == "targetSource" {
+      sourceRows++
+      if (NF != 8 || $2 !~ /^fuzz./ || sourceSeen[$2]++ || !sha256($3) ||
+          ($4 != "clean" && $4 != "dirty" && $4 != "unavailable")) {
+        invalid=1
+      } else if ($4 == "unavailable") {
+        if ($5 != "unavailable" || $6 != "unavailable" ||
+            $7 != "unavailable" || $8 != "unavailable") invalid=1
+      } else if (!fullGitObject($5) || !fullGitObject($6) || !sha256($7) ||
+          !gitRelativePath($8) ||
+          ($4 == "clean" && $7 != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") ||
+          ($4 == "dirty" && $7 == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")) {
+        invalid=1
+      }
       next
     }
     NF > 0 { invalid=1 }
     END {
       if (invalid || schemaRows != 1 || projectRows != 1 || budgetRows != 1 || parallelRows != 1 ||
           pluginRows != 1 || executionRows != 1 || observedTotal != expectedTotal) exit 1
+      if (schema == "4") {
+        if (observationRows != 0 || sourceRows != 0) exit 1
+      } else if (schema == "5") {
+        if (observationRows != targets || sourceRows != targets) exit 1
+        for (target in targetSeen) {
+          if (!(target in observationSeen) || !(target in sourceSeen)) exit 1
+        }
+        for (target in observationSeen) if (!(target in targetSeen)) exit 1
+        for (target in sourceSeen) if (!(target in targetSeen)) exit 1
+      } else exit 1
       print targets + 0
     }
   ' "$file"
@@ -1048,6 +1117,7 @@ self_test() {
   local log_hash aggregate_hash empty_path_log_hash empty_path_aggregate_hash
   local manifest_hash verify_output saved_function projection producer_failed
   local empty_receipt_fingerprint prior_receipt_fingerprint expected_receipt_fingerprint
+  local empty_status_sha source_sha clean_commit clean_tree dirty_commit dirty_tree dirty_status_sha
   local release_mode=false seconds=17 parallel_targets=1
   local run_dir published_plugin_sha256
   local GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -1158,6 +1228,13 @@ self_test() {
     echo "local-fuzz self-test: wrong parallel-target bound was accepted" >&2
     return 1
   fi
+  cp "$aggregate" "$fixture"
+  printf 'targetObservation\tfuzzCodec\t0\t/tmp/local-fuzz-attempt/codec\t0\t%s\t0\t%s\n' \
+    "$plugin_hash" "$plugin_hash" >> "$fixture"
+  if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 4 accepted schema 5 metadata" >&2
+    return 1
+  fi
   sed 's/totalExecutions\t300/totalExecutions\t301/' "$aggregate" > "$fixture"
   if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
     echo "local-fuzz self-test: inconsistent execution total was accepted" >&2
@@ -1178,6 +1255,74 @@ self_test() {
   printf 'target\tfuzzCodec\t1\n' >> "$aggregate"
   if validate_aggregate_receipt "$aggregate" 17 1 >/dev/null 2>&1; then
     echo "local-fuzz self-test: duplicate target evidence was accepted" >&2
+    return 1
+  fi
+  empty_status_sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  source_sha=$(printf '%064d' 1)
+  clean_commit=$(printf '%040d' 1)
+  clean_tree=$(printf '%040d' 2)
+  dirty_commit=$(printf '%040d' 3)
+  dirty_tree=$(printf '%040d' 4)
+  dirty_status_sha=$(printf '%064d' 5)
+  printf '%s\n' \
+    "schema	5" \
+    "project	:" \
+    "maxFuzzTimeSeconds	17" \
+    "maxParallelTargets	1" \
+    "pluginSha256	$plugin_hash" \
+    "totalExecutions	300" \
+    "target	fuzzCodec	100" \
+    "target	fuzzWire	200" \
+    "targetObservation	fuzzCodec	0	/tmp/local-fuzz-attempt/codec	0	$source_sha	0	$source_sha" \
+    "targetSource	fuzzCodec	$source_sha	clean	$clean_commit	$clean_tree	$empty_status_sha	." \
+    "targetObservation	fuzzWire	9223372036854775807	/tmp/local-fuzz-attempt/wire	9223372036854775807	$source_sha	0	$source_sha" \
+    "targetSource	fuzzWire	$source_sha	dirty	$dirty_commit	$dirty_tree	$dirty_status_sha	module/fuzz" > "$aggregate"
+  count=$(validate_aggregate_receipt "$aggregate" 17 1)
+  [ "$count" = 2 ] || {
+    echo "local-fuzz self-test: valid schema 5 aggregate was rejected" >&2; return 1;
+  }
+  sed '/^targetSource	fuzzWire	/d' "$aggregate" > "$fixture"
+  if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 5 accepted missing source metadata" >&2
+    return 1
+  fi
+  cp "$aggregate" "$fixture"
+  printf 'targetObservation\tfuzzCodec\t0\t/tmp/local-fuzz-attempt/duplicate\t0\t%s\t0\t%s\n' \
+    "$source_sha" "$source_sha" >> "$fixture"
+  if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 5 accepted duplicate observation metadata" >&2
+    return 1
+  fi
+  sed 's|/tmp/local-fuzz-attempt/codec|relative-attempt-directory|' "$aggregate" > "$fixture"
+  if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 5 accepted a relative attempt directory" >&2
+    return 1
+  fi
+  sed 's/targetObservation	fuzzCodec	0/targetObservation	fuzzCodec	01/' "$aggregate" > "$fixture"
+  if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 5 accepted a noncanonical elapsed time" >&2
+    return 1
+  fi
+  sed 's/9223372036854775807/9223372036854775808/' "$aggregate" > "$fixture"
+  if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 5 accepted an oversized log byte count" >&2
+    return 1
+  fi
+  sed "s/$empty_status_sha/$source_sha/" "$aggregate" > "$fixture"
+  if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 5 accepted a clean nonempty Git status" >&2
+    return 1
+  fi
+  sed "s/dirty\\t$dirty_commit\\t$dirty_tree\\t$dirty_status_sha\\tmodule\/fuzz/unavailable\\tunavailable\\tunavailable\\tunavailable\\tmodule\/fuzz/" \
+    "$aggregate" > "$fixture"
+  if validate_aggregate_receipt "$fixture" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 5 accepted malformed unavailable Git metadata" >&2
+    return 1
+  fi
+  printf 'targetSource\tfuzzOrphan\t%s\tunavailable\tunavailable\tunavailable\tunavailable\tunavailable\n' \
+    "$source_sha" >> "$aggregate"
+  if validate_aggregate_receipt "$aggregate" 17 1 >/dev/null 2>&1; then
+    echo "local-fuzz self-test: schema 5 accepted orphan source metadata" >&2
     return 1
   fi
   printf '%s\n' \

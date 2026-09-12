@@ -339,6 +339,10 @@ $buildTail
             if (mode.equals("tamper-fuzz-sentinel")) {
               Files.writeString(Path.of(".pitest-history/local-fuzz.running"), "tampered\n");
             }
+            if (mode.equals("change-fuzz-source")) {
+              Files.writeString(Path.of("src/main/java/com/example/FakeFuzz.java"),
+                  "\n// changed during fuzz execution\n", java.nio.file.StandardOpenOption.APPEND);
+            }
             if (mode.equals("fail") && target != null && target.endsWith("PlainFuzz")) {
               System.exit(4);
             }
@@ -1210,7 +1214,7 @@ $buildTail
     assertTrue(receipt.isFile, "fuzzAll did not write its receipt:\n${result.output}")
     assertEquals(
       listOf(
-        "schema\t4",
+        "schema\t5",
         "project\t:",
         "pluginSha256\t" + receipt.readLines().single { it.startsWith("pluginSha256\t") }
           .substringAfter('\t'),
@@ -1221,12 +1225,61 @@ $buildTail
         "target\tfuzzHollow\t202",
         "target\tfuzzPlain\t303",
       ),
-      receipt.readLines(),
+      receipt.readLines().filterNot {
+        it.startsWith("targetObservation\t") || it.startsWith("targetSource\t")
+      },
     )
+    val rows = receipt.readLines().map { it.split('\t') }
+    assertEquals(3, rows.count { it[0] == "targetObservation" })
+    assertEquals(3, rows.count { it[0] == "targetSource" })
+    listOf("codec", "hollow", "plain").forEach { target ->
+      val taskName = "fuzz${target.replaceFirstChar(Char::uppercase)}"
+      val observation = rows.single { it[0] == "targetObservation" && it[1] == taskName }
+      assertEquals(8, observation.size)
+      assertTrue(observation[2].toLong() > 0, "elapsed target time must be observed")
+      val attempt = fuzzAttemptDirectories(target).single()
+      assertEquals(attempt.canonicalPath, File(observation[3]).canonicalPath)
+      listOf("jazzer.stdout.log" to 4, "jazzer.stderr.log" to 6).forEach { (name, index) ->
+        val log = attempt.resolve(name)
+        assertEquals(log.length().toString(), observation[index])
+        assertEquals(PitestEvidence.sha256(log), observation[index + 1])
+      }
+      val source = rows.single { it[0] == "targetSource" && it[1] == taskName }
+      assertEquals(8, source.size)
+      assertTrue(source[2].matches(Regex("[0-9a-f]{64}")))
+      assertEquals(List(5) { "unavailable" }, source.drop(3))
+    }
     assertFalse(
       File(fixtureDir, ".pitest-history/local-fuzz.running").exists(),
       "successful campaign retained its running sentinel",
     )
+  }
+
+  @Test
+  fun `fuzzAll refuses source edits during execution and retains prior evidence`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val (commit, tree) = initializeGitFixture()
+    File(fixtureDir, "src/main/java/com/example/FakeFuzz.java")
+      .appendText("\n// dirty before the campaign\n")
+    runner("fuzzAll", "-PmaxFuzzTime=1").build()
+    val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
+    val previous = receipt.readBytes()
+    receipt.readLines().filter { it.startsWith("targetSource\t") }.forEach { row ->
+      assertEquals(listOf("dirty", commit, tree), row.split('\t').subList(3, 6))
+    }
+    File(fixtureDir, "fake-fuzz-mode.txt").writeText("change-fuzz-source\n")
+    val statusBefore = git("status", "--porcelain=v1", "--untracked-files=all")
+
+    val failed = runner("fuzzAll", "-PmaxFuzzTime=1").buildAndFail()
+
+    assertTrue(failed.output.contains("fuzz source identity changed"), failed.output)
+    assertTrue(failed.output.contains("Configuration cache entry reused."), failed.output)
+    assertArrayEquals(previous, receipt.readBytes())
+    assertTrue(File(fixtureDir, ".pitest-history/local-fuzz.running").isFile)
+    assertTrue(listOf("codec", "hollow", "plain").any { fuzzAttemptDirectories(it).size >= 2 })
+    assertEquals(statusBefore, git("status", "--porcelain=v1", "--untracked-files=all"))
   }
 
   @Test

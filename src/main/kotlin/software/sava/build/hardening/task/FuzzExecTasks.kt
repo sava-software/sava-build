@@ -1,6 +1,7 @@
 package software.sava.build.hardening.task
 
 import org.gradle.api.GradleException
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.services.ServiceReference
@@ -15,9 +16,13 @@ import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.UntrackedTask
 import org.gradle.api.tasks.JavaExec
 import org.gradle.process.CommandLineArgumentProvider
+import org.gradle.process.ExecOperations
 import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.HardeningFuzzSession
 import software.sava.build.hardening.MAX_FUZZ_RECEIPT_EXECUTIONS
+import software.sava.build.hardening.FuzzCapturedLog
+import software.sava.build.hardening.FuzzSourceIdentity
+import software.sava.build.hardening.FuzzTargetObservation
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
@@ -32,6 +37,8 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+import javax.inject.Inject
 
 /** Coverage-guided Jazzer execution with an explicit writable local corpus. */
 @UntrackedTask(because = "Fuzzing must execute for the requested wall-clock budget whenever selected")
@@ -59,6 +66,17 @@ abstract class FuzzRunTask : JavaExec() {
   /** Mutable diagnostic output; aggregate evidence continues to come from the live stream. */
   @get:LocalState
   abstract val logDirectory: DirectoryProperty
+
+  /** Root used to express aggregate source identity paths relative to this project. */
+  @get:Internal
+  abstract val evidenceProjectDirectory: DirectoryProperty
+
+  /** Source inputs bound to one aggregate fuzz observation. */
+  @get:Internal
+  abstract val evidenceSourceFiles: ConfigurableFileCollection
+
+  @get:Inject
+  protected abstract val execOperations: ExecOperations
 
   /** Restores the pre-concise aggregate console without changing standalone target output. */
   @get:Input
@@ -108,7 +126,12 @@ abstract class FuzzRunTask : JavaExec() {
       seed = seedCorpus.orNull?.asFile,
     )
     val target = targetName.get()
-    val logs = prepareFuzzAttemptLogs(logDirectory.get().asFile)
+    val logs = prepareFuzzAttemptLogs(logDirectory.get().asFile) { logPath, bytes ->
+      logger.warn(
+        "$path: fuzz '$target' retained raw log $logPath reached 1 GiB at $bytes bytes; " +
+          "retaining the full stream.",
+      )
+    }
     val configuredStandardOutput: OutputStream? = getStandardOutput()
     val configuredErrorOutput: OutputStream? = getErrorOutput()
     val originalStandardOutput = configuredStandardOutput ?: System.out
@@ -147,7 +170,18 @@ abstract class FuzzRunTask : JavaExec() {
     standardOutput = executionCount.standardOutput
     errorOutput = executionCount.errorOutput
     var executionFailure: Throwable? = null
+    var sourceBefore: FuzzSourceIdentity? = null
+    var processStartedAtNanos: Long? = null
+    var processFinishedAtNanos: Long? = null
     try {
+      if (aggregateCampaign) {
+        sourceBefore = FuzzSourceIdentity.capture(
+          evidenceProjectDirectory.get().asFile,
+          evidenceSourceFiles.files + listOfNotNull(seedCorpus.orNull?.asFile),
+          execOperations,
+        )
+      }
+      processStartedAtNanos = System.nanoTime()
       super.exec()
       // A consumer may configure this public JavaExec with ignoreExitValue=true.
       // Campaign completion is stricter than that compatibility knob: a non-zero
@@ -162,6 +196,8 @@ abstract class FuzzRunTask : JavaExec() {
         executionCount.close()
       } catch (closeFailure: Throwable) {
         executionFailure = retainPrimaryFailure(executionFailure, closeFailure)
+      } finally {
+        processFinishedAtNanos = System.nanoTime()
       }
     }
     executionFailure?.let { failure ->
@@ -181,8 +217,39 @@ abstract class FuzzRunTask : JavaExec() {
         )
         throw failure
       }
+      val sourceAfter = try {
+        FuzzSourceIdentity.capture(
+          evidenceProjectDirectory.get().asFile,
+          evidenceSourceFiles.files + listOfNotNull(seedCorpus.orNull?.asFile),
+          execOperations,
+        )
+      } catch (failure: Throwable) {
+        logger.lifecycle(
+          "$path: failed; raw logs: ${logs.standardOutput}, ${logs.errorOutput}",
+        )
+        throw failure
+      }
+      val observation = try {
+        FuzzSourceIdentity.requireUnchanged(checkNotNull(sourceBefore), sourceAfter)
+        val capturedLogs = logs.capturedEvidence()
+        val elapsedNanos = checkNotNull(processFinishedAtNanos) -
+          checkNotNull(processStartedAtNanos)
+        check(elapsedNanos >= 0) { "fuzz '$target': monotonic execution duration was negative" }
+        FuzzTargetObservation(
+          elapsedMillis = TimeUnit.NANOSECONDS.toMillis(elapsedNanos),
+          source = sourceAfter,
+          attemptDirectory = logs.attemptDirectory.path,
+          standardLog = capturedLogs.standardLog,
+          errorLog = capturedLogs.errorLog,
+        )
+      } catch (failure: Throwable) {
+        logger.lifecycle(
+          "$path: failed; raw logs: ${logs.standardOutput}, ${logs.errorOutput}",
+        )
+        throw failure
+      }
       try {
-        session.recordCompleted(projectPath, target, executions)
+        session.recordObservation(projectPath, target, executions, observation)
       } catch (failure: Throwable) {
         logger.lifecycle(
           "$path: failed; raw logs: ${logs.standardOutput}, ${logs.errorOutput}",
@@ -191,7 +258,8 @@ abstract class FuzzRunTask : JavaExec() {
       }
       logger.lifecycle(
         "$path: completed $executions execution(s); raw logs: " +
-          "${logs.standardOutput}, ${logs.errorOutput}",
+          "${observation.standardLog.path} (${observation.standardLog.bytes} bytes), " +
+          "${observation.errorLog.path} (${observation.errorLog.bytes} bytes)",
       )
     }
   }
@@ -399,7 +467,9 @@ private class FuzzLineCaptureOutputStream(
   private var retainedFailed = false
   private var delegateFailed = false
   private var processingFailed = false
-  private var finished = false
+  private var inputFinished = false
+  private var retainedClosed = false
+  private var delegateFlushed = false
   private var failure: Throwable? = null
 
   @Synchronized
@@ -432,35 +502,28 @@ private class FuzzLineCaptureOutputStream(
    */
   @Synchronized
   override fun close() {
-    finishWithoutThrowing()
+    // Gradle calls close from its background pipe-draining threads and discards any
+    // failure. It may safely finish parsing there, but retained evidence must remain
+    // open until the task thread gathers every failure and performs the final close.
+    finishInputWithoutThrowing()
   }
 
   @Synchronized
   fun finishAndCloseRetained() {
-    finishWithoutThrowing()
-    failure?.let { throw it }
-  }
-
-  private fun finishWithoutThrowing() {
-    if (finished) return
-    try {
-      flushBufferedLine()
-    } catch (next: Throwable) {
-      processingFailed = true
-      remember(next)
-    }
-    finished = true
-    if (retained != null) {
+    finishInputWithoutThrowing()
+    if (!retainedClosed && retained != null) {
+      retainedClosed = true
       try {
         retained.close()
       } catch (next: Throwable) {
         remember(next)
       }
     }
-    if (forwardAll) {
+    if (!delegateFlushed && forwardAll) {
+      delegateFlushed = true
       try {
         // The delegate belongs to JavaExec's caller. The pre-retention wrapper never
-        // closed it, and Gradle's output customization surface does not transfer
+        // closes it, and Gradle's output customization surface does not transfer
         // ownership to this task; flushing preserves compatibility for streams reused
         // by later tasks or build logic.
         delegate.flush()
@@ -468,11 +531,23 @@ private class FuzzLineCaptureOutputStream(
         remember(next)
       }
     }
+    failure?.let { throw it }
+  }
+
+  private fun finishInputWithoutThrowing() {
+    if (inputFinished) return
+    try {
+      flushBufferedLine()
+    } catch (next: Throwable) {
+      processingFailed = true
+      remember(next)
+    }
+    inputFinished = true
   }
 
   private inline fun writeRetained(write: (OutputStream) -> Unit) {
     val output = retained ?: return
-    if (retainedFailed || finished) return
+    if (retainedFailed || inputFinished) return
     try {
       write(output)
     } catch (next: Throwable) {
@@ -482,7 +557,7 @@ private class FuzzLineCaptureOutputStream(
   }
 
   private inline fun writeDelegate(write: (OutputStream) -> Unit) {
-    if (!forwardAll || delegateFailed || finished) return
+    if (!forwardAll || delegateFailed || inputFinished) return
     try {
       write(delegate)
     } catch (next: Throwable) {
@@ -492,7 +567,7 @@ private class FuzzLineCaptureOutputStream(
   }
 
   private inline fun process(block: () -> Unit) {
-    if (processingFailed || finished) return
+    if (processingFailed || inputFinished) return
     try {
       block()
     } catch (next: Throwable) {
@@ -502,6 +577,7 @@ private class FuzzLineCaptureOutputStream(
   }
 
   private fun remember(next: Throwable) {
+    if (failure === next) return
     failure = retainPrimaryFailure(failure, next)
   }
 
@@ -535,31 +611,155 @@ private class FuzzLineCaptureOutputStream(
   }
 }
 
-private data class FuzzAttemptLogs(
-  val standardOutput: File,
-  val errorOutput: File,
-  val standardSink: OutputStream,
-  val errorSink: OutputStream,
+internal data class FuzzCapturedLogs(
+  val standardLog: FuzzCapturedLog,
+  val errorLog: FuzzCapturedLog,
 )
 
-private fun prepareFuzzAttemptLogs(rawDirectory: File): FuzzAttemptLogs {
+internal class FuzzLogEvidenceOutputStream(
+  private val path: String,
+  private val sink: OutputStream,
+  private val largeLogThresholdBytes: Long = FUZZ_LARGE_LOG_ADVISORY_BYTES,
+  private val onLargeLog: (String, Long) -> Unit = { _, _ -> },
+) : OutputStream() {
+  private val digest = MessageDigest.getInstance("SHA-256")
+  private var bytesWritten = 0L
+  private var largeLogAdvised = false
+  private var closed = false
+  private var failure: Throwable? = null
+  private var captured: FuzzCapturedLog? = null
+
+  init {
+    require(largeLogThresholdBytes > 0) { "large log threshold must be positive" }
+  }
+
+  @Synchronized
+  override fun write(value: Int) {
+    writeSuccessfully {
+      sink.write(value)
+      digest.update(value.toByte())
+      bytesWritten = Math.addExact(bytesWritten, 1L)
+    }
+  }
+
+  @Synchronized
+  override fun write(bytes: ByteArray, offset: Int, length: Int) {
+    if (offset < 0 || length < 0 || offset > bytes.size - length) {
+      throw IndexOutOfBoundsException("size=${bytes.size}, offset=$offset, length=$length")
+    }
+    if (length == 0) return
+    writeSuccessfully {
+      // A throwing write may have emitted an unknown prefix. Do not advance either
+      // counter or digest in that case; the remembered failure refuses the evidence.
+      sink.write(bytes, offset, length)
+      digest.update(bytes, offset, length)
+      bytesWritten = Math.addExact(bytesWritten, length.toLong())
+    }
+  }
+
+  @Synchronized
+  override fun flush() {
+    ensureWritable()
+    try {
+      sink.flush()
+    } catch (next: Throwable) {
+      remember(next)
+      throw next
+    }
+  }
+
+  @Synchronized
+  override fun close() {
+    if (closed) return
+    closed = true
+    try {
+      sink.close()
+    } catch (next: Throwable) {
+      remember(next)
+    }
+    if (failure == null) {
+      captured = FuzzCapturedLog(path, bytesWritten, digest.digest().toHex())
+    }
+    failure?.let { throw it }
+  }
+
+  /** Available only after the task thread has successfully closed this retained stream. */
+  @Synchronized
+  fun capturedLog(): FuzzCapturedLog {
+    check(closed) { "fuzz log evidence for $path was requested before close" }
+    failure?.let { throw IllegalStateException("fuzz log evidence for $path is incomplete", it) }
+    return checkNotNull(captured) { "fuzz log evidence for $path was not finalized" }
+  }
+
+  @Synchronized
+  fun bytesWritten(): Long = bytesWritten
+
+  private inline fun writeSuccessfully(write: () -> Unit) {
+    ensureWritable()
+    try {
+      write()
+      if (!largeLogAdvised && bytesWritten >= largeLogThresholdBytes) {
+        largeLogAdvised = true
+        onLargeLog(path, bytesWritten)
+      }
+    } catch (next: Throwable) {
+      remember(next)
+      throw next
+    }
+  }
+
+  private fun ensureWritable() {
+    check(!closed) { "fuzz log evidence stream for $path is already closed" }
+    failure?.let { throw IllegalStateException("fuzz log evidence stream for $path failed", it) }
+  }
+
+  private fun remember(next: Throwable) {
+    failure = retainPrimaryFailure(failure, next)
+  }
+}
+
+internal data class FuzzAttemptLogs(
+  val attemptDirectory: File,
+  val standardOutput: File,
+  val errorOutput: File,
+  val standardSink: FuzzLogEvidenceOutputStream,
+  val errorSink: FuzzLogEvidenceOutputStream,
+) {
+  fun capturedEvidence(): FuzzCapturedLogs = FuzzCapturedLogs(
+    standardLog = standardSink.capturedLog(),
+    errorLog = errorSink.capturedLog(),
+  )
+}
+
+internal fun prepareFuzzAttemptLogs(
+  rawDirectory: File,
+  onLargeLog: (String, Long) -> Unit = { _, _ -> },
+): FuzzAttemptLogs {
   val targetDirectory = rawDirectory.toPath().toAbsolutePath().normalize()
   Files.createDirectories(targetDirectory)
   val attemptDirectory = Files.createTempDirectory(targetDirectory, "attempt-")
   val standardPath = attemptDirectory.resolve(FUZZ_STANDARD_OUTPUT_LOG)
   val errorPath = attemptDirectory.resolve(FUZZ_ERROR_OUTPUT_LOG)
-  val standardSink = Files.newOutputStream(
-    standardPath,
-    StandardOpenOption.CREATE_NEW,
-    StandardOpenOption.WRITE,
-    LinkOption.NOFOLLOW_LINKS,
-  )
-  val errorSink = try {
+  val standardSink = FuzzLogEvidenceOutputStream(
+    standardPath.toString(),
     Files.newOutputStream(
-      errorPath,
+      standardPath,
       StandardOpenOption.CREATE_NEW,
       StandardOpenOption.WRITE,
       LinkOption.NOFOLLOW_LINKS,
+    ),
+    onLargeLog = onLargeLog,
+  )
+  val errorSink = try {
+    FuzzLogEvidenceOutputStream(
+      errorPath.toString(),
+      Files.newOutputStream(
+        errorPath,
+        StandardOpenOption.CREATE_NEW,
+        StandardOpenOption.WRITE,
+        LinkOption.NOFOLLOW_LINKS,
+      ),
+      onLargeLog = onLargeLog,
     )
   } catch (failure: Throwable) {
     try {
@@ -570,6 +770,7 @@ private fun prepareFuzzAttemptLogs(rawDirectory: File): FuzzAttemptLogs {
     throw failure
   }
   return FuzzAttemptLogs(
+    attemptDirectory = attemptDirectory.toFile(),
     standardOutput = standardPath.toFile(),
     errorOutput = errorPath.toFile(),
     standardSink = standardSink,
@@ -579,6 +780,9 @@ private fun prepareFuzzAttemptLogs(rawDirectory: File): FuzzAttemptLogs {
 
 private const val FUZZ_STANDARD_OUTPUT_LOG = "jazzer.stdout.log"
 private const val FUZZ_ERROR_OUTPUT_LOG = "jazzer.stderr.log"
+internal const val FUZZ_LARGE_LOG_ADVISORY_BYTES = 1L shl 30
+
+private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
 internal data class FuzzCorpusCommitStats(
   val beforeFiles: Int,
