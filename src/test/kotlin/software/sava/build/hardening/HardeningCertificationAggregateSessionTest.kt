@@ -99,7 +99,7 @@ class HardeningCertificationAggregateSessionTest {
   fun `strict child receipt structure is checked before hashing`() {
     val root = temporaryDirectory.resolve("root").apply { mkdirs() }
     val child = child(root.resolve("child"), ":child", listOf("server"))
-    val unsupported = child.receiptFile.readText().replace("schema\t7", "schema\t6")
+    val unsupported = child.receiptFile.readText().replace("schema\t8", "schema\t7")
     child.receiptFile.writeText(unsupported)
 
     val failure = assertThrows(IllegalStateException::class.java) {
@@ -235,7 +235,7 @@ class HardeningCertificationAggregateSessionTest {
   }
 
   private fun receipt(projectPath: String, suites: List<String>): String = buildString {
-    appendLine("schema\t7")
+    appendLine("schema\t8")
     appendLine("project\t$projectPath")
     appendLine("session\t$CHILD_SESSION")
     appendLine("mode\tfresh-full-strict")
@@ -246,7 +246,7 @@ class HardeningCertificationAggregateSessionTest {
     appendLine("gitProjectDirectory\t.")
     appendLine("pluginSha256\t$PLUGIN_SHA")
     appendLine(
-      "suiteColumns\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\t" +
+      "suiteColumns\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\tclasspathSha256\t" +
         "configurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\t" +
         "mutationToolchainSha256\trecordInputsSha256\trecordPitestVersion\t" +
         "recordMutationToolchainSha256"
@@ -255,7 +255,7 @@ class HardeningCertificationAggregateSessionTest {
       appendLine(
         listOf(
           "suite", suite, SUITE_INVOCATION, "4".repeat(64), "5".repeat(64),
-          "6".repeat(64), "7".repeat(64), "1.30.0", PLUGIN_SHA,
+          "6".repeat(64), "b".repeat(64), "7".repeat(64), "1.30.0", PLUGIN_SHA,
           "8".repeat(64), "9".repeat(64), "a".repeat(64), "1.30.0",
           "9".repeat(64),
         ).joinToString("\t")

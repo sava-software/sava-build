@@ -339,7 +339,6 @@ else PitestEvidence.sha256(File(hardeningLoadedLocalArtifactPath))
 tasks.register<SavaBuildIdentityTask>("savaBuildIdentity") {
   group = "help"
   description = "Prints the loaded hardening plugin identity and verified local-artifact state."
-  requestedCoordinates.set("unavailable at plugin application")
   resolvedCoordinates.set(hardeningResolvedCoordinates)
   resolvedArtifactPath.set(hardeningResolvedArtifactPath)
   loadedCodePath.set(hardeningImplementationCode.absolutePath)
@@ -622,7 +621,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
       }
       // The report and compiled/configured inputs prove what PIT observed; these
       // committed files prove what made that observation acceptable. Keep their
-      // digest in every suite row too: the schema-7 receipt's project-level Git
+      // digest in every suite row too: the schema-8 receipt's project-level Git
       // identity binds the checkout, while this field names the exact baseline,
       // timeout membership, causes, and PIT-version provenance used by the suite.
       val recordInputsSha256 = PitestEvidence.mutationRecordFingerprint(
@@ -636,14 +635,15 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
       receiptRows.add(
           listOf(
               "suite", suiteName, evidence.invocationId, evidence.reportSha256,
-              evidence.sourceSha256, evidence.classesSha256, evidence.configurationSha256,
+              evidence.sourceSha256, evidence.classesSha256, evidence.classpathSha256,
+              evidence.configurationSha256,
               evidence.pitestVersion, evidence.pluginSha256, evidence.toolClasspathSha256,
               evidence.mutationToolchainSha256, recordInputsSha256, recordProvenance,
               recordToolchainProvenance,
           ).joinToString("\t"))
     }
     val receipt = buildString {
-      appendLine("schema\t7")
+      appendLine("schema\t8")
       appendLine("project\t$certifiedProjectPath")
       appendLine("session\t$sessionId")
       appendLine("mode\tfresh-full-strict")
@@ -654,7 +654,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
       appendLine("gitProjectDirectory\t${finalProjectIdentity.git.projectDirectory}")
       appendLine("pluginSha256\t${finalProjectIdentity.pluginSha256}")
       appendLine(
-          "suiteColumns\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\t" +
+          "suiteColumns\tname\tinvocation\treportSha256\tsourceSha256\tclassesSha256\tclasspathSha256\t" +
               "configurationSha256\tpitestVersion\tpluginSha256\ttoolClasspathSha256\t" +
               "mutationToolchainSha256\trecordInputsSha256\trecordPitestVersion\t" +
               "recordMutationToolchainSha256")
@@ -2410,7 +2410,8 @@ val fuzzAll = tasks.register("fuzzAll") {
       BaselineFiles.writeAtomically(
           trustedProjectDirectory, runningFile, "session\t$sessionId\n")
       logger.lifecycle(
-          "fuzzAll: started ${names.get().size} target(s), up to $parallelTargets concurrently")
+          "fuzzAll: started ${names.get().size} target(s) in project '$campaignProjectPath'; " +
+              "up to $parallelTargets concurrently across selected projects")
     } catch (failure: Exception) {
       val reason = failure.message ?: failure::class.java.simpleName
       session.refuse(campaignProjectPath, expectedTargets, reason)

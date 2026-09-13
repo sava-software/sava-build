@@ -302,6 +302,10 @@ abstract class HardeningCertificationAggregateSession :
    */
   fun awaitPublicationEvidence() = completionBarrier.awaitPublicationEvidence()
 
+  internal fun awaitPublicationEvidence(
+    onWaitFinished: (CertificationAggregateCompletionWait) -> Unit,
+  ) = completionBarrier.awaitPublicationEvidence(onWaitFinished)
+
   @Synchronized
   fun sessionId(gradleRootDirectory: File): String? =
     attempts[normalizedAbsolutePath(gradleRootDirectory).toString()]?.sessionId
@@ -346,6 +350,19 @@ abstract class HardeningCertificationAggregateSession :
     registry.registeredProjects(gradleRootDirectory)
 
   override fun close() = fileLocks.close()
+}
+
+/** One observation of an engaged wait, reported after releasing the barrier lock. */
+internal data class CertificationAggregateCompletionWait(
+  val pendingAnchor: Boolean,
+  val pendingChildTasks: Int,
+  val elapsedNanos: Long,
+  val outcome: String,
+) {
+  fun diagnostic(): String =
+    "hardeningCertifyAll: publication evidence wait $outcome after " +
+      "${TimeUnit.NANOSECONDS.toMillis(elapsedNanos)} ms; initially awaiting " +
+      "${if (pendingAnchor) 1 else 0} aggregate anchor and $pendingChildTasks child task completion(s)"
 }
 
 /**
@@ -422,28 +439,61 @@ internal class CertificationAggregateCompletionBarrier(
    * Once the anchor result is known, a false child result settles immediately. Children without
    * a receipt are not waited on: the publisher's outcome or manifest validation refuses them.
    */
-  fun awaitPublicationEvidence() {
-    lock.withLock {
-      val startedAt = nanoTime()
-      while (true) {
-        if (!hasPendingRelevantCompletionEvent()) return
-        val remainingNanos = timeoutNanos - (nanoTime() - startedAt)
-        if (remainingNanos <= 0) {
-          throw IllegalStateException(
-            "timed out after ${TimeUnit.NANOSECONDS.toSeconds(timeoutNanos)} seconds waiting for " +
-              "aggregate anchor completion and receipt-published child task completion"
-          )
+  fun awaitPublicationEvidence(
+    onWaitFinished: (CertificationAggregateCompletionWait) -> Unit = {},
+  ) {
+    var waitStartedAt: Long? = null
+    var pendingAnchor = false
+    var pendingChildTasks = 0
+    var outcome = "completed"
+    var waitFailure: Exception? = null
+    try {
+      lock.withLock {
+        val startedAt = nanoTime()
+        while (true) {
+          if (!hasPendingRelevantCompletionEvent()) return
+          val remainingNanos = timeoutNanos - (nanoTime() - startedAt)
+          if (remainingNanos <= 0) {
+            outcome = "timed out"
+            throw IllegalStateException(
+              "timed out after ${TimeUnit.NANOSECONDS.toSeconds(timeoutNanos)} seconds waiting for " +
+                "aggregate anchor completion and receipt-published child task completion"
+            )
+          }
+          if (waitStartedAt == null) {
+            waitStartedAt = nanoTime()
+            pendingAnchor = aggregateAnchorSucceeded == null
+            pendingChildTasks = if (expectedProjects.any { projectTaskSucceeded[it] == false }) 0
+              else receiptPublished.count { projectTaskSucceeded[it] == null }
+          }
+          beforeWait?.invoke()
+          try {
+            changed.awaitNanos(remainingNanos)
+          } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            outcome = "interrupted"
+            throw IllegalStateException(
+              "interrupted while waiting for aggregate anchor completion and receipt-published " +
+                "child task completion",
+              interrupted,
+            )
+          }
         }
-        beforeWait?.invoke()
+      }
+    } catch (failure: Exception) {
+      if (outcome == "completed") outcome = "failed"
+      waitFailure = failure
+      throw failure
+    } finally {
+      // Logging is external code: never invoke it while holding the callback barrier lock.
+      waitStartedAt?.let { startedAt ->
+        val observation = CertificationAggregateCompletionWait(
+          pendingAnchor, pendingChildTasks, (nanoTime() - startedAt).coerceAtLeast(0), outcome)
         try {
-          changed.awaitNanos(remainingNanos)
-        } catch (interrupted: InterruptedException) {
-          Thread.currentThread().interrupt()
-          throw IllegalStateException(
-            "interrupted while waiting for aggregate anchor completion and receipt-published " +
-              "child task completion",
-            interrupted,
-          )
+          onWaitFinished(observation)
+        } catch (diagnosticFailure: Exception) {
+          if (waitFailure == null) throw diagnosticFailure
+          waitFailure.addSuppressed(diagnosticFailure)
         }
       }
     }
@@ -679,7 +729,7 @@ internal class CertificationAggregateRegistry {
 }
 
 /**
- * Binds the trusted child writer's schema-7 receipt to this invocation and inventory.
+ * Binds the trusted child writer's schema-8 receipt to this invocation and inventory.
  * The child task owns validation of its per-suite evidence fields; the aggregate hashes
  * those exact bytes instead of maintaining a second copy of the child receipt parser.
  */
@@ -830,7 +880,7 @@ internal class CertificationAggregateFileLocks : AutoCloseable {
 
 private val RECEIPT_SHA256 = Regex("[0-9a-f]{64}")
 private val PLUGIN_SHA256 = Regex("(?:tree:)?[0-9a-f]{64}")
-private const val CHILD_RECEIPT_SCHEMA = "7"
+private const val CHILD_RECEIPT_SCHEMA = "8"
 private const val CHILD_RECEIPT_FIXED_LINE_COUNT = 11
 
 private fun normalizedAbsolutePath(file: File): Path =

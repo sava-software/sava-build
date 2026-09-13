@@ -755,7 +755,7 @@ class AgentsTemplateSyncFunctionalTest {
     writeFixture()
 
     val identity = runner("savaBuildIdentity").build().output
-    assertTrue(identity.contains("requested coordinates: unavailable at plugin application"), identity)
+    assertFalse(identity.contains("requested coordinates:"), identity)
     assertTrue(
       identity.contains("resolved coordinates: software.sava:sava-build:$savaBuildTestRepoVersion"),
       identity,

@@ -87,11 +87,17 @@ second field. The plugin deliberately retains that refusal record after the Grad
 its filename does not mean a process is still running or was abandoned. Any of those
 states keeps the sibling TSV historical rather than current. `hardeningCertify` fails before
 PIT when `.pitest-history/` is not Git-ignored.
-Each suite row binds not only the report,
-compiled code, source, configuration, PIT tool classpath, and loaded plugin binary, but
-also the accepted baseline, audited timeout membership, recorded PIT-version and
+Each suite row binds the report, compiled code, source, configuration, runtime classpath
+contents, PIT tool classpath, and loaded plugin binary. It also binds the accepted
+baseline, audited timeout membership, recorded PIT-version and
 mutation-toolchain sidecars, and the suite's triage README that decided whether the
-observation was acceptable. The README is deliberately an exact whole-file input for
+observation was acceptable. Schema 8 includes each suite's `classpathSha256`, binding
+the resolved runtime dependency and processed-resource bytes even when their paths
+stay unchanged. Schema 7 receipts lack that durable content binding; their matching
+build-directory `.evidence.tsv` recorded it, and certification checked it before
+publication. A new certification produces the complete schema 8 receipt. Custom receipt
+readers must accept schema 8 and map suite fields using the `suiteColumns` header.
+The README is deliberately an exact whole-file input for
 every suite in that project: legacy unlabeled rows, shared arguments, and cross-section
 prose make a generic per-suite Markdown projection unsound. Any README edit therefore
 invalidates the existing project receipts; finish even prose-only cleanup before the
@@ -1954,7 +1960,10 @@ as each raw stream is retained, avoiding a second read of potentially very large
 when the receipt is written. Once a stream reaches 1 GiB (1,073,741,824 bytes), the task
 prints one large-log advisory with its path and byte count and continues retaining every
 byte. Configure suppression of expected fuzz-input warnings in the consumer's fuzz
-harness or logging configuration; the plugin does not filter retained evidence.
+harness or logging configuration; the plugin does not filter retained evidence. Either
+captured stream may be empty when the target writes its console output to the other stream;
+an empty file is recorded as zero bytes with SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 libFuzzer prints progress to the launching pipeline;
 when the consumer dies, the next progress write blocks forever inside native
 code and the JVM parks `RUNNABLE` in `startLibFuzzer` — by thread state
@@ -2133,9 +2142,11 @@ for new campaigns.
 projects (default `1`). Choose a value the machine can sustain; `4` is a reasonable review
 starting point on a machine with at least four genuinely available cores. The configured
 width is part of the receipt beside every achieved execution count, so a faster parallel
-campaign is not mistaken for a serialized one. Do not combine mutation certification and
-fuzzing in the same invocation: PIT and corpus rewrites retain their exclusive slot because
-CPU saturation can turn mutation timeouts into load evidence.
+campaign is not mistaken for a serialized one. In a multi-project build, each project's
+start line reports its target count; the displayed concurrency limit is shared across the
+selected projects. Do not combine mutation certification and fuzzing in the same invocation:
+PIT and corpus rewrites retain their exclusive slot because CPU saturation can turn mutation
+timeouts into load evidence.
 
 A passing aggregate receipt proves work, not merely task completion. Each campaign target
 must emit exactly one positive libFuzzer terminal `Done N runs in S second(s)` observation.

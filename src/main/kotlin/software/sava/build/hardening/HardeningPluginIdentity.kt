@@ -65,7 +65,6 @@ internal abstract class HardeningPluginIdentityService :
 /** Prints frozen loaded-plugin identity information without resolving another configuration. */
 @UntrackedTask(because = "Prints identity captured when the plugin applied")
 internal abstract class SavaBuildIdentityTask : DefaultTask() {
-  @get:Input abstract val requestedCoordinates: Property<String>
   @get:Input abstract val resolvedCoordinates: Property<String>
   @get:Input abstract val resolvedArtifactPath: Property<String>
   @get:Input abstract val loadedCodePath: Property<String>
@@ -84,7 +83,6 @@ internal abstract class SavaBuildIdentityTask : DefaultTask() {
     }
     logger.quiet(
         "savaBuildIdentity:\n" +
-            "  requested coordinates: ${requestedCoordinates.get()}\n" +
             "  resolved coordinates: ${resolvedCoordinates.get()}\n" +
             "  resolved artifact path: ${resolvedArtifactPath.get()}\n" +
             "  loaded code path: ${loadedCodePath.get()}\n" +

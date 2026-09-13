@@ -34,6 +34,7 @@ class HardeningToolExecFunctionalTest {
     "reportSha256",
     "sourceSha256",
     "classesSha256",
+    "classpathSha256",
     "configurationSha256",
     "pitestVersion",
     "pluginSha256",
@@ -1189,6 +1190,12 @@ $buildTail
     val result = runner("fuzzAll", "-PmaxFuzzTime=1").build()
     val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
 
+    assertTrue(
+      result.output.contains(
+        "fuzzAll: started 3 target(s) in project ':'; up to 1 concurrently across selected projects",
+      ),
+      result.output,
+    )
     assertFalse(result.output.contains("fixture fuzz executed"), result.output)
     assertFalse(result.output.contains("\tNEW "), result.output)
     assertFalse(result.output.contains("\tREDUCE "), result.output)
@@ -1761,6 +1768,59 @@ $buildTail
   }
 
   @Test
+  fun `certification receipt binds runtime dependency bytes replaced at the same path`() {
+    writeFixture(buildTail = """
+      dependencies {
+        testRuntimeOnly(files("runtime-dependency.jar"))
+      }
+    """.trimIndent())
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    val dependency = File(fixtureDir, "runtime-dependency.jar")
+    fun replaceDependency(contents: String) {
+      java.util.jar.JarOutputStream(dependency.outputStream()).use { jar ->
+        jar.putNextEntry(java.util.jar.JarEntry("dependency-version.txt").apply { time = 0L })
+        jar.write(contents.toByteArray())
+        jar.closeEntry()
+      }
+    }
+    val reportDirectory = File(fixtureDir, "build/reports/pitest/encoding")
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
+    fun receiptFields(): Map<String, String> {
+      val lines = receipt.readLines()
+      val columns = lines.single { it.startsWith("suiteColumns\t") }.split('\t').drop(1)
+      val values = lines.single { it.startsWith("suite\tencoding\t") }.split('\t').drop(1)
+      assertEquals(certificationSuiteColumns, columns)
+      assertEquals(columns.size, values.size)
+      return columns.zip(values).toMap()
+    }
+
+    replaceDependency("version one")
+    runner("hardeningCertify").build()
+    val firstEvidence = PitestEvidence.parse(reportDirectory.resolve(".evidence.tsv").readText())
+    val firstReceipt = receiptFields()
+    assertEquals(firstEvidence.classpathSha256, firstReceipt.getValue("classpathSha256"))
+
+    // Neither a new dependency coordinate/path nor a source/configuration change can
+    // carry this distinction into the receipt. Only the runtime artifact bytes move.
+    replaceDependency("version two")
+    val stale = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(stale.contains("classpathSha256: recorded="), stale)
+
+    runner("hardeningCertify").build()
+    val secondEvidence = PitestEvidence.parse(reportDirectory.resolve(".evidence.tsv").readText())
+    val secondReceipt = receiptFields()
+    assertEquals(secondEvidence.classpathSha256, secondReceipt.getValue("classpathSha256"))
+    assertNotEquals(firstReceipt.getValue("classpathSha256"), secondReceipt.getValue("classpathSha256"))
+    listOf(
+      "sourceSha256", "classesSha256", "configurationSha256", "toolClasspathSha256",
+      "mutationToolchainSha256", "reportSha256",
+    ).forEach { field ->
+      assertEquals(firstReceipt.getValue(field), secondReceipt.getValue(field), field)
+    }
+  }
+
+  @Test
   fun `certification writes bound evidence and stale source cannot reuse the report`() {
     writeFixture(moneyMath = true)
     writeSeedCorpus()
@@ -1776,7 +1836,7 @@ $buildTail
     assertTrue(evidence.isFile, "completed PIT evidence missing:\n${certified.output}")
     assertTrue(receipt.isFile, "certification receipt missing:\n${certified.output}")
     val receiptText = receipt.readText()
-    assertTrue(receiptText.contains("schema\t7"), receiptText)
+    assertTrue(receiptText.contains("schema\t8"), receiptText)
     assertTrue(receiptText.contains("session\t"), receiptText)
     assertTrue(receiptText.contains("gitState\tunavailable"), receiptText)
     assertTrue(receiptText.contains("gitCommit\tunavailable"), receiptText)
@@ -1829,6 +1889,7 @@ $buildTail
         "reportSha256" to recordedEvidence.reportSha256,
         "sourceSha256" to recordedEvidence.sourceSha256,
         "classesSha256" to recordedEvidence.classesSha256,
+        "classpathSha256" to recordedEvidence.classpathSha256,
         "configurationSha256" to recordedEvidence.configurationSha256,
         "pitestVersion" to recordedEvidence.pitestVersion,
         "pluginSha256" to recordedEvidence.pluginSha256,
@@ -2267,7 +2328,7 @@ $buildTail
     val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
     val receiptAtA = receipt.readText()
     val statusAtA = git("status", "--porcelain=v1", "--untracked-files=all")
-    assertTrue(receiptAtA.contains("schema\t7\n"), receiptAtA)
+    assertTrue(receiptAtA.contains("schema\t8\n"), receiptAtA)
     assertTrue(receiptAtA.contains("gitState\tclean\n"), "status=$statusAtA\n$receiptAtA")
     assertTrue(receiptAtA.contains("gitCommit\t$certifiedCommit\n"), receiptAtA)
     assertTrue(receiptAtA.contains("gitTree\t$certifiedTree\n"), receiptAtA)
@@ -2502,7 +2563,7 @@ $buildTail
     val certified = runner("clean", "hardeningCertify").build()
     val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv").readText()
 
-    assertTrue(receipt.contains("schema\t7\n"), receipt)
+    assertTrue(receipt.contains("schema\t8\n"), receipt)
     assertTrue(receipt.contains("gitState\tclean\n"), receipt)
     assertTrue(receipt.contains("gitCommit\t$commit\n"), receipt)
     assertTrue(receipt.contains("gitTree\t$tree\n"), receipt)

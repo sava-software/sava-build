@@ -430,7 +430,7 @@ abstract class HardeningCertificationAggregatePublishTask : DefaultTask() {
       return
     }
     try {
-      session.awaitPublicationEvidence()
+      session.awaitPublicationEvidence { wait -> logger.lifecycle(wait.diagnostic()) }
       if (!session.aggregateMayPublish(root)) {
         logger.lifecycle(
           if (session.aggregateAnchorFailed()) {
