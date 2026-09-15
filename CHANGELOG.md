@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.5.36](https://github.com/sava-software/sava-build/compare/21.5.35...21.5.36) (2026-09-15)
+
+
+### Bug Fixes
+
+* **hardening:** bind runtime classpath in certification receipts ([e845f9c](https://github.com/sava-software/sava-build/commit/e845f9c27cddf17edf7961af55f569ed1f2805ea))
+
 ## [21.5.35](https://github.com/sava-software/sava-build/compare/21.5.34...21.5.35) (2026-09-12)
 
 
