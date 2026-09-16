@@ -31,6 +31,7 @@ import software.sava.build.hardening.MutantStatus
 import software.sava.build.hardening.knownInvalidExecutionClosure
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
+import software.sava.build.hardening.PitestReportLocation
 import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.PreparedMutationWrite
 import software.sava.build.hardening.PrunePreviewHistory
@@ -419,6 +420,7 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   this.certificationSession.set(certificationSession)
   hardeningProjectPath.set(project.path)
   certificationProjectDirectory.set(layout.projectDirectory)
+  certificationBuildDirectory.set(layout.buildDirectory)
   certificationPluginCode.from(hardeningImplementationCode)
   expectedPluginSha256.set(hardeningExpectedPluginSha256)
   localRepoArtifactPath.set(hardeningLocalRepoArtifactPath)
@@ -3534,13 +3536,13 @@ hardening.mutation.all {
       // needing exactly that. The XML report carries it; keyed like the baseline rows
       // (line-less), with each mutant's line folded into the description text, since
       // the key no longer carries it.
-      val descriptions: Map<String, List<String>> by lazy {
+      val reportLocations: List<PitestReportLocation> by lazy {
         val xml = (if (scoped) scopedXmlProvider else fullXmlProvider).get().asFile
-        if (!xml.isFile) return@lazy emptyMap()
+        if (!xml.isFile) return@lazy emptyList()
         val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance()
             .newDocumentBuilder().parse(xml)
         val mutations = doc.getElementsByTagName("mutation")
-        val collected = mutableMapOf<String, MutableList<String>>()
+        val collected = mutableListOf<PitestReportLocation>()
         for (i in 0 until mutations.length) {
           val mutation = mutations.item(i) as org.w3c.dom.Element
           fun text(tag: String) = mutation.getElementsByTagName(tag).item(0)?.textContent ?: ""
@@ -3549,10 +3551,18 @@ hardening.mutation.all {
               text("mutator").substringAfterLast('.')
           ).joinToString(",")
           val description = "line ${text("lineNumber")}: ${text("description")}"
+          collected.add(PitestReportLocation(key, mutation.getAttribute("status"), description))
+        }
+        collected
+      }
+      val reportLocationsByCoordinate by lazy { reportLocations.groupBy { it.key } }
+      val descriptions: Map<String, List<String>> by lazy {
+        val collected = mutableMapOf<String, MutableList<String>>()
+        reportLocations.forEach { location ->
           // keyed both with and without status, so a row still annotates when its
           // status differs from the XML the descriptions came from
-          collected.getOrPut("$key,${mutation.getAttribute("status")}") { mutableListOf() }.add(description)
-          collected.getOrPut(key) { mutableListOf() }.add(description)
+          collected.getOrPut("${location.key},${location.status}") { mutableListOf() }.add(location.description)
+          collected.getOrPut(location.key) { mutableListOf() }.add(location.description)
         }
         collected.mapValues { (_, all) -> all.distinct() }
       }
@@ -3581,7 +3591,7 @@ hardening.mutation.all {
           // coordinate map deliberately includes every XML mutant at the line-less
           // class/method/mutator coordinate, including KILLED possibilities; an
           // exact four-field lookup could otherwise show only the live survivor.
-          descriptions[key.substringBeforeLast(',')]
+          reportLocationsByCoordinate[key.substringBeforeLast(',')]
               ?.takeIf { it.isNotEmpty() }
               ?.let { key to (keyRows.size to it) }
         }
@@ -3594,7 +3604,9 @@ hardening.mutation.all {
             locationsByKey.forEach { (key, detail) ->
               val (physicalRows, locations) = detail
               append("\n    $key ($physicalRows physical ${if (physicalRows == 1) "row" else "rows"}):")
-              locations.forEach { location -> append("\n      $location") }
+              locations.groupingBy { it }.eachCount().forEach { (location, copies) ->
+                append("\n      $copies × ${location.status} — ${location.description}")
+              }
             }
           }
         }
@@ -4151,11 +4163,9 @@ hardening.mutation.all {
         }
         val staleMembers = timeoutFindings.staleMembers
         if (staleMembers.isNotEmpty()) {
-          // Warn-level like the other membership findings: 'retire or fix' is a
-          // reviewer-stop exactly as much as a missing cause, and warn is what feeds
-          // the end-of-build advisory summary.
+          // Staleness stays advisory, with a separate reviewed absence-retirement path.
           logger.warn(TimeoutAudit.staleWarning(
-              suiteName, staleMembers, historyDecisionCaveat))
+              suiteName, staleMembers, historyDecisionCaveat, evidencePitestTaskPath))
           advisoryLog.get().record(
               advisoryScope,
               countedTimeoutNoun(staleMembers.size, "stale audit row"),
@@ -4954,6 +4964,16 @@ hardening.mutation.all {
                 "inspect the resulting diff.",
             recordOutstanding = false)
         val rewrite = BaselineEngine.retagRewrite(acceptedRows, currentLines)
+        if (rewrite.ambiguousFallbackKeys.isNotEmpty()) {
+          logger.warn(
+              "pitest baseline '$suiteName': retag plans ambiguous same-key sibling fallback for " +
+                  "${rewrite.ambiguousFallbackKeys.size} key(s). After exact line matches, remaining " +
+                  "rows are assigned by the stable file-order fallback; this does not establish " +
+                  "physical mutant identity. Review the README pointers and resulting line tags:\n" +
+                  rewrite.ambiguousFallbackKeys.joinToString("\n") { "  $it" })
+          advisoryLog.get().record(
+              advisoryScope, "${rewrite.ambiguousFallbackKeys.size} ambiguous retag sibling key(s)")
+        }
         if (rewrite.refreshedLineTags == 0) {
           logger.lifecycle(
               "pitest baseline '$suiteName': retag changed nothing — every matched row already carries " +
@@ -5315,6 +5335,8 @@ hardening.mutation.all {
                   "from an uninsured load- or " +
                   "mode-dependent flip. This preview is evidence to investigate, not authorization " +
                   "to shrink the record." + removalGuidance)
+          advisoryLog.get().record(
+              advisoryScope, "${staleGone.size} baseline prune candidate row(s)")
         }
         if (staleInsured.isNotEmpty()) {
           // "unmatched at their own status", not "read killed": the insured
@@ -5333,13 +5355,14 @@ hardening.mutation.all {
         }
         if (staleTimedOut.isNotEmpty()) {
           logger.lifecycle(
-              "pitest baseline '$suiteName': ${staleTimedOut.size} baseline row(s) read TIMED_OUT this run — " +
-                  "preserved by this run's timeout budget, not killed; prune and update keep them. " +
-                  "That preservation does not prove benign load or that the acceptance argument " +
-                  "still holds, because the line-less key may identify this mutant or a sibling:\n" +
+              "pitest baseline '$suiteName': ${staleTimedOut.size} baseline row(s) protected by same-key timeout budget — " +
+                  "prune and update keep them. This does not identify which physical sibling timed " +
+                  "out or prove benign load or that the acceptance argument still holds:\n" +
                   staleTimedOut.joinToString("\n") {
                     "  ${BaselineNotes.render(acceptedRows[it])}"
                   })
+          advisoryLog.get().record(
+              advisoryScope, "${staleTimedOut.size} baseline row(s) protected by same-key timeout budget")
         }
       }
       if (fresh.isNotEmpty()) {
@@ -6380,6 +6403,7 @@ hardening.fuzz.all {
     maxFuzzTimeSeconds.set(maxFuzzTime.map { it.toInt() })
     campaignProjectPath.set(project.path)
     evidenceProjectDirectory.set(layout.projectDirectory)
+    evidenceBuildDirectory.set(layout.buildDirectory)
     evidenceSourceFiles.from(
         sourceSets.main.get().allSource,
         sourceSets.test.get().allSource,
@@ -6392,6 +6416,8 @@ hardening.fuzz.all {
         rootProject.layout.projectDirectory.file("settings.gradle"),
         rootProject.layout.projectDirectory.file("gradle.properties"),
         rootProject.layout.projectDirectory.file("gradle/libs.versions.toml"),
+        rootProject.layout.projectDirectory.file("gradle/sava.properties"),
+        rootProject.layout.projectDirectory.file("gradle/modules.properties"),
     )
     maxLen.set(target.maxLen)
     localCorpus.set(layout.buildDirectory.dir("fuzz/${target.name}-corpus"))

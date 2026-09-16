@@ -2358,6 +2358,168 @@ $buildTail
   }
 
   @Test
+  fun `clean certification refuses ignored source inputs under the source roots`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    initializeGitFixture(listOf("Integ.java", "alias.txt", ".sub-source/"))
+    val ignoredSource = File(fixtureDir, "src/main/java/com/example/Integ.java")
+    ignoredSource.writeText("package com.example; final class Integ {}\n")
+    assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
+
+    val refused = runner("clean", "hardeningCertify").buildAndFail().output
+    assertTrue(
+      refused.contains("clean Git certification cannot bind 1 source input(s) absent from its captured tree") &&
+        refused.contains("  src/main/java/com/example/Integ.java") &&
+        refused.contains("Commit them, move them outside the source roots, or generate them under the build directory"),
+      refused,
+    )
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists(), refused)
+    assertTrue(ignoredSource.delete())
+
+    // An ignored symlink to a tracked file is refused under its own name: the
+    // fingerprint records the alias, which no clean checkout has.
+    val alias = File(fixtureDir, "src/main/resources/alias.txt")
+    alias.parentFile.mkdirs()
+    java.nio.file.Files.createSymbolicLink(alias.toPath(), java.nio.file.Paths.get("../../../build.gradle.kts"))
+    assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
+    val aliasRefused = runner("hardeningCertify").buildAndFail().output
+    assertTrue(
+      aliasRefused.contains("cannot bind 1 source input(s)") &&
+        aliasRefused.contains("  src/main/resources/alias.txt"),
+      aliasRefused,
+    )
+    assertTrue(alias.delete())
+
+    // A tracked resource inside a pinned submodule is committed content, not a leak.
+    val subSource = File(fixtureDir, ".sub-source").apply { mkdirs() }
+    git(subSource, "init", "--quiet", "--initial-branch=main")
+    subSource.resolve("inside.txt").writeText("committed in the submodule\n")
+    git(subSource, "add", "inside.txt")
+    git(
+      subSource, "-c", "user.name=Hardening Fixture", "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "submodule",
+    )
+    git("-c", "protocol.file.allow=always", "submodule", "add", "--quiet", "./.sub-source", "src/main/resources/sub")
+    git(
+      "-c", "user.name=Hardening Fixture", "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "add submodule",
+    )
+    assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
+    assertTrue(File(fixtureDir, "src/main/resources/sub/inside.txt").isFile)
+
+    val certified = runner("hardeningCertify").build()
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv").readText()
+    assertTrue(
+      receipt.contains("schema\t8\n") && receipt.contains("gitState\tclean\n"),
+      "$receipt\n${certified.output}",
+    )
+  }
+
+  @Test
+  fun `clean certification resolves tracked symlinks and submodule trees before accepting inputs`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    // Tracked content a tracked symlink may point at, and an ignored place it must not.
+    File(fixtureDir, "notes").mkdirs()
+    File(fixtureDir, "notes/tracked.txt").writeText("tracked referent\n")
+    File(fixtureDir, "scratch").mkdirs()
+    File(fixtureDir, "scratch/secret.txt").writeText("ignored referent\n")
+    val resources = File(fixtureDir, "src/main/resources").apply { mkdirs() }
+    java.nio.file.Files.createSymbolicLink(
+      resources.resolve("tracked-link").toPath(), java.nio.file.Paths.get("../../../notes/tracked.txt"),
+    )
+    java.nio.file.Files.createSymbolicLink(
+      resources.resolve("leak").toPath(), java.nio.file.Paths.get("../../../scratch/secret.txt"),
+    )
+    // A tracked directory link, a file reached through it, and a link whose `..` only
+    // resolves through that directory link: lexical path arithmetic gets the last one wrong.
+    java.nio.file.Files.createSymbolicLink(
+      resources.resolve("notes-link").toPath(), java.nio.file.Paths.get("../../../notes"),
+    )
+    java.nio.file.Files.createSymbolicLink(
+      resources.resolve("sneaky").toPath(), java.nio.file.Paths.get("notes-link/../scratch/secret.txt"),
+    )
+    // An ignored directory link to tracked content: the bytes are the tree's, but the
+    // name the fingerprint recorded exists in no clean checkout.
+    java.nio.file.Files.createSymbolicLink(
+      resources.resolve("ignored-alias").toPath(), java.nio.file.Paths.get("../../../notes"),
+    )
+    initializeGitFixture(listOf("scratch/", ".sub-source/", "ignored-alias"))
+    // A pinned submodule whose own .gitignore hides a file from both repositories' status.
+    val subSource = File(fixtureDir, ".sub-source").apply { mkdirs() }
+    git(subSource, "init", "--quiet", "--initial-branch=main")
+    subSource.resolve(".gitignore").writeText("ignored.txt\n")
+    subSource.resolve("inside.txt").writeText("committed in the submodule\n")
+    git(subSource, "add", ".gitignore", "inside.txt")
+    git(
+      subSource, "-c", "user.name=Hardening Fixture", "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "submodule",
+    )
+    git("-c", "protocol.file.allow=always", "submodule", "add", "--quiet", "./.sub-source", "src/main/resources/sub")
+    git(
+      "-c", "user.name=Hardening Fixture", "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "add submodule",
+    )
+    File(fixtureDir, "src/main/resources/sub/ignored.txt").writeText("ignored inside the submodule\n")
+    assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
+
+    assertEquals("ignored referent\n", File(fixtureDir, "src/main/resources/sneaky").readText())
+    val refused = runner("clean", "hardeningCertify").buildAndFail().output
+    assertTrue(
+      refused.contains("cannot bind 4 source input(s)") &&
+        refused.contains("  src/main/resources/ignored-alias/tracked.txt -> notes/tracked.txt") &&
+        refused.contains("  src/main/resources/leak -> scratch/secret.txt") &&
+        refused.contains("  src/main/resources/sneaky -> scratch/secret.txt") &&
+        refused.contains("  src/main/resources/sub/ignored.txt") &&
+        !refused.contains("tracked-link") && !refused.contains("notes-link") &&
+        !refused.contains("inside.txt"),
+      refused,
+    )
+
+    assertTrue(File(fixtureDir, "src/main/resources/sub/ignored.txt").delete())
+    assertTrue(File(fixtureDir, "src/main/resources/ignored-alias").delete())
+    git("rm", "--quiet", "src/main/resources/leak", "src/main/resources/sneaky")
+    git(
+      "-c", "user.name=Hardening Fixture", "-c", "user.email=hardening-fixture@example.invalid",
+      "commit", "--quiet", "-m", "drop the leak",
+    )
+    assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
+    val certified = runner("hardeningCertify").build()
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv").readText()
+    assertTrue(receipt.contains("gitState\tclean\n"), "$receipt\n${certified.output}")
+  }
+
+  @Test
+  fun `clean fuzzAll exempts generated build inputs but refuses ignored source inputs`() {
+    writeFixture(buildTail = "sourceSets.main { java.srcDir(layout.buildDirectory.dir(\"generated\")) }")
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "build/generated/Generated.java").apply {
+      parentFile.mkdirs()
+      writeText("class Generated {}\n")
+    }
+    initializeGitFixture(listOf("Integ.java"))
+
+    val completed = runner("fuzzAll", "-PmaxFuzzTime=1").build()
+    val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
+    val sourceRows = receipt.readLines().filter { it.startsWith("targetSource\t") }
+    assertEquals(3, sourceRows.size, "${receipt.readText()}\n${completed.output}")
+    sourceRows.forEach { row -> assertEquals("clean", row.split('\t')[3], row) }
+
+    File(fixtureDir, "src/main/java/com/example/Integ.java")
+      .writeText("package com.example; final class Integ {}\n")
+    assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
+    val refused = runner("fuzzAll", "-PmaxFuzzTime=1").buildAndFail().output
+    assertTrue(
+      refused.contains("clean Git fuzz campaign cannot bind 1 source input(s) absent from its captured tree") &&
+        refused.contains("  src/main/java/com/example/Integ.java"),
+      refused,
+    )
+  }
+
+  @Test
   fun `certification records an explicit dirty Git state without refusing local use`() {
     writeFixture()
     writeSeedCorpus()

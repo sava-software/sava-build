@@ -554,6 +554,7 @@ class TimeoutAuditTest {
       TimeoutAudit.unauditedProvenancePreview(
         "encoding", "encoding-timeouts.csv", unaudited, "1.30.0", 2.0, 1500L),
     )
+    val stalePreview = TimeoutAudit.staleProvenancePreview("encoding", stale)
     assertEquals(
       "pitest 'encoding': provenance-blocked stale-membership preview — the current full " +
           "report does not contain 1 audited-timeout row:\n" +
@@ -562,24 +563,45 @@ class TimeoutAuditTest {
           "  Review: Committed mutation provenance is invalid, so this absence cannot authorize " +
           "record changes.\n" +
           "  Remedy: Retain these candidates for triage; do not retire or rewrite them until " +
-          "provenance is repaired/rebased and a fresh full observation confirms the absence.",
-      TimeoutAudit.staleProvenancePreview("encoding", stale),
+          "provenance is repaired/rebased and a fresh full history-free observation confirms the " +
+          "absence; then remove the membership line by hand.",
+      stalePreview,
     )
+    assertFalse(stalePreview.contains("-PnoMutationHistory"), stalePreview)
+    assertTrue(stalePreview.contains("do not retire or rewrite"), stalePreview)
   }
 
   @Test
-  fun `stale warning sorts coordinates and uses grammatical plurals`() {
+  fun `stale warning gives one-run hand removal rather than quiet-counter guidance`() {
+    val warning = TimeoutAudit.staleWarning(
+      "encoding",
+      listOf("b.B,second,IncrementsMutator", "a.A,first,MathMutator"),
+    )
+
     assertEquals(
       "pitest 'encoding': 2 audited-timeout rows match no mutant in this run's report:\n" +
           "  Evidence: Committed coordinates absent from the current population follow.\n" +
           "    a.A,first,MathMutator\n" +
           "    b.B,second,IncrementsMutator\n" +
           "  Review: The code may have moved, or the mutator set may have changed.\n" +
-          "  Remedy: Retire or fix each stale row.",
-      TimeoutAudit.staleWarning(
-        "encoding",
-        listOf("b.B,second,IncrementsMutator", "a.A,first,MathMutator"),
-      ),
+          "  Remedy: Absence is not quiet, and no writer retires it. Once one fresh full " +
+          "history-free observation with valid committed provenance omits the coordinate, remove " +
+          "that membership line from config/pitest/encoding-timeouts.csv by hand and note the " +
+          "refactor in config/pitest/README.md. Start with " +
+          "'./gradlew pitestEncoding -PnoMutationHistory'.",
+      warning,
+    )
+    assertFalse(warning.contains("3+ consecutive mutation runs"), warning)
+    assertFalse(warning.contains("three distinct"), warning)
+
+    val qualifiedWarning = TimeoutAudit.staleWarning(
+      "encoding",
+      listOf("a.A,first,MathMutator"),
+      pitestTaskPath = ":module:pitestEncoding",
+    )
+    assertTrue(
+      qualifiedWarning.contains("./gradlew :module:pitestEncoding -PnoMutationHistory"),
+      qualifiedWarning,
     )
   }
 

@@ -1139,6 +1139,8 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
   val suiteEvidence: NamedDomainObjectContainer<PitestEvidenceSpec> =
     objects.domainObjectContainer(PitestEvidenceSpec::class.java)
   @get:Internal abstract val certificationProjectDirectory: DirectoryProperty
+  /** Generated outputs under here are exempt from the clean-tree source-input refusal. */
+  @get:Internal abstract val certificationBuildDirectory: DirectoryProperty
   @get:Classpath abstract val certificationPluginCode: ConfigurableFileCollection
   // PitestEvidenceSpec keeps these collections @Internal so legacy/no-manifest
   // validators can return without resolving external tools. Certification always
@@ -1172,6 +1174,14 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
           gitBefore,
           certificationRecordFiles.files,
           execOperations,
+        )
+        CertificationGitIdentityCapture.requireSourceInputsInTree(
+          projectDirectory,
+          gitBefore,
+          suiteEvidence.flatMap { it.sourceFiles.files },
+          certificationBuildDirectory.get().asFile,
+          execOperations,
+          "certification",
         )
       } catch (e: IllegalStateException) {
         throw GradleException("hardeningCertify: ${e.message}" + retryGuidance(), e)

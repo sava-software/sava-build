@@ -466,6 +466,32 @@ class BaselineEngineTest {
     )
     assertEquals(1, rewrite.refreshedLineTags)
     assertEquals(listOf(0, 1, 2), rewrite.sourceRowIndices)
+    assertEquals(emptyList<String>(), rewrite.ambiguousFallbackKeys,
+        "an exact sibling match leaves only one moved row to assign")
+  }
+
+  @Test
+  fun `retag reports ambiguous moved siblings without changing file-order allocation`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# first", listOf(10)),
+      BaselineNotes.Row(key, "# second", listOf(20)),
+    )
+    // Both anchors moved, but only one observed survivor remains. The existing
+    // allocator updates the first row; the diagnostic must not invent identity.
+    val rewrite = BaselineEngine.retagRewrite(accepted, mapOf(key to listOf("50")))
+    assertEquals(listOf(key), rewrite.ambiguousFallbackKeys)
+    assertEquals(listOf("$key # first # line 50", "$key # second # line 20"), rewrite.written)
+    assertEquals(listOf(0, 1), rewrite.sourceRowIndices)
+    assertEquals(1, rewrite.refreshedLineTags)
+
+    val shifted = BaselineEngine.retagRewrite(accepted, mapOf(key to listOf("50", "40")))
+    assertEquals(listOf(key), shifted.ambiguousFallbackKeys)
+    assertEquals(listOf("$key # first # line 40", "$key # second # line 50"), shifted.written)
+    val repeated = BaselineEngine.retagRewrite(shifted.written.map(BaselineNotes::parse),
+        mapOf(key to listOf("40", "50")))
+    assertEquals(emptyList<String>(), repeated.ambiguousFallbackKeys)
+    assertEquals(shifted.written, repeated.written)
   }
 
   @Test

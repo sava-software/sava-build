@@ -108,8 +108,7 @@ data class PitestEvidence(
    * The timeout-quiet stash format is the compatibility fence for verifier or PIT
    * invocation semantics not represented by the remaining evidence fields. Bump
    * that format instead of adding the entire plugin JAR back to this identity.
-   */
-  /**
+   *
    * Retirement is a deliberate act, not passive accrual, and this identity encodes
    * that: it still binds `sourceSha256` — every main and test source plus the build
    * scripts — so the quiet streak survives a plugin upgrade but resets on essentially
@@ -220,25 +219,6 @@ data class PitestEvidence(
 
     fun sha256(file: File): String = sha256(file.readBytes())
 
-    /**
-     * A file's bytes or a directory's whole tree, tagged by which it was.
-     *
-     * The two branches are different encodings, and untagged they shared one output
-     * space with nothing separating them. That is not the theoretical hazard it
-     * looks like: the file branch hashes arbitrary bytes, so a file simply *holding*
-     * the directory branch's digest input produces the directory's value — write
-     * `int32be(1) || "a" || SHA-256("X")` into a file and it fingerprints as the
-     * directory containing `a` with content `X`. An empty file and an empty
-     * directory collide with no effort at all.
-     *
-     * The tag therefore has to sit outside the hash. A prefix folded into the digest
-     * input would be copyable by exactly the same trick, since the file branch's
-     * input is whatever the file says it is.
-     *
-     * This changes the recorded value's shape for both kinds, which is a one-time
-     * churn wherever one is committed — a consumer's mutation-toolchain record. The
-     * value was ambiguous before, so there was nothing there worth preserving.
-     */
     /**
      * A file's bytes or a directory's whole tree, in one field.
      *

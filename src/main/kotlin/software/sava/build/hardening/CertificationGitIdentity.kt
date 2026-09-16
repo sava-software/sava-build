@@ -237,6 +237,157 @@ internal object CertificationGitIdentityCapture {
   }
 
   /**
+   * A clean receipt claims that its sources are the captured tree's. Source inputs whose
+   * bytes are not bound by that tree (ignored files under the source roots, or symlinks
+   * that lead to them) make the claim false without dirtying Git status, so a clean
+   * certification or fuzz campaign refuses them. Outputs under [buildDirectory] are
+   * generated from tracked inputs and are exempt.
+   *
+   * Two things are checked per input: its logical name must be the tree's (an entry, an
+   * entry beneath a pinned submodule's own tree, or a name reached through a tracked
+   * symlink), and the file its bytes were read from, resolved by the operating system
+   * exactly as the fingerprint read it, must be a tracked regular blob. Content equality
+   * and index flags such as assume-unchanged are the owner's own doing and are outside
+   * this check, as they are outside the evidence identity generally.
+   * Callers invoke this only for [CertificationGitIdentity.State.CLEAN].
+   */
+  fun requireSourceInputsInTree(
+    projectDirectory: File,
+    identity: CertificationGitIdentity,
+    sourceFiles: Iterable<File>,
+    buildDirectory: File?,
+    execOperations: ExecOperations,
+    context: String,
+  ) {
+    check(identity.state == CertificationGitIdentity.State.CLEAN) {
+      "source-input tree verification requires a clean captured Git identity"
+    }
+    val buildPath = buildDirectory?.absoluteFile?.toPath()?.normalize()
+    val candidates = sourceFiles.asSequence()
+      .flatMap { entry ->
+        when {
+          entry.isFile -> sequenceOf(entry)
+          entry.isDirectory -> walkFiles(entry)
+          else -> emptySequence()
+        }
+      }
+      // Logical names, deliberately: the fingerprint records each input under the name
+      // it was reached by, so an ignored symlink to a tracked file is still an input no
+      // clean checkout has. A repository's own `.git` entries are never inputs.
+      .map { it.absoluteFile.toPath().normalize() }
+      .filter { path -> path.none { it.toString() == ".git" } }
+      .filter { buildPath == null || !it.startsWith(buildPath) }
+      .distinct()
+      .toList()
+    if (candidates.isEmpty()) return
+
+    val rootOutput = checkNotNull(git(
+      projectDirectory,
+      execOperations,
+      "rev-parse", "--show-toplevel",
+    )) {
+      "Git worktree root became unavailable while checking $context source inputs"
+    }
+    val root = File(rootOutput.toString(Charsets.UTF_8).trimEnd('\n', '\r'))
+    check(root.isAbsolute && root.isDirectory) {
+      "Git returned an invalid worktree root while checking $context source inputs: $root"
+    }
+    val currentProjectDirectory = relativeProjectDirectory(projectDirectory, root)
+    check(currentProjectDirectory == identity.projectDirectory) {
+      "Git project directory changed while checking $context source inputs: " +
+        "captured=${identity.projectDirectory}, current=$currentProjectDirectory"
+    }
+    val rootPath = checkNotNull(runCatching { root.canonicalFile.toPath() }.getOrNull()) {
+      "Git worktree root could not be resolved while checking $context source inputs: $root"
+    }
+    // The worktree root as the build names it, possibly through a workspace alias such
+    // as /var -> /private/var. Resolving that alias here, once, is the only symlink
+    // resolution the logical names get: a directory link inside the worktree stays in
+    // the name, because the fingerprint recorded the input under it.
+    val projectPath = projectDirectory.absoluteFile.toPath().normalize()
+    val projectDepth = if (identity.projectDirectory == ".") 0 else identity.projectDirectory.count { it == '/' } + 1
+    val logicalRoot = (0 until projectDepth).fold(projectPath) { directory, _ -> directory.parent ?: directory }
+    check(runCatching { logicalRoot.toRealPath() }.getOrNull() == rootPath) {
+      "project directory $projectPath does not sit ${identity.projectDirectory} below the Git worktree " +
+        "root $rootPath by name while checking $context source inputs; reach it by its real path"
+    }
+    // One query for the whole immutable tree: a source set can hold thousands of files,
+    // and the captured tree is what the receipt's commit claims to reproduce.
+    val treeOutput = checkNotNull(git(
+      root,
+      execOperations,
+      "ls-tree", "-r", "-z", "--full-tree", identity.tree,
+    )) {
+      "captured Git tree became unreadable while checking $context source inputs"
+    }
+    val rootTree = CapturedTree(root, parseTreeEntries(treeOutput))
+    val capturedTrees = HashMap<String, CapturedTree?>()
+    // A pinned submodule lists as one gitlink; its contents are bound by the tree of the
+    // commit the gitlink names. The query must answer from the submodule's own
+    // repository: a directory with no checkout of its own would let ordinary Git
+    // discovery answer from the superproject instead.
+    fun submoduleTree(worktree: File, pinned: String): CapturedTree? {
+      if (worktree.path in capturedTrees) return capturedTrees[worktree.path]
+      return capturedTrees.getOrPut(worktree.path) {
+        val toplevel = git(worktree, execOperations, "rev-parse", "--show-toplevel")
+          ?.toString(Charsets.UTF_8)?.trimEnd('\n', '\r')
+          ?.let { runCatching { File(it).canonicalFile.toPath() }.getOrNull() }
+        val own = toplevel != null && toplevel == runCatching { worktree.canonicalFile.toPath() }.getOrNull()
+        if (!own) {
+          null
+        } else {
+          git(worktree, execOperations, "ls-tree", "-r", "-z", "--full-tree", pinned)
+            ?.let { CapturedTree(worktree, parseTreeEntries(it)) }
+        }
+      }
+    }
+    /** The tree entry at a root-relative path, descending through pinned submodules. */
+    fun entryOf(tree: CapturedTree, path: String): TreeEntry? {
+      tree.entries[path]?.let { return it }
+      val (prefix, link) = tree.gitlinks.entries.firstOrNull { path.startsWith(it.key + "/") } ?: return null
+      val sub = submoduleTree(tree.worktree.resolve(prefix), link.objectId) ?: return null
+      return entryOf(sub, path.removePrefix("$prefix/"))
+    }
+    fun gitPathOf(path: java.nio.file.Path): String? =
+      if (path.startsWith(rootPath)) rootPath.relativize(path).joinToString("/") { it.toString() } else null
+    val findings = candidates.mapNotNull { path ->
+      val gitPath = if (path.startsWith(logicalRoot)) {
+        logicalRoot.relativize(path).joinToString("/") { it.toString() }
+      } else {
+        return@mapNotNull "$path (outside the Git worktree)"
+      }
+      // The bytes came from wherever the operating system took the name, links included.
+      val real = runCatching { path.toRealPath() }.getOrNull()
+        ?: return@mapNotNull "$gitPath (unresolvable link)"
+      val realGitPath = gitPathOf(real) ?: return@mapNotNull "$gitPath -> $real (outside the Git worktree)"
+      val bytesBound = entryOf(rootTree, realGitPath)?.let { it.type == "blob" && it.mode != SYMLINK_MODE } ?: false
+      val nameBound = entryOf(rootTree, gitPath) != null ||
+        generateSequence(gitPath.substringBeforeLast('/', "")) { it.substringBeforeLast('/', "") }
+          .takeWhile { it.isNotEmpty() }
+          .any { entryOf(rootTree, it)?.mode == SYMLINK_MODE }
+      when {
+        bytesBound && nameBound -> null
+        realGitPath == gitPath -> gitPath
+        else -> "$gitPath -> $realGitPath"
+      }
+    }.sorted()
+    check(findings.isEmpty()) {
+      "clean Git $context cannot bind ${findings.size} source input(s) absent from its captured " +
+        "tree (ignored files under the source roots, or links to them):\n" +
+        findings.joinToString("\n") { "  $it" } +
+        "\nCommit them, move them outside the source roots, or generate them under the build directory."
+    }
+  }
+
+  /** Files beneath a directory input, following directory links once each so a cycle ends. */
+  private fun walkFiles(directory: File): Sequence<File> {
+    val entered = HashSet<java.nio.file.Path>()
+    return directory.walkTopDown()
+      .onEnter { entry -> runCatching { entered.add(entry.toPath().toRealPath()) }.getOrDefault(false) }
+      .filter(File::isFile)
+  }
+
+  /**
    * Returns the Git-relative path of each present, untracked record file ignored
    * by Git.
    *
@@ -358,6 +509,12 @@ internal object CertificationGitIdentityCapture {
     }
     return entries
   }
+
+  private class CapturedTree(val worktree: File, val entries: Map<String, TreeEntry>) {
+    val gitlinks: Map<String, TreeEntry> = entries.filterValues { it.type == "commit" }
+  }
+
+  private const val SYMLINK_MODE = "120000"
 
   private data class Revision(val root: File, val commit: String, val tree: String)
 

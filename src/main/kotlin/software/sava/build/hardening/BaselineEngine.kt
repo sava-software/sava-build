@@ -19,6 +19,7 @@ internal object BaselineEngine {
   private data class ObservedCopy(
     val line: Int?,
     val rowIndex: Int?,
+    val ambiguousFallback: Boolean,
   )
 
   /**
@@ -41,6 +42,7 @@ internal object BaselineEngine {
   ): List<ObservedCopy> {
     class MutableCopy(val line: Int?) {
       var rowIndex: Int? = null
+      var ambiguousFallback = false
     }
     val copies = observedLines
         .map { MutableCopy(it.toIntOrNull()) }
@@ -82,9 +84,12 @@ internal object BaselineEngine {
         .toMutableList()
     for (copy in copies) {
       if (copy.rowIndex != null || unmatchedRows.isEmpty()) continue
+      // Diagnostic only: allocation still follows the existing stable partition.
+      // With several remaining rows, metadata cannot identify the physical sibling.
+      copy.ambiguousFallback = unmatchedRows.size > 1
       copy.rowIndex = unmatchedRows.removeAt(0)
     }
-    return copies.map { ObservedCopy(it.line, it.rowIndex) }
+    return copies.map { ObservedCopy(it.line, it.rowIndex, it.ambiguousFallback) }
   }
 
   /** Multiset difference: the elements of [a] left after each match in [b] consumes one. */
@@ -259,6 +264,7 @@ internal object BaselineEngine {
     val written: List<String>,
     val refreshedLineTags: Int,
     val sourceRowIndices: List<Int>,
+    val ambiguousFallbackKeys: List<String>,
   )
 
   /**
@@ -286,13 +292,15 @@ internal object BaselineEngine {
           }
     }
     val refreshedLines = HashMap<Int, List<Int>>()
+    val ambiguousFallbackKeys = mutableListOf<String>()
     acceptedRows.indices.groupBy { acceptedRows[it].key }.forEach { (key, rowIndices) ->
-      assignObservedCopies(acceptedRows, rowIndices, currentLines[key].orEmpty())
-          .forEach { copy ->
-            copy.rowIndex?.let { rowIndex ->
-              refreshedLines[rowIndex] = copy.line?.let(::listOf).orEmpty()
-            }
-          }
+      val copies = assignObservedCopies(acceptedRows, rowIndices, currentLines[key].orEmpty())
+      if (copies.any { it.ambiguousFallback }) ambiguousFallbackKeys.add(key)
+      copies.forEach { copy ->
+        copy.rowIndex?.let { rowIndex ->
+          refreshedLines[rowIndex] = copy.line?.let(::listOf).orEmpty()
+        }
+      }
     }
     var refreshedLineTags = 0
     val written = acceptedRows.indices.map { index ->
@@ -301,7 +309,7 @@ internal object BaselineEngine {
       if (lines != row.recordedLines) refreshedLineTags++
       BaselineNotes.render(row.key, row.note, lines)
     }
-    return RetagRewrite(written, refreshedLineTags, acceptedRows.indices.toList())
+    return RetagRewrite(written, refreshedLineTags, acceptedRows.indices.toList(), ambiguousFallbackKeys)
   }
 
   /**

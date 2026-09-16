@@ -460,11 +460,19 @@ internal object TimeoutAudit {
           historyDecisionCaveat
   }
 
-  /** The report-dependent warning for committed members absent from the population. */
+  /**
+   * The report-dependent warning for committed members absent from the population.
+   *
+   * Absence is deliberately not a quiet observation: the quiet stash tracks a still
+   * present coordinate whose status stopped timing out. A refactor can remove this
+   * coordinate altogether; one fresh full history-free observation with valid
+   * provenance settles that, and the member is removed by hand.
+   */
   fun staleWarning(
     suiteName: String,
     staleMembers: Collection<String>,
     historyDecisionCaveat: String = "",
+    pitestTaskPath: String = "pitest${suiteName.replaceFirstChar(Char::uppercase)}",
   ): String =
       "pitest '$suiteName': ${counted(staleMembers.size, "audited-timeout row")} " +
           "${if (staleMembers.size == 1) "matches" else "match"} no mutant in this run's " +
@@ -472,7 +480,12 @@ internal object TimeoutAudit {
           "  Evidence: Committed coordinates absent from the current population follow.\n" +
           staleMembers.sorted().joinToString("\n") { "    $it" } +
           "\n  Review: The code may have moved, or the mutator set may have changed." +
-          "\n  Remedy: Retire or fix each stale row." + historyDecisionCaveat
+          "\n  Remedy: Absence is not quiet, and no writer retires it. Once one fresh full " +
+          "history-free observation with valid committed provenance omits the coordinate, remove " +
+          "that membership line from config/pitest/$suiteName-timeouts.csv by hand and note the " +
+          "refactor in config/pitest/README.md. Start with " +
+          "'./gradlew $pitestTaskPath -PnoMutationHistory'." +
+          historyDecisionCaveat
 
   /** Stale-member preview that withholds retirement while provenance is invalid. */
   fun staleProvenancePreview(
@@ -487,7 +500,8 @@ internal object TimeoutAudit {
           "\n  Review: Committed mutation provenance is invalid, so this absence cannot authorize " +
           "record changes." +
           "\n  Remedy: Retain these candidates for triage; do not retire or rewrite them until " +
-          "provenance is repaired/rebased and a fresh full observation confirms the absence." +
+          "provenance is repaired/rebased and a fresh full history-free observation confirms the " +
+          "absence; then remove the membership line by hand." +
           historyDecisionCaveat
 
   fun causeFindingWarning(

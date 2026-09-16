@@ -75,6 +75,10 @@ abstract class FuzzRunTask : JavaExec() {
   @get:Internal
   abstract val evidenceSourceFiles: ConfigurableFileCollection
 
+  /** Generated outputs under here are exempt from the clean-tree source-input refusal. */
+  @get:Internal
+  abstract val evidenceBuildDirectory: DirectoryProperty
+
   @get:Inject
   protected abstract val execOperations: ExecOperations
 
@@ -179,6 +183,7 @@ abstract class FuzzRunTask : JavaExec() {
           evidenceProjectDirectory.get().asFile,
           evidenceSourceFiles.files + listOfNotNull(seedCorpus.orNull?.asFile),
           execOperations,
+          evidenceBuildDirectory.get().asFile,
         )
       }
       processStartedAtNanos = System.nanoTime()
@@ -222,6 +227,7 @@ abstract class FuzzRunTask : JavaExec() {
           evidenceProjectDirectory.get().asFile,
           evidenceSourceFiles.files + listOfNotNull(seedCorpus.orNull?.asFile),
           execOperations,
+          evidenceBuildDirectory.get().asFile,
         )
       } catch (failure: Throwable) {
         logger.lifecycle(

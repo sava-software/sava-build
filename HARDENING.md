@@ -97,6 +97,18 @@ stay unchanged. Schema 7 receipts lack that durable content binding; their match
 build-directory `.evidence.tsv` recorded it, and certification checked it before
 publication. A new certification produces the complete schema 8 receipt. Custom receipt
 readers must accept schema 8 and map suite fields using the `suiteColumns` header.
+
+The receipt schema is frozen at 8, and the local fuzz receipt at 5: a new field needs a
+program that reads it. A clean receipt claims that its sources are the captured Git tree,
+so when Git reads `clean` both certification and `fuzzAll` refuse source inputs whose
+bytes that tree does not bind: ignored files under the source roots, symlinks that lead
+to them, and files outside the worktree. Names reached through tracked symlinks and
+files inside pinned submodules are bound by the tree that commits them. Outputs generated
+under the build directory are exempt. The refusal names each path; commit the file, move
+it outside the source roots, or generate it under the build directory.
+`recompileExcludes` keeps a file out of the PIT/Jazzer recompile only; it does not remove
+it from the evidence inventory. Content edits hidden by index flags such as
+assume-unchanged are the owner's own doing and are not checked.
 The README is deliberately an exact whole-file input for
 every suite in that project: legacy unlabeled rows, shared arguments, and cross-section
 prose make a generic per-suite Markdown projection unsound. Any README edit therefore
@@ -529,7 +541,10 @@ commits two sidecars beside its accepted and timeout records:
   path-independent SHA-256 of the ordered artifact contents, and either `absent`
   ArcMutate fields or the base version, certificate SHA-256, and normalized expiry
   date. Absolute Gradle-cache paths are deliberately excluded, so two machines
-loading the same artifacts produce the same identity.
+loading the same artifacts produce the same identity. Its `toolClasspathSha256` is the
+portable ordered-artifact digest; the identically named evidence/receipt field is the
+path-inclusive `PitestEvidence.fingerprint`. Compare each field within its own format,
+not between those two documents.
 
 That committed sidecar deliberately does not claim to identify every execution
 input. The JDK and the loaded sava-build plugin are machine/build inputs rather than
@@ -942,7 +957,9 @@ mutant already matched by a row of its own key). Both keeps are **budgets,
 not statuses**: at most as many rows per coordinate as mutants actually
 timed out (or flipped) there, line affinity deciding which rows hold the
 timeout budget — one audited permanent timeout cannot vouch for an unbounded
-pile of genuinely killed siblings. Flip-insured rows are kept
+pile of genuinely killed siblings. A timeout-protected accepted row has not necessarily
+itself timed out: a permanent audited sibling can supply that same-key budget. The
+conservative keep does not prove physical sibling identity. Flip-insured rows are kept
 unconditionally and decided *before* the timeout budget, so an insured row
 never spends the budget its uninsured sibling needs. Prune and the candidate
 preview read one row-level keep-plan implementation, so given the same report
@@ -961,6 +978,12 @@ every unmatched licensed-engine/subsumed row, and refreshes only the `# line`
 metadata of rows matched by the fresh history-free report. This is deliberately a
 separate operation: Union invoked to accept unrelated new debt and Update invoked for
 a complete rewrite must not silently erase the same-key-swap signal before it is read.
+When several same-key rows lose their anchors, Retag warns that its file-order fallback
+cannot establish which physical sibling each note describes. Review those notes against
+the current source and report; refreshed tags alone do not establish that correspondence.
+Prune's possible-location diagnostics show each observed status and its copy count, including
+mixed statuses at one line. Candidate previews, timeout-budget protection, and ambiguous
+Retag assignments also appear in the end-of-build advisory summary.
 
 ### `TIMED_OUT` is detected, but does not diagnose its cause
 
@@ -1145,7 +1168,8 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   existence** outcome
   (for example, replace manual set-bit cursor arithmetic with the JDK's ordered
   traversal abstraction), then prove the old mutant is absent with a history-free
-  run. Refactoring away a mutation site does not require inventing a production bug;
+  run and remove its membership line by hand (the stale-row rule below). Refactoring
+  away a mutation site does not require inventing a production bug;
   it must preserve the independently tested contract.
   *(casebook: the liveness loop that raced the heap)*
 
@@ -1233,10 +1257,11 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   members with no timeout in 3+ consecutive fresh full mutation runs over
   identical inputs (the flip-family retirement criterion); a single quiet run
   is inconclusive, and a gate-load-only member is reset by gate runs, so the
-  notice presumes nothing; a stale
-  interlude drops the counter rather than freezing it — staleness means the
-  code moved, so quietness is re-measured once the mutant returns instead of
-  argued from the old method body. The
+  notice presumes nothing. A stale coordinate is an
+  absence, never a quiet observation: it does not advance, preserve, or create a
+  quiet counter. A stale interlude drops the counter rather than freezing it —
+  staleness means the code moved, so quietness is re-measured from zero if the
+  coordinate returns instead of argued from the old method body. The
   line-less key is also the membership check's resolution: a *new* timed-out
   mutant in an already-audited method+mutator draws no **unaudited-member**
   warning. The `# line` comments remain diagnostic pointers only; a moved line
@@ -1291,6 +1316,15 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   reports are read-only previews:
   they neither replace the run-to-run status stash nor advance the three-run quiet
   counter, because cached `TIMED_OUT`/`KILLED` statuses cannot retire evidence.
+  A stale row — one whose line-less coordinate no longer appears in a fresh full
+  history-free report with valid committed provenance — is different: absence is not
+  quiet, and no writer retires it. Remove that membership line from
+  `config/pitest/<suite>-timeouts.csv` by hand and record the refactor in
+  `config/pitest/README.md`; if the mutant returns and times out, it reads as
+  unaudited. Timeout membership lines are hand-maintained records; the never-hand-edit
+  rule covers baseline rows and provenance stamps. While provenance is invalid, the
+  tool previews the absence and withholds retirement until provenance is repaired or
+  rebased.
 - **Flip families do not settle while their cause remains — and "the cause
   remains" is a claim to re-measure, not a fact to record once.** Mutants
   equivalent on the wire but timing-dependent in detection (socket suites
@@ -2118,15 +2152,23 @@ build directory is configured outside the checkout. These are machine-local path
 Source identity hashes the names and bytes of main/test source-set files (including
 resources), the configured committed seed corpus, project/root build scripts and
 `gradle.properties`, root settings scripts, and the conventional root
-`gradle/libs.versions.toml`. The content fingerprint uses `PitestEvidence.fingerprint`
+`gradle/libs.versions.toml`, `gradle/sava.properties`, and `gradle/modules.properties`.
+The content fingerprint uses `PitestEvidence.fingerprint`
 with paths relative to the applying project. It includes dirty file contents; Git status
 SHA-256 hashes porcelain status only. Git state may be `clean`, `dirty`, or `unavailable`;
-the latter uses `unavailable` for all four remaining Git fields. Each target checks its
+the latter uses `unavailable` for all four remaining Git fields. When Git reads `clean`,
+a target refuses source inputs absent from the captured tree, exactly as certification
+does; outputs under the build directory are exempt. Each target checks its
 source identity before and after execution and refuses a receipt when those observations
 differ. Targets carry separate identities because generated sources can change between
 targets. This inventory is not a complete snapshot of dependency jars, compiler inputs,
 custom build logic or the evolving local corpus, and endpoint checks do not prove files
-stayed unchanged throughout a run.
+stayed unchanged throughout a run. Git status is repository-wide, including non-ignored
+writes outside the applying project. A change that remains at a target's ending check
+can refuse its receipt; for example, a Jazzer `slow-unit-*` artifact written to the project
+working directory. Configure the consumer's artifact paths or ignore rules before a long
+campaign. Writes that occur and revert between the two checks are not detected by these
+endpoint comparisons.
 
 Raw-log hashes identify bytes retained during capture. The files remain mutable diagnostic
 outputs and may be removed by `clean` even though the receipt survives. Receipt publication

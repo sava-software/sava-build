@@ -24,8 +24,14 @@ internal data class FuzzSourceIdentity(
       projectDirectory: File,
       sourceFiles: Iterable<File>,
       execOperations: ExecOperations,
+      buildDirectory: File? = null,
     ): FuzzSourceIdentity {
       val gitBefore = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
+      if (gitBefore.state == CertificationGitIdentity.State.CLEAN) {
+        CertificationGitIdentityCapture.requireSourceInputsInTree(
+          projectDirectory, gitBefore, sourceFiles, buildDirectory, execOperations, "fuzz campaign",
+        )
+      }
       val sourceSha256 = PitestEvidence.fingerprint(projectDirectory, sourceFiles)
       val gitAfter = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
       check(gitBefore == gitAfter) {

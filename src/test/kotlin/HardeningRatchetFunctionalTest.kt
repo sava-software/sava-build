@@ -509,6 +509,28 @@ $fuzzBlock
   }
 
   @Test
+  fun `retag reports ambiguous moved sibling assignment and retains every row`() {
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    baselineFile().writeText("$key # first argument # line 10\n$key # second argument # line 20\n")
+    writeReport(listOf(
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,40,KILLED,com.example.CodecTest",
+      "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,50,SURVIVED,none",
+    ), "")
+
+    val output = baselineRetagRunner().build().output
+    assertTrue(output.contains("ambiguous same-key sibling fallback for 1 key(s)") &&
+        output.contains("stable file-order fallback") &&
+        output.contains("this does not establish physical mutant identity") &&
+        output.contains("Review the README pointers and resulting line tags"), output)
+    assertTrue(output.substringAfterLast("hardening: ")
+        .contains("1 ambiguous retag sibling key(s)"), output)
+    assertEquals("$key # first argument # line 50\n$key # second argument # line 20\n",
+        baselineFile().readText(), "the diagnostic must not change the existing fallback allocation")
+  }
+
+  @Test
   fun `rebase and union hand remaining line drift to retag after successful writes`() {
     // Rebase changes provenance while retaining acceptance capacity. A matching
     // line-less key can therefore keep its old tag after the fresh run: print the
@@ -982,6 +1004,8 @@ $fuzzBlock
     writeReport(
         listOf(
             csv("decode", 30, "MathMutator", "SURVIVED"),
+            csv("decode", 30, "MathMutator", "KILLED"),
+            csv("decode", 31, "MathMutator", "KILLED"),
             csv("decode", 31, "MathMutator", "KILLED"),
             csv("decode", 32, "MathMutator", "KILLED"),
             csv("encode", 40, "NullReturnValsMutator", "NO_COVERAGE"),
@@ -990,6 +1014,8 @@ $fuzzBlock
         ),
         listOf(
             xml("decode", 30, "MathMutator", "SURVIVED", "live survived sibling"),
+            xml("decode", 30, "MathMutator", "KILLED", "same-line killed sibling"),
+            xml("decode", 31, "MathMutator", "KILLED", "first killed possibility"),
             xml("decode", 31, "MathMutator", "KILLED", "first killed possibility"),
             xml("decode", 32, "MathMutator", "KILLED", "second killed possibility"),
             xml("encode", 40, "NullReturnValsMutator", "NO_COVERAGE", "live uncovered sibling"),
@@ -1009,12 +1035,13 @@ $fuzzBlock
           output,
       )
       listOf(
-          "line 30: live survived sibling",
-          "line 31: first killed possibility",
-          "line 32: second killed possibility",
-          "line 40: live uncovered sibling",
-          "line 41: third killed possibility",
-          "line 42: fourth killed possibility",
+          "1 × SURVIVED — line 30: live survived sibling",
+          "1 × KILLED — line 30: same-line killed sibling",
+          "2 × KILLED — line 31: first killed possibility",
+          "1 × KILLED — line 32: second killed possibility",
+          "1 × NO_COVERAGE — line 40: live uncovered sibling",
+          "1 × KILLED — line 41: third killed possibility",
+          "1 × KILLED — line 42: fourth killed possibility",
       ).forEach { location ->
         assertEquals(
             1,
@@ -1506,7 +1533,11 @@ $fuzzBlock
           hinted.contains("com.example.Codec,encode,MathMutator,SURVIVED # second # line 24"),
       "the excess row must be named as the exact candidate:\n$hinted"
     )
-    assertTrue(hinted.contains("1 baseline row(s) read TIMED_OUT this run"), hinted)
+    assertTrue(hinted.contains("1 baseline row(s) protected by same-key timeout budget"), hinted)
+    val summary = hinted.substringAfterLast("hardening: ")
+    assertTrue(summary.contains("1 baseline prune candidate row(s)") &&
+        summary.contains("1 baseline row(s) protected by same-key timeout budget"), hinted)
+    assertFalse(hinted.contains("baseline row(s) read TIMED_OUT"), hinted)
 
     val output = baselinePruneRunner().build().output
     assertEquals(
@@ -1577,7 +1608,7 @@ $fuzzBlock
 
     val hinted = runner("pitestEncodingVerify").build().output
     val timedOutHint = hinted.lineSequence()
-      .dropWhile { !it.contains("read TIMED_OUT this run") }.take(2).joinToString("\n")
+      .dropWhile { !it.contains("protected by same-key timeout budget") }.take(2).joinToString("\n")
     assertTrue(
       timedOutHint.contains("com.example.Codec,encode,MathMutator,NO_COVERAGE # b # line 24"),
       "the hint must name the affine row as kept:\n$hinted"
@@ -2646,7 +2677,8 @@ $fuzzBlock
           torn.contains("Remedy: Retain these candidates, repair or rebase provenance") &&
           torn.contains("Do not add or classify them until that observation confirms them") &&
           torn.contains("cause:untriaged has not been reviewed") &&
-          torn.contains("do not retire or rewrite them until provenance is repaired/rebased"),
+          torn.contains("do not retire or rewrite them until provenance is repaired/rebased") &&
+          torn.contains("then remove the membership line by hand"),
       "torn provenance hid the fresh report's unaudited timeout:\n$torn",
     )
     assertFalse(torn.contains("add the row below"), torn)
@@ -2829,9 +2861,9 @@ $fuzzBlock
       "unmatched row not previewed exactly:\n$output"
     )
     assertTrue(
-      output.contains("1 baseline row(s) read TIMED_OUT this run") &&
-          output.contains("preserved by this run's timeout budget, not killed") &&
-          output.contains("does not prove benign load or that the acceptance argument still holds") &&
+      output.contains("1 baseline row(s) protected by same-key timeout budget") &&
+          output.contains("This does not identify which physical sibling timed out") &&
+          output.contains("or prove benign load or that the acceptance argument still holds") &&
           output.contains("com.example.Codec,encode,MathMutator,SURVIVED"),
       "timed-out flip not reported separately:\n$output"
     )
