@@ -1,5 +1,21 @@
 # Changelog
 
+## [21.5.37](https://github.com/sava-software/sava-build/compare/21.5.36...21.5.37) (2026-09-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **hardening:** check and qualityGate no longer depend on agentsTemplateInSync, and hardeningAgentTemplateDiff no longer exists. Existing AGENTS.md blocks and hardening-template digest markers are inert; replace the block with the printed one whenever convenient.
+
+### Bug Fixes
+
+* **hardening:** refuse non-tree source inputs and retire stale timeout rows by hand ([330dc80](https://github.com/sava-software/sava-build/commit/330dc8075a83c7b8820492dd025bc2a6b8e51d30))
+
+
+### Refactors
+
+* **hardening:** drop the agent-template digest gate and shrink the template ([6f7ba59](https://github.com/sava-software/sava-build/commit/6f7ba59a3bec35b9cd8ff8b27e5325e65bc123f0))
+
 ## [21.5.36](https://github.com/sava-software/sava-build/compare/21.5.35...21.5.36) (2026-09-15)
 
 
