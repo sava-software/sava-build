@@ -6,7 +6,6 @@ import software.sava.build.hardening.BaselineWriteOperation
 import software.sava.build.hardening.CommittedMutationProvenance
 import software.sava.build.hardening.ExclusionAudit
 import software.sava.build.hardening.HardeningAdvisoryLog
-import software.sava.build.hardening.HardeningAgentTemplateBlock
 import software.sava.build.hardening.HardeningCertificationAggregateSession
 import software.sava.build.hardening.HardeningCertificationRootPlugin
 import software.sava.build.hardening.HardeningCertificationSession
@@ -17,7 +16,6 @@ import software.sava.build.hardening.HardeningHelpTask
 import software.sava.build.hardening.HardeningOperationCompletionTask
 import software.sava.build.hardening.HardeningOperationRequestTask
 import software.sava.build.hardening.HardeningOperationSession
-import software.sava.build.hardening.HardeningRepositoryCheckCoordinator
 import software.sava.build.hardening.HardeningOptionNames
 import software.sava.build.hardening.HardeningPluginIdentity
 import software.sava.build.hardening.HardeningPluginIdentityGuard
@@ -45,7 +43,6 @@ import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.qualifiedHardeningTaskPath
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
-import software.sava.build.hardening.task.HardeningAgentTemplateDiffTask
 import software.sava.build.hardening.task.HardeningCertifyAllTask
 import software.sava.build.hardening.task.HardeningCertifyAllPreflightTask
 import software.sava.build.hardening.task.HardeningCertificationAggregatePublishTask
@@ -236,9 +233,6 @@ val hardeningOperationSession = gradle.sharedServices.registerIfAbsent(
 ) {}
 val hardeningFuzzSession = gradle.sharedServices.registerIfAbsent(
     "hardeningFuzzSession", HardeningFuzzSession::class
-) {}
-val hardeningRepositoryCheckCoordinator = gradle.sharedServices.registerIfAbsent(
-    "hardeningRepositoryCheckCoordinator", HardeningRepositoryCheckCoordinator::class
 ) {}
 // One end-of-build service shared across every project: it keeps non-failing reviewer
 // stops visible and rolls up only the certification receipts this invocation published.
@@ -764,165 +758,21 @@ val hardeningFuzzExecutionSlots = gradle.sharedServices.registerIfAbsent(
   maxParallelUsages.set(maxParallelFuzzTargets)
 }
 
-// The agent-instructions template in HARDENING.md is copied exactly into a bounded
-// block in each consuming repo's AGENTS.md; repository-specific facts stay outside.
-// Legacy adapted copies drift silently until their next normal sync. A template change
-// is invisible from inside the repos it obligates. The plugin carries a digest of the
-// current template block; this check fails until the repo's AGENTS.md contains one
-// valid bounded block and a marker acknowledging that digest. The marker is an
-// acknowledgment, not a checksum of the local block: update it only after re-diffing
-// the block against the template
-// — a changed bullet may mean new code, not just new prose. A repo without an
-// AGENTS.md is warned, not failed: the adoption checklist owns creating the file;
-// this task owns keeping it current.
-val renderedHardeningAgentTemplate = HardeningTemplateDigest.TEMPLATE.lineSequence()
-    .joinToString("\n") { it.removePrefix("> ") }
-HardeningAgentTemplateBlock.requireCanonicalHeadingFree(
-    renderedHardeningAgentTemplate.lineSequence().toList())
-val hardeningAgentTemplateDiff = tasks.register<HardeningAgentTemplateDiffTask>(
-    "hardeningAgentTemplateDiff"
-) {
-  group = "help"
-  description = "Diffs the bounded AGENTS.md hardening block against the installed template; normalizes one uniform Markdown '> ' quote layer."
-  agentsFile.set(rootProject.layout.projectDirectory.file("AGENTS.md"))
-  installedTemplate.set(renderedHardeningAgentTemplate)
-  repositoryCheckKey.set(HardeningTemplateDigest.SHA256_12)
-  repositoryCheckCoordinator.set(hardeningRepositoryCheckCoordinator)
-  usesService(hardeningRepositoryCheckCoordinator)
-}
-val agentsTemplateInSync = tasks.register("agentsTemplateInSync") {
-  group = "verification"
-  description = "Checks the root AGENTS.md bounded acknowledgment of the installed agent-instructions template."
-  val agentsDoc = rootProject.layout.projectDirectory.file("AGENTS.md").asFile
-  val expected = HardeningTemplateDigest.SHA256_12
-  val templateTask = if (project.path == ":") ":hardeningAgentTemplate" else "${project.path}:hardeningAgentTemplate"
-  val templateDiffTask = if (project.path == ":") {
-    ":hardeningAgentTemplateDiff"
-  } else {
-    "${project.path}:hardeningAgentTemplateDiff"
-  }
-  // Set only when this feature plugin's loaded bytes match the configured local test
-  // publication. A property or configured repository is not enough: a custom
-  // settings script can leave it present while resolving a published plugin. A stale
-  // marker under verified local candidate validation is the expected state,
-  // not a defect: the repo acknowledges the digest of a RELEASED plugin, and this
-  // checkout's digest has not shipped yet. Failing here forced repos to acknowledge
-  // unreleased digests ahead of the release — which then wedged their 'check'
-  // against every published plugin until the release landed and the pin was bumped.
-  // A deliberate RC-adoption change may prepare the new block and marker now, but
-  // that consumer commit must land only with or after the release pin it acknowledges.
-  val validatingUnreleased =
-      hardeningLoadedLocalArtifactPath != HardeningPluginIdentityService.NO_LOCAL_ARTIFACT
-  val advisoryLog = hardeningAdvisoryLog
-  val advisoryScope = "repository AGENTS.md"
-  val repositoryCoordinator = hardeningRepositoryCheckCoordinator
-  usesService(advisoryLog)
-  usesService(repositoryCoordinator)
-  inputs.files(agentsDoc)
-  inputs.property("templateDigest", expected)
-  inputs.property("validatingUnreleased", validatingUnreleased)
-  doLast {
-    val isValidatingUnreleased = validatingUnreleased
-    if (!repositoryCoordinator.get().claim(
-        "agentsTemplateInSync",
-        agentsDoc.absoluteFile.normalize().path,
-        expected,
-        if (isValidatingUnreleased) "unreleased" else "published",
-      )) {
-      logger.info("agentsTemplateInSync: repository-scoped check already ran in this build")
-      return@doLast
-    }
-    if (!agentsDoc.isFile) {
-      logger.warn(
-          "agentsTemplateInSync: no AGENTS.md at $agentsDoc — copy the agent-instructions " +
-              "template printed by './gradlew $templateTask' and add:\n" +
-              "  <!-- hardening-template sha256:$expected -->"
-      )
-      advisoryLog.get().record(advisoryScope, "AGENTS.md is missing")
-      return@doLast
-    }
-    val doc = agentsDoc.readText()
-    val docLines = doc.lines()
-    val inspection = try {
-      HardeningAgentTemplateBlock.inspect(docLines)
-    } catch (invalid: HardeningAgentTemplateBlock.Invalid) {
-      throw GradleException("agentsTemplateInSync: ${invalid.message}", invalid)
-    }
-    val currentMarker = inspection.marker?.digest == expected
-    val hasAnyBoundary = inspection.hasAnyBoundary
-    if (currentMarker || hasAnyBoundary) {
-      try {
-        HardeningAgentTemplateBlock.parse(docLines)
-      } catch (invalid: HardeningAgentTemplateBlock.Invalid) {
-        throw GradleException("agentsTemplateInSync: ${invalid.message}", invalid)
-      }
-    }
-    if (currentMarker) return@doLast
-    val boundaryStart = HardeningAgentTemplateDiffTask.BLOCK_START
-    val boundaryEnd = HardeningAgentTemplateDiffTask.BLOCK_END
-    val boundaryMigration = if (hasAnyBoundary) {
-      ""
-    } else {
-      HardeningAgentTemplateBlock.boundaryMigrationGuidance()
-    }
-    val stale = inspection.marker
-    if (stale != null && isValidatingUnreleased) {
-      val boundaryMigrationNotice = if (boundaryMigration.isEmpty()) {
-        ""
-      } else {
-        "\n  Remedy prerequisite:\n" + boundaryMigration.trimEnd().prependIndent("    ")
-      }
-      logger.warn(
-          "agentsTemplateInSync: unreleased template digest differs from AGENTS.md.\n" +
-              "  AGENTS.md marker: ${stale.digest}\n" +
-              "  Unreleased checkout: $expected\n" +
-              "  Review: The marker normally lands with the release that ships this digest, not " +
-              "before it; local candidate validation alone does not require a consumer change." +
-              boundaryMigrationNotice +
-              "\n  Remedy for deliberate RC adoption: Run './gradlew $templateDiffTask', review " +
-              "or act on the bounded AGENTS.md hardening block, and stage the marker with the new " +
-              "plugin pin.\n" +
-              "  Landing condition: Do not land that consumer commit while it still resolves " +
-              "the older published plugin.\n" +
-              "  Remedy otherwise: When bumping past the release, run './gradlew $templateDiffTask', " +
-              "review or act on the diff, and update the marker to:\n" +
-              "    <!-- hardening-template sha256:$expected -->"
-      )
-      advisoryLog.get().record(
-          advisoryScope, "AGENTS.md acknowledges an older hardening template during unreleased validation")
-      return@doLast
-    }
-    throw GradleException(
-        if (stale == null) {
-          "AGENTS.md has no 'hardening-template' marker. $boundaryMigration" +
-              "Run './gradlew $templateDiffTask', " +
-              "sync or act on what " +
-              "differs, then add:\n  <!-- hardening-template sha256:$expected -->"
-        } else {
-          "The shared agent-instructions template changed since this repo's AGENTS.md last " +
-          "acknowledged it (marker ${stale.digest}, current $expected). $boundaryMigration" +
-              "Run './gradlew $templateDiffTask' to compare its explicitly bounded hardening block " +
-              "with the installed template. A " +
-              "changed bullet may need code, not just prose — then update the marker to:\n" +
-              "  <!-- hardening-template sha256:$expected -->"
-        }
-    )
-  }
-}
+// The agent-instructions block in HARDENING.md is copied into each consuming repo's
+// AGENTS.md. This prints the block baked into the installed plugin version so a copy
+// never comes from moving main. Nothing checks the copy: a stale block costs a wrong
+// instruction, not a red build.
 tasks.register("hardeningAgentTemplate") {
   group = "help"
-  description = "Prints the bounded, unquoted agent-instructions template carried by this plugin version."
+  description = "Prints the agent-instructions block carried by this plugin version, to copy into AGENTS.md."
   doLast {
-    logger.quiet(HardeningAgentTemplateDiffTask.BLOCK_START)
+    logger.quiet("<!-- hardening-template block:start -->")
     logger.quiet(
         HardeningTemplateDigest.TEMPLATE.lineSequence()
             .joinToString("\n") { it.removePrefix("> ") })
-    logger.quiet(HardeningAgentTemplateDiffTask.BLOCK_END)
-    logger.quiet("<!-- hardening-template sha256:${HardeningTemplateDigest.SHA256_12} -->")
+    logger.quiet("<!-- hardening-template block:end -->")
   }
 }
-tasks.named("check") { dependsOn(agentsTemplateInSync) }
-qualityGate.configure { dependsOn(agentsTemplateInSync) }
 
 // Serialize the PIT suites: each already runs its own worker pool, and
 // concurrent suites contend for the same cores without finishing sooner.
@@ -6685,11 +6535,8 @@ tasks.register("hardeningInit") {
   val initProjectDirectory = layout.projectDirectory.asFile
   val gitignore = rootProject.layout.projectDirectory.file(".gitignore").asFile
   val initRootProjectDirectory = rootProject.layout.projectDirectory.asFile
-  val digest = HardeningTemplateDigest.SHA256_12
   val initHelpTaskPath = qualifiedHardeningTaskPath(project.path, "hardeningHelp")
   val initTemplateTaskPath = qualifiedHardeningTaskPath(project.path, "hardeningAgentTemplate")
-  val initTemplateDiffTaskPath =
-      qualifiedHardeningTaskPath(project.path, "hardeningAgentTemplateDiff")
   val initBaselineUpdateTaskPath =
       qualifiedHardeningTaskPath(project.path, "pitest<Suite>BaselineUpdate")
   val initTimeoutAuditTaskPath =
@@ -6764,11 +6611,9 @@ tasks.register("hardeningInit") {
         |       cause:untriaged row and write its structural
         |       argument in config/pitest/README.md; seeding deliberately leaves
         |       certification red (HARDENING.md, audited-timeout bullet)
-        |  5. run ./gradlew $initTemplateTaskPath and copy that exact version-matched
-        |       bounded agent-instructions template into AGENTS.md with:
-        |       <!-- hardening-template sha256:$digest -->
-        |       On later upgrades run ./gradlew $initTemplateDiffTaskPath before
-        |       moving the digest; the task prints a review-only diff and never edits AGENTS.md.
+        |  5. run ./gradlew $initTemplateTaskPath and copy the printed agent-instructions
+        |       block into AGENTS.md, keeping repository-specific facts outside it;
+        |       nothing checks the copy, so re-copy it when the printed block changes
         |  6. decide who owns the pre-release $initCertifyTaskPath run, and record it in AGENTS.md
         |  7. fuzz targets with a seedCorpus get a generated replay test automatically;
         |       document seed provenance in a README next to (never inside) the corpus dir

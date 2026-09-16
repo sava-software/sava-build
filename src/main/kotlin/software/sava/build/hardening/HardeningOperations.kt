@@ -687,13 +687,7 @@ internal object HardeningHelpText {
     appendLine("  savaBuildIdentity                 loaded plugin coordinates, code path, SHA-256, and local validation state")
     appendGenerated(
         "hardeningAgentTemplate",
-        "print the installed bounded agent-instructions template unquoted")
-    appendGenerated(
-        "hardeningAgentTemplateDiff",
-        "compare the bounded local block; normalizes one uniform Markdown '> ' quote layer")
-    appendGenerated(
-        "agentsTemplateInSync",
-        "check the installed template acknowledgment; used by check and qualityGate")
+        "print the installed agent-instructions block to copy into AGENTS.md")
     suiteWorkflowTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     suiteDebtTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     suiteDiagnosticTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }

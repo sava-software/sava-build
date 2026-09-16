@@ -113,23 +113,21 @@ class HardeningInitFunctionalTest {
     assertTrue(first.output.contains("appended .pitest-history/ to"), first.output)
     assertTrue(gitignore.readText().contains("\n.pitest-history/\n"), gitignore.readText())
     assertTrue(first.output.contains("remaining adoption steps"), first.output)
-    // the checklist hands over the acknowledgment marker agentsTemplateInSync expects
-    assertTrue(
-      Regex("<!-- hardening-template sha256:[0-9a-f]{12} -->").containsMatchIn(first.output),
-      "digest marker missing from the checklist:\n" + first.output
+    // the checklist points at the block to copy and says nothing checks the copy
+    assertFalse(
+      first.output.contains("hardening-template sha256:"),
+      "the checklist must not hand over a digest marker:\n" + first.output
     )
     assertTrue(
-      first.output.contains("bounded agent-instructions template") &&
+      first.output.contains("copy the printed agent-instructions") &&
           first.output.contains("./gradlew :pitest<Suite>BaselineUpdate") &&
           first.output.contains("./gradlew :pitest<Suite>TimeoutAuditInit") &&
           first.output.contains("./gradlew :hardeningAgentTemplate") &&
-          first.output.contains("./gradlew :hardeningAgentTemplateDiff") &&
           first.output.contains("pre-release :hardeningCertify run") &&
           first.output.contains("local :fuzzAll -PmaxFuzzTime") &&
-          first.output.contains("hardeningAgentTemplateDiff") &&
-          first.output.contains("review-only diff") &&
-          first.output.contains("never edits AGENTS.md"),
-      "the checklist did not make the bounded upgrade diff first-class:\n${first.output}",
+          first.output.contains("nothing checks the copy") &&
+          !first.output.contains("hardeningAgentTemplateDiff"),
+      "the checklist did not describe the unchecked template copy:\n${first.output}",
     )
 
     // a second run changes nothing: same README bytes, no duplicated ignore line

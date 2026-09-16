@@ -194,8 +194,6 @@ class HardeningOperationsFunctionalTest {
 
     listOf(
       "hardeningAgentTemplate",
-      "hardeningAgentTemplateDiff",
-      "agentsTemplateInSync",
       "hardeningInit",
       "pitestEncoding",
       "pitestEncodingVerify",
@@ -221,16 +219,10 @@ class HardeningOperationsFunctionalTest {
     }
     assertSingleEntry(
       "hardeningAgentTemplate",
-      "print the installed bounded agent-instructions template unquoted",
+      "print the installed agent-instructions block to copy into AGENTS.md",
     )
-    assertSingleEntry(
-      "hardeningAgentTemplateDiff",
-      "compare the bounded local block; normalizes one uniform Markdown '> ' quote layer",
-    )
-    assertSingleEntry(
-      "agentsTemplateInSync",
-      "check the installed template acknowledgment; used by check and qualityGate",
-    )
+    assertFalse(output.contains("hardeningAgentTemplateDiff"), output)
+    assertFalse(output.contains("agentsTemplateInSync"), output)
     assertSingleEntry(
       "hardeningInit",
       "scaffold config/pitest/README.md and the .pitest-history/ ignore rule",
@@ -253,8 +245,6 @@ class HardeningOperationsFunctionalTest {
     assertTrue(readOnlySection != null, "missing read-only workflow section:\n$output")
     listOf(
       "hardeningAgentTemplate",
-      "hardeningAgentTemplateDiff",
-      "agentsTemplateInSync",
       ":hardeningCertifyAll",
       "pitestEncoding",
       "pitestEncodingVerify",

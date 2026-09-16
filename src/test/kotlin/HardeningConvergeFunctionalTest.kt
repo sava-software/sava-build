@@ -450,7 +450,7 @@ class HardeningConvergeFunctionalTest {
     // task's own certification guard, which must still fail rather than print green.
     val gate = runner(
       "qualityGate", "-PmutateOnly=com.example.Codec",
-      "-x", "test", "-x", "agentsTemplateInSync", "-x", "pitestEncoding", "-x", "pitestParsing"
+      "-x", "test", "-x", "pitestEncoding", "-x", "pitestParsing"
     ).buildAndFail()
     assertTrue(gate.output.contains("qualityGate cannot certify a scoped mutation population"), gate.output)
   }

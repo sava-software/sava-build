@@ -155,13 +155,9 @@ sources require Java 17 or newer. Run `./gradlew :hardeningInit`, complete its o
 and baseline checklist, then run the template task on exactly one project that applies
 the plugin (for example, `./gradlew :module:hardeningAgentTemplate`, or
 `./gradlew :hardeningAgentTemplate` when the root project owns hardening) and copy the
-exact bounded agent-instructions block printed by the installed plugin before treating
-`hardeningCertify` as a release gate. The task also prints the matching digest marker;
-there is no Git-tag lookup and no dependency on the moving `main` documentation. On a
-later plugin upgrade, run the corresponding project-qualified
-`hardeningAgentTemplateDiff`; it prints a read-only textual diff from that bounded local
-block to the newly installed template. An unqualified task name can select every
-hardening project in a multi-project build and duplicate the output.
+short agent-instructions block it prints into `AGENTS.md` before treating
+`hardeningCertify` as a release gate. Nothing checks that copy; re-copy it when the
+printed block changes.
 
 ### gradle/sava.properties
 
@@ -189,17 +185,14 @@ software.sava.core=software.sava:sava-core
 org.postgresql.jdbc=org.postgresql:postgresql
 ```
 
-### Upgrading across hardening template versions
+### Upgrading the plugin
 
-`agentsTemplateInSync` checks the root `AGENTS.md` acknowledgment of the installed
-agent-instructions template and is used by `check` and `qualityGate`. Treat the installed
-plugin as the task authority: on an upgrade, run the applying project's `hardeningHelp`
-(for example, `./gradlew :module:hardeningHelp`), then its project-qualified
-`hardeningAgentTemplate` and `hardeningAgentTemplateDiff`. Review or act on the bounded
-diff before moving the digest marker, and move the marker in the same commit as the
-version pin. In a multi-project build, keep all three task names project-qualified so
-one chosen owner reports the installed version's guidance. Template synchronization is
-deliberately structural: the plugin does not attempt to judge arbitrary repository prose.
+Treat the installed plugin as the task authority: on an upgrade, run the applying
+project's `hardeningHelp` (for example, `./gradlew :module:hardeningHelp`) for the
+installed task surface, and re-copy the block printed by its project-qualified
+`hardeningAgentTemplate` into `AGENTS.md` when it changed. Nothing gates `check` on
+that copy. In a multi-project build, keep the task names project-qualified so one
+chosen owner reports the installed version's guidance.
 
 Run that project's `savaBuildIdentity` (for example,
 `./gradlew :module:savaBuildIdentity`) to inspect the loaded plugin coordinates, code
@@ -209,7 +202,7 @@ The `local override` state describes only whether a configured local redirection
 resolved and verified against the loaded bytes; it does not attest to the validity or
 provenance of a published artifact.
 An empty `-PsavaBuildLocalRepo=` clears an inherited override in the consumer setup
-shown below; it does not make a published plugin's stale template acknowledgment advisory.
+shown below.
 
 ## Plugins
 
@@ -546,13 +539,15 @@ Releasing is Release Please plus the ordinary check:
    provenance with GitHub's native `actions/attest` — verifiable by consumers through the
    `software.sava.build.check.attestations` feature or `gh attestation verify`.
 
-Each adoption report has two upstream channels. First, report any plugin defect or
-consumer workaround immediately. Second, batch reusable rules, hazards, tempting false leads,
-process gaps, and paths the pass did not exercise at report-back, with the concrete evidence
-that supports them and a proposed destination (normative template, main doctrine, casebook, or
-repo-local notes). Always include the exact resolved plugin JAR SHA-256 and the consumer's
-starting and final commits. This keeps non-defect learning from disappearing without turning
-every observation into a shared-template revision.
+Batch fixes and release on a cadence, not per fix: every release is re-adopted across
+the fleet, so each one starts about ten adoption passes.
+
+Report a plugin defect or a consumer workaround upstream, with the exact resolved plugin
+JAR SHA-256 and the consumer's starting and final commits. A defect is a wrong or
+irreproducible receipt, a refused build, lost data, a HARDENING.md promise contradicted
+by behaviour, or a misread mutant. Everything else an adoption teaches — hazards, false
+leads, local rules — stays in that repo's own notes; sava-build pulls from those notes
+when a rule proves general, so an adoption pass owes no list of gaps.
 
 The local fuzz runner remains available when a change warrants a cross-repository campaign:
 

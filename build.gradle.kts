@@ -300,12 +300,9 @@ val generateHardeningToolDefaults = tasks.register("generateHardeningToolDefault
 }
 kotlin.sourceSets["main"].kotlin.srcDir(generateHardeningToolDefaults)
 
-// The agent-instructions template in HARDENING.md is copied exactly into a bounded
-// block in each consuming repo's AGENTS.md, with local facts kept outside it. Baking a
-// digest of the template block into the plugin lets every consuming build check that
-// its AGENTS.md has acknowledged the current template (see 'agentsTemplateInSync' in
-// the hardening feature plugin). Only the '> ' blockquote lines are hashed, so the
-// surrounding prose can evolve without breaking downstream builds.
+// The agent-instructions template in HARDENING.md is copied into each consuming repo's
+// AGENTS.md. Baking its '> ' blockquote lines into the plugin lets 'hardeningAgentTemplate'
+// print the block that matches the installed version rather than moving main.
 val generateHardeningTemplateDigest = tasks.register("generateHardeningTemplateDigest") {
   description = "Generates HardeningTemplateDigest.kt from the agent-instructions template in HARDENING.md"
   val docFile = layout.projectDirectory.file("HARDENING.md").asFile
@@ -321,13 +318,6 @@ val generateHardeningTemplateDigest = tasks.register("generateHardeningTemplateD
       .filter { it.startsWith(">") }
       .joinToString("\n") { it.trimEnd() }
     check(template.isNotEmpty()) { "the agent-instructions template block in HARDENING.md is empty" }
-    val digest = MessageDigest.getInstance("SHA-256")
-      .digest(template.toByteArray(Charsets.UTF_8))
-      .joinToString("") { "%02x".format(it) }
-      .take(12)
-    // Consumers need the exact template carried by the plugin version they resolved.
-    // A link to the main branch can move ahead of a released digest, so bake the text
-    // beside the digest and expose it through the hardeningAgentTemplate task.
     val templateLiteral = buildString {
       append('"')
       template.forEach { char ->
@@ -350,7 +340,6 @@ val generateHardeningTemplateDigest = tasks.register("generateHardeningTemplateD
       appendLine("package software.sava.build.hardening")
       appendLine()
       appendLine("internal object HardeningTemplateDigest {")
-      appendLine("  const val SHA256_12 = \"$digest\"")
       appendLine("  const val TEMPLATE = $templateLiteral")
       appendLine("}")
     })

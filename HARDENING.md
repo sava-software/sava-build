@@ -12,9 +12,8 @@ repository-specific ownership, measurements, reasons, and provenance. Point to
 `hardeningHelp` when a detailed copy of installed behavior would otherwise need
 maintenance. This is writing guidance, not a semantic property that `check` attempts to
 infer from prose *(casebook: the audit that tried to understand prose)*. A consumer
-`AGENTS.md` carries the exact generated, digest-pinned agent template below plus
-repository-specific facts. The template body remains owned by its deterministic
-digest/diff workflow *(casebook: the adoption whose authority omitted its own gate)*.
+`AGENTS.md` carries a copy of the short agent-instructions block below plus
+repository-specific facts; nothing checks that copy.
 
 Every rule here was earned from an observed incident; the incidents live in
 `HARDENING_CASEBOOK.md`, cited as *(casebook: entry)*. Read an entry before
@@ -2469,8 +2468,8 @@ Java toolchain, and the generated replay/support sources require Java 17+.
 1. Apply `software.sava.build.feature.hardening` and register mutation suites
    (wildcard targets + exclusions) and fuzz targets. `hardeningInit` scaffolds
    the transcription: the `config/pitest/README.md` skeleton, the
-   `.pitest-history/` git-ignore, and the adoption checklist with the current
-   template digest. Run `./gradlew :module:hardeningHelp` for the installed
+   `.pitest-history/` git-ignore, and the adoption checklist. Run
+   `./gradlew :module:hardeningHelp` for the installed
    version's exact task and option surface (or `./gradlew :hardeningHelp` when
    the root project owns the plugin).
 2. Pin any unseeded randomness in the test suite (see above).
@@ -2481,16 +2480,10 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    PIT-version and mutation-toolchain sidecars.
 4. Review the `config/pitest/README.md` written by `hardeningInit`, then record
    accepted-mutant evidence (initially empty) and any seeded untriaged debt there.
-5. Add the agent-instructions block below to the repo's `AGENTS.md` with the
-   `hardening-template` marker. Run the task on exactly one project that applies the
-   plugin (`./gradlew :module:hardeningAgentTemplate`, or
-   `./gradlew :hardeningAgentTemplate` when the root project owns hardening) to print
-   the exact bounded block and digest carried by the installed plugin. On later
-   upgrades, run the corresponding project-qualified `hardeningAgentTemplateDiff` to
-   compare that bounded local block with the installed version before moving the
-   digest; an unqualified task name can select every hardening project and duplicate
-   the output. `agentsTemplateInSync` points to the qualified tasks when the marker is
-   missing or stale. Then decide who owns the pre-release
+5. Add the agent-instructions block below to the repo's `AGENTS.md`. Run the task on
+   exactly one project that applies the plugin (`./gradlew :module:hardeningAgentTemplate`,
+   or `./gradlew :hardeningAgentTemplate` when the root project owns hardening) to
+   print the block carried by the installed plugin. Then decide who owns the pre-release
    `hardeningCertify` run: wire it into CI if the runners can afford it, otherwise
    record it as a release-checklist item run locally (see the lifecycle
    section) — and say which in `AGENTS.md`.
@@ -2514,330 +2507,63 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    `tools/fleet-manifest.txt` in the plugin repo so an explicit cross-repository
    local-fuzz experiment can discover it. Ordinary local-fuzz runs skip absent
    sibling checkouts; its opt-in strict mode refuses omissions.
-
 ## Agent instructions template
 
-Copy the generated block exactly into the repo's `AGENTS.md`, retaining its start/end
-boundary comments; put repository-specific facts outside that bounded block. Run the
-task on exactly one project that applies the plugin (for example,
-`./gradlew :module:hardeningAgentTemplate`, or `./gradlew :hardeningAgentTemplate` when
-the root project owns hardening) to print the exact template baked into the installed
-plugin version; do not copy a possibly newer block from moving `main`. An unqualified
-task name can select every hardening project in a multi-project build and duplicate the
-output. The copies
-drift, and some legacy downstream blocks contain deliberate adaptations. Migrate those
-local facts outside the bounded block during normal template sync; newly copied and
-synced blocks stay exact. The plugin provides a textual review aid rather than claiming
-semantic equivalence:
-The corresponding project-qualified `hardeningAgentTemplateDiff` compares the
-explicitly bounded local block with the installed unquoted template, never edits
-`AGENTS.md`, and exits successfully when a reviewable diff exists. It refuses missing
-or ambiguous boundaries rather than guessing
-from headings or marker placement. A person must still decide whether to sync prose or
-act on the changed requirement. The plugin also carries a digest of this template's
-blockquote lines. When a root
-`AGENTS.md` does not exist, `agentsTemplateInSync` (wired into `check`) warns and
-prints the marker because adoption still requires the deliberate copy step above.
-Once `AGENTS.md` exists, the gate requires exactly one ordered boundary pair around a
-non-empty shared block and exactly one current
-`<!-- hardening-template sha256:<digest> -->` outside it. A current marker alone does
-not satisfy the gate: legacy marker-only consumers must add the boundaries before they
-can claim a reviewable acknowledgment of the release's template.
-Thus editing the template below breaks already-adopted downstream checks on their
-next plugin refresh, which is the point, and no list of downstream repos needs
-maintaining anywhere. The marker is an acknowledgment, not a checksum of the local
-block: update it only after re-diffing the block against the release-matched template
-and syncing or **acting on** each changed bullet — a new requirement may mean new
-code, not just new prose; that is how sava's corpus-replay gap went unnoticed until
-an unrelated repo's agent tripped over it. The warning or failure prints the digest
-to paste. One softening: when the loaded plugin is verified as the configured
-local `0.0.0-test` publication, a stale marker warns instead of failing — the repo
-acknowledges a *released* digest and the checkout's has not shipped, so the marker
-dance normally lands with the release, never before it. A deliberate RC-adoption
-change may re-diff and stage the candidate block and marker now only when that consumer
-commit will land with or after the published plugin pin it acknowledges; landing the
-candidate marker while the older plugin remains selected would wedge ordinary checks.
-A marker-less existing file still fails in local-repo mode; it is unadopted, not
-merely waiting for a release.
-Property presence, a blank override, or a matching JAR hash without the resolved
-local-test coordinate cannot relax the gate. Use the applying project's
-`savaBuildIdentity` to inspect the loaded identity without running mutation tests.
+Copy the block printed by `./gradlew :module:hardeningAgentTemplate` (or
+`./gradlew :hardeningAgentTemplate` when the root project owns hardening) into the
+repo's `AGENTS.md`, keeping its start and end comment lines so the copy can be found
+and replaced on a later upgrade. Put repository-specific facts (suite roster, who runs
+`hardeningCertify`, fuzz budgets, module notes) outside that block. The block is short
+by design: it lists what an agent must do and where the reasons live. Nothing checks
+the copy — a stale block costs a wrong instruction, not a red build — so re-copy it
+when the printed block changes, and read HARDENING.md, not the block, when a rule
+needs its argument. An unqualified task name can select every hardening project in a
+multi-project build and print the block once per project.
 
-The source block below is quoted only so it renders as one unit in this document.
-The project-qualified `hardeningAgentTemplate` removes the leading `> ` markers and
-prints paste-ready instruction text between `<!-- hardening-template block:start -->`
-and `<!-- hardening-template block:end -->`; the digest still names the canonical
-quoted source block. Its complete output is also the canonical final layout:
-start marker, body, end marker, then exactly one digest marker. During a legacy
-transition the old marker may remain before the block long enough to run the diff,
-but after review replace/remove it rather than appending a second marker. The matching
-`hardeningAgentTemplateDiff` automatically removes one uniform Markdown quote layer
-from a legacy block. The boundary lines may either carry that same quote layer or be
-added unquoted exactly as the migration failure prints; do not edit the block merely
-to normalize the presentation used by releases before 21.5.25.
+The source block below is quoted only so it renders as one unit in this document;
+the task prints it unquoted between `<!-- hardening-template block:start -->` and
+`<!-- hardening-template block:end -->`.
 
-> - **Scale verification to the change.** Iterate with the module's `test`
->   task; before handing off, run only the `pitest<Suite>`(s) whose mutated
->   code the change can reach — including suites in dependent modules that
->   call a changed API, and the owning suite for test-only edits (a weakened
->   test is exactly what the ratchet catches). When the production-class inventory
->   changes (add/remove/rename/move), or mutation target/exclusion rules change,
->   also run the cheap whole-population
->   `mutationOwnershipAudit` before handoff. The full `hardeningCertify` — every
->   suite freshly observed, serialized, provenance-bound, diffed against
->   `config/pitest/`, with strict timeout and ownership audits — is the pre-release
->   check, owned by CI or by the release checklist (this repo records which); it is
->   not the inner loop.
-> - A new unkilled mutant has exactly three legal outcomes: **kill it** with a
->   test (prefer asserting the property it breaks over restating the
->   implementation), **refactor** it out of existence, or **accept it** with a
->   written reason in `config/pitest/README.md` **and a short family label on
->   the row itself** — refreshes seed new rows `# untriaged`, and triage means
->   replacing that label, so the baseline always says which rows are argued
->   and which are debt. For an existing baseline, use `BaselineUnion` after
->   reviewing the fresh rows: it appends them without deleting unmatched evidence.
->   Reserve `BaselineUpdate` for a first seed or an independently reviewed complete
->   rewrite; never run it just to make the build pass. A family label groups
->   individually reviewed instances; it never authorizes the next syntactically
->   similar mutant.
-> - **A mutant is a question, not a specification.** Before writing a killing
->   test, state the externally intended property and an oracle independent of the
->   current implementation: public contract, protocol specification, caller
->   invariant, reference implementation, or domain rule. If it contradicts current
->   behavior, first demonstrate the bug with a regression test that fails against
->   the unmutated code, then fix production; never add a passing assertion that
->   merely locks in the bug. At PR or handoff, report each nontrivial behavioral
->   cluster — not each mutant — as `Property: ... | Oracle: ... | Outcome: missing
->   assertion / production bug / accepted equivalent`. Test names and assertions
->   normally carry the durable property; comment only when the oracle or unusual
->   setup would otherwise be lost, and never embed PIT coordinates or line numbers.
-> - Baseline keys are line-less (`class,method,mutator,STATUS`) — editing
->   above a mutated method churns nothing, and `# line` tags are review
->   metadata. New or edited mutation-evidence prose should use line-less
->   class/method/mutator identifiers rather than source line numbers. Existing prose
->   is not a plugin-upgrade gate; repair a stale locator when ordinary review encounters
->   it. The current PIT report and the row's `# line` tag are the sole transient locators.
->   A new mutant replacing a
->   killed one at the same key can inherit
->   its acceptance, so treat a line-drift advisory whose written argument no
->   longer fits the code as that swap until shown otherwise. After review, use
->   `BaselineRetag` to refresh only matched line metadata while preserving every
->   accepted row; never use an unrelated acceptance or deletion merely to clear
->   the advisory. Use the installed plugin's named writer tasks and heed their
->   candidate previews. Before `BaselinePrune` can delete, two distinct completed
->   fresh full history-free previews must have the exact same candidate multiset;
->   its own third fresh write-boundary run must match them too. Candidate drift is a
->   reviewer-stop, and matching bytes do not replace review of the relevant
->   solo/gate load context or each removal criterion. Every retained row remains
->   active acceptance authority regardless of a `# retired`, `# refactor`, or other
->   note. When a reviewed refactor removes the mutation site and the gate is already
->   clear, finish the normal Prune protocol rather than leaving a purported
->   non-authorizing history row; this is tightening the ratchet, not excusing fresh
->   debt. Never hand-edit
->   record structure or provenance stamps. A PIT, PIT-plugin/tool-artifact,
->   ArcMutate-base, or certificate change uses `pitest<Suite>BaselineRebase`: it
->   preserves every old row, seeds new rows `# untriaged`, and stamps the reviewed
->   toolchain only after a successful fresh observation. That provenance binds the
->   current transition and observation; it does not claim that every conservatively
->   preserved row was generated by the new toolchain. Perform a schema
->   migration/rollback only with a fleet pin plan. A `[history]` report may check
->   the ratchet but cannot support adding, removing, or relabelling
->   accepted/timeout records; run `pitest<Suite> -PnoMutationHistory` first.
-> - Consumer hardening notes should focus on local ownership, measurements, acceptance
->   reasons, and provenance. Prefer a `hardeningHelp` pointer over a detailed copy of
->   installed task behavior, but do not turn a plugin upgrade into a repository-wide
->   prose migration. `AGENTS.md` carries this exact generated, digest-pinned template
->   with repository-specific facts outside its bounded block. Use `hardeningHelp` and
->   project-qualified `hardeningAgentTemplate` as the installed-version authorities,
->   and run the matching read-only `hardeningAgentTemplateDiff` against its explicitly
->   bounded block on every template-digest move before acknowledging the new marker.
-> - **Iterate with `-PmutateOnly=<class-glob>`** while killing a cluster —
->   seconds instead of the full suite — then re-run unscoped with
->   `-PnoMutationHistory` before any record decision; the tooling refuses to let
->   a scoped report touch the baseline.
-> - Identical baseline rows are sibling mutants of one compound condition and
->   the comparison is a multiset: never hand-dedupe. When one sibling
->   survives, the verify names the killed sibling's test — the survivor is
->   the opposite branch direction; triage it as its own mutant.
-> - **A survivor contradicted by an existing oracle may be contaminated evidence.**
->   Open PIT's HTML **Covering tests** list, then compare the same scoped,
->   history-free population with and without isolation:
->   `-PmutateOnly=<class> -PnoMutationHistory`, then
->   `-PmutateOnly=<class> -PisolateMutants`. An isolation-only kill points
->   to state leaked between mutants — commonly a thread, executor, handler, or
->   static fixture whose cleanup an earlier assertion failure skipped. Put
->   teardown in `finally`/`try`-with-resources and rerun normally, history-free;
->   isolated execution is diagnostic evidence, never a baseline decision.
-> - **Stubs and fixtures return distinguishable, non-default values.** A stub
->   returning null/0/""/true/empty makes the matching return-value mutant
->   equivalent by accident of the fixture — the clock non-zero-origin rule
->   generalized to every stubbed return.
-> - **Copy-on-write clusters split by direction.** Assert immutability of
->   returned collections (`assertThrows(UnsupportedOperationException, ...)`)
->   at every size: the mutable-escape direction is a kill, not an acceptance;
->   only the content-equal siblings are family-accepted equivalents.
-> - **Randomized tests use fixed seeds, and never sleep**: the ratchet needs
->   deterministic kills, and PIT re-runs the suite per mutant, so one real wait
->   costs minutes. Exploration belongs to the fuzz targets.
-> - **Do not rely on PIT's timeout to detect a mutant.** `TIMED_OUT` counts as
->   detected and is not written to the baseline, but it proves only watchdog
->   detection. Load can change the observed status and line-less keys can conflate
->   siblings. Verify a baseline in both modes; for measured load-flip insurance,
->   union only rows observed to flip, never every `TIMED_OUT` row. This does not
->   restrict additive `BaselineUnion` acceptance of separately reviewed fresh debt.
-> - **A new timed-out mutant is a reviewer-stop, not detection noise.** A timeout
->   can mask a weakened assertion; audit a set, not a count. **Record.**
->   `config/pitest/<suite>-timeouts.csv` holds line-less
->   `class,method,mutator` keys and a cause; `# line` is diagnostic, while
->   `config/pitest/README.md` records the full cause. Verification warns on outside
->   timeouts and stale members. `pitest<Suite>Debt` previews the pre-PIT
->   file check. `TimeoutAuditInit` seeds an uncertifiable file: classify every row.
->   **Classify.** Only `cause:liveness` certifies: after deterministic seams and
->   budgets, the mutated path has no path-owned finite completion. A fixture's
->   emergency exit does not demote that loss; record its bound. A bound claimed
->   as the deterministic oracle must beat PIT's
->   `duration × timeoutFactor + timeoutConst`; otherwise shorten it and re-observe
->   history-free — it contributes no cause evidence. A later emergency
->   ceiling cannot prove liveness.
->   A straight-line path without a loop, retry, lock, wait, blocking call, or external
->   completion dependency is not credible liveness evidence. Prove the mutated path
->   receives the test clock/budget and check for a synchronous state reader; a
->   collaborator's `TestClock` cannot observe a system clock.
->   Missing/unknown causes, `cause:untriaged`, finite `cause:resource`, and
->   `cause:harness` are reviewer-stops; harness records a finite covering-path/watchdog
->   race without authorizing it. Resource behavior needs its promised contract test/fix
->   or a stable `SURVIVED` equivalence argument. Liveness authorizes `TIMED_OUT`, never
->   `MEMORY_ERROR`: for a non-advancing loop racing the heap, make every covering path
->   fail deterministically without relying on PIT test order, or refactor out the
->   mutation site.
->   **Disambiguate.** A cause covers every `TIMED_OUT` sibling under its key. A finite
->   sibling observed `KILLED` or another valid non-timeout does not itself create
->   mixed timeout causes, but a key
->   cannot certify when trustworthy fresh evidence shows distinct same-key siblings
->   timing out under different cause categories. One later `KILLED` does not erase that
->   conflict; `KILLED`↔`TIMED_OUT` movement alone does not prove it. Repair the finite
->   path and establish repeated fresh history-free non-timeout observations under
->   solo/gate load, or split/refactor/eliminate the site. Multiplicity drift prints
->   all current line-full candidates, but lines cannot define identity: moving imports,
->   adding a method, or reflowing code never warns, fails, or requires re-anchoring.
->   **Retire.** Remove an admissible liveness member only after the tool reports 3+
->   distinct fresh full-run quiet observations over identical execution inputs,
->   confirmed under solo/gate load. When retirement semantics are unchanged, a plugin
->   fingerprint change alone does not reset this advisory; captured PIT-input changes
->   do, and unmodeled semantic changes require a timeout-quiet format bump. A
->   finite `KILLED`↔`TIMED_OUT` race never certifies: repair it instead of waiting on
->   liveness retirement. The quiet stash is a machine-local nomination; never copy or
->   merge it, and retain the row without same-input gate confirmation. Assisted
->   reports are previews and advance neither timeout status nor quiet-run evidence.
-> - **A flaky harness is worse than recorded debt.** If an interleaving or a
->   boundary cannot be made deterministic, accept the mutant with a written
->   reason rather than chasing it with sleeps or spin-waits.
-> - **A suite's percentage is not a target.** An accepted mutant with a written
->   reason is finished work, not debt. Before trying to raise a number, check
->   whether the remainder is `NO_COVERAGE` (real work) or documented
->   equivalents (already closed).
-> - **Allocation and timing harnesses are a last resort for thin constant-factor
->   differences**, reserved for properties that are a stated design goal. A
->   removed growth/capacity/amortisation guard that changes complexity class is
->   not “allocation-size only”: use a small input with an orders-of-magnitude
->   margin and the correct path through the mutated code. Harnesses re-run once
->   per mutant, need a `volatile` sink so escape analysis cannot delete what they
->   measure, and flap when the margin is thin.
-> - When a test you believe in will not go green, **suspect the code before you
->   soften the assertion** — that is where this process finds real bugs.
-> - **A wandering unkilled count is a defect, not noise** — chase it before
->   changing any baseline. Reproduce it under the relevant solo/gate loads,
->   inspect per-mutant coordinates, remove real waits, and move construction
->   coverage into the test body before deciding whether it is a product defect,
->   a load-dependent timeout, or a harness defect.
-> - **Build the subject under test inside the test body, not in a field.**
->   Under `PER_CLASS` lifecycle a field-initialized client's construction
->   coverage attaches to whichever test runs first, so wiring mutants can
->   never pair with the test that drives what they wire — they survive even
->   under a harness that asserts every request. One test that constructs the
->   client in the test method and drives each configured URL restores the
->   pairing.
-> - **Kill rates are bounded by the mutator set.** `BigInteger`/`BigDecimal`
->   arithmetic and receiver-returning fluent calls can be invisible to the
->   enabled defaults. Follow the plugin's trial advice per suite, enable only
->   mutators proved to fire, and record the measured numbers and declines.
-> - Module-path and mutation-test service discovery can differ. Declare real
->   services in every runtime representation the project supports, probe the
->   active environment in test-only scaffolding, and never commit a harness
->   whose pass/fail result depends on which task launched it.
-> - `SURVIVED` and `NO_COVERAGE` are different problems: the first is a
->   judgment call about equivalence, the second is usually an untested line
->   and is mechanical. Never accept a `NO_COVERAGE` mutant as "equivalent" —
->   you have not observed its behaviour. One structural exception: a block
->   that always exits by throw reads `NO_COVERAGE` forever, executed or not
->   (PIT probes a block at its end), and its return-value mutants can never
->   change status. Such a line is owed a test asserting the throw's contract,
->   not coverage — and never leave one untested fearing a covered-line
->   `SURVIVED` conversion, which would require the block to complete.
-> - Exclusions must cover the **test source set**, not a naming convention:
->   shared fakes are named `RecordingFoo` / `StubFoo` and match no `*Test*`
->   pattern. After registering or widening a suite, list the mutated classes and
->   confirm none live under `src/test`.
-> - **Verify by the absence of failures, not the presence of passes.** Counting
->   `PASSED` lines hides a failure sitting next to them, and a green
->   `clean build` can mean the build cache short-circuited rather than that
->   tests ran. Check the failure count and confirm the task actually executed.
->   A mutation run has a second version of this: PIT writes reports incrementally,
->   so a failed run can otherwise look complete. The plugin clears known
->   decision-grade leaves before each attempt, writes `.running` until clean
->   completion, and retains unfiltered `pitest.stdout.log` / `pitest.stderr.log`
->   beside the selected report. Trust the exit code and sentinel, not a summary
->   from a failed attempt. Use `pitest<Suite>Diagnostic` for isolated
->   `VERBOSE_NO_SPINNER`, history-free investigation; its report and raw logs are
->   machine-local diagnostic output, may contain sensitive test/process details,
->   and can never support a record or certification decision.
-> - **A suite that got faster without getting narrower is a bug report.** Real
->   speedups come from fewer mutants or faster covering tests; an unexplained
->   one usually means the run did less than you think. Read the task's evidence
->   markers and scope; only a fresh full certification may support a release.
->   The process itself needs no ArcMutate licence and applies to any Java package.
-> - **Invalid execution outcomes are not results.** PIT `MINION_DIED` fails
->   before writing a report, so it cannot corrupt one — re-run the suite; a
->   Gradle-worker `EOFException` death is the same shape, and a per-mutant
->   `RUN_ERROR` often first observed in a multi-suite run is the same
->   shape smaller (load average itself proves nothing; the hardening parser refuses
->   the report rather than certifying PIT's detected score). The refusal and
->   `pitest<Suite>Debt` name every offending row; retain the coordinate before a
->   quiet re-run replaces the report. `RUN_ERROR` alone diagnoses neither load nor
->   memory and never justifies changing threads or heap; record load/RSS as context,
->   retry once quietly, and tune only when PIT explicitly diagnoses a process-resource
->   failure. Recurrence localizes a repeatable observation, not its cause: stable
->   mutation-unit partition can report an aggregate-contention minion death at the same
->   coordinate repeatedly. Compare fresh history-free full attempts with
->   `-PmutateOnly=<class> -PnoMutationHistory`; a reliable scoped kill points away from
->   the mutant alone without proving load, while a scoped batched/`-PisolateMutants`
->   difference says the mutation-unit boundary matters — inspect leaked state first,
->   then packing/process overhead. Run `pitest<Suite>Diagnostic` full and scoped when
->   per-process progress is missing; its separate raw streams establish no total order,
->   and the last announced mutation is context, not cause. Only a clean fresh full
->   unscoped run can support records or certification. Such a later clean run (or a
->   successful `hardeningCertify`) is sufficient closure for a non-recurring invalid
->   outcome: it does not diagnose that failure, and the invalid attempt creates no
->   mutation-record debt. If certification was interrupted, retry the affected
->   project's whole `hardeningCertify`; its receipt deliberately re-executes every
->   suite in that project in one invocation rather than stitching attempts, while
->   other project receipts remain independent.
->   The daemon log
->   (`~/.gradle/daemon/<version>/daemon-<pid>.out.log`) keeps a failed build's
->   full output even when the shell discarded it — read it before calling a
->   failure unexplained.
-> - Fuzz findings become a committed seed input **and** a named regression
->   test, never just a fix — and the committed corpus is replayed by a unit
->   test inside `check`, so it cannot rot between fuzz runs.
-> - **Run fuzz campaigns explicitly and locally.** `fuzzAll` is derived from every
->   registered target, so it cannot drift from a hand-written workflow task list;
->   set and record `-PmaxFuzzTime=<seconds>` and
->   `-PmaxParallelFuzzTargets=<count>` before release. Scheduled GitHub fuzz
->   workflows are optional and are not release evidence.
-> - **When one thing has two representations, fuzz the differential.** Two
->   parsers for one config, an encode/decode round trip, a fast path beside a
->   reference path: assert the two *agree* rather than that neither crashes.
->   Crash-only fuzzing cannot see a wrong answer.
-> - **Time-dependent code takes a clock**, so tests advance time instead of
->   waiting. Give test clocks a non-zero origin — a clock starting at 0 makes
->   every "start timestamp mutated to 0" mutant equivalent by accident.
+> - Iterate with the module's `test` task. Before handoff, run each `pitest<Suite>`
+>   whose mutated code the change can reach, including suites in dependent modules,
+>   and `mutationOwnershipAudit` when production classes or target/exclusion rules
+>   change. `hardeningCertify` (or `:hardeningCertifyAll`) is the pre-release check
+>   this repo's notes assign an owner to, not the inner loop.
+> - Iterate on one cluster with `-PmutateOnly=<class-glob>`. Before any record
+>   decision, re-run unscoped with `-PnoMutationHistory`: a `[history]` report cannot
+>   support adding, removing, or relabelling records.
+> - An unkilled mutant has three outcomes: kill it with a test that asserts the
+>   property it breaks, refactor it out of existence, or accept it with a written
+>   reason in `config/pitest/README.md` and a family label on the row. Refreshes seed
+>   rows `# untriaged`; triage replaces that label. Never accept a `NO_COVERAGE`
+>   mutant as equivalent; it is an untested line.
+> - A mutant is a question, not a specification. State the intended property and an
+>   oracle independent of the implementation before writing the killing test. If they
+>   contradict current behaviour, prove the bug with a failing regression test first,
+>   then fix production; never lock a bug in with a passing assertion.
+> - Write records only through the installed writer tasks: `BaselineUnion` adds
+>   reviewed rows, `BaselineRetag` refreshes `# line` metadata, `BaselinePrune` deletes
+>   only after two matching fresh history-free previews, `BaselineUpdate` is for a
+>   first seed or a reviewed complete rewrite, and `pitest<Suite>BaselineRebase`
+>   follows a PIT, PIT-plugin/tool-artifact, ArcMutate-base, or certificate change.
+>   Never hand-edit baseline
+>   rows or provenance stamps.
+> - Baseline keys are line-less (`class,method,mutator,STATUS`); `# line` tags are
+>   review metadata. Identical rows are sibling mutants and the comparison is a
+>   multiset: never hand-dedupe.
+> - A new `TIMED_OUT` mutant is a reviewer stop, never detection. Record it in
+>   `config/pitest/<suite>-timeouts.csv` with a cause and argue it in the README; only
+>   `cause:liveness` certifies. A member whose coordinate has left the population is
+>   removed by hand after one fresh history-free run with valid committed provenance
+>   omits it; while provenance is invalid, repair or rebase it first.
+> - Tests are deterministic: fixed seeds, no sleeps, a clock with a non-zero origin,
+>   stubs that return distinguishable non-default values, and the subject built inside
+>   the test body. Exclusions must cover the test source set, not a naming convention.
+> - Verify by the absence of failures: trust the exit code and the `.running`
+>   sentinel, not a summary. `MINION_DIED` and `RUN_ERROR` are not results; re-run. A
+>   suite that got faster without getting narrower is a bug report.
+> - Fuzz findings become a committed seed input and a named regression test. Run
+>   `fuzzAll` locally with an explicit `-PmaxFuzzTime` and `-PmaxParallelFuzzTargets`
+>   before a release. Where one thing has two representations, fuzz the differential.
+> - `./gradlew :module:hardeningHelp` lists the installed tasks and options;
+>   sava-build's HARDENING.md holds the argument behind every rule above.
