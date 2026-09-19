@@ -692,6 +692,24 @@ internal object HardeningHelpText {
     suiteDebtTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     suiteDiagnosticTasks.forEach { (name, purpose) -> appendGenerated(name, purpose) }
     appendLine()
+    appendLine("Debt and mutator-trial reports:")
+    appendLine(
+        "  pitest<Suite>Debt groups survivors and no-coverage by class, largest first, with " +
+            "the delta against the baseline; it reads the latest valid full report and says " +
+            "when it excluded a newer -PmutateOnly scoped report instead of presenting the " +
+            "older full observation as current.")
+    appendLine(
+        "  pitestMutatorTrial runs every suite with only -PtrialMutators — no ratchet, no " +
+            "history, reports kept apart under build/reports/pitest/<suite>-trial — and " +
+            "tabulates generated / killed-by-existing-tests / unkilled per suite.")
+    appendLine(
+        "  Its closing \"fired in N of M suites\" tally is per module, so 0 of 1 beside 1 of 1 " +
+            "is the expected multi-module shape, and a suite whose candidates cannot fire exits " +
+            "PIT with an error by design and reads as zero fired, not as a failed invocation.")
+    appendLine(
+        "  The trial otherwise follows the suite's effective PIT launcher, tool classpath, " +
+            "main class, and verbosity, including supported late task customization.")
+    appendLine()
     appendLine("Aggregate transition lifecycle:")
     appendLine(
         "  Before child PIT, :hardeningCertifyAll reports every provenance-bound suite " +
@@ -704,6 +722,14 @@ internal object HardeningHelpText {
         "  Budget two fresh full observations per transitioning suite: the review run, " +
             "then BaselineRebase's own write-boundary run. Final certification observes " +
             "every suite again.")
+    appendLine(
+        "  After preflight, each project certifies as an independent finalizer: one " +
+            "project's failure still fails the build without blocking sibling receipts.")
+    appendLine(
+        "  Success publishes the Gradle-root manifest " +
+            ".pitest-history/pitest-certification-all.tsv — the registered project/suite " +
+            "inventory plus a SHA-256 of every complete child receipt — under its own root " +
+            "lock and .running sentinel.")
     appendLine()
     appendLine("Durable receipt-marker lifecycle:")
     appendLine(
@@ -768,6 +794,15 @@ internal object HardeningHelpText {
         appendGenerated(prefix, "run the target")
         appendGenerated("${prefix}Minimize", "minimize its committed corpus")
       }
+      appendLine(
+          "  Local fuzz receipt elapsed time is a monotonic measurement around child " +
+              "execution through pipe closure, excluding compilation, source fingerprinting, " +
+              "and waiting for an execution slot; it is separate from Jazzer's configured " +
+              "budget and its rounded terminal duration.")
+      appendLine(
+          "  Each target's attempt directory holds jazzer.stdout.log and jazzer.stderr.log, " +
+              "including when the build directory sits outside the checkout; those are " +
+              "machine-local paths.")
     }
     appendLine()
     appendLine("Gradle properties:")

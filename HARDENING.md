@@ -169,22 +169,9 @@ It deliberately does not build suite outputs merely to predict an artifact-conte
 identity; same-version tool-classpath or licence-content drift remains enforced by the
 suite's normal completed-evidence boundary.
 
-After that preflight succeeds, the aggregate schedules each project certification as an
-independent finalizer: one project's failure still leaves the overall build failed, but does
-not block sibling projects from publishing their own successful receipts. Success also writes the
-machine-local `.pitest-history/pitest-certification-all.tsv` at the Gradle root. That
-canonical manifest lists the exact registered project/suite inventory and hashes every
-complete child receipt, so a handoff can verify the whole Gradle-root result without manual
-enumeration. The callback that records each receipt is invocation-local, the aggregate checks
-the anchor and every child task outcome, and each trusted child writer's receipt header and
-suite inventory are checked against the registered project, plugin, and child-session identity
-before its exact bytes become SHA-256 authority. The
-aggregate owns a separate root lock and `.running` sentinel. At publication it rehashes every
-child receipt, atomically replaces the manifest, and immediately rehashes them again; a
-failure restores the prior manifest bytes under the retained sentinel.
-Gradle delivers task completion events asynchronously, so publication waits for those events
-before deciding task success. If delivery times out or the wait is interrupted, certification
-fails and retains the incomplete sentinel.
+After that preflight succeeds, the aggregate certifies each project as an independent
+finalizer and publishes the Gradle-root manifest
+`.pitest-history/pitest-certification-all.tsv`; `hardeningHelp` describes both.
 
 The manifest is an inventory of strict child receipts, not a new source snapshot. Each child
 receipt retains its own project-level Git and input evidence. Projects finish at different
@@ -377,13 +364,6 @@ run cheaper. The cost model is directly optimisable:
   meant to exercise, remove only irrelevant harness cost, and remeasure — the
   advisory is deliberately non-blocking and cannot prescribe a safe mechanical
   rewrite *(casebook: the fake clock that still waited 416ms)*.
-- **`pitest<Suite>Debt` prints where the debt lives** — survivors and
-  no-coverage grouped by class, largest first, with the delta against the
-  baseline. It deliberately reads the latest valid **full** report: a scoped
-  `-PmutateOnly` diagnostic cannot describe suite-wide debt. When a newer
-  scoped report exists, Debt says that it excluded it instead of presenting
-  the older full observation as simply “current.” Use the result to pick the
-  next cluster instead of re-deriving the ranking from the CSV.
 
 *(casebook: loop-speed measurements)*
 
@@ -1810,26 +1790,11 @@ reads as measured, not forgotten. Property-asserting tests already kill
 96–98% of newly expressible mutants; implementation-restating ones do not
 *(casebook: EXPERIMENTAL_BIG_INTEGER trials)*.
 
-The plugin scripts the trial: `pitestMutatorTrial
--PtrialMutators=<CANDIDATE[,...]>` runs every suite with **only** the
-candidate mutators — no ratchet, no history, reports kept apart under
-`build/reports/pitest/<suite>-trial` so the real reports and baselines are
-untouched — and tabulates generated / killed-by-existing-tests / unkilled
-per suite, closing with "fired in N of M suites". The candidate mutators,
-history, report, evidence, and zero-fire exit semantics are its deliberate
-differences; the trial otherwise follows the normal suite's effective PIT
-launcher, tool classpath, main class, and verbosity, including supported late
-task customization. A suite where the candidates cannot fire exits PIT with an
-error by design; the trial reads that as zero fired rather than failing the
-invocation. What was a hand-run
-campaign per new PIT release (a run per suite, counts diffed by hand) is one
-invocation; recording the numbers in `config/pitest/README.md` is still
-yours. The "fired in N of M suites" tally is per **module**, so a multi-module
-repo reads one line per module: `0 of 1` from a module with no such arithmetic
-beside `1 of 1` from the module that has it is the expected shape, not a
-miscount.
+`pitestMutatorTrial -PtrialMutators=<CANDIDATE[,...]>` scripts that trial, and
+`hardeningHelp` describes its reports, its per-module tally, and its zero-fire
+semantics; recording the numbers in `config/pitest/README.md` is still yours.
 
-Those launcher, tool-classpath, main-class, and managed-verbosity properties are
+The launcher, tool-classpath, main-class, and managed-verbosity properties are
 the supported late `JavaExec` compatibility surface for typed PIT tasks. Direct
 `args(...)` and extra `argumentProviders` are refused: they can override the
 plugin-owned command line without entering its evidence identity. If a needed PIT
@@ -2141,12 +2106,6 @@ Schema 5 retains the existing `target` execution-count rows and adds two rows pe
 | --- | --- |
 | `targetObservation` | Elapsed milliseconds, absolute attempt directory, stdout bytes, stdout SHA-256, stderr bytes, stderr SHA-256 |
 | `targetSource` | Source SHA-256, Git state, Git commit, Git tree, Git status SHA-256, Git-relative project directory |
-
-Elapsed time uses a monotonic clock around child execution through pipe closure; it
-excludes compilation, source fingerprinting and waiting for an execution slot. It is
-separate from Jazzer's configured budget and its rounded terminal duration. The attempt
-directory contains `jazzer.stdout.log` and `jazzer.stderr.log`, including when the Gradle
-build directory is configured outside the checkout. These are machine-local paths.
 
 Source identity hashes the names and bytes of main/test source-set files (including
 resources), the configured committed seed corpus, project/root build scripts and
