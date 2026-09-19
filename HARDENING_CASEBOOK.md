@@ -1673,18 +1673,6 @@ Rules: *the induction variable must represent every value admitted by its bound*
 *under method-wide subsumption, inspect the whole method before explaining or pruning
 an unmatched row*.
 
-## The ancestry check that never ran
-
-A manual `git merge-base --is-ancestor <reviewed> <tag>` returned non-zero and briefly
-looked like a release-integrity failure. The tag object simply had not been fetched. No
-ancestry question had been evaluated. Production release verification already resolves
-the commit and tag objects before asking the graph question, but the bare diagnostic
-command hid that distinction.
-
-Rules: *prove both objects exist before interpreting graph predicates*; *exit 1 from a
-successfully evaluated ancestry predicate means false, while command/evaluation errors
-need their own message*; *“could not check” is never evidence for either answer*.
-
 ## The reviewed repository that ran different bytes
 
 The schema-2 release attestation for 21.5.23 named json-iterator among the reviewed
@@ -1709,32 +1697,6 @@ the deleted fleet-backed creation path and its dead validator were removed toget
 Rules: *a reviewer name is not artifact evidence*; *derive every claim that existing
 receipts can prove*; *bind the consumer commit and exact loaded bytes together*;
 *preserve shipped old schemas for verification without allowing them for new records*.
-
-## The compatible checkout counted as a feature validator
-
-A later candidate repaired ArcMutate-history decision paths. Ravina exercised that
-behavior directly. Idl-src-gen then certified the exact same JAR cleanly, but its
-private package namespace made ArcMutate history unavailable: the pass proved
-compatibility and receipt transport, not the repaired history behavior. The release
-discussion nevertheless began treating “both repositories healthy” as two independent
-validations because schema 3 represented both with the same repository shape and its
-verifier printed one undifferentiated adoption count.
-
-The receipts were correct; the interpretation was not. A completed certification can
-derive exact bytes, consumer revision, projects, and suites. It cannot derive which
-changed feature a reviewer deliberately exercised.
-
-Schema 4 keeps one derived repository inventory and adds an owner-reviewed role to
-each entry: `feature-path` or `certification-only`. New records must state
-whether their basis is consumer-feature, plugin-only, or deliberately
-certification-only. A consumer-feature record requires at least one feature-path
-checkout; the other bases refuse that role. Verification prints the total certified
-consumer count and its feature-path subset separately. Historical schema-2 and
-schema-3 records retain their original meanings.
-
-Rules: *hardening certification is not changed-feature coverage*; *do not turn one evidence kind
-into another by counting it*; *make a narrower release claim explicit rather than
-silently empty*; *plugin-owned tests do not impersonate consumer validation*.
 
 ## The optional fleet runner that remained mandatory to maintain
 
