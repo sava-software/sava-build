@@ -67,18 +67,10 @@ made certification refuse until a human copied a new number into the record.
 
 The pragmatic repair keeps `# line` as diagnostic metadata only. Adding a method,
 moving imports, changing indentation, or reflowing a multi-line expression must not
-warn, fail, or require re-anchoring. `cause:liveness` remains a key-level authorization
-for timeout evidence. A finite same-key sibling observed only `KILLED`, `SURVIVED`, or
-another valid non-timeout result does not conflict with it. The key becomes
-unrepresentable while trustworthy fresh evidence under the current inputs shows
-distinct siblings actually timing out under different cause categories. One later
-kill does not erase that conflict, and status movement alone does not prove it.
-Repair/retime the finite covering path and establish repeated fresh history-free
-non-timeout observations under the relevant solo/gate load, or split/refactor the
-behavior into distinct method keys or eliminate the ambiguous site. Positive
-timeout-count drift still prints every current line-full candidate so a reviewer can
-notice widened coverage, but the line itself
-grants and revokes nothing. Rules: *classify by whether the mutated
+warn, fail, or require re-anchoring. The key-level cause rules this produced, and the
+mixed-timeout-cause conflict a source line cannot resolve, live in HARDENING.md,
+*`TIMED_OUT` is detected, but does not diagnose its cause*.
+Rules: *classify by whether the mutated
 path owns a finite completion guarantee, not by a fixture's safety escape or by
 wall-clock practicality*; *do not turn source positions or formatting into behavioral
 identity*; *a source-line qualifier cannot make simultaneous mixed timeout causes sound
@@ -555,12 +547,7 @@ one warning carrying the endpoint and throwable. No upstream fallback was involv
 the local contract itself was “failures are never silent.” That test killed the
 log-removal mutant rather than admitting it under the broad family.
 
-Rules: *a family label groups reviewed instances; it is not blanket authorization for
-the next syntactically similar mutant*; *distinguish a diagnostic beside observable
-effects from the last observable effect of a failure branch*; *when the contract is
-"failures are never silent", assert record presence, level, and throwable rather than
-message wording*; *an installed application callback can replace, rather than merely
-observe, an upstream fallback log*.
+Rules: see HARDENING.md, *The recurring equivalence families*.
 
 ## The check-loop seam that deleted its flip insurance
 
@@ -850,13 +837,11 @@ byte-identical observable. The mutant was equivalent purely by accident of
 the fixture; a one-line stub change (return a real shared `HttpClient`) plus
 an `assertSame` turned both into ordinary kills.
 
-This is the fixture-value trap in general form, already known in one
-special case — a test clock starting at 0 makes every "timestamp mutated to
-0" mutant equivalent. A stub returning null, 0, `""`, `true`, or an empty
-collection silently blinds the corresponding return-value mutant wherever
-the stubbed value flows. Rule: *fixtures return distinguishable, non-default
-values — a stub that returns the mutator's replacement value has withdrawn
-that mutant from the game before the tests were consulted*.
+Rule: *fixtures return distinguishable, non-default values — a stub that
+returns the mutator's replacement value has withdrawn that mutant from the
+game before the tests were consulted* — stated in general form, with the
+test-clock special case it generalizes, in HARDENING.md, *Test conventions
+for new or changed API*.
 
 ## The copy-on-write family that split
 
@@ -894,11 +879,8 @@ the silence was keyed to; every eyeball check confirmed the wrong belief.
 The second unsilenced logger (a named-type parser with its own ERROR spray)
 was found the same minute, once the first lie was visible.
 
-Rules: *silence a logger by its declaration site — an interface-inherited
-`System.Logger` carries the interface's name, and the formatter's class
-column is not the logger name*; *verify a silence empirically — a silenced
-harness prints zero lines, and reading the output format is how this one
-survived review*.
+Rules: see HARDENING.md, *Fuzzing*. Reading the output format instead of running
+the harness is how this one survived review.
 
 ## The fuzzer frozen by its own stdout
 
@@ -942,11 +924,7 @@ Minting a fresh key per invocation (a counter in the test helper, so every call
 takes the cache-miss path) killed thirteen of the fifteen outright. The two
 that remained were genuinely equivalent and are accepted with that argument.
 
-The rule: an unkillable mutant on a cache-miss path is a fixture bug until
-proven otherwise. Ask whether the line can still execute before asking whether
-its effect can be seen — process-lifetime state outlives the mutant that
-created it, and a test that always supplies the same key only exercises the
-miss path once per JVM, not once per mutant.
+Rule: see HARDENING.md, *When a mutant won't die — a decision tree*.
 
 ## The unlabeled row the shift reclassified
 
@@ -1612,13 +1590,10 @@ with the same nine mutation units. That stable packing was consistent with a rep
 point in the analysis stream sampling an aggregate failure repeatedly; recurrence
 identified the observation, not its cause.
 
-The useful comparison keeps bytecode and history mode fixed while changing scope. A
-coordinate that kills reliably in a class-scoped batched run but fails only in the full
-population points away from the mutant alone — without proving load or memory. If scoped
-batching and one-mutant isolation disagree, the unit boundary matters: inspect
-inter-mutant state leaks first, then packing/process and diagnostic-overhead effects.
-Neither diagnostic can certify: the release verdict remains a clean fresh full unscoped
-run. Rules: *load average is context, not diagnosis*; *recurrence localizes an observation,
+The scope-comparison protocol this produced — full, class-scoped batched, and isolated,
+with bytecode and history mode held fixed, and none of them able to certify — lives in
+HARDENING.md, *Invalid execution outcomes are not mutation results*.
+Rules: *load average is context, not diagnosis*; *recurrence localizes an observation,
 not a cause*; *compare full, scoped-batched, and isolated shapes before blaming either the
 mutant or the machine*; *do not turn correlation into an automatic retry*.
 
@@ -1931,15 +1906,11 @@ deliberate — one receipt binds one fresh serialized project invocation — but
 refusal nor the policy said so, making the discarded observations look like accidental
 cost or a command-scoping error.
 
-A later clean, history-free, full unscoped run is sufficient closure for a
-non-recurring invalid execution. It neither diagnoses the earlier failure nor creates
-accepted-baseline, timeout, provenance, or mutation-record debt. Operational diagnostics
-may still be retained under the repository's reliability policy, and continued invalid
-executions deserve investigation even when their coordinates move. During certification,
-retry the affected project's whole certification; completed receipts from other projects
-remain independent. Rules: *state the sufficient closure condition for a transient*;
+Rules: *state the sufficient closure condition for a transient*;
 *invalid execution is operational context, not mutation debt*; *a certification receipt
-is project-atomic and is never stitched from attempts*.
+is project-atomic and is never stitched from attempts* — the closure condition and the
+project-atomic retry live in HARDENING.md, *Invalid execution outcomes are not mutation
+results*.
 
 ## The acceptance locator that rotted three ways
 
@@ -1958,9 +1929,8 @@ some at a branch, and some at adjacent evidence — while the report and structu
 already carry transient coordinates.
 
 The repair renders the advisory as claim, coordinate rows, review instruction, and a
-conditional remedy. Writer paths label the same information as a pre-write notice. README
-arguments name class, method, semantic branch, property, and oracle without source line
-numbers; the current report and `# line` tag remain the only transient locators. Rules:
+conditional remedy. Writer paths label the same information as a pre-write notice. The
+locator rule this produced lives in HARDENING.md, *The mutation ratchet*. Rules:
 *put an actionable remedy on its own labeled line*; *refresh metadata only after the
 semantic argument still fits*; *do not maintain an unaudited prose copy of source
 coordinates*.

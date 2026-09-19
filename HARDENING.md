@@ -59,7 +59,7 @@ digest, and the plugin binary actually loaded by every consumer. An explicit loc
 is valid; it needs neither a scheduled workflow nor an arbitrary soak window. A receipt
 must bind the complete expected roster, refuse a stale shared plugin binary, and say
 which recorded checkouts it revalidated. Keep evidence outside the tree it certifies
-*(casebook: the aggregate run that skipped two consumers)*. Releasing `sava-build` itself uses
+*(casebook: the canary that skipped two consumers)*. Releasing `sava-build` itself uses
 the already-reviewed local adoption passes rather than requiring a duplicate full-fleet
 campaign; its Release Please mechanics live only in the README's
 [Local adoption and releasing](README.md#local-adoption-and-releasing)
@@ -821,7 +821,9 @@ lets two siblings of one key carry two different family labels. All baseline
 rewrites land atomically (a sibling temp file moved over the target), so an
 interrupted refresh — a stopped task, a killed daemon — leaves the previous
 baseline intact instead of a truncated file the next verify reads as an
-empty ratchet *(casebook: the baseline truncated mid-write)*. Preservation extends across a
+empty ratchet *(casebook: the baseline truncated mid-write)*. A verify reporting the whole
+unkilled population as unexplained-new is diagnosing a damaged baseline file, not the
+code. Preservation extends across a
 status flip: when a refresh rewrites a coordinate whose status changed (a
 `NO_COVERAGE` row whose method a test now reaches), the dropped row's note is
 carried onto the new row annotated `(carried across NO_COVERAGE ->
@@ -2232,6 +2234,11 @@ it. `TIMED_OUT` flips (above) are one mechanism; two more:
   factory reached only through a `static final` initializer flaps between
   killed and survived. Call it from inside a `@Test` — which usually yields
   a real assertion for free.
+
+An implausibly *quiet* run is the same defect from the other side: after a source edit,
+treat zero baseline drift as suspect until the log shows the PIT recompile executed
+rather than UP-TO-DATE, and never edit sources while a build that will certify them is
+running *(casebook: the green run against stale classes)*.
 
 Convergence is checkable, and the plugin scripts it: `pitestConverge` runs
 every suite twice in one invocation — snapshotting and clearing the reports
