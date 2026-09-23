@@ -1,3 +1,5 @@
+import software.sava.build.publish.GitHubPackagesUploadTask
+
 plugins {
   id("java-base")
   id("maven-publish")
@@ -102,15 +104,46 @@ publishing {
 
   repositories {
     maven {
-      name = "savaGithubPackagesPublish"
-      url = uri("https://maven.pkg.github.com/${orgPathSegment}/${productName}")
-      // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
-      credentials(PasswordCredentials::class)
-    }
-    maven {
       name = "savaCentralStaging"
       url = uri(centralStagingDir.get().asFile)
     }
+  }
+}
+
+// GitHub Packages stores a SHA-1 and a SHA-256 checksum beside each file, no MD5, and no
+// checksum of a signature. Gradle's own publisher uploads MD5 beside every file with no way
+// to switch it off, so the staged publications are uploaded by hand, from the same
+// repository the Central bundle is built from. maven-metadata.xml is left to the registry,
+// which regenerates it. Central keeps MD5 and SHA-1 because it requires them. The
+// aggregation's 'publishToGitHubPackages' runs this for every published module; the name
+// differs so that running 'publishToGitHubPackages' from the root, unqualified, still
+// reaches only the aggregation and never uploads an unpublished module.
+val uploadToGitHubPackages = tasks.register<GitHubPackagesUploadTask>("uploadToGitHubPackages") {
+  group = "publishing"
+  description = "Uploads the staged publications to GitHub Packages with SHA-1 and SHA-256 checksums"
+  dependsOn("publishAllPublicationsToSavaCentralStagingRepository")
+  stagingDirectory = centralStagingDir
+  // A test points this at a mock registry; a release always targets this product's own.
+  baseUrl = providers.gradleProperty("savaGithubPackagesPublishUrl")
+    .orElse("https://maven.pkg.github.com/${orgPathSegment}/${productName}")
+  username = providers.gradleProperty("savaGithubPackagesPublishUsername")
+  password = providers.gradleProperty("savaGithubPackagesPublishPassword")
+}
+
+// 'publish' uploaded to GitHub Packages while it was a Maven repository here, and still does.
+tasks.named("publish") { dependsOn(uploadToGitHubPackages) }
+
+// Deprecated: the names of the tasks the 'savaGithubPackagesPublish' Maven repository gave
+// this project before sava-build 21.6.0. Aggregation scripts written for those versions
+// register their own 'publishToGitHubPackages' on top of them, and keep working unchanged.
+for (legacyName in listOf(
+  "publishMavenJavaPublicationToSavaGithubPackagesPublishRepository",
+  "publishAllPublicationsToSavaGithubPackagesPublishRepository",
+)) {
+  tasks.register(legacyName) {
+    group = "publishing"
+    description = "Deprecated alias for uploadToGitHubPackages"
+    dependsOn(uploadToGitHubPackages)
   }
 }
 

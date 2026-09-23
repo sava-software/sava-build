@@ -8,6 +8,7 @@ import java.net.http.HttpResponse
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
@@ -513,21 +514,9 @@ tasks.named { name ->
 }.configureEach {
   enabled = false
 }
-tasks.register("publishToGitHubPackages") {
-  group = "publishing"
-  // Every publication (module + all plugin markers) except the local-test-repo one,
-  // which its own task filter above disables everywhere but the test repo. The
-  // 'publishAllPublications' aggregate is excluded too: it would pull the disabled
-  // test-publication task (and its generate tasks) into the graph as SKIPPED noise.
-  dependsOn(tasks.named { name ->
-    name.endsWith("ToSavaGithubPackagesRepository") &&
-      !name.startsWith(savaTestRepoPublishPrefix) &&
-      !name.startsWith("publishAllPublications")
-  })
-}
 
-// Allow callers to drop selected checksum files (e.g. md5, sha1, sha256, sha512) from the
-// Maven Central deployment bundle via '-PmavenCentralExcludeChecksums=md5,sha1'.
+// Allow callers to drop further checksum files from the Maven Central deployment bundle
+// via '-PmavenCentralExcludeChecksums=<extension>,...'; Central rejects one without .md5 and .sha1.
 val mavenCentralExcludeChecksums = providers.gradleProperty("mavenCentralExcludeChecksums")
   .map { value -> value.split(",").map(String::trim).filter(String::isNotEmpty) }
   .getOrElse(emptyList())
@@ -545,12 +534,6 @@ val centralStagingDir = layout.buildDirectory.dir("central-portal-staging")
 
 publishing {
   repositories {
-    maven {
-      name = "savaGithubPackages"
-      url = uri("https://maven.pkg.github.com/sava-software/sava-build")
-      // https://docs.gradle.org/current/samples/sample_publishing_credentials.html
-      credentials(PasswordCredentials::class)
-    }
     maven {
       name = "savaCentralStaging"
       url = uri(centralStagingDir.get().asFile)
@@ -669,6 +652,137 @@ tasks.register("publishAggregationToCentralPortal") {
   group = "publishing"
   description = "Deprecated alias for publishCentralPortalDeployment"
   dependsOn(publishCentralPortalDeployment)
+}
+
+// sava-build's own publications (the module and every plugin marker) reach GitHub Packages
+// the way the convention plugins publish a consumer's: from the staging repository the
+// Central bundle is also built from, with SHA-1 and SHA-256 checksums and no MD5. The test
+// publication never reaches it; its staging task is disabled above.
+tasks.register<GitHubPackagesUpload>("publishToGitHubPackages") {
+  group = "publishing"
+  description = "Uploads the staged publications to GitHub Packages with SHA-1 and SHA-256 checksums"
+  dependsOn("publishAllPublicationsToSavaCentralStagingRepository")
+  stagingDirectory = centralStagingDir
+  baseUrl = providers.gradleProperty("savaGithubPackagesPublishUrl")
+    .orElse("https://maven.pkg.github.com/sava-software/sava-build")
+  username = providers.gradleProperty("savaGithubPackagesUsername")
+  password = providers.gradleProperty("savaGithubPackagesPassword")
+}
+
+// Inline duplicate of software.sava.build.publish.GitHubPackagesUploadTask: this build
+// compiles that class, so it cannot use it in its own build script.
+@UntrackedTask(because = "Uploads to an external service")
+abstract class GitHubPackagesUpload : DefaultTask() {
+
+  @get:InputDirectory
+  @get:PathSensitive(PathSensitivity.RELATIVE)
+  abstract val stagingDirectory: DirectoryProperty
+
+  @get:Input
+  abstract val baseUrl: Property<String>
+
+  @get:Internal
+  abstract val username: Property<String>
+
+  @get:Internal
+  abstract val password: Property<String>
+
+  @get:Input
+  abstract val checksums: SetProperty<String>
+
+  @get:Internal
+  abstract val retryDelayMillis: Property<Long>
+
+  init {
+    checksums.convention(setOf("sha1", "sha256"))
+    retryDelayMillis.convention(1_000L)
+  }
+
+  @TaskAction
+  fun upload() {
+    val user = username.orNull
+      ?: error("GitHub Packages username is missing; set the publishing username Gradle property.")
+    val pass = password.orNull
+      ?: error("GitHub Packages password is missing; set the publishing password Gradle property.")
+    val root = stagingDirectory.get().asFile.toPath()
+    val kept = checksums.get()
+    // One version directory at a time, its POM first, so a failure leaves at most one
+    // version partly uploaded; a checksum sorts after its file. Built here rather than held
+    // in a field: the configuration cache cannot serialize a comparator lambda as task state.
+    val uploadOrder = compareBy<Path>(
+      { it.parent?.toString() ?: "" },
+      { !it.fileName.toString().endsWith(".pom") },
+      { it.toString() },
+    )
+    val files = Files.walk(root).use { stream ->
+      stream.filter { Files.isRegularFile(it) }.map { root.relativize(it) }.toList()
+    }.filter { publishes(it.fileName.toString(), kept) }.sortedWith(uploadOrder)
+    check(files.isNotEmpty()) { "Nothing to upload under $root; stage the publications first." }
+
+    val token = Base64.getEncoder().encodeToString("$user:$pass".toByteArray(Charsets.UTF_8))
+    val client = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(10))
+      .build()
+    val base = baseUrl.get().trimEnd('/')
+    for (relative in files) {
+      val path = relative.joinToString("/")
+      val request = HttpRequest.newBuilder(URI("$base/$path"))
+        .header("Authorization", "Basic $token")
+        .header("Content-Type", "application/octet-stream")
+        .timeout(Duration.ofMinutes(10))
+        .PUT(HttpRequest.BodyPublishers.ofFile(root.resolve(relative)))
+        .build()
+      val (response, retried) = send(client, request, path)
+      if (response.statusCode() == 409 && retried) {
+        logger.warn("GitHub Packages already holds {}, stored by the attempt that failed in transit.", path)
+        continue
+      }
+      check(response.statusCode() != 409) {
+        "GitHub Packages already holds $path (HTTP 409): a published version is immutable, " +
+          "so a release cannot be uploaded twice."
+      }
+      check(response.statusCode() in 200..299) {
+        "GitHub Packages rejected $path with HTTP ${response.statusCode()}: ${response.body()}"
+      }
+      logger.info("Uploaded {}", path)
+    }
+    logger.lifecycle("Uploaded {} files to {}.", files.size, base)
+  }
+
+  private fun send(client: HttpClient, request: HttpRequest, path: String): Pair<HttpResponse<String>, Boolean> {
+    var attempt = 1
+    while (true) {
+      val response = try {
+        client.send(request, HttpResponse.BodyHandlers.ofString())
+      } catch (e: IOException) {
+        if (attempt >= 3) throw e
+        logger.warn("GitHub Packages upload of {} failed ({}); retrying...", path, e.message)
+        null
+      }
+      if (response != null) {
+        val status = response.statusCode()
+        if (status < 500 && status != 408 && status != 429 || attempt >= 3) {
+          return response to (attempt > 1)
+        }
+        logger.warn(
+          "GitHub Packages upload of {} attempt {} returned HTTP {}; retrying...",
+          path, attempt, response.statusCode()
+        )
+      }
+      Thread.sleep(retryDelayMillis.get() * attempt)
+      attempt++
+    }
+  }
+
+  private fun publishes(fileName: String, checksums: Set<String>): Boolean {
+    if (fileName.startsWith("maven-metadata")) {
+      return false
+    }
+    val checksum = listOf("md5", "sha1", "sha256", "sha512").firstOrNull { fileName.endsWith(".$it") }
+      ?: return true
+    return checksum != "md5" && checksum in checksums &&
+      !fileName.removeSuffix(".$checksum").endsWith(".asc")
+  }
 }
 
 // Inline duplicate of software.sava.build.publish.CentralPortalUploadTask: this build

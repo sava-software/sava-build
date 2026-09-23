@@ -7,8 +7,8 @@ plugins {
   id("maven-publish")
 }
 
-// Allow callers to drop selected checksum files (e.g. md5, sha1, sha256, sha512) from the
-// Maven Central deployment bundle via '-PmavenCentralExcludeChecksums=md5,sha1'.
+// Allow callers to drop further checksum files from the Maven Central deployment bundle
+// via '-PmavenCentralExcludeChecksums=<extension>,...'; Central rejects one without .md5 and .sha1.
 val mavenCentralExcludeChecksums = providers.gradleProperty("mavenCentralExcludeChecksums")
   .map { value -> value.split(",").map(String::trim).filter(String::isNotEmpty) }
   .getOrElse(emptyList())
@@ -80,6 +80,43 @@ tasks.register<CentralPortalReleaseTask>("releaseCentralPortalDeployment") {
   deploymentId = providers.gradleProperty("centralPortalDeploymentId")
   username = providers.environmentVariable("MAVEN_CENTRAL_TOKEN")
   password = providers.environmentVariable("MAVEN_CENTRAL_SECRET")
+}
+
+// The task the release workflows invoke: every aggregated project uploads its own staged
+// publications through the 'uploadToGitHubPackages' that 'software.sava.build.feature.publish'
+// registers on it. Registered once the aggregation script has run, and only if the script
+// did not register its own: scripts written before sava-build 21.6.0 do, and theirs keeps
+// working through the deprecated task names 'software.sava.build.feature.publish' still
+// provides, uploading the same way.
+afterEvaluate {
+  if ("publishToGitHubPackages" in tasks.names) {
+    logger.warn(
+      "Deprecated: {} registers its own 'publishToGitHubPackages'. Since sava-build 21.6.0 the " +
+        "publish-maven-central plugin provides it for every project declared with " +
+        "centralPortalAggregation(project(...)); declare the modules this task publishes that way, " +
+        "then delete the registration.",
+      buildFile
+    )
+  } else {
+    val aggregated = listOf(centralPortalAggregation, nmcpAggregation)
+      .flatMap { it.get().dependencies.withType<ProjectDependency>() }
+      .map { it.path }
+    tasks.register("publishToGitHubPackages") {
+      group = "publishing"
+      description = "Uploads every aggregated project's publications to GitHub Packages"
+      dependsOn(aggregated.map { if (it == ":") ":uploadToGitHubPackages" else "$it:uploadToGitHubPackages" })
+      // Without this a release would pass with nothing uploaded.
+      val nothingAggregated = aggregated.isEmpty()
+      doFirst {
+        if (nothingAggregated) {
+          throw GradleException(
+            "No project to publish: declare each published module with " +
+              "centralPortalAggregation(project(\":name\")) in the aggregation build script."
+          )
+        }
+      }
+    }
+  }
 }
 
 // Deprecated alias, named after the task the nmcp plugin used to provide, so existing

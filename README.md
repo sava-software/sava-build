@@ -229,8 +229,8 @@ project must request its plugin by an explicit version, as in the hardening-only
 |---|---|
 | `software.sava.build.java-module` | Java library with modules: dependency rules, versioning, compilation, testing, javadoc, publishing, and dependency checks. |
 | `software.sava.build.feature.jlink` | jlink images built by invoking the toolchain JDK's `jlink` directly, with service binding and unsigned-jar tolerance. Configured via `jlinkApplication {}`; adds `image`, `imageRun`, and `imageModules` tasks with output under `build/images/<applicationName>`. |
-| `software.sava.build.feature.publish` | Maven publishing with sources/javadoc jars, POM metadata from [sava.properties](#gradlesavaproperties), optional GPG signing, and the `savaGithubPackagesPublish` repository. Applied by `java-module`. |
-| `software.sava.build.feature.publish-maven-central` | Maven Central publishing for the `:aggregation` project: stages, bundles (`zipCentralPortalDeployment`), and uploads (`publishCentralPortalDeployment`) deployments straight to the [Central Portal API](https://central.sonatype.org/publish/publish-portal-api/). The `nmcpAggregation` configuration and `publishAggregationToCentralPortal` task from the retired [nmcp](https://github.com/GradleUp/nmcp) plugin remain as deprecated aliases. |
+| `software.sava.build.feature.publish` | Maven publishing with sources/javadoc jars, POM metadata from [sava.properties](#gradlesavaproperties), optional GPG signing, and the `uploadToGitHubPackages` task (see [Publishing](#publishing)). Applied by `java-module`. |
+| `software.sava.build.feature.publish-maven-central` | Maven Central publishing for the `:aggregation` project: stages, bundles (`zipCentralPortalDeployment`), and uploads (`publishCentralPortalDeployment`) deployments straight to the [Central Portal API](https://central.sonatype.org/publish/publish-portal-api/), and registers `publishToGitHubPackages` over the same projects. The `nmcpAggregation` configuration and `publishAggregationToCentralPortal` task from the retired [nmcp](https://github.com/GradleUp/nmcp) plugin remain as deprecated aliases. |
 | `software.sava.build.feature.jmh` | [JMH](https://github.com/melix/jmh-gradle-plugin) benchmarking conventions for standalone benchmark builds: quick-look run defaults (1 fork, 5×1s warmup, 8×1s measurement, fail-on-error), a `jmh` task that is never skipped as `UP-TO-DATE`, per-run results archived timestamped under `<project>/jmh-results/` — outside `build/`, so `clean` keeps measurement history — with `results.txt` re-rendered after each run as the newest-wins merge of all archived runs (subset runs converge on a full scoreboard; delete archive files to drop stale rows), and service-replicating JVM flags (compact object headers, generational ZGC, pinned pre-touched 2g heap, `-XX:+PerfDisableSharedMem`) — override wholesale with `jmh { jvmArgsAppend.set(...) }`. Every default is overridable per invocation: `-PjmhFork`, `-PjmhIncludes=<regex>[,...]`, `-PjmhWarmupIterations`, `-PjmhWarmup`, `-PjmhIterations`, `-PjmhTimeOnIteration`, `-PjmhFailOnError`, and `-PjmhJvmArgsAppend="<flag> <flag>..."` (replaces the service flag list wholesale). Decision-grade comparisons need 3+ forks and isolation from other load. Leaves the toolchain to the consuming build (benchmark harnesses often pin bespoke JDKs). |
 | `software.sava.build.feature.hardening` | Registers configured [PIT](https://pitest.org) mutation suites, [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) fuzz targets, baseline diagnostics and writers, release certification, and optional generated test support through `hardening {}`. It is package-agnostic and works with open-source PIT; an applicable ArcMutate licence is optional. See the [standalone example](#standalone-hardening-only-project), run `./gradlew :module:hardeningHelp` for the installed version's tasks and options (or `./gradlew :hardeningHelp` when the root project owns the plugin), and use [HARDENING.md](HARDENING.md) for policy. |
 | `software.sava.build.modules.postgresql` | Opt-in [extra-java-module-info](https://github.com/gradlex-org/extra-java-module-info) patch converting the PostgreSQL JDBC driver into an explicit module (required for jlink). |
@@ -285,16 +285,42 @@ dependencies {
   // 'nmcpAggregation(...)' still works as a deprecated alias.
   centralPortalAggregation(project(":my-module"))
 }
-
-tasks.register("publishToGitHubPackages") {
-  group = "publishing"
-  dependsOn(":my-module:publishMavenJavaPublicationToSavaGithubPackagesRepository")
-}
 ```
 
 - `./gradlew :aggregation:publishCentralPortalDeployment` — bundle and upload to Maven Central
   (`publishAggregationToCentralPortal` is a deprecated alias).
 - `./gradlew :aggregation:publishToGitHubPackages` — publish to GitHub Packages.
+
+Both tasks come from the plugins, over the projects declared with `centralPortalAggregation`
+(a module that is published to GitHub Packages only is declared there too; nothing reaches
+Central until `publishCentralPortalDeployment` runs). An aggregation that declares no project
+fails `publishToGitHubPackages` rather than passing with nothing uploaded.
+`software.sava.build.feature.publish` registers `uploadToGitHubPackages` on each library
+project (a module's `publish` runs it too), and the aggregation's task runs it for every
+aggregated project; the name differs so that an unqualified `publishToGitHubPackages` still
+reaches only the aggregation. The upload stores each staged file with a SHA-1 and a SHA-256
+checksum beside it, no MD5, and no checksum of a signature; the task's `checksums` property
+changes the set, except that MD5 is never sent. Gradle's own Maven publisher is not used for
+GitHub Packages because it uploads MD5 beside every file and cannot be told not to. GitHub
+Packages answers a `.md5`, `.sha1` or `.sha256` request for any stored file with a digest it
+computes itself (and `.sha512` only when one was uploaded), so the set changes what is
+stored, not what Gradle, Maven Resolver or coursier can fetch. A checksum only catches a
+corrupt download; the `.asc` signatures and the build-provenance attestation are what a
+consumer trusts. `maven-metadata.xml` is not uploaded (the registry regenerates it from its
+own version records), and a version the registry already holds fails the upload, since
+GitHub Packages versions are immutable. Maven Central still receives MD5 and SHA-1, which it
+requires, through the deployment bundle.
+`-PsavaGithubPackagesPublishUrl` points the upload at another registry, which the
+functional tests use.
+
+Aggregation scripts written before sava-build 21.6.0 register their own
+`publishToGitHubPackages` on top of `:<module>:publishMavenJavaPublicationToSavaGithubPackagesPublishRepository`.
+They keep working unchanged, and upload the same way: those task names remain as deprecated
+aliases of `uploadToGitHubPackages`, and the plugin then leaves `publishToGitHubPackages` to
+the script, with a deprecation warning. To migrate, declare every module the script's task
+publishes with `centralPortalAggregation(project(...))`, then delete the registration. A
+script that does not apply `publish-maven-central` depends on
+`:<module>:uploadToGitHubPackages` instead.
 
 Repositories that publish nothing (services) simply omit the aggregation build file.
 
