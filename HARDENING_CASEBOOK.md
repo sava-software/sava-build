@@ -547,7 +547,7 @@ one warning carrying the endpoint and throwable. No upstream fallback was involv
 the local contract itself was “failures are never silent.” That test killed the
 log-removal mutant rather than admitting it under the broad family.
 
-Rules: see HARDENING.md, *The recurring equivalence families*.
+Rules: see HARDENING.md, *The mutation ratchet* and *The recurring equivalence families*.
 
 ## The check-loop seam that deleted its flip insurance
 

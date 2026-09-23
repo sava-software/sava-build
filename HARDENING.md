@@ -369,6 +369,8 @@ run cheaper. The cost model is directly optimisable:
   meant to exercise, remove only irrelevant harness cost, and remeasure — the
   advisory is deliberately non-blocking and cannot prescribe a safe mechanical
   rewrite *(casebook: the fake clock that still waited 416ms)*.
+- **Pick the next cluster from `pitest<Suite>Debt`** instead of re-deriving the
+  ranking from the CSV.
 
 *(casebook: loop-speed measurements)*
 
