@@ -1,5 +1,27 @@
 # Changelog
 
+## [21.6.0](https://github.com/sava-software/sava-build/compare/21.5.37...21.6.0) (2026-09-23)
+
+
+### Features
+
+* **publish:** upload to GitHub Packages with SHA-1 and SHA-256 checksums and no MD5 ([f8e4d09](https://github.com/sava-software/sava-build/commit/f8e4d0996301d6e58c1d6f8b6e2d0a18cc3d0c51))
+
+
+### Bug Fixes
+
+* **ci:** restrict workflow token permissions ([dc02151](https://github.com/sava-software/sava-build/commit/dc02151da2ad28e06546b19858f469a6152db1ae))
+* **javadoc:** leave the DejaVu font notice out with the fonts ([ee44550](https://github.com/sava-software/sava-build/commit/ee445503cb04074538ee425b60f2f8a5acf2e97b))
+* **publish:** drop .sha512 from the Central bundle by default ([8e4c769](https://github.com/sava-software/sava-build/commit/8e4c76915007e1b45b7294e9b977ddd3ebe91b0c))
+
+
+### Documentation
+
+* **hardening:** cite every casebook entry from a rule or retire it ([2edae79](https://github.com/sava-software/sava-build/commit/2edae794ec45436474c47be7911f081f26dd8fc7))
+* **hardening:** keep each rule in one home ([3bf4fef](https://github.com/sava-software/sava-build/commit/3bf4fef4cc53e952fe9b794a0c2356fd370ea058))
+* **hardening:** move four mechanics paragraphs behind hardeningHelp ([17fdf13](https://github.com/sava-software/sava-build/commit/17fdf131e8b28e78f5c0d0cfbcedda93dc2278b9))
+* **hardening:** restore the Debt ranking rule and point the family-label rule at its section ([b37b31a](https://github.com/sava-software/sava-build/commit/b37b31a7d2a44409d32291e94460975acc1c9cee))
+
 ## [21.5.37](https://github.com/sava-software/sava-build/compare/21.5.36...21.5.37) (2026-09-16)
 
 
