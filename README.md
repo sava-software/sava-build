@@ -262,7 +262,7 @@ Build-level Gradle properties (typically passed by the [workflows](#github-workf
 | `-Pversion` | Version to build/publish (the git tag in CI). |
 | `-Psign=true` | Enables artifact signing; keys come from the `GPG_PUBLISH_SECRET` / `GPG_PUBLISH_PHRASE` environment variables. |
 | `-PjavaVersion` | Overrides the toolchain version from `sava.properties`. |
-| `-PmavenCentralExcludeChecksums=md5,sha1` | Drops checksum files from the Maven Central bundle. |
+| `-PmavenCentralExcludeChecksums=<ext>,...` | Drops further checksum files from the Maven Central bundle. The bundle already leaves out `.sha256`, `.sha512` and checksums of signatures, keeping the `.md5` and `.sha1` Central requires; `-PmavenCentralPublishAllChecksums=true` restores them. |
 
 Publishing credentials:
 

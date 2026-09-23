@@ -101,12 +101,14 @@ class CentralPortalBundleFunctionalTest {
     val artifactDir = "software/sava/test/lib/1.2.3"
     for (artifact in listOf("lib-1.2.3.jar", "lib-1.2.3.pom", "lib-1.2.3-sources.jar", "lib-1.2.3-javadoc.jar")) {
       assertTrue("$artifactDir/$artifact" in entries, "missing $artifact in $entries")
-      // md5/sha1 satisfy Central validation, sha512 is Gradle's preferred checksum;
-      // sha256 is trimmed by default to respect Central's publishing file limits.
-      for (checksum in listOf("md5", "sha1", "sha512")) {
+      // md5/sha1 are the checksums Central requires; sha256 and sha512 are trimmed by
+      // default because no resolver fetches them and every file counts against Central's limits.
+      for (checksum in listOf("md5", "sha1")) {
         assertTrue("$artifactDir/$artifact.$checksum" in entries, "missing $artifact.$checksum in $entries")
       }
-      assertFalse("$artifactDir/$artifact.sha256" in entries, "$artifact.sha256 should be trimmed: $entries")
+      for (checksum in listOf("sha256", "sha512")) {
+        assertFalse("$artifactDir/$artifact.$checksum" in entries, "$artifact.$checksum should be trimmed: $entries")
+      }
     }
     assertFalse(entries.any { "maven-metadata" in it }, "bundle must not contain maven-metadata files: $entries")
   }

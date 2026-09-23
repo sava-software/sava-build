@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       maven-central-exclude-checksums:
-        description: 'Comma-separated checksum types to exclude from the Maven Central bundle (e.g. "md5,sha1"). Leave empty to keep all.'
+        description: 'Comma-separated checksum types to exclude from the Maven Central bundle on top of the default, which drops sha256 and, from sava-build 21.6.0, sha512 (Central requires md5 and sha1). Leave empty for the default.'
         required: false
         type: string
         default: ''

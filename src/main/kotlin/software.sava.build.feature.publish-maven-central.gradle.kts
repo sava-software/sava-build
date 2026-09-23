@@ -13,12 +13,14 @@ val mavenCentralExcludeChecksums = providers.gradleProperty("mavenCentralExclude
   .map { value -> value.split(",").map(String::trim).filter(String::isNotEmpty) }
   .getOrElse(emptyList())
 
-// Central Portal validation wants md5/sha1 and Gradle prefers sha512; sha256 files and
-// checksums of .asc signatures only inflate the deployment file count against Maven
-// Central's publishing limits. Restore them with '-PmavenCentralPublishAllChecksums=true'.
+// Central requires .md5 and .sha1 and validates nothing else. No resolver fetches a
+// .sha256 or .sha512 sidecar in its default configuration (Gradle asks only for .sha1, and
+// only to match a copy it already caches; Maven Resolver asks for SHA-1, then MD5), and .asc
+// signatures need no checksums at all; every published file counts against Maven Central's
+// monthly publishing limits. Restore the rest with '-PmavenCentralPublishAllChecksums=true'.
 val defaultChecksumExcludes =
   if (providers.gradleProperty("mavenCentralPublishAllChecksums").getOrElse("false").toBoolean()) emptyList()
-  else listOf("**/*.sha256", "**/*.asc.md5", "**/*.asc.sha1", "**/*.asc.sha512")
+  else listOf("**/*.sha256", "**/*.sha512", "**/*.asc.md5", "**/*.asc.sha1")
 
 // --- Central Portal deployment. Aggregated projects expose their staged publications
 // through the 'savaCentralStagingElements' variant wired in
