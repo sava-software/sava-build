@@ -14,6 +14,9 @@
            * org.jetbrains.kotlinx is group-wide on purpose: kotlin-gradle-plugin floats
              to new patch releases, and cold caches fetch BOM/parent POMs that a
              warm-cache regeneration narrows away.
+           * org.jspecify:jspecify trusts its signing key for every version on purpose:
+             dependency-analysis-gradle-plugin patch bumps move it (3.19.2 took 1.0.1),
+             and dependabot cannot update this file; regeneration pins it to one version.
            * Signature keys are committed in verification-keyring.keys so verification
              needs no keyserver access; after adding dependencies regenerate with the
              export-keys flag and re-check this comment and the trusted-artifacts block.
@@ -31,7 +34,7 @@
          <trusted-key id="33FD4BFD33554634053D73C0C2148900BCD3C2AF" group="org.jetbrains" name="annotations" version="23.0.0"/>
          <trusted-key id="34441E504A937F43EB0DAEF96A65176A0FB1CD0B" group="org.apache.groovy"/>
          <trusted-key id="41A1A08C62FCA78B79D3081164A16FAAEC16A4BE" group="org.apache.commons" name="commons-math3" version="3.6.1"/>
-         <trusted-key id="41CD49B4EF5876F9E9F691DABAC30622339994C4" group="org.jspecify" name="jspecify" version="1.0.0"/>
+         <trusted-key id="41CD49B4EF5876F9E9F691DABAC30622339994C4" group="org.jspecify" name="jspecify"/>
          <trusted-key id="517B94F8D0A46317A28D8AB30DA8A5EC02D11EAD" group="net.sf.jopt-simple" name="jopt-simple" version="5.0.4"/>
          <trusted-key id="635EE627345F3C1DD422B2E207D3516820BCF6B1" group="com.github.ben-manes.caffeine" name="caffeine" version="3.2.3"/>
          <trusted-key id="635EE627345F3C1DD422B2E207D3516820BCF6B1" group="com.github.ben-manes.caffeine" name="caffeine" version="3.2.4"/>
