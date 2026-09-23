@@ -17,5 +17,7 @@ tasks.withType<Jar>().configureEach {
     exclude("resource-files/fonts/**")
     // Pre-JDK-25 layout, should the toolchain ever be downgraded.
     exclude("fonts/**")
+    // The notice for those fonts; --no-fonts would still write it.
+    exclude("legal/dejavufonts.md")
   }
 }
