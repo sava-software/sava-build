@@ -1,5 +1,17 @@
 # Changelog
 
+## [21.6.1](https://github.com/sava-software/sava-build/compare/21.6.0...21.6.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **modules:** map CEL's jars for google-cloud-kms 2.100.0 and later ([1cf2c69](https://github.com/sava-software/sava-build/commit/1cf2c6900252d068e403be2768d2551ff3acd13e))
+
+
+### Build System
+
+* bump the Gradle wrapper to 9.8.0 and prune stale verification entries ([a79c7a0](https://github.com/sava-software/sava-build/commit/a79c7a09e0c9968657ed9f6599cf9d044d13bf04))
+
 ## [21.6.0](https://github.com/sava-software/sava-build/compare/21.5.37...21.6.0) (2026-09-23)
 
 
