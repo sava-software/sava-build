@@ -26,4 +26,14 @@ extraJavaModuleInfo {
   automaticModule("com.google.re2j:re2j", "com.google.re2j")
 
   automaticModule("com.google.guava:listenablefuture", "com.google.guava.listenablefuture")
+
+  // https://mvnrepository.com/artifact/dev.cel
+  // google-cloud-kms lists CEL's runtime, common and protobuf jars from 2.100.0 on,
+  // inherited from grpc-xds, which bundles its own relocated copy: nothing loads them,
+  // but they must still be modules. They split dev.cel.common and several of its
+  // subpackages, so they merge into common, which the other two depend on.
+  automaticModule("dev.cel:common", "dev.cel") {
+    mergeJar("dev.cel:runtime")
+    mergeJar("dev.cel:protobuf")
+  }
 }
