@@ -11,6 +11,6 @@ sava-software/http-servers
 sava-software/idl-src-gen
 sava-software/incident-client
 sava-software/idl-clients
-glamsystems/ix-proxy
+glamsystems/ix-mapper-java
 glamsystems/glam-sdk-java
 glamsystems/vault-stat-service
