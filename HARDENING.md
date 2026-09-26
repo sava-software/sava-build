@@ -2110,9 +2110,11 @@ so adding a target cannot leave a hand-maintained task list stale. It writes
 receipt deliberately survives `clean`, including a later `clean hardeningCertify`
 *(casebook: the clean proof that erased the fuzz proof)*.
 Starting the next campaign creates `.pitest-history/local-fuzz.running` before any target
-runs and preserves the prior TSV as last-known-success evidence. Failure or interruption
-replaces its active `starting`/`session` state with a retained `refused` reason; that is a
-terminal campaign record, not evidence of a still-running or abandoned process. Receipt plus
+runs and preserves the prior TSV as last-known-success evidence. When a campaign ends without
+a receipt, because a target failed or the build was cancelled, the end of the build replaces
+its active `starting`/`session` state with a retained `refused` reason; that is a terminal
+campaign record, not evidence of a still-running or abandoned process. A killed process
+cannot, and leaves `session`, which still marks an incomplete attempt. Receipt plus
 marker is not a completed current campaign. Success
 publishes the new receipt before clearing the sentinel. Consumers, including the release
 runner, must require the receipt and the absence of the sentinel. If the owned sentinel

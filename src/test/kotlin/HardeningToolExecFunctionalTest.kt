@@ -1284,7 +1284,13 @@ $buildTail
     assertTrue(failed.output.contains("fuzz source identity changed"), failed.output)
     assertTrue(failed.output.contains("Configuration cache entry reused."), failed.output)
     assertArrayEquals(previous, receipt.readBytes())
-    assertTrue(File(fixtureDir, ".pitest-history/local-fuzz.running").isFile)
+    val running = File(fixtureDir, ".pitest-history/local-fuzz.running")
+    assertTrue(
+      running.readText().startsWith("refused\t") &&
+        running.readText().contains("failed: ") &&
+        running.readText().contains("fuzz source identity changed"),
+      "a failed target left the campaign state active:\n${running.readText()}",
+    )
     assertTrue(listOf("codec", "hollow", "plain").any { fuzzAttemptDirectories(it).size >= 2 })
     assertEquals(statusBefore, git("status", "--porcelain=v1", "--untracked-files=all"))
   }
@@ -1363,9 +1369,10 @@ $buildTail
         File(fixtureDir, ".pitest-history/local-fuzz.tsv").exists(),
         "$mode execution evidence earned a fuzzAll receipt",
       )
+      val running = File(fixtureDir, ".pitest-history/local-fuzz.running")
       assertTrue(
-        File(fixtureDir, ".pitest-history/local-fuzz.running").isFile,
-        "$mode execution evidence did not retain the invalidation sentinel",
+        running.readText().startsWith("refused\t") && running.readText().contains(message),
+        "$mode execution evidence did not retain a refused record:\n${running.readText()}",
       )
     }
   }
@@ -1396,9 +1403,11 @@ $buildTail
       File(fixtureDir, ".pitest-history/local-fuzz.tsv").exists(),
       "a failed target earned a fuzzAll receipt",
     )
+    val running = File(fixtureDir, ".pitest-history/local-fuzz.running")
     assertTrue(
-      File(fixtureDir, ".pitest-history/local-fuzz.running").isFile,
-      "a failed campaign did not retain its invalidation sentinel",
+      running.readText().startsWith("refused\tfuzzPlain failed: ") &&
+        running.readText().contains("non-zero exit value 4"),
+      "a failed campaign did not retain a refused record:\n${running.readText()}",
     )
   }
 
@@ -2295,7 +2304,12 @@ $buildTail
     )
     val running = File(fixtureDir, ".pitest-history/local-fuzz.running")
     assertTrue(running.isFile, "deleted fuzz sentinel was not restored")
-    assertTrue(running.readText().startsWith("refused\t"), running.readText())
+    // fuzzAllComplete's own reason survives: the build-end refusal must not replace it
+    assertTrue(
+      running.readText().startsWith("refused\t") &&
+        running.readText().contains("campaign ownership sentinel changed"),
+      running.readText(),
+    )
   }
 
   @Test
@@ -2314,7 +2328,12 @@ $buildTail
     assertArrayEquals(priorReceipt, receipt.readBytes())
     val running = File(fixtureDir, ".pitest-history/local-fuzz.running")
     assertTrue(running.isFile)
-    assertTrue(running.readText().startsWith("refused\t"), running.readText())
+    // fuzzAllComplete's own reason survives: the build-end refusal must not replace it
+    assertTrue(
+      running.readText().startsWith("refused\t") &&
+        running.readText().contains("campaign ownership sentinel changed"),
+      running.readText(),
+    )
   }
 
   @Test

@@ -2208,7 +2208,8 @@ val fuzzAll = tasks.register("fuzzAll") {
       historyDirectory.mkdirs()
       BaselineFiles.requireDirectoryOrMissing(trustedProjectDirectory, historyDirectory)
       BaselineFiles.requireRegularFileOrMissing(trustedProjectDirectory, lockFile)
-      val sessionId = session.activate(campaignProjectPath, expectedTargets, lockFile)
+      val sessionId = session.activate(
+          campaignProjectPath, expectedTargets, lockFile, trustedProjectDirectory, runningFile)
       ownsCampaign = true
 
       // The ownership lock comes first: a rejected concurrent invocation must not

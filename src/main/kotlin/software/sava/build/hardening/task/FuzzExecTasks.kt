@@ -120,6 +120,28 @@ abstract class FuzzRunTask : JavaExec() {
     } catch (failure: IllegalStateException) {
       throw GradleException(failure.message.orEmpty(), failure)
     }
+    try {
+      execute(session, projectPath, aggregateCampaign)
+    } catch (failure: Throwable) {
+      // Gradle skips fuzzAllComplete once a target fails; the campaign keeps this reason
+      // for the refused record the session writes when the build ends.
+      if (aggregateCampaign) {
+        try {
+          session.recordFailure(
+            projectPath, targetName.get(), failure.message ?: failure::class.java.simpleName)
+        } catch (recordFailure: Throwable) {
+          failure.addSuppressed(recordFailure)
+        }
+      }
+      throw failure
+    }
+  }
+
+  private fun execute(
+    session: HardeningFuzzSession,
+    projectPath: String,
+    aggregateCampaign: Boolean,
+  ) {
     val budget = maxFuzzTimeSeconds.get()
     if (budget <= 0) {
       throw GradleException("fuzz '${targetName.get()}': maxFuzzTime must be positive, was $budget")

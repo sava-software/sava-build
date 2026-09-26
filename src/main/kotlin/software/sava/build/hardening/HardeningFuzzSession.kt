@@ -12,6 +12,9 @@ import java.util.UUID
 /** Largest integer represented exactly by jq/JSON's IEEE-754 number model. */
 internal const val MAX_FUZZ_RECEIPT_EXECUTIONS: Long = 9_007_199_254_740_991L
 
+/** A campaign state record is one short line; anything longer is not this campaign's. */
+private const val MAX_FUZZ_STATE_RECORD_BYTES = 256L
+
 /**
  * Invocation-local proof that every target named by a project's [fuzzAll] campaign
  * actually completed. The service deliberately does nothing for standalone fuzz
@@ -40,17 +43,34 @@ abstract class HardeningFuzzSession :
     }
   }
 
+  /** Where a campaign keeps its state record, relative to a trusted root. */
+  private data class CampaignFiles(
+    val trustedProjectDirectory: File,
+    val running: File,
+  )
+
   private val registry = FuzzCampaignRegistry()
   private val fileLocks = FuzzCampaignFileLocks()
+  private val campaignFiles = linkedMapOf<String, CampaignFiles>()
 
   fun activate(
     projectPath: String,
     expectedTargets: Collection<String>,
     lockFile: File,
+    trustedProjectDirectory: File,
+    runningFile: File,
   ): String {
     fileLocks.acquire(projectPath, lockFile)
-    return registry.activate(projectPath, expectedTargets)
+    val sessionId = registry.activate(projectPath, expectedTargets)
+    synchronized(campaignFiles) {
+      campaignFiles[projectPath] = CampaignFiles(trustedProjectDirectory, runningFile)
+    }
+    return sessionId
   }
+
+  /** Keeps a live campaign's first target failure for its refused record; see [close]. */
+  fun recordFailure(projectPath: String, target: String, reason: String) =
+    registry.recordFailure(projectPath, target, reason)
 
   fun refuse(
     projectPath: String,
@@ -84,7 +104,54 @@ abstract class HardeningFuzzSession :
     expectedTargets: Collection<String>,
   ): CompletedCampaign = registry.requireCompleted(projectPath, expectedTargets)
 
-  override fun close() = fileLocks.close()
+  /**
+   * Gradle skips `fuzzAllComplete` once a target fails, so the end of the build is the one
+   * point that sees every campaign. A campaign whose state record still holds its own
+   * `starting` or `session` state never published a receipt: it gets the retained `refused`
+   * record, and the prior receipt stays beside it. A campaign that published, or already
+   * recorded a refusal, is left alone. This runs before the ownership locks are released,
+   * so no later campaign can own the record being replaced. A process that is killed never
+   * gets here and leaves `session`, which still marks an incomplete attempt.
+   */
+  override fun close() {
+    val failures = mutableListOf<Throwable>()
+    try {
+      synchronized(campaignFiles) { campaignFiles.toMap() }.forEach { (projectPath, files) ->
+        try {
+          refuseUnfinished(projectPath, files)
+        } catch (failure: Exception) {
+          failures += failure
+        }
+      }
+    } finally {
+      try {
+        fileLocks.close()
+      } catch (failure: Exception) {
+        failures += failure
+      }
+    }
+    failures.firstOrNull()?.let { first ->
+      failures.drop(1).forEach(first::addSuppressed)
+      throw first
+    }
+  }
+
+  private fun refuseUnfinished(projectPath: String, files: CampaignFiles) {
+    if (!fileLocks.isHeld(projectPath)) return
+    val sessionId = registry.sessionId(projectPath) ?: return
+    BaselineFiles.requireRegularFileOrMissing(files.trustedProjectDirectory, files.running)
+    if (!files.running.isFile || files.running.length() > MAX_FUZZ_STATE_RECORD_BYTES) return
+    val state = files.running.readText()
+    if (state != "session\t$sessionId\n" && state != "starting\t$sessionId\n") return
+    val reason = registry.incompleteReason(projectPath) ?: return
+    // The owned marker is intact and already keeps the receipt historical, so a failed
+    // write leaves both as they are rather than deleting last-known-success evidence.
+    BaselineFiles.writeAtomically(
+      files.trustedProjectDirectory,
+      files.running,
+      "refused\t${reason.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')}\n",
+    )
+  }
 }
 
 /**
@@ -168,6 +235,7 @@ internal class FuzzCampaignRegistry {
     val executionsByTarget: MutableMap<String, Long> = linkedMapOf(),
     val observationsByTarget: MutableMap<String, FuzzTargetObservation> = linkedMapOf(),
     var refusalReason: String? = null,
+    var firstFailure: String? = null,
   )
 
   private val campaigns = mutableMapOf<String, Campaign>()
@@ -198,6 +266,38 @@ internal class FuzzCampaignRegistry {
       "fuzzAll campaign for '$projectPath' was refused with a different target inventory"
     }
     campaign.refusalReason = reason
+  }
+
+  /**
+   * Keeps the first target failure of a live campaign. It does not refuse the campaign:
+   * the remaining targets still run, and [incompleteReason] reports it at the build end.
+   */
+  @Synchronized
+  fun recordFailure(projectPath: String, target: String, reason: String) {
+    val campaign = campaigns[projectPath] ?: return
+    if (campaign.firstFailure == null) {
+      campaign.firstFailure = "fuzz${target.replaceFirstChar(Char::uppercase)} failed: $reason"
+    }
+  }
+
+  @Synchronized
+  fun sessionId(projectPath: String): String? = campaigns[projectPath]?.sessionId
+
+  /**
+   * Why the campaign for [projectPath] ended without a receipt: its refusal, else its
+   * first target failure, else the targets it never completed. Null for no campaign.
+   */
+  @Synchronized
+  fun incompleteReason(projectPath: String): String? {
+    val campaign = campaigns[projectPath] ?: return null
+    campaign.refusalReason?.let { return it }
+    campaign.firstFailure?.let { return it }
+    val missing = campaign.expectedTargets - campaign.executionsByTarget.keys
+    if (missing.isNotEmpty()) {
+      return "fuzzAll did not complete every configured target; missing: " +
+        missing.joinToString { "fuzz${it.replaceFirstChar(Char::uppercase)}" }
+    }
+    return "fuzzAll ended before publishing its receipt"
   }
 
   /** Returns false for a standalone target, true for a live aggregate, and throws if refused. */

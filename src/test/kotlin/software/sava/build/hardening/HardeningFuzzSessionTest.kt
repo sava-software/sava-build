@@ -42,6 +42,40 @@ class HardeningFuzzSessionTest {
   }
 
   @Test
+  fun `a target failure is kept without refusing the campaign`() {
+    session.activate(":", listOf("codec", "plain"))
+
+    session.recordFailure(":", "codec", "crashed")
+    session.recordFailure(":", "plain", "also crashed")
+
+    assertTrue(session.requireRunnable(":"), "the remaining targets must still run")
+    assertTrue(session.recordCompleted(":", "plain", 5))
+    assertEquals("fuzzCodec failed: crashed", session.incompleteReason(":"))
+  }
+
+  @Test
+  fun `an incomplete campaign names its missing targets, and a refusal wins`() {
+    session.activate(":", listOf("codec", "plain"))
+    assertTrue(session.recordCompleted(":", "codec", 3))
+
+    assertEquals(
+      "fuzzAll did not complete every configured target; missing: fuzzPlain",
+      session.incompleteReason(":"),
+    )
+    session.refuse(":", listOf("codec", "plain"), "budget rejected")
+    assertEquals("budget rejected", session.incompleteReason(":"))
+  }
+
+  @Test
+  fun `failures outside a campaign are ignored`() {
+    session.recordFailure(":", "codec", "standalone run")
+
+    assertEquals(null, session.incompleteReason(":"))
+    assertEquals(null, session.sessionId(":"))
+    assertFalse(session.requireRunnable(":"))
+  }
+
+  @Test
   fun `campaign rejects unknown completions and inventory drift`() {
     session.activate(":", listOf("codec"))
 
