@@ -1,5 +1,17 @@
 # Changelog
 
+## [21.6.2](https://github.com/sava-software/sava-build/compare/21.6.1...21.6.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* **hardening:** record a refused fuzzAll campaign when a target fails ([51e9671](https://github.com/sava-software/sava-build/commit/51e96716e4640d781ac3d779f5f9725c8a9f7182))
+
+
+### Chores
+
+* **tools:** point the fuzz roster at glamsystems/ix-mapper-java ([57944fc](https://github.com/sava-software/sava-build/commit/57944fc170683778302ff55c67e622adc942f6d5))
+
 ## [21.6.1](https://github.com/sava-software/sava-build/compare/21.6.0...21.6.1) (2026-09-24)
 
 
