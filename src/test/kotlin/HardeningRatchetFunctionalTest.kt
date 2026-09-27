@@ -974,6 +974,93 @@ $fuzzBlock
   }
 
   @Test
+  fun `suite-scoped selective prune takes gate-load previews that the solo writer accepts`() {
+    // Under qualityGate every suite verifies; the unscoped selector would ask the
+    // sibling 'decoding' baseline for keys only 'encoding' holds.
+    writeFixture(
+      registerFuzz = false,
+      extraSuites = """
+          mutation.register("decoding") {
+            targetClasses = listOf("com.example.decoding.*")
+            targetTests = "com.example.*Test*"
+          }
+      """.trimIndent(),
+    )
+    File(fixtureDir, "build.gradle.kts").appendText(
+      """
+      tasks.named<JavaExec>("pitestDecoding") {
+        classpath = sourceSets.main.get().output
+        mainClass.set("com.example.FakePit")
+        environment(
+          "FIXTURE_PIT_REPORT",
+          layout.projectDirectory.dir("fixture-pit-report-decoding").asFile.absolutePath,
+        )
+      }
+      """.trimIndent() + "\n"
+    )
+    listOf(
+      File(fixtureDir, "build/reports/pitest/decoding"),
+      File(fixtureDir, "fixture-pit-report-decoding"),
+    ).forEach { reportDir ->
+      reportDir.mkdirs()
+      reportDir.resolve("mutations.csv").writeText(
+        "Decoder.java,com.example.decoding.Decoder,org.pitest.mutationtest.engine.gregor.mutators." +
+            "MathMutator,decode,5,KILLED,com.example.DecoderTest\n")
+      reportDir.resolve("mutations.xml").writeText(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mutations>\n\n</mutations>\n")
+    }
+    baselineFile().parentFile.mkdirs()
+    val selected = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val unselected = "com.example.Codec,encode,MathMutator,SURVIVED # retained # line 20"
+    baselineFile().writeText("$selected # reviewed # line 10\n$unselected\n")
+    File(fixtureDir, "prune.keys").writeText("$selected\n")
+    writeReport(listOf(
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+            "MathMutator,decode,10,KILLED,com.example.CodecTest",
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+            "MathMutator,encode,20,SURVIVED,none",
+    ), "")
+    bindLegacyFixtureRecord()
+    val previews = File(fixtureDir, ".pitest-history/encoding.prune-previews")
+
+    val both = runner("help", "-PpruneBaselineKeys=prune.keys", "-PpruneBaselineKeys.encoding=prune.keys")
+        .buildAndFail().output
+    assertTrue(both.contains("cannot be combined with suite-scoped selections"), both)
+
+    val misspelt = runner("pitestEncoding", "-PnoMutationHistory", "-PpruneBaselineKeys.encodng=prune.keys")
+        .buildAndFail().output
+    assertTrue(misspelt.contains("-PpruneBaselineKeys.encodng names no mutation suite of project :"), misspelt)
+    assertFalse(previews.exists(), "a refused selection advanced prune-preview state")
+
+    val otherSuite = rawBaselinePruneRunner("-PpruneBaselineKeys.decoding=prune.keys").buildAndFail().output
+    assertTrue(otherSuite.contains("remove -PpruneBaselineKeys.decoding"), otherSuite)
+
+    val first = runner("qualityGate", "-PnoMutationHistory", "-PpruneBaselineKeys.encoding=prune.keys")
+        .build().output
+    assertTrue(first.contains("pitest baseline 'encoding': selective prune preview"), first)
+    assertFalse(first.contains("pitest baseline 'decoding': selective prune preview"), first)
+    assertTrue(
+      first.contains("./gradlew :qualityGate -PnoMutationHistory '-PpruneBaselineKeys.encoding=prune.keys'"),
+      first,
+    )
+    val second = runner("qualityGate", "-PnoMutationHistory", "-PpruneBaselineKeys.encoding=prune.keys")
+        .build().output
+    assertTrue(second.contains("prune-candidate preview matches 2 distinct"), second)
+
+    // The file, not its spelling, is bound: the unscoped solo writer continues the sequence.
+    rawBaselinePruneRunner("-PpruneBaselineKeys=prune.keys").build()
+    assertEquals("$unselected\n", baselineFile().readText())
+
+    val unscopedGate = runner("qualityGate", "-PnoMutationHistory", "-PpruneBaselineKeys=prune.keys")
+        .buildAndFail().output
+    assertTrue(unscopedGate.contains("keys absent from the accepted baseline"), unscopedGate)
+    assertTrue(
+      unscopedGate.contains("./gradlew :qualityGate -PnoMutationHistory '-PpruneBaselineKeys.<suite>=prune.keys'"),
+      unscopedGate,
+    )
+  }
+
+  @Test
   fun `prune groups duplicate rows and possible locations without collapsing its multiset`() {
     writeFixture()
     baselineFile().parentFile.mkdirs()

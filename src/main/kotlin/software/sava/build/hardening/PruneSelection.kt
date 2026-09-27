@@ -16,9 +16,11 @@ internal class PruneSelection private constructor(val keys: Set<String>) {
     val retainedRowIndices: List<Int>,
   )
 
+  /** [missingKeysHint] is appended to the refusal for keys this baseline does not hold. */
   fun plan(
     acceptedRows: List<BaselineNotes.Row>,
     keepPlan: List<BaselineEngine.Disposition>,
+    missingKeysHint: String = "",
   ): Plan {
     require(acceptedRows.size == keepPlan.size) {
       "prune selection has ${acceptedRows.size} accepted rows but ${keepPlan.size} dispositions"
@@ -27,7 +29,7 @@ internal class PruneSelection private constructor(val keys: Set<String>) {
     val missing = keys.filter { it !in rowsByKey }
     require(missing.isEmpty()) {
       "prune selection names keys absent from the accepted baseline:\n" +
-          missing.joinToString("\n") { "  $it" }
+          missing.joinToString("\n") { "  $it" } + missingKeysHint
     }
     val protectedKeys = keys.filter { key ->
       rowsByKey.getValue(key).any { keepPlan[it] != BaselineEngine.Disposition.DROP }

@@ -19,6 +19,8 @@ class HardeningDocumentationBoundaryTest {
         "preserved byte-for-byte; this mode performs no incidental retag",
         "**complete** candidate multiset must still match, including unselected candidates",
         "Failure leaves baseline and provenance unchanged",
+        "./gradlew :module:qualityGate -PnoMutationHistory -PpruneBaselineKeys.ws=.pitest-history/ws-prune.keys",
+        "continue one sequence and satisfy the same writer",
     ).forEach { assertTrue(compact.contains(it), it) }
   }
 

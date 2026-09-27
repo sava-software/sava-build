@@ -70,6 +70,10 @@ class HardeningOperationsTest {
     assertTrue(help.contains("pitestEncodingBaselineRetag"), help)
     assertTrue(help.contains("pitestEncodingBaselinePrune"), help)
     assertTrue(help.contains("-PpruneBaselineKeys=<file>"), help)
+    assertTrue(
+      help.contains(":module:qualityGate -PnoMutationHistory -PpruneBaselineKeys.<suite>=<file>"),
+      help,
+    )
     assertTrue(help.contains("No labels, line tags, globs, or partial sibling counts"), help)
     assertTrue(help.contains("unselected rows remain byte-for-byte active capacity, without retagging"), help)
     assertTrue(

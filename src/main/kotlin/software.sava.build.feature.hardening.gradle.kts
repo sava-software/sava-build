@@ -109,6 +109,24 @@ if (removedWriterProperties.isNotEmpty()) {
   throw GradleException(HardeningOptionNames.removedWriterMessage(removedWriterProperties))
 }
 
+// The unscoped selector applies to every suite the build runs, so a multi-suite graph
+// such as qualityGate refuses in the first suite whose baseline lacks its keys.
+// -PpruneBaselineKeys.<suite> applies to that suite alone; the others take their
+// ordinary previews. Both spellings at once would leave the scope ambiguous.
+val presentSuitePruneSelectionProperties = providers
+    .gradlePropertiesPrefixedBy(HardeningOptionNames.PRUNE_BASELINE_KEYS_SUITE_PREFIX)
+    .get().keys.sorted()
+val presentPruneSelectionProperties =
+    listOf(HardeningOptionNames.PRUNE_BASELINE_KEYS).filter { providers.gradleProperty(it).isPresent } +
+        presentSuitePruneSelectionProperties
+if (presentSuitePruneSelectionProperties.isNotEmpty() &&
+    HardeningOptionNames.PRUNE_BASELINE_KEYS in presentPruneSelectionProperties) {
+  throw GradleException(
+      "-P${HardeningOptionNames.PRUNE_BASELINE_KEYS} selects in every suite and cannot be combined " +
+          "with suite-scoped selections (" +
+          presentSuitePruneSelectionProperties.joinToString { "-P$it" } + "); pass one spelling")
+}
+
 // Arcmutate incremental analysis ("history"): the licensed engine decides which
 // per-mutant results can be reused across runs. Treat that decision as an optimisation,
 // never as a fresh-observation guarantee — in particular, changed consumer tests have
@@ -368,7 +386,7 @@ val hardeningCertifyPreflight =
   hardeningProjectPath.set(project.path)
   presentForbiddenProperties.set(HardeningOptionNames.certificationForbiddenProperties.filter {
     providers.gradleProperty(it).isPresent
-  })
+  } + presentSuitePruneSelectionProperties)
   excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
 }
 
@@ -1316,9 +1334,7 @@ private val pitestModeCompareUnionPreflight = tasks.register<HardeningOperationR
   description = "Internal to pitestModeCompareUnion: selects one fresh mode-insurance write."
   hardeningProjectPath.set(project.path)
   request.set(HardeningWriteRequest.MODE_FLIP_INSURANCE)
-  presentIncompatibleProperties.set(listOf(HardeningOptionNames.PRUNE_BASELINE_KEYS).filter {
-    providers.gradleProperty(it).isPresent
-  })
+  presentIncompatibleProperties.set(presentPruneSelectionProperties)
   excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
   operationSession.set(hardeningOperationSession)
   certificationSession.set(hardeningCertificationSession)
@@ -1928,9 +1944,7 @@ private fun registerSchemaOperationPreflight(
   description = "Internal baseline-schema writer preflight."
   hardeningProjectPath.set(project.path)
   request.set(requestValue)
-  presentIncompatibleProperties.set(listOf(HardeningOptionNames.PRUNE_BASELINE_KEYS).filter {
-    providers.gradleProperty(it).isPresent
-  })
+  presentIncompatibleProperties.set(presentPruneSelectionProperties)
   excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
   operationSession.set(hardeningOperationSession)
   certificationSession.set(hardeningCertificationSession)
@@ -2570,17 +2584,32 @@ hardening.mutation.all {
   // old report stale instead of silently authoritative.
   val evidenceProjectDir = layout.projectDirectory.asFile
   val pruneSelectionRoot = rootProject.layout.projectDirectory.asFile
-  val pruneSelectionFile = providers.gradleProperty(HardeningOptionNames.PRUNE_BASELINE_KEYS)
-      .orNull?.let { requested ->
-        require(requested.isNotBlank()) {
-          "-PpruneBaselineKeys requires a nonblank file path; omit it to review the full candidate set"
-        }
-        rootProject.layout.projectDirectory.file(requested).asFile
-      }
-  val pruneSelectionArgument = pruneSelectionFile?.let {
-    " '-PpruneBaselineKeys=" +
+  val suitePruneSelectionProperty = HardeningOptionNames.PRUNE_BASELINE_KEYS_SUITE_PREFIX + suiteName
+  // The file, not the spelling, is the decision input: a gate-load preview taken with
+  // the suite-scoped spelling and a solo writer given the unscoped one bind the same
+  // bytes and path, so they continue one preview sequence.
+  val pruneSelectionProperty = listOf(suitePruneSelectionProperty, HardeningOptionNames.PRUNE_BASELINE_KEYS)
+      .firstOrNull { providers.gradleProperty(it).isPresent }
+  val pruneSelectionFile = pruneSelectionProperty?.let { property ->
+    val requested = providers.gradleProperty(property).get()
+    require(requested.isNotBlank()) {
+      "-P$property requires a nonblank file path; omit it to review the full candidate set"
+    }
+    rootProject.layout.projectDirectory.file(requested).asFile
+  }
+  fun pruneSelectionArgumentFor(property: String): String = pruneSelectionFile?.let {
+    " '-P$property=" +
         it.relativeTo(pruneSelectionRoot).invariantSeparatorsPath.replace("'", "'\\''") + "'"
   }.orEmpty()
+  val pruneSelectionArgument = pruneSelectionProperty?.let(::pruneSelectionArgumentFor).orEmpty()
+  // Every suite of this project runs under its qualityGate, so a gate-load preview must
+  // name its selection with the suite-scoped spelling.
+  val gatePruneSelectionArgument = pruneSelectionArgumentFor(suitePruneSelectionProperty)
+  val unscopedPruneSelectionHint = if (pruneSelectionProperty != HardeningOptionNames.PRUNE_BASELINE_KEYS) "" else
+    "\n  If another suite holds these keys: -P${HardeningOptionNames.PRUNE_BASELINE_KEYS} selects in " +
+        "every suite this build runs, so for a gate-load preview scope the selection to that suite:\n" +
+        "    ./gradlew ${qualifiedHardeningTaskPath(project.path, "qualityGate")} -PnoMutationHistory " +
+        pruneSelectionArgumentFor(HardeningOptionNames.PRUNE_BASELINE_KEYS_SUITE_PREFIX + "<suite>").trim()
   val evidenceSourceFiles = files(
       sourceSets.main.get().allSource,
       sourceSets.test.get().allSource,
@@ -2625,6 +2654,7 @@ hardening.mutation.all {
   val evidenceProjectPath = project.path
   val evidencePitestTaskPath = qualifiedHardeningTaskPath(evidenceProjectPath, pitestTaskName)
   val evidenceBaselinePruneTaskPath = "${evidencePitestTaskPath}BaselinePrune"
+  val evidenceQualityGateTaskPath = qualifiedHardeningTaskPath(evidenceProjectPath, "qualityGate")
   val evidenceBaselineRebaseTaskPath = "${evidencePitestTaskPath}BaselineRebase"
   val evidenceBaselineRetagTaskPath = "${evidencePitestTaskPath}BaselineRetag"
   val evidenceBaselineUnionTaskPath = "${evidencePitestTaskPath}BaselineUnion"
@@ -2724,6 +2754,8 @@ hardening.mutation.all {
     val operationSession = hardeningOperationSession
     val verifyExcludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
     val advisoryScope = suiteAdvisoryScope
+    val suitePruneSelectionProperties = presentSuitePruneSelectionProperties
+    val registeredSuiteNames = hardeningHelpSuiteNames
     usesService(advisoryLog)
     usesService(certificationSession)
     usesService(operationSession)
@@ -2748,12 +2780,22 @@ hardening.mutation.all {
                 verifyExcludedTaskNames.joinToString { "-x $it" })
       }
       val certificationActive = certificationSession.get().isActive(evidenceProjectPath)
+      // A misspelt suite would otherwise select nothing and let the gate run record
+      // ordinary previews the reviewed selection never reaches.
+      val unknownSuiteSelections = suitePruneSelectionProperties.filter {
+        it.removePrefix(HardeningOptionNames.PRUNE_BASELINE_KEYS_SUITE_PREFIX) !in registeredSuiteNames.get()
+      }
+      require(unknownSuiteSelections.isEmpty()) {
+        unknownSuiteSelections.joinToString { "-P$it" } + " names no mutation suite of project " +
+            "$evidenceProjectPath (suites: ${registeredSuiteNames.get().sorted().joinToString()}); " +
+            "run the project-qualified task of the project that owns the suite"
+      }
       val pruneSelectionBytes = pruneSelectionFile?.let { selectionFile ->
         require(!certificationActive && (writeOperation == BaselineWriteOperation.CHECK || prune)) {
-          "-PpruneBaselineKeys is only supported for deliberate history-free previews and BaselinePrune"
+          "-P$pruneSelectionProperty is only supported for deliberate history-free previews and BaselinePrune"
         }
         BaselineFiles.readRegularFileSnapshot(pruneSelectionRoot, selectionFile)
-            ?: throw GradleException("-PpruneBaselineKeys selection file is missing: $selectionFile")
+            ?: throw GradleException("-P$pruneSelectionProperty selection file is missing: $selectionFile")
       }
       val pruneSelection = pruneSelectionBytes?.let { PruneSelection.parse(it.toString(Charsets.UTF_8)) }
       fun requirePruneSelectionUnchanged() {
@@ -4304,13 +4346,15 @@ hardening.mutation.all {
       val pruneCandidates = pruneCandidateIndices
           .map { BaselineNotes.render(acceptedRows[it]) }
           .sorted()
-      val selectivePrunePlan = pruneSelection?.plan(acceptedRows, keepPlan)
+      val selectivePrunePlan =
+          pruneSelection?.plan(acceptedRows, keepPlan, missingKeysHint = unscopedPruneSelectionHint)
       if (selectivePrunePlan != null) {
         require(!scoped && !historyAssistedReport &&
             verifiedEvidence?.scope == PitestEvidence.FULL_SCOPE &&
             verifiedEvidence?.historyAssisted == false) {
-          "-PpruneBaselineKeys requires fresh full history-free evidence; run " +
-              "$evidencePitestTaskPath -PnoMutationHistory with the same selection file"
+          "-P$pruneSelectionProperty requires fresh full history-free evidence; run " +
+              "$evidencePitestTaskPath -PnoMutationHistory$pruneSelectionArgument, or under gate load " +
+              "$evidenceQualityGateTaskPath -PnoMutationHistory$gatePruneSelectionArgument"
         }
         val removals = selectivePrunePlan.removedRowIndices.map { acceptedRows[it] }
         val retained = selectivePrunePlan.retainedRowIndices.map { acceptedRows[it] }
@@ -5165,6 +5209,8 @@ hardening.mutation.all {
             } else {
               "Obtain the next qualifying preview with:\n" +
                   "  ./gradlew $evidencePitestTaskPath -PnoMutationHistory$pruneSelectionArgument --console=plain\n" +
+                  "or, under gate load:\n" +
+                  "  ./gradlew $evidenceQualityGateTaskPath -PnoMutationHistory$gatePruneSelectionArgument --console=plain\n" +
                   "Do not run $evidenceBaselinePruneTaskPath until two completed previews match.\n"
             }
             "\n$currentObservation\nEvidence required before deletion: at least two distinct, " +
@@ -6054,6 +6100,7 @@ hardening.mutation.all {
   )
       .filter { providers.gradleProperty(it).isPresent }
   val requestedExcludedTaskNames = gradle.startParameter.excludedTaskNames.sorted()
+  val writerPruneSelectionProperties = presentPruneSelectionProperties
   val writerSuiteName = suiteName
   fun registerSuiteWriter(
       taskSuffix: String,
@@ -6067,9 +6114,10 @@ hardening.mutation.all {
       this.suiteName.set(writerSuiteName)
       request.set(requestValue)
       presentIncompatibleProperties.set(presentWriterIncompatibleProperties)
-      if (requestValue != HardeningWriteRequest.BASELINE_PRUNE && pruneSelectionFile != null) {
-        presentIncompatibleProperties.add(HardeningOptionNames.PRUNE_BASELINE_KEYS)
-      }
+      // Only Prune takes a selection, and only the one that applies to its own suite.
+      presentIncompatibleProperties.addAll(writerPruneSelectionProperties.filter {
+        requestValue != HardeningWriteRequest.BASELINE_PRUNE || it != pruneSelectionProperty
+      })
       excludedTaskNames.set(requestedExcludedTaskNames)
       operationSession.set(hardeningOperationSession)
       certificationSession.set(hardeningCertificationSession)

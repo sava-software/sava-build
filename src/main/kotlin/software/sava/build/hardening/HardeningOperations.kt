@@ -31,6 +31,8 @@ internal object HardeningOptionNames {
   const val NO_MUTATION_HISTORY = "noMutationHistory"
   const val PITEST_MODE = "pitestMode"
   const val PRUNE_BASELINE_KEYS = "pruneBaselineKeys"
+  /** `-PpruneBaselineKeys.<suite>=<file>`: the same selection, applied to one suite only. */
+  const val PRUNE_BASELINE_KEYS_SUITE_PREFIX = "$PRUNE_BASELINE_KEYS."
   const val PRUNE_MUTATION_BASELINE = "pruneMutationBaseline"
   const val SAVA_BUILD_LOCAL_REPO = "savaBuildLocalRepo"
   const val STRICT_TIMEOUT_AUDIT = "strictTimeoutAudit"
@@ -90,7 +92,8 @@ internal object HardeningOptionNames {
         "label a pitestModeSnapshot observation"),
     Descriptor(PRUNE_BASELINE_KEYS, "file",
         "select whole line-less keys for deliberate history-free prune previews and BaselinePrune; " +
-            "file is relative to the Gradle root; retained rows remain byte-for-byte unchanged"),
+            "file is relative to the Gradle root; retained rows remain byte-for-byte unchanged; " +
+            "-PpruneBaselineKeys.<suite>=<file> applies it to that suite only"),
     Descriptor(SAVA_BUILD_LOCAL_REPO, "directory",
         "resolve an unpublished sava-build test publication (settings-level)"),
     Descriptor(STRICT_TIMEOUT_AUDIT, null,
@@ -765,6 +768,10 @@ internal object HardeningHelpText {
         "  Use the same selection for two pitest<Suite> -PnoMutationHistory previews and " +
             "the third BaselinePrune run. Selector bytes and the complete candidate multiset must " +
             "match; unselected rows remain byte-for-byte active capacity, without retagging.")
+    appendLine(
+        "  -PpruneBaselineKeys selects in every suite the build runs. For a gate-load preview, " +
+            "scope it to the suite that holds the keys: :module:qualityGate -PnoMutationHistory " +
+            "-PpruneBaselineKeys.<suite>=<file>. Either spelling of the same file continues the sequence.")
     appendLine("  migrateMutationBaselines          stamp substantive accepted baselines; remove empty placeholders")
     appendLine("  downgradeMutationBaselines        remove schema 1 from substantive baselines; empty placeholders stay absent")
     suitePrefixes.forEach { prefix ->

@@ -915,6 +915,20 @@ Then select the writer, which runs its own third full observation:
 ./gradlew :module:pitestWsBaselinePrune -PpruneBaselineKeys=.pitest-history/ws-prune.keys
 ```
 
+`-PpruneBaselineKeys` selects in every suite the build runs, so under gate load it
+refuses in the first suite whose baseline lacks the selected keys. Take a gate-load
+preview with the suite-scoped spelling, which applies the selection to that suite
+while every other suite takes its ordinary preview:
+
+```sh
+./gradlew :module:qualityGate -PnoMutationHistory -PpruneBaselineKeys.ws=.pitest-history/ws-prune.keys
+```
+
+Both spellings of the same file bind the same bytes, so gate-load and solo previews
+continue one sequence and satisfy the same writer. Passing both spellings refuses.
+So does a suite-scoped name that is not a suite of every project whose suites the build
+verifies, which is why the gate task is project-qualified.
+
 Every selective preview lists exact removals and retained capacity by key.
 Unselected rows, their duplicate multiplicity, spelling, line tags, comments, and
 line endings are preserved byte-for-byte; this mode performs no incidental retag.
@@ -925,7 +939,8 @@ at the final write boundary refuses the write. All existing provenance, full-pop
 gate, timeout/flip protections, and two-prior-preview requirements remain in force.
 Failure leaves baseline and provenance unchanged; machine-local preview state may
 record a reset as usual. The selector is review input, not a new accepted record or
-authority for another writer or certification. Run one suite's workflow at a time.
+authority for another writer or certification. Run one suite's workflow at a time; a
+gate-load preview runs every suite, but only the named one applies the selection.
 
 Without a selector, Prune also refreshes the `# line` tag of each retained row matched at its own
 key, using line affinity before file order; unmatched rows kept for
