@@ -2,6 +2,7 @@ package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -99,6 +100,33 @@ class PitestEvidenceTest {
 
     assertTrue(differences.any { it.startsWith("sourceSha256:") }, differences.toString())
     assertTrue(differences.any { it.startsWith("scope:") }, differences.toString())
+  }
+
+  @Test
+  fun `a source-only difference is the one a kept report may carry`() {
+    val recorded = evidence()
+
+    assertTrue(recorded.differsOnlyInSource(recorded.copy(sourceSha256 = "new-source")))
+    assertFalse(recorded.differsOnlyInSource(recorded), "an exact match differs in nothing")
+    listOf(
+      recorded.copy(sourceSha256 = "new-source", classesSha256 = "new-classes"),
+      recorded.copy(sourceSha256 = "new-source", classpathSha256 = "new-classpath"),
+      recorded.copy(sourceSha256 = "new-source", toolClasspathSha256 = "new-tool-classpath"),
+      recorded.copy(sourceSha256 = "new-source", mutationToolchainSha256 = "new-toolchain"),
+      recorded.copy(sourceSha256 = "new-source", configurationSha256 = "new-config"),
+      recorded.copy(sourceSha256 = "new-source", pluginSha256 = "new-plugin"),
+      recorded.copy(sourceSha256 = "new-source", reportSha256 = "new-report"),
+      recorded.copy(sourceSha256 = "new-source", invocationId = "another-run"),
+      recorded.copy(sourceSha256 = "new-source", scope = "com.example.Codec"),
+      recorded.copy(sourceSha256 = "new-source", historyAssisted = true),
+      recorded.copy(sourceSha256 = "new-source", javaVersion = "21"),
+      recorded.copy(sourceSha256 = "new-source", pitestVersion = "1.30.0"),
+      recorded.copy(sourceSha256 = "new-source", junitPluginVersion = "1.2.4"),
+      recorded.copy(sourceSha256 = "new-source", identitySchema = "other"),
+      recorded.copy(classesSha256 = "new-classes"),
+    ).forEach { current ->
+      assertFalse(recorded.differsOnlyInSource(current), current.toString())
+    }
   }
 
   @Test

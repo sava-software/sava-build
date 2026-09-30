@@ -8,7 +8,10 @@ import java.security.MessageDigest
 
 /**
  * Provenance for one completed PIT report. A report is evidence only when this
- * manifest still describes the code and suite configuration being verified.
+ * manifest still describes the code and suite configuration being verified. Every
+ * boundary compares it exactly, with one exception: a direct verify may keep a report
+ * whose manifest differs in [sourceSha256] alone, under the conditions
+ * `PitestEvidenceValidationTask` checks beside that comparison.
  *
  * The on-disk form is deliberately tiny and strict: sorted `key<TAB>value` rows.
  * It is machine-readable without adding a JSON dependency to every consumer build,
@@ -82,6 +85,15 @@ data class PitestEvidence(
       if (actual[key] != wanted[key]) add("$key: recorded=${actual[key]} current=${wanted[key]}")
     }
   }
+
+  /**
+   * Whether [current] differs from this recorded evidence in the source fingerprint and
+   * nothing else: the same compiled classes, classpath, tools, configuration, scope and
+   * report bytes, over different source text. It says only that; whether the class tree
+   * really was compiled from that text is the caller's to establish.
+   */
+  fun differsOnlyInSource(current: PitestEvidence): Boolean =
+      sourceSha256 != current.sourceSha256 && copy(sourceSha256 = current.sourceSha256) == current
 
   /**
    * Identity of the code, loaded sava-build plugin bytes, mutation tools, classpaths,

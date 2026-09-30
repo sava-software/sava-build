@@ -26,6 +26,7 @@ import software.sava.build.hardening.HardeningToolDefaults
 import software.sava.build.hardening.HardeningWriteRequest
 import software.sava.build.hardening.Mutant
 import software.sava.build.hardening.MutantStatus
+import software.sava.build.hardening.MutationClassTreeLock
 import software.sava.build.hardening.knownInvalidExecutionClosure
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
@@ -38,6 +39,7 @@ import software.sava.build.hardening.PrunePreviewTransition
 import software.sava.build.hardening.PrunePreviewTransitionKind
 import software.sava.build.hardening.PruneSelection
 import software.sava.build.hardening.ProjectWriteOperation
+import software.sava.build.hardening.RecompileSourceStamp
 import software.sava.build.hardening.RecordedLineMetadata
 import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.qualifiedHardeningTaskPath
@@ -178,6 +180,11 @@ val jazzer = configurations.create("jazzer") {
 }
 
 val mutationClassesDir = layout.buildDirectory.dir("mutation-classes")
+// One walk of the class tree for everything that fingerprints it: the evidence, the
+// recompile's stamp and the PIT run's check. A raw directory walk and a Gradle file
+// tree differ on the files Gradle excludes by default (.DS_Store, editor backups), and
+// two definitions would refuse each other over one such file until the next clean.
+val mutationClassTree = fileTree(mutationClassesDir)
 val fuzzClassesDir = layout.buildDirectory.dir("fuzz-classes")
 
 fun registerRecompile(taskName: String, tool: String, destination: Provider<Directory>, release: Provider<Int>) =
@@ -252,6 +259,142 @@ val hardeningOperationSession = gradle.sharedServices.registerIfAbsent(
 val hardeningFuzzSession = gradle.sharedServices.registerIfAbsent(
     "hardeningFuzzSession", HardeningFuzzSession::class
 ) {}
+
+// The PIT recompile vouches for its own inputs. A class fingerprint says something about
+// the sources only while the classes were compiled from them, and Gradle has called this
+// task UP-TO-DATE over an edited file (casebook: the green run against stale classes).
+// So it compiles every file on every execution, publishes the fingerprint of what it
+// read only when the sources held still across the compile, and is never up to date
+// against source bytes other than those. An incremental execution would recompile only
+// the files Gradle believed had changed while the stamp read all of them from disk, so
+// the two could disagree about one file and the stamp would hide it.
+// Two invocations can share this build directory. Two compiles into one tree interleave
+// their writes while each stamp names whatever the tree holds when it is published,
+// Gradle empties a task's outputs before the task's own actions run, and a PIT run reads
+// the tree for minutes. So an invocation takes the tree before the recompile can start,
+// by a task the recompile depends on, and keeps it until the build ends; a second
+// invocation refuses there, before it can recompile (which empties the tree) or mutate
+// alongside, and a recompile or PIT run that finds the tree untaken (-x on the lock
+// task) refuses itself, the recompile in an onlyIf that runs before Gradle's cleanup.
+// 'clean' and the generated 'cleanCompileForPitest' take the same locks in their own
+// first action, so a clean cannot land on a tree another invocation is compiling or
+// mutating and leave part of it behind. The recompile also empties the tree, because
+// Gradle's cleanup removes only the outputs its own history produced, so a class left
+// by another project cache directory would otherwise be stamped as this compile's; and
+// its pending record lives in its declared output directory, so a clean takes the record
+// with the tree and the compile declines its stamp. Its up-to-date spec and its last
+// action record that Gradle asked the task about its inputs: a task a consumer switch
+// skips, or disables, is asked nothing, and a PIT run or a kept report then has no proof
+// the class tree was compared with the compile classpath and compiler settings.
+// 'compileForFuzz' takes none of this: nothing reuses a fuzz observation across edits.
+val mutationRecompileDir = layout.buildDirectory.dir("mutation-recompile")
+val mutationRecompileStamp = mutationRecompileDir.map { it.file("sources.sha256") }
+val mutationClassesCheckoutLock = layout.projectDirectory.file(".pitest-history/mutation-recompile.lock")
+fun Task.takeMutationClasses(certificationSession: Provider<HardeningCertificationSession>) {
+  // Resolved when the task runs, so a build directory a consumer relocates after the
+  // plugin applied names the tree lock as well.
+  val gradleUserHome = gradle.gradleUserHomeDir
+  val classesDir = mutationClassesDir
+  val checkoutLock = mutationClassesCheckoutLock.asFile
+  val lockProjectPath = project.path
+  usesService(certificationSession)
+  doFirst {
+    try {
+      certificationSession.get().lockMutationClasses(
+          lockProjectPath, checkoutLock,
+          MutationClassTreeLock.file(gradleUserHome, classesDir.get().asFile))
+    } catch (e: IllegalStateException) {
+      throw GradleException("$name: ${e.message}", e)
+    } catch (e: java.io.IOException) {
+      throw GradleException("$name: could not take the mutation class tree of '$lockProjectPath': ${e.message}", e)
+    }
+  }
+}
+val lockMutationClasses = tasks.register("lockMutationClasses") {
+  description = "Internal to compileForPitest: takes this project's mutation class tree for the rest of the build."
+  takeMutationClasses(hardeningCertificationSession)
+}
+// The stamp names sources and classes, not the compile classpath or the compiler
+// settings, which Gradle tracks only while the recompile is in the task graph. So
+// '-x compileForPitest' after a dependency or release change would leave a tree the
+// stamp still vouches for; an evidence-bound PIT run asks whether the recompile was
+// scheduled at all. Read once the graph is ready: '-x' is part of the configuration
+// cache key, so a reused entry answers for the same exclusions.
+val mutationRecompileScheduled = objects.property<Boolean>().convention(false)
+gradle.taskGraph.whenReady { mutationRecompileScheduled.set(hasTask(compileForPitest.get())) }
+// A clean takes the tree for its deletion and, when nothing in this build recompiles or
+// mutates afterwards, gives it back at once rather than keeping every other invocation
+// out until 'clean build' ends.
+fun Task.cleanMutationClasses(certificationSession: Provider<HardeningCertificationSession>) {
+  takeMutationClasses(certificationSession)
+  val recompileScheduled = mutationRecompileScheduled
+  val lockProjectPath = project.path
+  doLast {
+    if (!recompileScheduled.get()) certificationSession.get().releaseMutationClasses(lockProjectPath)
+  }
+}
+tasks.named("clean") { cleanMutationClasses(hardeningCertificationSession) }
+tasks.withType<Delete>().configureEach {
+  if (name == "cleanCompileForPitest") cleanMutationClasses(hardeningCertificationSession)
+}
+compileForPitest.configure {
+  dependsOn(lockMutationClasses)
+  // Locals only: these lambdas run at execution time and are serialized by the
+  // configuration cache, which cannot hold the script object.
+  val stamp = mutationRecompileStamp
+  val pending = mutationRecompileDir.map { it.file("sources.pending") }
+  val projectDir = layout.projectDirectory.asFile
+  val classTree = mutationClassTree
+  val classesDir = mutationClassesDir
+  val recompileProjectPath = project.path
+  val certificationSession = hardeningCertificationSession
+  usesService(certificationSession)
+  options.isIncremental = false
+  outputs.dir(mutationRecompileDir).withPropertyName("recompileRecords")
+  // The stamp hashes this checkout's source bytes while the build cache's key
+  // normalizes line endings: an entry from a checkout with other endings would install
+  // a stamp naming bytes this checkout does not hold, and refuse once for nothing.
+  outputs.doNotCacheIf("its stamp describes this checkout's source bytes") { true }
+  // Evaluated before the up-to-date check and before Gradle empties the outputs, which
+  // is why this is not a doFirst: a compile that skipped the lock task must not get as
+  // far as touching a tree another invocation may own.
+  onlyIf {
+    if (!certificationSession.get().ownsMutationClasses(recompileProjectPath)) {
+      throw GradleException(
+          "compileForPitest ran without lockMutationClasses (-x lockMutationClasses?): the " +
+              "class tree is taken for the whole build before it is compiled, and a compile " +
+              "that skipped that cannot be told apart from another invocation's")
+    }
+    true
+  }
+  outputs.upToDateWhen { task ->
+    val compile = task as JavaCompile
+    certificationSession.get().noteMutationRecompileChecked(recompileProjectPath)
+    RecompileSourceStamp.matches(
+        stamp.get().asFile, projectDir, compile.source.files, classTree.files)
+  }
+  doFirst {
+    val compile = this as JavaCompile
+    if (compile.options.isIncremental || !compile.options.isFailOnError) {
+      throw GradleException(
+          "compileForPitest must stay a full recompile that fails on a compile error " +
+              "(options.isIncremental = false, options.isFailOnError = true): otherwise its " +
+              "class tree cannot be shown to come from the sources on disk")
+    }
+    // The contents, not the directory: Gradle created it for javac before this action.
+    classesDir.get().asFile.listFiles()?.forEach { BaselineFiles.deleteRecursivelyIfExists(it) }
+    RecompileSourceStamp.begin(
+        stamp.get().asFile, pending.get().asFile, projectDir, compile.source.files)
+  }
+  doLast {
+    val compile = this as JavaCompile
+    RecompileSourceStamp.publish(
+        stamp.get().asFile, pending.get().asFile, projectDir, compile.source.files,
+        classTree.files)
+    // --rerun-tasks skips the up-to-date spec; an executed compile was asked by definition.
+    certificationSession.get().noteMutationRecompileChecked(recompileProjectPath)
+  }
+}
 // One end-of-build service shared across every project: it keeps non-failing reviewer
 // stops visible and rolls up only the certification receipts this invocation published.
 val hardeningAdvisoryLog = gradle.sharedServices.registerIfAbsent(
@@ -867,6 +1010,21 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
       } catch (e: IllegalArgumentException) {
         throw GradleException("pitestConverge: invalid round-one evidence for '$suiteName': ${e.message}", e)
       } else null
+      // A report the verify kept across a Java source edit serves the read-only check
+      // only; it is not this invocation's round one, and the diff's own identity check
+      // would refuse it a round later, after this task had cleared the canonical report.
+      if (evidence != null &&
+          certificationSession.get().isRetained(convergenceProjectPath, suiteName, evidence)) {
+        val suiteTask = qualifiedHardeningTaskPath(convergenceProjectPath, "pitest" +
+            suiteName.replaceFirstChar(Char::uppercase))
+        throw GradleException(
+            "pitestConverge: the '$suiteName' round-one report is one this invocation's verify " +
+                "kept across a Java source edit; a kept report serves the read-only check only " +
+                "and cannot anchor the diff. $suiteTask did not run in this invocation " +
+                "(skipped?); convergence needs round one to be this invocation's fresh run, " +
+                "so let it run, then run " +
+                "${qualifiedHardeningTaskPath(convergenceProjectPath, "pitestConverge")} again.")
+      }
       if (reportDir.resolve(".history-assisted").isFile || evidence?.historyAssisted == true) {
         throw GradleException(
             "pitestConverge proves nothing when '$suiteName' round one is arcmutate-history-assisted — " +
@@ -2620,7 +2778,11 @@ hardening.mutation.all {
       // after dependency validation, including configuration-cache reuse.
       pruneSelectionFile?.let { listOf(it) }.orEmpty(),
   )
-  val evidenceClassFiles = fileTree(mutationClassesDir)
+  // The tree 'compileForPitest' itself compiles, never a rebuilt copy of its excludes.
+  // The PIT task and the validator split the evidence sources by it and the recompile
+  // stamps it, so the three read one definition and cannot drift apart.
+  val recompiledSourceTree = files(compileForPitest.map { it.source })
+  val evidenceClassFiles = mutationClassTree
   val pitestBuildDirPath = layout.buildDirectory.get().asFile.absolutePath + File.separator
   val pitestResourceDirs = files(
       sourceSets.main.get().output.resourcesDir!!,
@@ -2892,6 +3054,10 @@ hardening.mutation.all {
       val completedEvidenceFile = csv.parentFile.resolve(".evidence.tsv")
       BaselineFiles.requireRegularFileOrMissing(completedEvidenceFile)
       var verifiedEvidence: PitestEvidence? = null
+      // An earlier invocation's report kept across a Java source edit that left every
+      // recompiled class byte-identical. Read-only in every sense: the check may stand
+      // on it, and nothing machine-local is advanced from it.
+      var keptReport = false
       if (!completedEvidenceFile.isFile) {
         val message = "pitest '$suiteName': report has no completed-run evidence manifest at " +
             "$completedEvidenceFile — it may predate this plugin or be a detached/stale report; " +
@@ -2927,7 +3093,7 @@ hardening.mutation.all {
                   "${e.message}" + retryGuidance, e)
         }
         try {
-          certificationSession.get().requireCurrentEvidence(
+          certificationSession.get().requireCurrentOrRetainedEvidence(
               evidenceProjectPath, suiteName, recordedEvidence)
         } catch (e: IllegalStateException) {
           throw GradleException(
@@ -2936,6 +3102,8 @@ hardening.mutation.all {
                   retryGuidance, e)
         }
         verifiedEvidence = recordedEvidence
+        keptReport = certificationSession.get().isRetained(
+            evidenceProjectPath, suiteName, recordedEvidence)
         if (writingRecord) {
           try {
             certificationSession.get().requireNoIncompleteAttempt(
@@ -3382,7 +3550,8 @@ hardening.mutation.all {
       logger.lifecycle(
           "pitest '$suiteName': $detected/$total detected ($percent%)" +
               (if (split.isEmpty()) "" else " — ${split.joinToString(", ")}") +
-              (if (historyAssistedReport) " [history]" else "")
+              (if (historyAssistedReport) " [history]" else "") +
+              (if (keptReport) " [kept report]" else "")
       )
       if (strictTimeoutAudit && historyAssistedReport) {
         throw GradleException(
@@ -3733,7 +3902,8 @@ hardening.mutation.all {
         // ArcMutate reuse is a read-only preview, not another observation. Letting a
         // regenerated assisted report replace this stash makes the next fresh run's
         // drift relative to cached statuses and can manufacture or hide a transition.
-        if (historyAssistedReport) return@run
+        // A kept report is a replay of an observation already stashed; it adds nothing.
+        if (historyAssistedReport || keptReport) return@run
         fun tally(pairs: List<Pair<String, String>>): Map<String, Map<String, Int>> = pairs
             .groupBy({ it.first }, { it.second })
             .mapValues { (_, statuses) -> statuses.groupingBy { it }.eachCount() }
@@ -4104,7 +4274,7 @@ hardening.mutation.all {
         run {
           // The same rule as the status stash above: reused statuses are not a fresh
           // quiet observation and must not advance the timeout-retirement nudge.
-          if (historyAssistedReport) return@run
+          if (historyAssistedReport || keptReport) return@run
           val retirementEvidence = verifiedEvidence ?: return@run
           // A scoped report can diagnose one class, but it cannot prove suite-wide
           // timeout absence. Legacy reports without a completed evidence manifest are
@@ -5886,6 +6056,9 @@ hardening.mutation.all {
     task.certifyingProjectPath.set(project.path)
     task.evidenceProjectDirectory.set(layout.projectDirectory)
     task.evidenceSourceFiles.from(evidenceSourceFiles)
+    task.recompiledSourceFiles.from(recompiledSourceTree)
+    task.recompileStamp.set(mutationRecompileStamp)
+    task.recompileScheduled.set(mutationRecompileScheduled)
     task.evidenceClassFiles.from(evidenceClassFiles)
     task.evidenceClasspath.from(evidenceClasspathFiles)
     task.evidencePluginCode.from(typedPluginCode)
@@ -6051,7 +6224,16 @@ hardening.mutation.all {
       "${pitestTaskName}EvidenceValidate",
       "pitest '$suiteName': completed report evidence no longer matches the current build — " +
           "a stale report cannot verify or rewrite mutation state:\n",
-      "run $evidencePitestTaskPath in a new Gradle invocation.")
+      "run $evidencePitestTaskPath in a new Gradle invocation.").also {
+    // The read-only check alone may stand on an earlier report after Java source text
+    // changed without changing a recompiled class. The mode validator below stays exact.
+    it.configure {
+      keepOnIdenticalClasses.set(true)
+      recompiledSourceFiles.from(recompiledSourceTree)
+      recompileStamp.set(mutationRecompileStamp)
+      excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
+    }
+  }
   val modeSnapshotEvidenceValidation = registerEvidenceValidator(
       "${pitestTaskName}ModeEvidenceValidate",
       "pitestModeSnapshot: '$suiteName' report/evidence pair no longer matches the current build:\n",

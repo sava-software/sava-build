@@ -33,6 +33,8 @@ import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
 import software.sava.build.hardening.PitestEvidenceSnapshotInput
 import software.sava.build.hardening.ProjectWriteOperation
+import software.sava.build.hardening.RecompileSourceStamp
+import software.sava.build.hardening.UncompiledSourceRecord
 import software.sava.build.hardening.qualifiedHardeningTaskPath
 import java.io.File
 import javax.inject.Inject
@@ -959,11 +961,30 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
   @get:Input abstract val standaloneRetry: Property<String>
   @get:Input abstract val fullEvidenceOnly: Property<Boolean>
 
+  /**
+   * Set for the verify validator alone. With it, a report left by an earlier invocation
+   * is kept when Java source text is the only thing that changed and every recompiled
+   * class is byte-identical; see [keepRefusal] for each condition. The mode validator
+   * leaves it off: a mode snapshot is the first of three exact boundaries, and a report
+   * kept here would be stashed only to be refused at the third.
+   */
+  @get:Input abstract val keepOnIdenticalClasses: Property<Boolean>
+
+  // Internal for the same reason as the spec's collections: a missing stamp must leave
+  // the rule strict, not fail input validation ahead of the no-manifest return.
+  /** The files 'compileForPitest' compiles, the same tree the PIT task partitions by. */
+  @get:Internal abstract val recompiledSourceFiles: ConfigurableFileCollection
+  /** What that recompile published about the sources it read. */
+  @get:Internal abstract val recompileStamp: RegularFileProperty
+  @get:Input abstract val excludedTaskNames: ListProperty<String>
+
   @get:ServiceReference("hardeningCertificationSession")
   abstract val certificationSession: Property<HardeningCertificationSession>
 
   init {
     fullEvidenceOnly.convention(false)
+    keepOnIdenticalClasses.convention(false)
+    excludedTaskNames.convention(emptyList())
   }
 
   private fun retryGuidance(): String =
@@ -989,32 +1010,203 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
     if (fullEvidenceOnly.get() &&
       (recorded.scope != PitestEvidence.FULL_SCOPE || recorded.historyAssisted)) return
     val toolchainFile = reportDir.resolve(".toolchain.tsv")
-    if (recorded.mutationToolchainSha256 != PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
-      val toolchain = try {
+    val toolchain = if (recorded.mutationToolchainSha256 == PitestEvidence.LEGACY_MUTATION_TOOLCHAIN) {
+      null
+    } else {
+      val parsed = try {
         MutationToolchainRecord.parse(toolchainFile.readText())
       } catch (e: Exception) {
         throw GradleException(
           diagnosticPrefix.get() + "  completed mutation-toolchain record is missing or malformed: " +
             "${e.message}" + retryGuidance(), e)
       }
-      if (toolchain.identitySha256 != recorded.mutationToolchainSha256) {
+      if (parsed.identitySha256 != recorded.mutationToolchainSha256) {
         throw GradleException(
           diagnosticPrefix.get() + "  completed mutation-toolchain record differs from evidence" +
             retryGuidance()
         )
       }
+      parsed
+    }
+    // Read on both sides of the capture. Another build writing this directory could
+    // otherwise publish a new stamp beside classes it has not rewritten yet.
+    val stampBeforeCapture = if (keepOnIdenticalClasses.get()) {
+      RecompileSourceStamp.read(recompileStamp.get().asFile)
+    } else {
+      null
     }
     val expected = evidence.capture(recorded, useRecordedReportHash = false)
     val differences = recorded.differences(expected)
-    if (differences.isNotEmpty()) {
+    val projectPath = evidence.projectPath.get()
+    val suite = evidence.suiteName.get()
+    // Without a PIT run in this invocation the class tree is vouched for only by a
+    // recompile Gradle asked about its inputs; a compile a consumer switch skips or
+    // disables, or one excluded, leaves the tree unchecked against the compile classpath
+    // and compiler settings, which no recorded field covers. Exact and kept alike.
+    if (!certificationSession.get().attemptedThisInvocation(projectPath, suite) &&
+      !certificationSession.get().mutationRecompileChecked(projectPath)) {
+      // Only the verify validator has a Verify twin to name; the others keep their own retry.
+      val retry = if (keepOnIdenticalClasses.get()) {
+        "\n  Retry: run ${path.removeSuffix("EvidenceValidate")}Verify with compileForPitest " +
+          "in the graph and enabled."
+      } else {
+        retryGuidance()
+      }
       throw GradleException(
-        diagnosticPrefix.get() + differences.joinToString("\n") { "  $it" } + retryGuidance()
+        diagnosticPrefix.get() + differences.joinToString("") { "  $it\n" } +
+          "  compileForPitest neither ran nor checked its inputs in this invocation (skipped " +
+          "by an onlyIf, disabled, or excluded), so nothing compared the class tree with the " +
+          "compile classpath and compiler settings." + retry
       )
     }
-    certificationSession.get().recordRevalidated(
-      evidence.projectPath.get(), evidence.suiteName.get(), recorded
-    )
+    if (differences.isEmpty()) {
+      certificationSession.get().recordRevalidated(projectPath, suite, recorded)
+      return
+    }
+    val refusal = keepRefusal(recorded, expected, toolchain, reportDir, stampBeforeCapture)
+    if (refusal != null) {
+      throw GradleException(
+        diagnosticPrefix.get() + differences.joinToString("\n") { "  $it" } + refusal.hint +
+          (refusal.retry ?: retryGuidance())
+      )
+    }
+    // Lifecycle, not an advisory: nothing is owed. The manifest keeps its recorded
+    // source fingerprint, so this repeats on every direct verify until a fresh run.
+    logger.lifecycle(
+      "pitest '$suite': only recompiled Java sources changed and every recompiled class is " +
+        "byte-identical to the recorded run: report retained (not an advisory finding)")
+    certificationSession.get().recordRetained(projectPath, suite, recorded)
   }
+
+  /** The line printed under the differences, and the retry line when the standalone one would mislead. */
+  private data class KeepRefusal(val hint: String, val retry: String? = null)
+
+  /**
+   * Null when a report whose manifest no longer matches may still stand for the read-only
+   * check; otherwise what to print under the differences (an empty hint where today's
+   * message already says everything).
+   *
+   * The report is kept only when all of this holds, and each condition closes a way for
+   * equal class fingerprints to mean less than they appear to:
+   *  - the source fingerprint is the only field that moved, so classes, classpath, tools,
+   *    configuration and report bytes are the recorded ones;
+   *  - PIT did not run in this invocation, where a difference means an input changed
+   *    under a build that is supposed to be observing it;
+   *  - ArcMutate is not part of the toolchain: its `@Generated` filter reads source text,
+   *    so there identical classes do not imply an identical population;
+   *  - every evidence source the recompile does not compile is byte-identical to what the
+   *    run recorded, leaving the recompiled Java sources as the only thing that can have
+   *    changed;
+   *  - no task was excluded, so every producer of those inputs had its chance to run;
+   *  - the recompile's own stamp says the class tree on disk was compiled from the Java
+   *    sources on disk, which is what makes the class fingerprint a statement about them.
+   *
+   * The causes that no re-run of the verify can clear come first, so the first hint
+   * printed is the one that decides.
+   */
+  private fun keepRefusal(
+    recorded: PitestEvidence,
+    expected: PitestEvidence,
+    toolchain: MutationToolchainRecord?,
+    reportDir: File,
+    stampBeforeCapture: RecompileSourceStamp.Stamp?,
+  ): KeepRefusal? {
+    if (!keepOnIdenticalClasses.get()) return KeepRefusal("")
+    val projectPath = evidence.projectPath.get()
+    val suite = evidence.suiteName.get()
+    val attempted = certificationSession.get().attemptedThisInvocation(projectPath, suite)
+    val pitestTask = path.removeSuffix("EvidenceValidate")
+    val verifyTask = pitestTask + "Verify"
+    // A refusal is not a finding that a run is owed: this verify cannot tell a code change
+    // from a comment that moved a line, and the reachability rule decides. Inside the
+    // run's own invocation, or a certification, the standard retry stands.
+    val ruleRetry = if (attempted || certificationSession.get().isActive(projectPath)) null else
+      "\n  Retry: a fresh run of $pitestTask in a new Gradle invocation replaces this report; " +
+        "whether this range owes one is the reachability rule's question (HARDENING.md, " +
+        "Lifecycle): a doc or comment edit owes none; code, and any other input PIT is " +
+        "given, owes the suites it can reach, once, at the pre-push gate."
+    if (!recorded.differsOnlyInSource(expected)) {
+      val classesMoved = recorded.classesSha256 != expected.classesSha256
+      val sourcesMoved = recorded.sourceSha256 != expected.sourceSha256
+      return when {
+        classesMoved && sourcesMoved -> KeepRefusal(
+          hint(
+            "The recompiled classes differ from the recorded run, so the report no longer " +
+              "describes this code. A moved line is enough: class files carry line tables."),
+          ruleRetry,
+        )
+        sourcesMoved -> KeepRefusal(
+          hint(
+            "Beside the sources, another recorded input moved (a resource, a dependency, " +
+              "the tools or the suite's configuration): the report describes other inputs, " +
+              "and only recompiled Java sources may change under a kept report."),
+          ruleRetry,
+        )
+        else -> KeepRefusal("")
+      }
+    }
+    if (attempted) return KeepRefusal("")
+    // A legacy manifest differs in its toolchain field too, so it never reaches here.
+    if (toolchain == null || toolchain.arcMutateBaseVersion != null) {
+      return KeepRefusal(
+        hint(
+          "Only source text changed, but ArcMutate is active for this suite and its " +
+            "@Generated filter reads src/main/java, so identical classes do not show an " +
+            "identical population here."),
+        ruleRetry,
+      )
+    }
+    val projectDirectory = evidence.projectDirectory.get().asFile
+    val recompiledSources = recompiledSourceFiles.files
+    val recordedUncompiled = try {
+      UncompiledSourceRecord.parse(reportDir.resolve(UncompiledSourceRecord.FILE_NAME).readText())
+    } catch (_: Exception) {
+      null
+    }
+    if (recordedUncompiled == null ||
+      recordedUncompiled.invocationId != recorded.invocationId ||
+      recordedUncompiled.uncompiledSourceSha256 != UncompiledSourceRecord.fingerprint(
+        projectDirectory, evidence.sourceFiles.files, recompiledSources)) {
+      return KeepRefusal(
+        hint(
+          "A source the recompile does not compile changed (a build script, a resource, a " +
+            "prune selection, module-info.java or a recompile-excluded file), or this report " +
+            "carries no record of them; only the recompiled Java sources may change under a " +
+            "kept report."),
+        ruleRetry,
+      )
+    }
+    val excluded = excludedTaskNames.get()
+    if (excluded.isNotEmpty()) {
+      return KeepRefusal(
+        hint(
+          "Only the recompiled Java sources changed, but tasks are excluded (" +
+            excluded.joinToString { "-x $it" } + "), so nothing shows that every producer " +
+            "of this report's inputs ran; a report is kept only in a complete task graph."),
+        "\n  Retry: run $verifyTask without -x; that verify decides whether the report can " +
+          "be kept.",
+      )
+    }
+    val sourcesNow = RecompileSourceStamp.fingerprint(projectDirectory, recompiledSources)
+    val stampAfterCapture = RecompileSourceStamp.read(recompileStamp.get().asFile)
+    val vouched = listOf(stampBeforeCapture, stampAfterCapture).all {
+      it != null && it.sourcesSha256 == sourcesNow && it.classesSha256 == expected.classesSha256
+    }
+    if (!vouched) {
+      return KeepRefusal(
+        hint(
+          "Only the recompiled Java sources changed, but compileForPitest has published no " +
+            "stamp naming these source bytes and this class tree (its last complete run read " +
+            "other bytes, or a source or class changed during this build), so the class tree " +
+            "is not shown to come from these sources."),
+        "\n  Retry: run $verifyTask again once nothing else is editing or building this " +
+          "checkout; if it refuses the same way, check that compileForPitest executed.",
+      )
+    }
+    return null
+  }
+
+  private fun hint(text: String): String = "\n  $text"
 }
 
 /** Final current-checkout validation and commit for a prepared mode-insurance write. */

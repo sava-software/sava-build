@@ -37,6 +37,8 @@ import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestEvidenceSnapshot
 import software.sava.build.hardening.PitestEvidenceSnapshotInput
+import software.sava.build.hardening.RecompileSourceStamp
+import software.sava.build.hardening.UncompiledSourceRecord
 import software.sava.build.hardening.qualifiedHardeningTaskPath
 import java.io.File
 import java.io.OutputStream
@@ -194,6 +196,28 @@ abstract class PitestExecTask : JavaExec() {
   @get:InputFiles
   @get:PathSensitive(PathSensitivity.RELATIVE)
   abstract val evidenceSourceFiles: ConfigurableFileCollection
+
+  /**
+   * The files 'compileForPitest' compiles. Whatever [evidenceSourceFiles] holds outside
+   * this tree is fingerprinted into the uncompiled-source sidecar, because a class
+   * fingerprint cannot vouch for it.
+   */
+  @get:InputFiles
+  @get:PathSensitive(PathSensitivity.RELATIVE)
+  abstract val recompiledSourceFiles: ConfigurableFileCollection
+
+  /** What 'compileForPitest' published about the sources it read and the tree it wrote. */
+  @get:Internal
+  abstract val recompileStamp: RegularFileProperty
+
+  /**
+   * Whether 'compileForPitest' is in this invocation's task graph. Its stamp names the
+   * sources and the class tree, not the compile classpath or compiler settings, which
+   * Gradle tracks only while the task is scheduled; excluded, it leaves a tree the stamp
+   * still vouches for after a dependency or release change.
+   */
+  @get:Internal
+  abstract val recompileScheduled: Property<Boolean>
 
   @get:InputFiles
   @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -360,6 +384,56 @@ abstract class PitestExecTask : JavaExec() {
     )
   }
 
+  /**
+   * The class tree PIT is about to mutate must be the one 'compileForPitest' produced from
+   * the sources on disk. Its stamp says so; a missing or mismatching stamp means the
+   * recompile was excluded, failed, or something changed since it ran, and a report
+   * taken now would bind the current source fingerprint to classes that do not come
+   * from it *(casebook: the green run against stale classes)*.
+   */
+  private fun requireRecompileVouchesForClasses() {
+    if (!recompileScheduled.get()) {
+      throw GradleException(
+        "pitest '${suiteName.get()}': compileForPitest is not in this invocation's task graph " +
+          "(-x compileForPitest?), so nothing recompiled the class tree PIT would mutate " +
+          "against the current sources, compile classpath and compiler settings. Run with " +
+          "the recompile in the graph."
+      )
+    }
+    if (!certificationSession.get().ownsMutationClasses(certifyingProjectPath.get())) {
+      throw GradleException(
+        "pitest '${suiteName.get()}': this build does not own the mutation class tree " +
+          "(lockMutationClasses did not run: -x lockMutationClasses, or the task disabled), " +
+          "so another invocation could recompile it under this run. Run with the lock task " +
+          "in the graph."
+      )
+    }
+    if (!certificationSession.get().mutationRecompileChecked(certifyingProjectPath.get())) {
+      throw GradleException(
+        "pitest '${suiteName.get()}': compileForPitest neither ran nor checked its inputs in " +
+          "this invocation (skipped by an onlyIf, or disabled), so nothing compared the class " +
+          "tree with the compile classpath and compiler settings. Let the recompile run."
+      )
+    }
+    val vouched = RecompileSourceStamp.matches(
+      recompileStamp.get().asFile,
+      evidenceProjectDirectory.get().asFile,
+      recompiledSourceFiles.files,
+      evidenceClassFiles.files,
+    )
+    if (!vouched) {
+      throw GradleException(
+        "pitest '${suiteName.get()}': compileForPitest has published no stamp naming the " +
+          "sources and classes now on disk (it failed or was skipped, or a source or class " +
+          "changed since it ran), so the class tree PIT would mutate is not shown to come " +
+          "from the sources on disk. The recompile runs again whenever the stamp does not " +
+          "match, so if this repeats, check that compileForPitest executed rather than " +
+          "SKIPPED; otherwise something else is editing sources or building this checkout: " +
+          "wait for it to stop, then run again."
+      )
+    }
+  }
+
   @TaskAction
   override fun exec() {
     if (unmanagedPitArgumentsPresent()) {
@@ -379,6 +453,7 @@ abstract class PitestExecTask : JavaExec() {
     // older report looking like an interrupted current run.
     val initialToolchain = mutationToolchainRecord()
     requireUnconfiguredMasterJvm()
+    if (bindSuiteEvidence.get()) requireRecompileVouchesForClasses()
     beforeAttempt()
     if (diagnosticMode.get()) {
       initialToolchain.arcMutateBaseVersion?.let { baseVersion ->
@@ -562,7 +637,7 @@ abstract class PitestExecTask : JavaExec() {
 
     prepareAttemptDirectory(reportDir)
     reportDir.resolve(RUNNING_MARKER).writeText("")
-    if (!bindsEvidence) return PitestAttempt(invocationId, null, toolchain)
+    if (!bindsEvidence) return PitestAttempt(invocationId, null, toolchain, null)
 
     Files.deleteIfExists(reportDir.resolve(EVIDENCE_FILE).toPath())
     Files.deleteIfExists(reportDir.resolve(TOOLCHAIN_FILE).toPath())
@@ -577,8 +652,15 @@ abstract class PitestExecTask : JavaExec() {
         mutationToolchainSha256 = toolchain.identitySha256,
       ),
       toolchain,
+      uncompiledSourceFingerprint(),
     )
   }
+
+  private fun uncompiledSourceFingerprint(): String = UncompiledSourceRecord.fingerprint(
+    evidenceProjectDirectory.get().asFile,
+    evidenceSourceFiles.files,
+    recompiledSourceFiles.files,
+  )
 
   private fun completeAttempt(attempt: PitestAttempt, historyActive: Boolean) {
     val suite = suiteName.get()
@@ -586,6 +668,7 @@ abstract class PitestExecTask : JavaExec() {
     val scope = currentScope()
     val scopedMarker = reportDir.resolve(SCOPED_MARKER)
     var completedEvidence: PitestEvidence? = null
+    var completedUncompiledSources: UncompiledSourceRecord? = null
 
     if (bindSuiteEvidence.get()) {
       val report = reportDir.resolve(REPORT_FILE)
@@ -617,7 +700,24 @@ abstract class PitestExecTask : JavaExec() {
       check(attempt.preRunToolchain == completedToolchain) {
         "pitest '$suite' mutation-toolchain record changed without changing its identity"
       }
+      // The two captures agree, so the run saw one state; the stamp must name that
+      // state, not only the one checked before the pre-run capture. An edit that landed
+      // between the first check and the capture would otherwise bind the new sources to
+      // the classes compiled from the old ones.
+      requireRecompileVouchesForClasses()
+      // The same files as sourceSha256 above, so this can disagree only when one of
+      // them changed between the two reads; either way the run did not see one state.
+      val uncompiledSources = uncompiledSourceFingerprint()
+      if (uncompiledSources != attempt.preRunUncompiledSourceSha256) {
+        throw GradleException(
+          "pitest '$suite': evidence inputs changed while PIT was running — refusing to commit " +
+            "completed evidence; re-run against a stable checkout:\n" +
+            "  uncompiledSourceSha256: recorded=${attempt.preRunUncompiledSourceSha256} " +
+            "current=$uncompiledSources"
+        )
+      }
       completedEvidence = before.copy(reportSha256 = PitestEvidence.sha256(report))
+      completedUncompiledSources = UncompiledSourceRecord(before.invocationId, uncompiledSources)
     }
 
     if (scope == PitestEvidence.FULL_SCOPE) {
@@ -638,6 +738,9 @@ abstract class PitestExecTask : JavaExec() {
         "pitest '$suite' mutation-toolchain record disagrees with completed evidence"
       }
       BaselineFiles.writeAtomically(reportDir.resolve(TOOLCHAIN_FILE), completedToolchain.render())
+      completedUncompiledSources?.let {
+        BaselineFiles.writeAtomically(reportDir.resolve(UNCOMPILED_SOURCES_FILE), it.render())
+      }
       BaselineFiles.writeAtomically(reportDir.resolve(EVIDENCE_FILE), evidence.render())
       certificationSession.get().recordCompleted(certifyingProjectPath.get(), suite, evidence)
       Files.deleteIfExists(invocationFile.toPath())
@@ -719,6 +822,7 @@ abstract class PitestExecTask : JavaExec() {
     val invocationId: String,
     val preRunEvidence: PitestEvidence?,
     val preRunToolchain: MutationToolchainRecord,
+    val preRunUncompiledSourceSha256: String?,
   )
 
   private enum class AttemptLogDisposition {
@@ -756,6 +860,7 @@ abstract class PitestExecTask : JavaExec() {
       HISTORY_MARKER,
       EVIDENCE_FILE,
       TOOLCHAIN_FILE,
+      UNCOMPILED_SOURCES_FILE,
       EVIDENCE_INVOCATION_FILE,
       STANDARD_OUTPUT_LOG,
       ERROR_OUTPUT_LOG,
@@ -795,6 +900,7 @@ abstract class PitestExecTask : JavaExec() {
     const val HISTORY_MARKER = ".history-assisted"
     const val EVIDENCE_FILE = ".evidence.tsv"
     const val TOOLCHAIN_FILE = ".toolchain.tsv"
+    const val UNCOMPILED_SOURCES_FILE = UncompiledSourceRecord.FILE_NAME
     const val EVIDENCE_INVOCATION_FILE = ".evidence-invocation"
     const val STANDARD_OUTPUT_LOG = "pitest.stdout.log"
     const val ERROR_OUTPUT_LOG = "pitest.stderr.log"

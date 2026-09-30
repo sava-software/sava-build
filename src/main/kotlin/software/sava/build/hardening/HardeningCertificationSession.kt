@@ -6,6 +6,7 @@ import java.io.File
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.channels.OverlappingFileLockException
+import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.util.UUID
 
@@ -42,9 +43,12 @@ abstract class HardeningCertificationSession :
   private val verified = mutableMapOf<SuiteKey, VerifiedEvidence>()
   private val verifiedRecordInputs = mutableMapOf<SuiteKey, String>()
   private val revalidated = mutableMapOf<SuiteKey, VerifiedEvidence>()
+  private val retained = mutableMapOf<SuiteKey, VerifiedEvidence>()
   private val finalProjectIdentities = mutableMapOf<String, FinalProjectIdentity>()
   private val pluginIdentities = CertificationPluginIdentities()
   private val fileLocks = CertificationFileLocks()
+  private val recompileLocks = CertificationFileLocks()
+  private val recompileChecked = mutableSetOf<String>()
 
   /** Retains the published service API for non-certifying third-party task wiring. */
   @Synchronized
@@ -85,7 +89,13 @@ abstract class HardeningCertificationSession :
     verified.remove(key)
     verifiedRecordInputs.remove(key)
     revalidated.remove(key)
+    retained.remove(key)
   }
+
+  /** Whether a PIT task began an attempt for this suite in this Gradle invocation. */
+  @Synchronized
+  internal fun attemptedThisInvocation(projectPath: String, suite: String): Boolean =
+      SuiteKey(projectPath, suite) in attempts
 
   @Synchronized
   fun recordCompleted(projectPath: String, suite: String, evidence: PitestEvidence) {
@@ -144,6 +154,44 @@ abstract class HardeningCertificationSession :
     check(revalidated[SuiteKey(projectPath, suite)] == expected) {
       "PIT suite '$projectPath:$suite' current evidence was not revalidated in this Gradle invocation"
     }
+  }
+
+  /**
+   * An earlier invocation's report kept across a change to Java source text that left
+   * every recompiled class byte-identical. Kept apart from [recordRevalidated] because
+   * it is a weaker statement: the manifest no longer matches the checkout field for
+   * field, so only the read-only ratchet check may stand on it. Everything that reads
+   * [requireCurrentEvidence] keeps meaning an exact match.
+   */
+  @Synchronized
+  internal fun recordRetained(projectPath: String, suite: String, evidence: PitestEvidence) {
+    val key = SuiteKey(projectPath, suite)
+    check(key !in attempts) {
+      "PIT suite '$projectPath:$suite' ran in this Gradle invocation; its report cannot be a kept one"
+    }
+    retained[key] = VerifiedEvidence(
+      "", evidence.invocationId, evidence.reportSha256, PitestEvidence.sha256(evidence.render())
+    )
+  }
+
+  /** Whether the read-only check is standing on a kept report rather than an exact match. */
+  @Synchronized
+  internal fun isRetained(projectPath: String, suite: String, evidence: PitestEvidence): Boolean {
+    val key = SuiteKey(projectPath, suite)
+    return key !in attempts && retained[key] == VerifiedEvidence(
+      "", evidence.invocationId, evidence.reportSha256, PitestEvidence.sha256(evidence.render())
+    )
+  }
+
+  /** The read-only ratchet check alone accepts a kept report as well as current evidence. */
+  @Synchronized
+  internal fun requireCurrentOrRetainedEvidence(
+    projectPath: String,
+    suite: String,
+    evidence: PitestEvidence,
+  ) {
+    if (isRetained(projectPath, suite, evidence)) return
+    requireCurrentEvidence(projectPath, suite, evidence)
   }
 
   private fun requireMatchingCompletedAttempt(
@@ -239,7 +287,100 @@ abstract class HardeningCertificationSession :
     finalProjectIdentities[projectPath] ?: throw IllegalStateException(
       "final Git/plugin identity was not captured in this certification invocation")
 
-  override fun close() = fileLocks.close()
+  /**
+   * Cross-process ownership of a project's mutation class tree for the rest of this
+   * build. Two compiles into one tree interleave their writes and a stamp names whatever
+   * the tree holds when it is published; Gradle empties a task's outputs before the
+   * task's own actions run, and a PIT run reads the tree for minutes. So the tree is
+   * taken before `compileForPitest` can start, by a task it depends on, and kept until
+   * this service closes with the build, or until a clean that nothing follows gives it
+   * back ([releaseMutationClasses]): a second invocation refuses at that task, before it
+   * can recompile (which empties the tree) or mutate alongside. Two lock
+   * files, because no single place is shared by every pair of invocations that can
+   * meet on one tree: [checkoutLock] lives under the checkout and covers invocations
+   * with different Gradle user homes (an agent's scratchpad home beside the terminal's
+   * default), [treeLock] is [MutationClassTreeLock.file] under the Gradle user home and
+   * covers two checkouts that share a relocated build directory. Both must be free.
+   */
+  @Synchronized
+  internal fun lockMutationClasses(projectPath: String, checkoutLock: File, treeLock: File) {
+    if (ownsMutationClasses(projectPath)) return
+    val contended = { lock: String ->
+      "another invocation is using the mutation classes of '$projectPath', recompiling, " +
+        "mutating or cleaning them (lock $lock); wait for it to finish, then run again"
+    }
+    val checkoutKey = "mutation-classes:$projectPath"
+    val newlyTaken = !recompileLocks.isHeld(checkoutKey)
+    recompileLocks.acquire(checkoutKey, checkoutLock, contended)
+    try {
+      recompileLocks.acquire("mutation-class-tree:$projectPath", treeLock, contended)
+    } catch (failure: Exception) {
+      // Half an ownership is none: give the checkout back so an independent clean is not
+      // refused on this build's account until it ends.
+      if (newlyTaken) {
+        try {
+          recompileLocks.release(checkoutKey)
+        } catch (releaseFailure: Exception) {
+          failure.addSuppressed(releaseFailure)
+        }
+      }
+      throw failure
+    }
+  }
+
+  /**
+   * Whether this build took the tree. A recompile or a PIT run that finds it did not was
+   * run around the lock (`-x lockMutationClasses`, or the task disabled).
+   */
+  @Synchronized
+  internal fun ownsMutationClasses(projectPath: String): Boolean =
+    recompileLocks.isHeld("mutation-classes:$projectPath") &&
+      recompileLocks.isHeld("mutation-class-tree:$projectPath")
+
+  /**
+   * Gives the tree back before the build ends: a clean that took it, in a build where
+   * nothing recompiles or mutates afterwards, would otherwise keep every other invocation
+   * out for the rest of its own run. Nothing to give back is not an error.
+   */
+  @Synchronized
+  internal fun releaseMutationClasses(projectPath: String) {
+    var failure: Exception? = null
+    listOf("mutation-class-tree:$projectPath", "mutation-classes:$projectPath").forEach { key ->
+      try {
+        recompileLocks.release(key)
+      } catch (e: Exception) {
+        failure?.addSuppressed(e) ?: run { failure = e }
+      }
+    }
+    failure?.let { throw it }
+  }
+
+  /**
+   * That Gradle asked `compileForPitest` about its inputs in this build: its up-to-date
+   * spec ran, or it executed. A task skipped by an `onlyIf` or disabled is asked
+   * nothing, and its class tree then stands unchecked against the compile classpath and
+   * compiler settings the stamp does not cover.
+   */
+  @Synchronized
+  internal fun noteMutationRecompileChecked(projectPath: String) {
+    recompileChecked += projectPath
+  }
+
+  @Synchronized
+  internal fun mutationRecompileChecked(projectPath: String): Boolean =
+    projectPath in recompileChecked
+
+  override fun close() {
+    var failure: Exception? = null
+    listOf(recompileLocks, fileLocks).forEach { locks ->
+      try {
+        locks.close()
+      } catch (e: Exception) {
+        failure?.addSuppressed(e) ?: run { failure = e }
+      }
+    }
+    failure?.let { throw it }
+  }
 }
 
 /**
@@ -258,14 +399,22 @@ private class CertificationFileLocks : AutoCloseable {
   private val held = linkedMapOf<String, HeldLock>()
 
   @Synchronized
-  fun acquire(projectPath: String, lockFile: File) {
+  fun acquire(
+    projectPath: String,
+    lockFile: File,
+    contended: (String) -> String = { lock ->
+      "another hardeningCertify invocation owns '$projectPath' via $lock; " +
+        "wait for it to finish before replacing its certification evidence"
+    },
+  ) {
     val normalized = lockFile.toPath().toAbsolutePath().normalize()
     held[projectPath]?.let { current ->
       check(current.path == normalized.toString()) {
-        "hardeningCertify for '$projectPath' changed its ownership-lock path"
+        "the ownership lock for '$projectPath' changed its path"
       }
       return
     }
+    normalized.parent?.let { Files.createDirectories(it) }
     val channel = FileChannel.open(
       normalized,
       StandardOpenOption.CREATE,
@@ -285,16 +434,24 @@ private class CertificationFileLocks : AutoCloseable {
     }
     if (lock == null) {
       channel.close()
-      throw IllegalStateException(
-        "another hardeningCertify invocation owns '$projectPath' via $normalized; " +
-          "wait for it to finish before replacing its certification evidence"
-      )
+      throw IllegalStateException(contended(normalized.toString()))
     }
     held[projectPath] = HeldLock(normalized.toString(), channel, lock)
   }
 
   @Synchronized
   fun isHeld(projectPath: String): Boolean = projectPath in held
+
+  /** Releases one held lock; nothing to release is not an error. */
+  @Synchronized
+  fun release(projectPath: String) {
+    val entry = held.remove(projectPath) ?: return
+    try {
+      entry.lock.release()
+    } finally {
+      entry.channel.close()
+    }
+  }
 
   @Synchronized
   override fun close() {
@@ -313,8 +470,7 @@ private class CertificationFileLocks : AutoCloseable {
     }
     held.clear()
     if (failures.isNotEmpty()) {
-      val failure = IllegalStateException(
-        "could not release hardeningCertify ownership lock")
+      val failure = IllegalStateException("could not release an ownership lock")
       failures.forEach(failure::addSuppressed)
       throw failure
     }
