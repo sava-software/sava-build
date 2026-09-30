@@ -1125,6 +1125,34 @@ $buildTail
               })
             }
           }
+          // Master-JVM settings PIT forwards to the minions, none of them in the evidence.
+          if (providers.gradleProperty("reservedSystemProperty").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") { systemProperty("user.language", "tr") }
+          }
+          if (providers.gradleProperty("jvmArgumentProvider").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") {
+              jvmArgumentProviders.add(org.gradle.process.CommandLineArgumentProvider { listOf("-Dmode=b") })
+            }
+          }
+          if (providers.gradleProperty("characterEncoding").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") { defaultCharacterEncoding = "ISO-8859-1" }
+          }
+          if (providers.gradleProperty("allJvmArgs").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") { allJvmArgs = listOf("-Duser.language=tr") }
+          }
+          // A Set binds the Iterable overload, which JavaExec routes past the List one.
+          if (providers.gradleProperty("allJvmArgsIterable").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") { setAllJvmArgs(setOf("-Duser.language=tr")) }
+          }
+          if (providers.gradleProperty("reservedSystemPropertyMap").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") { systemProperties(mapOf("java.io.tmpdir" to "/tmp/pit")) }
+          }
+          if (providers.gradleProperty("reservedSystemPropertySetter").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") { systemProperties = mapOf("file.encoding" to "ISO-8859-1") }
+          }
+          if (providers.gradleProperty("environmentEntry").isPresent) {
+            tasks.named<JavaExec>("pitestEncoding") { environment("FIXTURE_UNBOUND", "1") }
+          }
         """.trimIndent(),
     )
     runner("pitestEncoding").build()
@@ -1138,17 +1166,31 @@ $buildTail
     )
     val before = protectedFiles.associateWith { report.resolve(it).readBytes().toList() }
 
-    listOf("unmanagedPitArgs", "unmanagedPitProvider").forEach { property ->
-      val refused = runner(
-        "pitestEncoding",
-        "-P$property",
-        "--no-configuration-cache",
-      ).buildAndFail().output
-      assertTrue(
-        refused.contains("direct JavaExec args/argumentProviders are not supported") &&
-            refused.contains("first-class typed, evidence-bound plugin property"),
-        refused,
-      )
+    val masterJvmRefusals = mapOf(
+      "reservedSystemProperty" to "reserved system properties=[user.language]",
+      "reservedSystemPropertyMap" to "reserved system properties=[java.io.tmpdir]",
+      "reservedSystemPropertySetter" to "reserved system properties=[file.encoding]",
+      "jvmArgumentProvider" to "jvmArgumentProviders=1",
+      "characterEncoding" to "defaultCharacterEncoding=ISO-8859-1",
+      "allJvmArgs" to "allJvmArgs=[-Duser.language=tr]",
+      "allJvmArgsIterable" to "allJvmArgs=[-Duser.language=tr]",
+    )
+    (listOf("unmanagedPitArgs", "unmanagedPitProvider") + masterJvmRefusals.keys).forEach { property ->
+      val refused = runner("pitestEncoding", "-P$property").buildAndFail().output
+      val expectedRefusal = masterJvmRefusals[property]
+      if (expectedRefusal == null) {
+        assertTrue(
+          refused.contains("direct JavaExec args/argumentProviders are not supported") &&
+              refused.contains("first-class typed, evidence-bound plugin property"),
+          refused,
+        )
+      } else {
+        assertTrue(
+          refused.contains("the PIT master JVM carries configuration the evidence does not record") &&
+              refused.contains(expectedRefusal),
+          "$property:\n$refused",
+        )
+      }
       assertEquals(
         before,
         protectedFiles.associateWith { report.resolve(it).readBytes().toList() },
@@ -1159,6 +1201,10 @@ $buildTail
         "$property reached the PIT attempt lifecycle before refusal",
       )
     }
+
+    // The environment is inherited by the minions and recorded by nothing; it stays a
+    // documented limit rather than a refusal, because it has no unconfigured value.
+    runner("pitestEncoding", "-PenvironmentEntry").build()
   }
 
   @Test

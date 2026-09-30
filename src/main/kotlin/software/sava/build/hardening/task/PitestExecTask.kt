@@ -310,6 +310,53 @@ abstract class PitestExecTask : JavaExec() {
     argumentProviders.add(commandLineProvider)
   }
 
+  /**
+   * System properties Gradle routes past [getSystemProperties]: it keeps a reserved set
+   * (`file.encoding`, `user.language`, `java.io.tmpdir`, the `javax.net.ssl` stores, ...)
+   * in a map of its own and emits them only on the command line, from where PIT forwards
+   * every `-D` to the minions. Recorded on the way in by behaviour rather than by a copy
+   * of Gradle's list: whatever a setter did not land in the mutable map was reserved.
+   */
+  private val reservedSystemPropertyKeys = mutableSetOf<String>()
+
+  /** JavaExec reports the daemon's own charset when nothing was set, so record the setter. */
+  private var characterEncodingConfigured: String? = null
+
+  /** Deprecated in Gradle, and it parses -D entries past every other setter here. */
+  private var allJvmArgsConfigured: List<String>? = null
+
+  override fun setAllJvmArgs(arguments: List<String>) {
+    super.setAllJvmArgs(arguments)
+    allJvmArgsConfigured = arguments.toList()
+  }
+
+  override fun setAllJvmArgs(arguments: Iterable<*>) {
+    super.setAllJvmArgs(arguments)
+    allJvmArgsConfigured = arguments.map { it.toString() }
+  }
+
+  override fun setDefaultCharacterEncoding(defaultCharacterEncoding: String?) {
+    super.setDefaultCharacterEncoding(defaultCharacterEncoding)
+    characterEncodingConfigured = defaultCharacterEncoding ?: "<null>"
+  }
+
+  override fun systemProperty(name: String, value: Any?): JavaExec {
+    val result = super.systemProperty(name, value)
+    if (!systemProperties.containsKey(name)) reservedSystemPropertyKeys.add(name)
+    return result
+  }
+
+  override fun systemProperties(properties: Map<String, *>): JavaExec {
+    val result = super.systemProperties(properties)
+    properties.keys.filterNot(systemProperties::containsKey).forEach(reservedSystemPropertyKeys::add)
+    return result
+  }
+
+  override fun setSystemProperties(properties: Map<String, *>) {
+    super.setSystemProperties(properties)
+    properties.keys.filterNot(systemProperties::containsKey).forEach(reservedSystemPropertyKeys::add)
+  }
+
   override fun setClasspath(classpath: FileCollection): JavaExec {
     val result = super.setClasspath(classpath)
     effectiveToolClasspath.setFrom(classpath)
@@ -369,11 +416,23 @@ abstract class PitestExecTask : JavaExec() {
    * the main class and verbosity. PIT's child JVMs — the ones that actually run the
    * tests — are configured through the suite's `minionJvmArgs`, which is
    * evidence-bound.
+   *
+   * The reserved-key properties, `jvmArgumentProviders` and `defaultCharacterEncoding`
+   * reach the minions by the same road (PIT forwards every master `-D`) and were caught
+   * by nothing but the build script's bytes inside `sourceSha256`. `environment(...)` is
+   * deliberately left alone: it has no unconfigured value to compare against, so it stays
+   * an inherited, unrecorded input like the shell it came from.
    */
   private fun requireUnconfiguredMasterJvm() {
     val configured = buildList {
       jvmArgs?.takeIf { it.isNotEmpty() }?.let { add("jvmArgs=$it") }
       systemProperties.takeIf { it.isNotEmpty() }?.let { add("systemProperties=${it.keys.sorted()}") }
+      reservedSystemPropertyKeys.takeIf { it.isNotEmpty() }?.let {
+        add("reserved system properties=${it.sorted()}")
+      }
+      jvmArgumentProviders.takeIf { it.isNotEmpty() }?.let { add("jvmArgumentProviders=${it.size}") }
+      characterEncodingConfigured?.let { add("defaultCharacterEncoding=$it") }
+      allJvmArgsConfigured?.let { add("allJvmArgs=$it") }
     }
     if (configured.isEmpty()) return
     throw GradleException(
