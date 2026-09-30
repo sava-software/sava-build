@@ -748,6 +748,49 @@ internal object HardeningHelpText {
         "  A report-directory .running file is different: it is an empty PIT attempt guard " +
             "left when that report did not complete cleanly.")
     appendLine()
+    appendLine("Report reuse by a direct Verify:")
+    appendLine(
+        "  pitest<Suite>Verify without a PIT run compares the report's .evidence.tsv with a " +
+            "fresh capture: compiled classes, source fingerprint, runtime and tool classpaths, " +
+            "mutation toolchain, configuration, Java runtime, plugin, scope and report bytes.")
+    appendLine(
+        "  It keeps the report, and says so on one lifecycle line, only when the source " +
+            "fingerprint is the sole difference and: PIT did not run in this invocation; the " +
+            "suite runs without ArcMutate (its @Generated filter reads source text); every " +
+            "evidence source outside the mutation recompile (build scripts, resources, a prune " +
+            "selection, module-info.java, recompile-excluded files) is byte-identical to the " +
+            ".uncompiled-sources.tsv the run recorded; no task was excluded; and " +
+            "compileForPitest's stamp names both the Java sources on disk and the class tree " +
+            "on disk. Class files carry line tables, so a comment that moves a code line is a " +
+            "changed class. The refusal names the first cause that decides; it does not say " +
+            "whether a run is owed, because it cannot tell a code change from a moved line: " +
+            "that is the reachability rule's question (HARDENING.md, Lifecycle), and the retry " +
+            "line says so, or says when a re-run of the Verify is the remedy.")
+    appendLine(
+        "  A kept report is tagged [kept report], advances no machine-local stash, satisfies " +
+            "nothing but that check, and stays kept on every later direct Verify until a fresh " +
+            "run. Writers, mode snapshots and compare, convergence and certification compare " +
+            "exactly, and every writer observes fresh. HARDENING.md (Lifecycle) states the one " +
+            "accepted limit, a test that reads a Java source file by path.")
+    appendLine(
+        "  compileForPitest is a full recompile into an emptied tree that publishes that " +
+            "stamp only after a compile during which the sources held still (bytes, sizes, " +
+            "timestamps and file keys, read before and after), and it is never UP-TO-DATE " +
+            "against other source bytes. An invocation takes the tree before the recompile " +
+            "can start (lockMutationClasses: one lock under the checkout, one named after the " +
+            "tree under the Gradle user home) and keeps it until the build ends, so a second " +
+            "invocation refuses instead of recompiling (which empties the tree) or mutating " +
+            "alongside; clean and cleanCompileForPitest take the same locks; a recompile or " +
+            "PIT run that finds the tree untaken, and any direct Verify without a PIT run " +
+            "whose recompile was skipped, disabled or excluded, refuses itself. Ownership " +
+            "covers the project's own build directory: a parent project's clean over a " +
+            "centralized build layout is not gated, and two checkouts sharing a relocated " +
+            "build directory contend only while they share a Gradle user home. A PIT run " +
+            "refuses to start on a class tree the stamp does not name, " +
+            "which is what a failed or skipped recompile leaves behind, checks the stamp again " +
+            "once its two evidence captures agree, and refuses when compileForPitest is " +
+            "excluded from its task graph, since the stamp does not cover the compile classpath.")
+    appendLine()
     appendLine("Repository scaffolding (may write files):")
     appendGenerated(
         "hardeningInit",

@@ -1983,3 +1983,44 @@ retire matching authority*; *aggregate completeness needs an exact configured in
 invocation-bound receipt callbacks, and successful task outcomes—not a directory scan or a
 fictional simultaneous source snapshot*; *keep the full diagnostic stream without making it
 the operator console*.
+
+## The gate that ran on every amend
+
+In idl-src-gen, from 2026-09-26 to 09-30, the Gradle daemon logs record at least 154
+full PIT suite executions — 111 of them the three-minute `jsonParse` — for 73 commits
+and 12 pushes, about five hours of mutation testing; one push of six commits had about
+95 runs behind it. Three things drove it. A local rule attached evidence to every change:
+"one fresh, unscoped `pitest<Suite> -PnoMutationHistory` per owed suite on the final
+content, followed by that suite's `pitest<Suite>BaselineRetag`", and Retag is itself a
+fresh run, so each commit or amend cost two full observations per owed suite. The agent template said "before handoff",
+which an agent reads as every reply. And the local reviewer ran after the evidence, so
+each review round's corrections amended the commit, made the report stale, and owed the
+runs again. Fuzzing, by contrast, was already a release-checklist campaign run once from
+a detached worktree.
+
+The last amend of that series changed two comments in `Entrypoint.java` and
+`DeleteGuard.java` without moving a line, one hand-edited `# line` tag and two Markdown
+files. The tag edit (`# line 1487 -> 1473`) read the template's "tags are review
+metadata" as licence; the writers refresh a tag from a fresh report, and a hand-written
+one asserts a line no run observed. Every class file was byte-identical before and after, and the evidence manifest
+already recorded the class fingerprint beside the source fingerprint; `classesSha256`
+matched, `sourceSha256` did not, and the validator refused on the one field, its only
+remedy a full run. That run hit a `RUN_ERROR` and had to be repeated; the push landed
+nine seconds after the third.
+
+The requested fix was a class hash with the debug attributes stripped so that
+line-shifting comment edits would verify too. PIT's default filters group mutants by line
+within a class: `try { a++; } finally { b++; }` is one mutant on one line and two on
+four, so a hash blind to line tables keeps reports that a fresh run would contradict.
+The plugin keeps the exact class fingerprint instead and lets a direct verify stand on an
+earlier report only when Java source text is the sole moved input and the recompile
+proves the class tree came from the sources on disk — which needed the recompile to
+become full and self-checking, because a class fingerprint says nothing about a tree
+Gradle wrongly called up to date, and `-x compileForPitest` produces that state on
+demand. Every other input stays exact, licensed suites stay on the source rule because
+ArcMutate's `@Generated` filter reads source text, and the hand-edited tag became a rule
+of its own: a tag is part of its row.
+
+Rules: *the mutation gate runs once per reviewed unpushed range, never per commit or
+amend*; *the evidence is keyed to the compiled code, and a kept report needs the
+recompile to vouch for it*; *a tag is part of its row*.

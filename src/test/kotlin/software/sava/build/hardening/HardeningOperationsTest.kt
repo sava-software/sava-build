@@ -90,6 +90,22 @@ class HardeningOperationsTest {
     assertTrue(help.contains("fuzzWireMinimize"), help)
     assertTrue(help.contains("durable receipt in .pitest-history/"), help)
     assertTrue(
+      help.contains("Report reuse by a direct Verify:") &&
+        help.contains("keeps the report, and says so on one lifecycle line, only when the source " +
+            "fingerprint is the sole difference") &&
+        help.contains("a comment that moves a code line is a changed class") &&
+        help.contains("it does not say whether a run is owed") &&
+        help.contains("tagged [kept report], advances no machine-local stash") &&
+        help.contains("HARDENING.md (Lifecycle) states the one accepted limit") &&
+        !help.contains("so keep such inputs under resources") &&
+        help.contains("takes the tree before the recompile can start (lockMutationClasses: one lock under the checkout, one named after the tree under the Gradle user home)") &&
+        help.contains("clean and cleanCompileForPitest take the same locks") &&
+        help.contains("whose recompile was skipped, disabled or excluded, refuses itself") &&
+        help.contains("a parent project's clean over a centralized build layout is not gated") &&
+        help.contains("refuses when compileForPitest is excluded from its task graph"),
+      help,
+    )
+    assertTrue(
       help.contains("Aggregate transition lifecycle:") &&
         help.contains("Before child PIT, :hardeningCertifyAll reports every provenance-bound suite") &&
         help.contains("consolidated refusal is the expected adoption stop") &&

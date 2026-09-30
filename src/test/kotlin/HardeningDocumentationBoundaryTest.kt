@@ -124,6 +124,41 @@ class HardeningDocumentationBoundaryTest {
   }
 
   @Test
+  fun `the mutation gate runs once per reviewed range and a kept report is keyed to compiled code`() {
+    val compactHardening = hardening.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactHardening.contains("Once, when the work is complete and reviewed, before it is pushed") &&
+          compactHardening.contains("The owed suites run once per unpushed range, on its final content") &&
+          compactHardening.contains("They do not run per commit, per amend or per review round") &&
+          compactHardening.contains("The evidence is keyed to the compiled code and to every other input PIT is given; when Java source text is the only one that moved and every class came out byte-identical, no run is owed") &&
+          compactHardening.contains("The dedicated fork options (heap sizes, assertions, debugging, the bootstrap classpath) reach the master alone") &&
+          compactHardening.contains("a kept report proves the range owes that suite nothing, a refusal proves nothing by itself") &&
+          compactHardening.contains("a comment that moves a code line is a changed class it cannot keep, though the edit owes no suite") &&
+          compactHardening.contains("the refusal names the field, or the kind of input, that moved") &&
+          compactHardening.contains("a test that opens a Java source file by path reads text no field binds once the classes match") &&
+          compactHardening.contains("A suite that runs ArcMutate keeps the source-text rule") &&
+          compactHardening.contains("Writers, mode snapshots, convergence and certification never stand on a kept report") &&
+          compactHardening.contains("A tag is part of its row") &&
+          compactHardening.contains("(casebook: the gate that ran on every amend)") &&
+          compactHardening.contains("Verification is tiered by cost and by stage"),
+      "the pre-push gate and the kept-report rule must be stated with their limits",
+    )
+    val template = hardening.substringAfter("## Agent instructions template")
+      .lineSequence().filter { it.startsWith(">") }.joinToString(" ") { it.removePrefix("> ").trim() }
+    assertTrue(
+      template.contains("The mutation suites are a final gate, run once per unpushed range") &&
+          template.contains("Never per commit, amend or review round") &&
+          template.contains("A change the gate forced owes it again by the same reachability rule") &&
+          template.contains("it keeps its report while only recompiled Java sources changed") &&
+          template.contains("proves that suite is owed nothing") &&
+          template.contains("`# line` tags are review metadata that belong to their row"),
+      "the agent template must carry the gate rule:\n$template",
+    )
+    val casebook = projectRoot.resolve("HARDENING_CASEBOOK.md").readText()
+    assertTrue(casebook.contains("## The gate that ran on every amend"), "the cited casebook entry must exist")
+  }
+
+  @Test
   fun `certification retry policy is project-atomic`() {
     val compactHardening = hardening.replace(Regex("\\s+"), " ")
     assertTrue(

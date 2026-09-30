@@ -45,13 +45,14 @@ keep the description accurate:
 
 ## Lifecycle
 
-Verification is tiered by cost, and the tier is chosen by what the change can
-affect — not by habit in either direction:
+Verification is tiered by cost and by stage: the table says when each tier
+runs, and the reachability rule below it says which suites the mutation tier
+owes — not habit in either direction:
 
 | When | Command | What it proves |
 |---|---|---|
-| Inner loop | the module's `test` (or `--tests` for the touched classes) | The change works. |
-| Before handing off a change | the `pitest<Suite>`(s) whose mutated code the change can reach | No new unkilled mutants where the change lives. |
+| While working | the module's `test` (or `--tests` for the touched classes) | The change works. |
+| Once, when the work is complete and reviewed, before it is pushed | each `pitest<Suite>` whose mutated code the unpushed range can reach | No new unkilled mutants anywhere the range lives. |
 | Before a release | `hardeningCertify` on every module; an explicit local `fuzzAll -PmaxFuzzTime=<seconds> -PmaxParallelFuzzTargets=<count>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
 
 A release command without provenance is not durable evidence. Record the repository
@@ -231,15 +232,45 @@ one:
 - test-only edits still owe the suite those tests kill mutants in: a
   weakened or deleted test shows up as a new survivor, which is precisely
   what the ratchet is for. They owe nothing beyond it.
-- doc, build-script, and comment changes owe no suite at all.
+- doc and comment changes owe no suite at all, even when the verify below
+  cannot keep its report over them. A build-script change owes the project's
+  suites only when it changes what PIT is given: a dependency, a compiler or
+  suite setting, the PIT task itself.
 
-Both failure modes waste something real: per-change full gates turn an inner
-loop into a queue, and never running the gate hides what only surfaces there
-(`TIMED_OUT` flips under load, cross-module callers). The full gate runs
-before anything is published — that is the requirement; *where* is a cost
-decision. Wire it into CI if the runners can afford serialized PIT; otherwise
-the release checklist owns a local run and CI stays on `check`. Either is
-fine deliberately chosen; the failure mode is a repo where nobody owns it.
+The evidence is keyed to the compiled code and to every other input PIT is
+given; when Java source text is the only one that moved and every class came
+out byte-identical, no run is owed. A direct `pitest<Suite>Verify` therefore
+keeps an earlier invocation's report when the Java sources the recompile
+compiles are the only recorded input that moved and the recompile shows every
+main and test class came out byte-identical, and it says so. Its answer is one-sided:
+a kept report proves the range owes that suite nothing, a refusal proves
+nothing by itself, because the verify keeps only what it can prove. Class
+files carry line tables, so a comment that moves a code line is a changed
+class it cannot keep, though the edit owes no suite; every other input — a
+resource, a build script, a prune selection, a dependency, the tools, the
+suite's configuration — must be exact, and the refusal names the field, or
+the kind of input, that moved. One limit is accepted: a test that opens a
+Java source file by path reads text no field binds once the classes match,
+so keep such inputs under resources, where the processed copy is bound. A
+suite that runs ArcMutate keeps the source-text rule, because its
+`@Generated` filter reads `src/main/java`. Writers, mode snapshots,
+convergence and certification never stand on a kept report; `hardeningHelp`
+lists what is compared *(casebook: the gate that ran on every amend)*.
+
+The owed suites run once per unpushed range, on its final content: after
+review says the range is clean and before it is pushed. They do not run per
+commit, per amend or per review round, and nothing before that gate records
+mutation evidence *(casebook: the gate that ran on every amend)*. A change the
+gate forces goes back through review as a delta, and that delta owes the gate
+again by the same reachability rule; a direct verify that keeps the report
+proves it does not. Both failure modes waste something real: per-change gates
+turn an inner loop into a queue, and never running the gate hides what only
+surfaces there (`TIMED_OUT` flips under load, cross-module callers). The full
+gate runs before anything is released — that is the requirement; *where* is
+a cost decision. Wire it into CI if the runners can afford serialized PIT;
+otherwise the release checklist owns a local run and CI stays on `check`.
+Either is fine deliberately chosen; the failure mode is a repo where nobody
+owns it.
 
 ## Making the loop faster
 
@@ -308,7 +339,20 @@ run cheaper. The cost model is directly optimisable:
   PIT. Do not infer memory pressure from `RUN_ERROR` or generic minion death; use the
   setting only when PIT explicitly diagnoses a process-resource or
   insufficient-memory failure. Change `threads` only for measured aggregate
-  contention.
+  contention. On the PIT master JVM, `jvmArgs`, system properties (Gradle's
+  reserved keys included), `jvmArgumentProviders`, `allJvmArgs` and
+  `defaultCharacterEncoding` are refused, because PIT forwards every master
+  `-D` and `-javaagent` to the minions, a customised main class can read the
+  rest, and the evidence records none of them. The dedicated fork options
+  (heap sizes, assertions, debugging, the bootstrap classpath) reach the master
+  alone, are not forwarded, and are not recorded either. An `environment(...)`
+  entry is inherited by master and minions and recorded nowhere;
+  `JAVA_TOOL_OPTIONS` and `JDK_JAVA_OPTIONS` are JVM options by that road, so
+  never carry a refused setting in them. Gradle also puts the daemon's own
+  `file.encoding` and `user.language`/`country`/`variant` on every forked JVM,
+  where PIT forwards them to the minions; they cannot be refused and are not
+  recorded, so two daemons with different locales share one evidence
+  identity. After changing an environment entry, the run is owed by hand.
 - **Scope the iteration loop with `-PmutateOnly=<glob[,glob]>`** — mutate
   only the class under attack while writing its kills, then re-run unscoped
   with `-PnoMutationHistory` once before making any accepted-baseline or
@@ -510,7 +554,7 @@ external property rather than private steps or an expected value generated by th
 same implementation. With no defensible oracle, investigate or meet the explicit
 acceptance bar above — never manufacture a test just to improve the score.
 
-Keep the reporting proportional. At the PR or agent-handoff boundary, summarize
+Keep the reporting proportional. At the PR or pre-push gate, summarize
 each nontrivial mutation-driven behavioral cluster, not every mutant, as
 `Property: ... | Oracle: ... | Outcome: missing assertion / production bug / accepted equivalent`.
 The durable test name and assertions normally carry the property. Add a test comment
@@ -1416,6 +1460,8 @@ multiset already fails a genuinely new sibling as a count change, so unlike
 the audited timeout sets there is no new-sibling quiet case to preserve.
 Partial tags or skewed counts fall back to the audit's key-level disjointness
 (the skew is already failing the build or printing the candidate preview).
+A tag is part of its row: the writers refresh it, and a hand-edited tag is a
+hand-edited row *(casebook: the gate that ran on every amend)*.
 
 Accepted-baseline documents have an explicit schema. Schema 1 begins with
 `!sava-hardening-baseline-schema,1`; the non-comment marker makes a legacy
@@ -2279,7 +2325,11 @@ it. `TIMED_OUT` flips (above) are one mechanism; two more:
 An implausibly *quiet* run is the same defect from the other side: after a source edit,
 treat zero baseline drift as suspect until the log shows the PIT recompile executed
 rather than UP-TO-DATE, and never edit sources while a build that will certify them is
-running *(casebook: the green run against stale classes)*.
+running *(casebook: the green run against stale classes)*. The recompile is now never
+UP-TO-DATE against source bytes other than the ones it compiled, and a PIT run refuses
+to start on a class tree the recompile has not vouched for, or with the recompile
+excluded from its graph — the states a failed or skipped recompile leaves — so that
+tell is caught before PIT runs; the rule about editing during a build stands.
 
 Convergence is checkable, and the plugin scripts it: `pitestConverge` runs
 every suite twice in one invocation — snapshotting and clearing the reports
@@ -2537,14 +2587,24 @@ The source block below is quoted only so it renders as one unit in this document
 the task prints it unquoted between `<!-- hardening-template block:start -->` and
 `<!-- hardening-template block:end -->`.
 
-> - Iterate with the module's `test` task. Before handoff, run each `pitest<Suite>`
->   whose mutated code the change can reach, including suites in dependent modules,
->   and `mutationOwnershipAudit` when production classes or target/exclusion rules
->   change. `hardeningCertify` (or `:hardeningCertifyAll`) is the pre-release check
->   this repo's notes assign an owner to, not the inner loop.
-> - Iterate on one cluster with `-PmutateOnly=<class-glob>`. Before any record
->   decision, re-run unscoped with `-PnoMutationHistory`: a `[history]` report cannot
->   support adding, removing, or relabelling records.
+> - Work with the module's `test` task. The mutation suites are a final gate, run once
+>   per unpushed range when the work is complete and reviewed, before the push: each
+>   `pitest<Suite>` whose mutated code the range can reach, including suites in
+>   dependent modules, plus `mutationOwnershipAudit` when production classes or
+>   target/exclusion rules changed. Never per commit, amend or review round; a change
+>   the gate forces goes back through review as a delta. `hardeningCertify` (or
+>   `:hardeningCertifyAll`) and `fuzzAll` are the pre-release checks this repo's notes
+>   assign an owner to.
+> - Doc and comment edits owe no suite; a build-script edit only when it changes what
+>   PIT is given. A change the gate forced owes it again by the same reachability rule
+>   once reviewed. `pitest<Suite>Verify` answers one way: it keeps its report while only
+>   recompiled Java sources changed and every recompiled class is byte-identical, which
+>   proves that suite is owed nothing; a refusal (a moved line, a resource, a build
+>   script, an ArcMutate suite) names its cause and proves nothing by itself.
+> - When the gate reports unkilled mutants, iterate on one cluster with
+>   `-PmutateOnly=<class-glob>`. Before any record decision, re-run unscoped with
+>   `-PnoMutationHistory`: a `[history]` report cannot support adding, removing, or
+>   relabelling records.
 > - An unkilled mutant has three outcomes: kill it with a test that asserts the
 >   property it breaks, refactor it out of existence, or accept it with a written
 >   reason in `config/pitest/README.md` and a family label on the row. Refreshes seed
@@ -2562,8 +2622,9 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 >   Never hand-edit baseline
 >   rows or provenance stamps.
 > - Baseline keys are line-less (`class,method,mutator,STATUS`); `# line` tags are
->   review metadata. Identical rows are sibling mutants and the comparison is a
->   multiset: never hand-dedupe.
+>   review metadata that belong to their row: `BaselineRetag` refreshes them, a hand
+>   edit is a hand-edited row. Identical rows are sibling mutants and the comparison
+>   is a multiset: never hand-dedupe.
 > - A new `TIMED_OUT` mutant is a reviewer stop, never detection. Record it in
 >   `config/pitest/<suite>-timeouts.csv` with a cause and argue it in the README; only
 >   `cause:liveness` certifies. A member whose coordinate has left the population is
@@ -2573,8 +2634,8 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 >   stubs that return distinguishable non-default values, and the subject built inside
 >   the test body. Exclusions must cover the test source set, not a naming convention.
 > - Verify by the absence of failures: trust the exit code and the `.running`
->   sentinel, not a summary. `MINION_DIED` and `RUN_ERROR` are not results; re-run. A
->   suite that got faster without getting narrower is a bug report.
+>   sentinel, not a summary. `MINION_DIED` and `RUN_ERROR` are not results; re-run once
+>   on a quiet machine. A suite that got faster without getting narrower is a bug report.
 > - Fuzz findings become a committed seed input and a named regression test. Run
 >   `fuzzAll` locally with an explicit `-PmaxFuzzTime` and `-PmaxParallelFuzzTargets`
 >   before a release. Where one thing has two representations, fuzz the differential.
