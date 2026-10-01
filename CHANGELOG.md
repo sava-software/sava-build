@@ -1,5 +1,14 @@
 # Changelog
 
+## [21.6.3](https://github.com/sava-software/sava-build/compare/21.6.2...21.6.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* **hardening:** keep a completed report across Java edits that leave the recompiled classes byte-identical ([05522e4](https://github.com/sava-software/sava-build/commit/05522e4a9d92ab0106fc3a05445245c982b3e41f))
+* **hardening:** make the mutation suites a pre-push gate and state the kept-report rule ([3c74df4](https://github.com/sava-software/sava-build/commit/3c74df44255f97605120e3984ae2d47fab88da3d))
+* **hardening:** refuse the master-JVM settings PIT forwards to its minions ([92f3d4a](https://github.com/sava-software/sava-build/commit/92f3d4aeb3021fadd32e5d4559981c37a7f9364d))
+
 ## [21.6.2](https://github.com/sava-software/sava-build/compare/21.6.1...21.6.2) (2026-09-27)
 
 
