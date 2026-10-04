@@ -2024,3 +2024,30 @@ of its own: a tag is part of its row.
 Rules: *the mutation gate runs once per reviewed unpushed range, never per commit or
 amend*; *the evidence is keyed to the compiled code, and a kept report needs the
 recompile to vouch for it*; *a tag is part of its row*.
+
+## The registry that was a journal
+
+vault-stat-service's `config/pitest/README.md` grew, from its first pass on 2026-07-24 to
+2026-10-02, into a dated journal of 3,469 lines over 414 accepted rows: each gate appended
+a section with the pass's counts, the writer tasks it ran, the rows it pruned and the
+mutants it killed, under the acceptance arguments of the pass before. The questions a
+reviewer brings to the file — is this label's argument still the live one, which members
+does it cover, what does the suite's mutator set leave unmutated — took a reading of the
+whole file, because an argument restated at three dates reads as three arguments, a count
+written in prose was stale by the next pass, and retired incidents sat beside live
+acceptances with nothing but a date to tell them apart. Everything the journal restated
+was already printed or recorded elsewhere: the counts by `pitest<Suite>Verify` and
+`pitest<Suite>Debt` on every run, the writer receipts by git, the policy by this document.
+
+The rewrite kept the journal verbatim beside the README as `HISTORY.md`, unmaintained, and
+replaced the README with the arguments in force: per family label its members, its
+reason, the independent oracle and the condition that invalidates it; per audited
+timeout member its cause; the rationale for debt deliberately left;
+the measurements behind each suite's mutator set, which no listing reconstructs. The
+repository added two rules of its own: no restated counts and no ceremony in its prose,
+and a duplicate-prose check before any commit that adds to it. `hardeningInit` scaffolds
+an illustrative skeleton of that shape, and the agent block names the rule.
+
+Rules: *the README holds the arguments in force, updated in place and never appended to
+as a pass report*; *the totals the build prints are not restated; the measurements it
+cannot reconstruct are kept with their provenance*.

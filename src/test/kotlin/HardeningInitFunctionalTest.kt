@@ -60,8 +60,13 @@ class HardeningInitFunctionalTest {
     assertTrue(first.output.contains("hardeningInit: wrote"), first.output)
     assertTrue(readme.isFile, "README not scaffolded")
     val readmeText = readme.readText()
-    assertTrue(readmeText.startsWith("# Mutation hardening evidence"), readmeText)
+    assertTrue(readmeText.startsWith("# Mutation-testing records"), readmeText)
     assertTrue(readmeText.contains("repository-specific evidence and decisions only"), readmeText)
+    assertTrue(readmeText.contains("kept current in place and never"), readmeText)
+    assertTrue(readmeText.contains("appended to as a pass report"), readmeText)
+    assertTrue(readmeText.contains("The layout below is illustrative"), readmeText)
+    assertTrue(readmeText.contains("`# capacity-hint`"), readmeText)
+    assertTrue(readmeText.contains("Invalidated by:"), readmeText)
     assertTrue(readmeText.contains("./gradlew :hardeningHelp"), readmeText)
     assertTrue(
       readmeText.contains("inline, fenced, or tabular coordinate rosters source-line-free") &&
@@ -69,14 +74,15 @@ class HardeningInitFunctionalTest {
           readmeText.contains("typographic `×N` is equivalent"),
       readmeText,
     )
-    assertTrue(readmeText.contains("## Untriaged debt"), readmeText)
-    assertTrue(readmeText.contains("## Accepted mutants"), readmeText)
+    assertTrue(readmeText.contains("## Suites"), readmeText)
+    assertTrue(readmeText.contains("## <suite> (`pitest<Suite>`)"), readmeText)
+    assertTrue(readmeText.contains("### Families"), readmeText)
+    assertTrue(readmeText.contains("### Declined and untriaged debt"), readmeText)
     val normalizedReadme = readmeText.replace(Regex("\\s+"), " ")
     assertTrue(
       normalizedReadme.contains("Name the class, method, and semantic branch") &&
           normalizedReadme.contains("omit source line numbers") &&
-          normalizedReadme.contains("Every row retained in an accepted CSV remains active") &&
-          normalizedReadme.contains("pitest<Suite>BaselinePrune"),
+          normalizedReadme.contains("the numbers no build listing reconstructs"),
       readmeText,
     )
     assertTrue(
@@ -85,7 +91,7 @@ class HardeningInitFunctionalTest {
           normalizedReadme.contains("condition that would make the acceptance invalid"),
       readmeText,
     )
-    assertTrue(readmeText.contains("## Audited timeout causes"), readmeText)
+    assertTrue(readmeText.contains("### Audited timeouts"), readmeText)
     assertTrue(
       normalizedReadme.contains("record the class and method, the observed local behavior") &&
           normalizedReadme.contains("deterministic seams or budgets tried") &&

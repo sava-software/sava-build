@@ -6774,6 +6774,7 @@ tasks.register("hardeningInit") {
       qualifiedHardeningTaskPath(project.path, "pitest<Suite>TimeoutAuditInit")
   val initCertifyTaskPath = qualifiedHardeningTaskPath(project.path, "hardeningCertify")
   val initFuzzAllTaskPath = qualifiedHardeningTaskPath(project.path, "fuzzAll")
+  val initProjectName = project.name
   doLast {
     BaselineFiles.requireRegularFileOrMissing(initProjectDirectory, readme)
     BaselineFiles.requireRegularFileOrMissing(initRootProjectDirectory, gitignore)
@@ -6783,37 +6784,56 @@ tasks.register("hardeningInit") {
       readme.parentFile.mkdirs()
       BaselineFiles.writeAtomically(initProjectDirectory, readme,
           """
-          |# Mutation hardening evidence
+          |# Mutation-testing records — `$initProjectName`
           |
-          |This file contains repository-specific evidence and decisions only. Run
-          |`./gradlew $initHelpTaskPath` for the exact mechanics installed in this checkout,
-          |and `./gradlew $initTemplateTaskPath` for the version-matched agent contract.
-          |The portable decision policy lives in sava-build's `HARDENING.md`.
-          |Keep all prose and inline, fenced, or tabular coordinate rosters source-line-free;
-          |retain line-less class/method/mutator evidence and meaningful multiplicity as `xN`
-          |(typographic `×N` is equivalent).
+          |This file holds the arguments in force behind this repository's mutation records:
+          |repository-specific evidence and decisions only, each kept current in place and never
+          |appended to as a pass report. The policy is sava-build's `HARDENING.md`; run
+          |`./gradlew $initHelpTaskPath` for the mechanics installed in this checkout and
+          |`./gradlew $initTemplateTaskPath` for the version-matched agent contract. Name the
+          |class, method, and semantic branch, and omit source line numbers: keep all prose and
+          |inline, fenced, or tabular coordinate rosters source-line-free, and retain line-less
+          |class/method/mutator evidence and meaningful multiplicity as `xN`
+          |(typographic `×N` is equivalent). The layout below is illustrative; tables and shared
+          |explanations are fine where they read better.
           |
-          |## Untriaged debt
+          |## Suites
           |
-          |Record the local owner, measured scope, and retirement plan for every seeded
-          |`# untriaged` family.
+          |What each suite mutates, the tests it runs, and the measurements behind its mutator
+          |set, with their provenance: these are the numbers no build listing reconstructs.
           |
-          |## Accepted mutants
+          |## <suite> (`pitest<Suite>`)
+          |
+          |A section per suite, with the three headings below.
+          |
+          |### Families
           |
           |For every accepted family, record its exact `# <label>`, local structural reason,
-          |property, independent oracle, and the condition that would make the acceptance
-          |invalid. Name the class, method, and semantic branch, and omit source line numbers.
-          |Every row retained in an accepted CSV remains active matching authority regardless
-          |of a `# retired`, `# refactor`, or other note. Finish a reviewed refactor removal
-          |through the installed `pitest<Suite>BaselinePrune` protocol, then keep retired
-          |incidents outside the active record and separate from current acceptance evidence.
+          |property, independent oracle, the condition that would make the acceptance invalid,
+          |and the members it covers, as this example does:
           |
-          |## Audited timeout causes
+          |- `# capacity-hint` — the initial capacity handed to the by-key map is mutated
+          |  (doubled, halved, shifted); the map holds the same entries whatever capacity it
+          |  starts with. What the capacity does change is when the map resizes, what it
+          |  allocates, and its iteration order: nothing in `ExampleCache` iterates the map, and
+          |  the map has no resource contract, so the allocation and resizing differences are
+          |  incidental constant factors. Oracle: the entries looked up by key. Invalidated by: a
+          |  reader that iterates the map and acts on its order, or a resource contract on the
+          |  map's allocation or size. Covers: `ExampleCache.<init>`, the by-key map's capacity
+          |  argument.
           |
-          |For every audited timeout family, record the class and method, the observed local
-          |behavior, deterministic seams or budgets tried, any fixture safety bound, and the
-          |measured structural cause. A global statement that the suite is slow is not
-          |evidence for an individual mutant.
+          |### Audited timeouts
+          |
+          |For every audited member, or a cause members share, record the class and method, the
+          |observed local behavior, deterministic seams or budgets tried, any fixture safety
+          |bound, and the measured structural cause. A global statement that the suite is slow is
+          |not evidence for an individual mutant.
+          |
+          |### Declined and untriaged debt
+          |
+          |Record the local owner, measured scope, and retirement plan for every seeded
+          |`# untriaged` family; for debt deliberately left, its rationale and the condition under
+          |which it is revisited.
           |""".trimMargin()
       )
       logger.lifecycle("hardeningInit: wrote $readme")

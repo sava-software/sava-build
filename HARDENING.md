@@ -7,8 +7,12 @@ in use (or `./gradlew :hardeningHelp` when the root project owns the plugin).
 This document owns human policy, interpretation, and safety rules. The
 repository [README](README.md) owns setup and the `sava-build` release procedure,
 and [HARDENING_CASEBOOK.md](HARDENING_CASEBOOK.md) is historical evidence rather
-than current instructions. Consumer notes and `config/pitest/README.md` should focus on
-repository-specific ownership, measurements, reasons, and provenance. Point to
+than current instructions. Consumer notes and `config/pitest/README.md` should hold the
+arguments in force — repository-specific ownership, measurements, reasons, and
+provenance — kept current in place: an argument is updated, never appended to as a pass
+report; the totals the verify and debt listings print are not restated; the
+measurements they cannot reconstruct (a mutator trial, a fixture's bound) are recorded
+with their provenance; history is git's *(casebook: the registry that was a journal)*. Point to
 `hardeningHelp` when a detailed copy of installed behavior would otherwise need
 maintenance *(casebook: the adoption whose authority omitted its own gate)*. This is
 writing guidance, not a semantic property that `check` attempts to
@@ -864,7 +868,19 @@ orphaned argument surfaces instead of silently opening a new bucket — and it
 surfaces in the listing where the counts are read, since a count is exactly
 what makes a mistyped label read as finished triage
 (`# untriaged` is exempt — seeded debt needs no section). This check proves only
-that the pointer resolves; it cannot prove the prose is still true. A family label
+that the pointer resolves; it cannot prove the prose is still true. The README is read
+beside the counts the build prints, so it holds the arguments in force and not a record
+of passes: an argument is updated in place when its code or its members change, and what
+a run counted, added, pruned or killed is the run's output and git's history, never a
+section appended under last month's arguments *(casebook: the registry that was a
+journal)*. One layout that has worked is a section per suite with its families (each
+naming its members, the acceptance reason — an equivalence, or the specific capability
+the deterministic harness lacks — the independent oracle, and the condition that
+invalidates it), its audited timeouts with their causes (a cause members share
+argued once, naming them), and the debt deliberately left with its rationale; tables,
+subsections and shared explanations are fine where they read better, and the
+measurements behind a suite's mutator set stay, with their provenance, since no listing
+reconstructs them. A family label
 never authorizes every superficially similar mutant. Re-read each live family's
 property, oracle, and escape when its code or callers change, and keep historical
 incident prose separate from the current acceptance argument so a stale line or
@@ -2540,8 +2556,11 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    `./gradlew :pitest<Suite>BaselineUpdate` when the root project owns hardening),
    review the written rows, and commit `config/pitest/`, including each suite's
    PIT-version and mutation-toolchain sidecars.
-4. Review the `config/pitest/README.md` written by `hardeningInit`, then record
-   accepted-mutant evidence (initially empty) and any seeded untriaged debt there.
+4. Review the `config/pitest/README.md` written by `hardeningInit`: an illustrative
+   skeleton (a section per suite with its families, audited timeouts and declined debt,
+   and one worked example to replace). Record accepted-mutant arguments (initially none)
+   and any seeded untriaged debt there, and keep each argument current in place rather
+   than appending pass reports.
 5. Add the agent-instructions block below to the repo's `AGENTS.md`. Run the task on
    exactly one project that applies the plugin (`./gradlew :module:hardeningAgentTemplate`,
    or `./gradlew :hardeningAgentTemplate` when the root project owns hardening) to
@@ -2625,6 +2644,10 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 >   review metadata that belong to their row: `BaselineRetag` refreshes them, a hand
 >   edit is a hand-edited row. Identical rows are sibling mutants and the comparison
 >   is a multiset: never hand-dedupe.
+> - `config/pitest/README.md` holds the arguments in force, each updated in place and
+>   never appended to as a pass report: a family's members, reason, oracle and the
+>   condition that invalidates it; an audited timeout's cause. The totals the build prints
+>   are not restated there; the measurements it cannot reconstruct are kept.
 > - A new `TIMED_OUT` mutant is a reviewer stop, never detection. Record it in
 >   `config/pitest/<suite>-timeouts.csv` with a cause and argue it in the README; only
 >   `cause:liveness` certifies. A member whose coordinate has left the population is
