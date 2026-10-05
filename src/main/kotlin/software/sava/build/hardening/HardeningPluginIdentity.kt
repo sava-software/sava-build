@@ -76,10 +76,11 @@ internal abstract class SavaBuildIdentityTask : DefaultTask() {
   @TaskAction
   fun printIdentity() {
     val localOverride = localOverrideState.get()
-    val localOverrideExplanation = if (localOverride == "not verified") {
-      " (no resolved local test publication verified; see loaded coordinates and SHA-256)"
-    } else {
-      ""
+    val localOverrideExplanation = when (localOverride) {
+      "inactive" -> " (property unset or blank)"
+      "not verified" ->
+        " (property configured; no resolved local test publication verified; see loaded coordinates and SHA-256)"
+      else -> ""
     }
     logger.quiet(
         "savaBuildIdentity:\n" +

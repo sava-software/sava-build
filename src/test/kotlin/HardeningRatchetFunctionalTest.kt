@@ -2326,8 +2326,8 @@ $fuzzBlock
     // The line-less key's honest residue: a new mutant of an accepted key is visible
     // only as a count change. The multiset comparison must fail on the extra copy
     // (never absorb it), and an update must seed it '# untriaged' — an accepted
-    // twin's argument was written for the mutants it had, not for one more. Bare
-    // pre-seeding rows stay bare through the same refresh.
+    // twin's argument was written for the mutants it had, not for one more.
+    // Previously unlabeled rows stay bare through the same refresh.
     writeFixture()
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText(
@@ -5865,7 +5865,7 @@ $fuzzBlock
     // A genuinely new coordinate enters the baseline as explicit debt, never bare —
     // triage means replacing the seeded label. Pre-existing rows keep their state:
     // a labeled row keeps its label (surfaced sibling copies included, since notes
-    // are keyed by row text), and a bare pre-seeding row stays bare rather than
+    // are keyed by row text), and an existing bare row stays bare rather than
     // being retroactively branded debt it may not be.
     writeFixture()
     baselineFile().parentFile.mkdirs()
@@ -6204,7 +6204,7 @@ $fuzzBlock
   fun `the verify prints a per-label baseline breakdown`() {
     // Triage state is a number the build prints: one count per label, with carry
     // markers and flip details stripped ('# race guard family (carried across ...)'
-    // still counts as 'race guard family'), and pre-seeding bare rows named as
+    // still counts as 'race guard family'), and bare rows named as
     // unlabeled rather than silently folded into a bucket.
     writeFixture()
     baselineFile().parentFile.mkdirs()
@@ -6230,19 +6230,23 @@ $fuzzBlock
           "4 rows / 2 unique keys — 2 '# untriaged', 1 '# race guard family', 1 unlabeled"),
       output
     )
+    assertTrue(output.contains("1 unlabeled row — triage state unknown"), output)
+    assertTrue(output.contains("1 unlabeled baseline row(s) with unknown triage state"), output)
   }
 
   @Test
   fun `the verify names an all-unlabeled baseline instead of staying silent`() {
-    // A baseline that predates label seeding carries no notes, but it is exactly the
-    // one worth nudging — so the summary still prints, naming every row unlabeled
-    // rather than skipping the line and hiding that nothing is triaged.
+    // Bare rows can be argued acceptances or unfinished work. Neither their age nor
+    // their triage state can be inferred from the missing label, even with a README.
     writeFixture()
     baselineFile().parentFile.mkdirs()
     baselineFile().writeText(
       "com.example.Codec,encode,12,MathMutator,SURVIVED\n" +
           "com.example.Codec,encode,20,MathMutator,SURVIVED\n"
     )
+    File(fixtureDir, "config/pitest/README.md")
+        .writeText("# Triage\n\nCodec.encode has legacy acceptance arguments.\n")
+    val originalBaseline = baselineFile().readText()
     writeReport(
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.MathMutator,encode,12,SURVIVED,none",
@@ -6251,8 +6255,17 @@ $fuzzBlock
       ""
     )
 
-    val output = runner("pitestEncodingVerify").build().output
+    val output = runner("pitestEncodingVerify", "-PstrictTimeoutAudit").build().output
     assertTrue(output.contains("2 rows / 1 unique key — 2 unlabeled"), output)
+    assertTrue(output.contains("2 unlabeled rows — triage state unknown"), output)
+    assertTrue(output.contains("2 unlabeled baseline row(s) with unknown triage state"), output)
+    assertFalse(output.contains("2 '# untriaged'"), output)
+
+    val debt = runner("pitestEncodingDebt", "-PstrictTimeoutAudit").build().output
+    assertTrue(debt.contains("baseline labels: 2 unlabeled"), debt)
+    assertTrue(debt.contains("2 unlabeled rows — triage state unknown"), debt)
+    assertFalse(debt.contains("2 '# untriaged'"), debt)
+    assertEquals(originalBaseline, baselineFile().readText(), "read-only warnings must preserve bare rows")
   }
 
   @Test
@@ -6287,6 +6300,7 @@ $fuzzBlock
     )
     val quiet = runner("pitestEncodingVerify").build().output
     assertFalse(quiet.contains("label(s) with no argument"), quiet)
+    assertFalse(quiet.contains("triage state unknown"), quiet)
   }
 
   @Test
@@ -6311,6 +6325,7 @@ $fuzzBlock
     File(fixtureDir, "config/pitest/README.md").writeText("# capacity hint\n\nGrowth arithmetic …\n")
     val quiet = runner("pitestEncodingDebt").build().output
     assertFalse(quiet.contains("label(s) with no argument"), quiet)
+    assertFalse(quiet.contains("triage state unknown"), quiet)
   }
 
   @Test

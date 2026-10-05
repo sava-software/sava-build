@@ -928,12 +928,12 @@ Rule: see HARDENING.md, *When a mutant won't die — a decision tree*.
 
 ## The unlabeled row the shift reclassified
 
-`# untriaged` seeding arrived in 21.5.12, so every baseline row written before
-it is bare: no note, its acceptance argument living in the suite README under a
-section the row itself never points at. Those rows are counted as their own
-state — the verify summary and the debt listing both print `5 unlabeled`
-separately from `13 '# untriaged'` — precisely so that settled-but-old triage
-does not read as work outstanding.
+`# untriaged` seeding arrived in 21.5.12, but `BaselineUnion` still wrote bare
+additions before 21.5.25. A bare row proves neither its age nor that an acceptance
+argument lives in the suite README: its triage status is unknown. Those rows are
+counted separately — the verify summary and the debt listing both print `5 unlabeled`
+apart from `13 '# untriaged'` — so the record preserves that uncertainty rather
+than silently reclassifying it.
 
 A refresh converted them anyway. The line-shift carry added for *the note the
 line shift dropped* builds its pairing pool with `mapNotNull` over the
@@ -2047,6 +2047,13 @@ the measurements behind each suite's mutator set, which no listing reconstructs.
 repository added two rules of its own: no restated counts and no ceremony in its prose,
 and a duplicate-prose check before any commit that adds to it. `hardeningInit` scaffolds
 an illustrative skeleton of that shape, and the agent block names the rule.
+
+Reorganizing the registry also changes its evidence: the
+[whole README binds every suite's receipt](HARDENING.md#lifecycle), including
+prose-only edits. Keep each audited timeout's class and method together in one
+[Markdown heading block](HARDENING.md#timed_out-is-detected-but-does-not-diagnose-its-cause).
+`pitest<Suite>Debt -PstrictTimeoutAudit` previews membership shape, cause classification,
+and README mentions without PIT; report-dependent strict findings still require a full run.
 
 Rules: *the README holds the arguments in force, updated in place and never appended to
 as a pass report*; *the totals the build prints are not restated; the measurements it

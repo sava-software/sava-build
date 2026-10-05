@@ -268,8 +268,14 @@ class BaselineNotesTest {
   fun `summarize counts per label, descending, with unlabeled rows named last`() {
     assertNull(BaselineNotes.summarize(emptyList(), 0), "an empty baseline has nothing to say")
 
-    // a baseline predating label seeding still prints a number rather than nothing
+    // a baseline with no notes still prints a number rather than nothing
     assertEquals("5 unlabeled", BaselineNotes.summarize(emptyList(), 5))
+    assertNull(BaselineNotes.unlabeledWarning("encoding", 0))
+    assertEquals(
+        "pitest baseline 'encoding': 1 unlabeled row — triage state unknown; " +
+            "reconcile each row with config/pitest/README.md before classifying it as " +
+            "an argued acceptance or '# untriaged' debt",
+        BaselineNotes.unlabeledWarning("encoding", 1))
 
     assertEquals("2 '# race guard'",
         BaselineNotes.summarize(listOf("# race guard", "# race guard"), 0))

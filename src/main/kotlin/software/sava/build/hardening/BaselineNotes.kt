@@ -320,11 +320,19 @@ internal object BaselineNotes {
           undocumented.joinToString(", ") { "'# $it'" } +
           " — document the family there, or fix the label if it is a typo"
 
+  /** A missing label establishes neither an acceptance argument nor unfinished triage. */
+  fun unlabeledWarning(suiteName: String, unlabeled: Int): String? =
+      if (unlabeled == 0) null else
+        "pitest baseline '$suiteName': $unlabeled unlabeled " +
+            (if (unlabeled == 1) "row" else "rows") +
+            " — triage state unknown; reconcile each row with config/pitest/README.md " +
+            "before classifying it as an argued acceptance or '# untriaged' debt"
+
   /**
    * A per-label count summary — `13 '# untriaged', 20 '# race guard family', 5
    * unlabeled` — one count per family label sorted by descending count, unlabeled rows
    * named last. Returns null only when the baseline is empty (no notes, no rows), so a
-   * baseline that is entirely pre-seeding still prints `N unlabeled` rather than nothing.
+   * baseline with no notes still prints `N unlabeled` rather than nothing.
    * [notes] holds one entry per labeled row (leading `#` included); [unlabeled] counts
    * the rows with no note.
    */

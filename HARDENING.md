@@ -56,7 +56,7 @@ owes — not habit in either direction:
 | When | Command | What it proves |
 |---|---|---|
 | While working | the module's `test` (or `--tests` for the touched classes) | The change works. |
-| Once, when the work is complete and reviewed, before it is pushed | each `pitest<Suite>` whose mutated code the unpushed range can reach | No new unkilled mutants anywhere the range lives. |
+| Once, when the work is complete and reviewed, before it is pushed | each `pitest<Suite>` whose mutated code the unpushed range can reach, including through changed tests; the relevant project's `qualityGate` when those suites are unclear | No new unkilled mutants anywhere the range lives. |
 | Before a release | `hardeningCertify` on every module; an explicit local `fuzzAll -PmaxFuzzTime=<seconds> -PmaxParallelFuzzTargets=<count>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
 
 A release command without provenance is not durable evidence. Record the repository
@@ -233,13 +233,18 @@ one:
 
 - the suite covering the edited files, plus any suite — including in a
   dependent module — whose mutated code calls the changed API.
-- test-only edits still owe the suite those tests kill mutants in: a
-  weakened or deleted test shows up as a new survivor, which is precisely
-  what the ratchet is for. They owe nothing beyond it.
+- test-only edits still owe the suites whose mutated code those tests exercise,
+  including changes to coverage, assertions, and shared test helpers: a weakened
+  or deleted test shows up as a new survivor, which is precisely what the ratchet
+  is for. Absence from a historical report's killing-test column
+  is not an exemption: that column records the first test that killed a mutant,
+  not every covering test or every assertion the suite depends on.
 - doc and comment changes owe no suite at all, even when the verify below
   cannot keep its report over them. A build-script change owes the project's
   suites only when it changes what PIT is given: a dependency, a compiler or
   suite setting, the PIT task itself.
+
+When the affected suites are unclear, run the relevant project's `qualityGate`.
 
 The evidence is keyed to the compiled code and to every other input PIT is
 given; when Java source text is the only one that moved and every class came
@@ -847,8 +852,9 @@ row enters the baseline bare. `pitestModeCompareUnion` writes its derived litera
 `# flip insurance` evidence instead of an untriaged marker. Triage
 means replacing that label with a short family label (`# race-guard
 family`, `# capacity-hint`) whose full argument lives in the README. An
-already-unlabeled row is a different thing — it predates seeding (added in
-21.5.12) and its argument lives in the README rather than on the row — and a
+already-unlabeled row has unknown triage status: seeding began in 21.5.12,
+but `BaselineUnion` still wrote bare additions before 21.5.25, and a missing note
+proves neither the row's age nor that an acceptance argument exists. A
 refresh preserves that state rather than converting it to seeded debt *(casebook: the
 unlabeled row the shift reclassified)*. Rows retained
 by baseline writers preserve their notes and their original document slots; new rows
@@ -859,9 +865,10 @@ line-less identities, then counts notes **per label** (`38 rows / 31 unique keys
 13 '# untriaged', 20 '# race-guard family', 5 unlabeled`; the debt task prints
 the same counts and breakdown). The first number is the ratchet's sibling capacity;
 the second is the inventory of unique keys, so prose cannot silently confuse several
-same-key siblings with several families. Triage state is therefore a number the build
-prints rather than prose that drifts from the CSV it describes. Rows that predate seeding
-print as `unlabeled`; label them when touched. A label is also a pointer to
+same-key siblings with several families. These are accepted-record counts, separate from
+the current report's results; neither a count nor successful certification proves completed
+triage. Verify and Debt warn that bare rows have unknown triage status and count them
+separately as `unlabeled`; review and label them when touched. A label is also a pointer to
 its argument: the verify *and* the debt listing warn when a family label has
 no `# <label>` mention in `config/pitest/README.md`, so a typo'd label or an
 orphaned argument surfaces instead of silently opening a new bucket — and it
@@ -880,7 +887,13 @@ invalidates it), its audited timeouts with their causes (a cause members share
 argued once, naming them), and the debt deliberately left with its rationale; tables,
 subsections and shared explanations are fine where they read better, and the
 measurements behind a suite's mutator set stay, with their provenance, since no listing
-reconstructs them. A family label
+reconstructs them. Before reorganizing these arguments, account for the
+[whole-README receipt binding](#lifecycle): even a prose-only edit invalidates the
+project's existing receipts. Audited timeout arguments must keep each member's
+class and method together in one [Markdown heading block](#timed_out-is-detected-but-does-not-diagnose-its-cause).
+Use `pitest<Suite>Debt -PstrictTimeoutAudit` to preview membership shape, cause
+classification, and README mentions without PIT; it does not evaluate report-dependent
+strict findings. A family label
 never authorizes every superficially similar mutant. Re-read each live family's
 property, oracle, and escape when its code or callers change, and keep historical
 incident prose separate from the current acceptance argument so a stale line or
@@ -2614,7 +2627,9 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 >   the gate forces goes back through review as a delta. `hardeningCertify` (or
 >   `:hardeningCertifyAll`) and `fuzzAll` are the pre-release checks this repo's notes
 >   assign an owner to.
-> - Doc and comment edits owe no suite; a build-script edit only when it changes what
+> - Test-only edits owe the suites whose mutated code those tests exercise; when scope
+>   is unclear, run the relevant project's `qualityGate`. Doc and comment edits owe
+>   no suite; a build-script edit only when it changes what
 >   PIT is given. A change the gate forced owes it again by the same reachability rule
 >   once reviewed. `pitest<Suite>Verify` answers one way: it keeps its report while only
 >   recompiled Java sources changed and every recompiled class is byte-identical, which

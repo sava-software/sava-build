@@ -23,7 +23,7 @@ class LocalRepoNoticeFunctionalTest {
   @TempDir
   lateinit var fixtureDir: File
 
-  private fun writeFixture(pluginRepo: File = File(localRepo)) {
+  private fun writeFixture(pluginRepo: File = File(localRepo), hardening: Boolean = false) {
     // Consumers enable the configuration cache in gradle.properties rather than per
     // invocation; the fixture mirrors that, and the reuse test below also passes the
     // flag so the run it asserts on is unambiguous.
@@ -49,6 +49,16 @@ class LocalRepoNoticeFunctionalTest {
         rootProject.name = "local-repo-notice"
       """.trimIndent() + "\n"
     )
+    if (hardening) {
+      File(fixtureDir, "build.gradle.kts").writeText(
+        """
+          plugins {
+            java
+            id("software.sava.build.feature.hardening")
+          }
+        """.trimIndent() + "\n"
+      )
+    }
   }
 
   private fun runBuild(vararg arguments: String): BuildResult = GradleRunner.create()
@@ -88,11 +98,12 @@ class LocalRepoNoticeFunctionalTest {
     val privateRepo = copiedLocalRepo()
     val expectedSha256 = PitestEvidence.sha256(pluginArtifact(privateRepo))
     val provenance = SavaBuildLocalPublicationProvenance.read(publicationProvenance(privateRepo))
-    writeFixture(privateRepo)
+    writeFixture(privateRepo, hardening = true)
     val first = runBuild(
-      "help", "--configuration-cache",
+      "savaBuildIdentity", "--configuration-cache",
       "-PsavaBuildLocalRepo=$privateRepo",
     )
+    assertTrue(first.output.contains("local override: verified resolved local test publication"), first.output)
     assertTrue(first.output.contains("resolved every 'software.sava.build*' plugin to $savaBuildTestRepoVersion"), first.output)
     assertTrue(first.output.contains("published ${provenance.publishedAtUtc}"), first.output)
     assertTrue(
@@ -113,11 +124,12 @@ class LocalRepoNoticeFunctionalTest {
     )
 
     val second = runBuild(
-      "help", "--configuration-cache",
+      "savaBuildIdentity", "--configuration-cache",
       "-PsavaBuildLocalRepo=$privateRepo",
     )
     // Without the reuse the second run proves nothing: it would just be a second miss.
     assertTrue(second.output.contains("Reusing configuration cache"), second.output)
+    assertTrue(second.output.contains("local override: verified resolved local test publication"), second.output)
     assertTrue(second.output.contains("resolved every 'software.sava.build*' plugin to $savaBuildTestRepoVersion"), second.output)
     assertTrue(
       second.output.contains("application-time SHA-256 $expectedSha256"),
@@ -401,18 +413,26 @@ class LocalRepoNoticeFunctionalTest {
 
   @Test
   fun `nonblank local-repo property stays truthful when settings did not resolve its publication`() {
-    writeFixture()
+    writeFixture(hardening = true)
     val unpublished = File(fixtureDir, "never-published").absolutePath
-    val result = runBuild("help", "-PsavaBuildLocalRepo=$unpublished")
+    val result = runBuild("savaBuildIdentity", "-PsavaBuildLocalRepo=$unpublished")
     assertTrue(result.output.contains("local override is inactive"), result.output)
+    assertTrue(result.output.contains("local override: not verified (property configured;"), result.output)
     assertFalse(result.output.contains("resolved every 'software.sava.build*' plugin"), result.output)
   }
 
   @Test
-  fun `published resolution stays quiet`() {
-    writeFixture()
-    val result = runBuild("help")
-    assertFalse(result.output.contains("software.sava.build*"), result.output)
+  fun `unset and explicitly cleared local overrides print inactive`() {
+    writeFixture(hardening = true)
+    val unset = runBuild("savaBuildIdentity")
+    assertTrue(unset.output.contains("local override: inactive (property unset or blank)"), unset.output)
+    assertFalse(unset.output.contains("software.sava.build*"), unset.output)
+
+    File(fixtureDir, "gradle.properties").appendText("savaBuildLocalRepo=never-published\n")
+    val cleared = runBuild("savaBuildIdentity", "-PsavaBuildLocalRepo=")
+    assertTrue(cleared.output.contains("local override: inactive (property unset or blank)"), cleared.output)
+    assertFalse(cleared.output.contains("local override: not verified"), cleared.output)
+    assertFalse(cleared.output.contains("software.sava.build*"), cleared.output)
   }
 
   @Test

@@ -500,8 +500,12 @@ tasks.register<SavaBuildIdentityTask>("savaBuildIdentity") {
   loadedCodePath.set(hardeningImplementationCode.absolutePath)
   loadedSha256.set(hardeningImplementationSha256AtProjectApplication)
   localOverrideState.set(
-      if (hardeningLoadedLocalArtifactPath == HardeningPluginIdentityService.NO_LOCAL_ARTIFACT)
-        "not verified" else "verified resolved local test publication")
+      when {
+        hardeningLoadedLocalArtifactPath != HardeningPluginIdentityService.NO_LOCAL_ARTIFACT ->
+          "verified resolved local test publication"
+        providers.gradleProperty("savaBuildLocalRepo").orNull.isNullOrBlank() -> "inactive"
+        else -> "not verified"
+      })
   localArtifactPath.set(hardeningLoadedLocalArtifactPath)
   localArtifactSha256.set(hardeningLoadedLocalArtifactSha256)
 }
@@ -3861,13 +3865,19 @@ hardening.mutation.all {
       // stale-entry hint, and the drift stash, so no two sites can carry their
       // own copy of the key shape and drift apart.
       // Per-label breakdown so triage state is a number the build prints (BaselineNotes
-      // owns the label semantics: carry/flip parentheticals stripped, unlabeled rows —
-      // which predate seeding — named rather than folded into a bucket).
-      BaselineNotes.summarize(acceptedRows.mapNotNull { it.note }, acceptedRows.count { it.note == null })
+      // owns the label semantics: carry/flip parentheticals stripped, unlabeled rows
+      // named separately because their triage state is unknown).
+      val unlabeledRows = acceptedRows.count { it.note == null }
+      BaselineNotes.summarize(acceptedRows.mapNotNull { it.note }, unlabeledRows)
           ?.let {
             logger.lifecycle(
                 "pitest baseline '$suiteName': ${BaselineNotes.populationSummary(accepted)} — $it")
           }
+      BaselineNotes.unlabeledWarning(suiteName, unlabeledRows)?.let {
+        logger.warn(it)
+        advisoryLog.get().record(
+            advisoryScope, "$unlabeledRows unlabeled baseline row(s) with unknown triage state")
+      }
       // A family label is a pointer to its argument in config/pitest/README.md (the rule
       // and its message live in BaselineNotes, so this and 'Debt' resolve labels the same
       // way). Warned rather than failed, mirroring the scaffolding check: the gap may
@@ -5824,6 +5834,10 @@ hardening.mutation.all {
                 })
       }
       val wellFormedRows = baselineDocument.rows
+      val unlabeledRows = wellFormedRows.count { it.note == null }
+      BaselineNotes.unlabeledWarning(suiteName, unlabeledRows)?.let {
+        logger.warn(it)
+      }
       val baselinePairs = wellFormedRows
           .map { it.key.split(',') }
           .filter { it.size >= 4 }
@@ -5926,10 +5940,10 @@ hardening.mutation.all {
         }
       }
       // Label breakdown from the baseline (the well-formed rows parsed above):
-      // triaged-accepted rows carry a family label, seeded debt reads '# untriaged',
-      // and unlabeled rows predate seeding.
+      // family labels point to acceptance arguments, seeded debt reads '# untriaged',
+      // and unlabeled rows have unknown triage state.
       val baselineNotes = wellFormedRows.mapNotNull { it.note }
-      val labelBreakdown = BaselineNotes.summarize(baselineNotes, wellFormedRows.size - baselineNotes.size)
+      val labelBreakdown = BaselineNotes.summarize(baselineNotes, unlabeledRows)
           ?.let {
             "\n  baseline: ${BaselineNotes.populationSummary(wellFormedRows.map { row -> row.key })}; " +
                 "baseline labels: $it"

@@ -7,6 +7,10 @@
 
 * **hardening:** keep config/pitest/README.md to the arguments in force ([d59a713](https://github.com/sava-software/sava-build/commit/d59a7132a4284af0e9b79caec25cd97f3e96251c))
 
+Adoption from 21.6.3: `hardeningHelp` and the mutation toolchain are unchanged. The
+printed agent template now names the README rule. `hardeningInit` uses the new README
+skeleton for new scaffolds and preserves existing files; this upgrade requires no baseline rebase.
+
 ## [21.6.3](https://github.com/sava-software/sava-build/compare/21.6.2...21.6.3) (2026-10-01)
 
 
