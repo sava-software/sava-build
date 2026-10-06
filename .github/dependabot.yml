@@ -23,3 +23,6 @@ updates:
       gradle-actions:
         patterns:
           - "gradle/actions*"
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"

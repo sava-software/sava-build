@@ -523,7 +523,14 @@ Verify changes with:
 ./gradlew check
 ```
 
-This also runs TestKit smoke tests that configure a minimal consumer fixture against the
+The [CodeQL Advanced workflow](.github/workflows/codeql.yml) scans GitHub Actions and
+compiles the Kotlin convention plugins for analysis on pushes and pull requests to
+`main`, weekly, and on manual dispatch. Its compilation keeps dependency verification
+strict and disables build/configuration caches and Kotlin incremental compilation so
+CodeQL observes the sources being compiled. The scan uses the repository's `JDK_SRC` and
+`GRADLE_JAVA_VERSION` variables, matching the Gradle build workflow.
+
+The `check` task also runs TestKit smoke tests that configure a minimal consumer fixture against the
 checkout. When changing dependencies, regenerate the
 [verification metadata](gradle/verification-metadata.xml):
 
