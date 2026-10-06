@@ -13,8 +13,8 @@ import java.io.File
  * Smoke tests that configure a minimal consumer project against the plugin published
  * to the local test repo — resolving it by id and version the same way consumer
  * repositories do.
- * They only exercise the configuration phase (no dependency resolution), so they
- * need no credentials and catch plugin wiring or Gradle API breakage before a release.
+ * They exercise settings/project wiring and the root build-health aggregate without
+ * consumer repository credentials, catching plugin wiring or Gradle API breakage.
  */
 class SavaBuildConventionsSmokeTest {
 
@@ -80,8 +80,13 @@ class SavaBuildConventionsSmokeTest {
 
   @Test
   fun `settings entry point provides the root build health aggregate`() {
+    // Use the test JVM so an unavailable provisioned JDK cannot silently drop lib's advice.
     writeFixture(
-      savaProperties = "solanaBOMVersion=0.0.0-smoke\n",
+      savaProperties = """
+        solanaBOMVersion=0.0.0-smoke
+        javaVersion=${Runtime.version().feature()}
+        javaVendor=${System.getProperty("java.vendor")}
+      """.trimIndent() + "\n",
       settingsSuffix =
         """
 
@@ -108,7 +113,12 @@ class SavaBuildConventionsSmokeTest {
         """.trimIndent() + "\n",
       )
     }
-    val result = runBuild("buildHealth", "--console=plain")
+    val result = runBuild(
+      "buildHealth", "--console=plain",
+      "-Dorg.gradle.java.installations.auto-detect=false",
+      "-Dorg.gradle.java.installations.auto-download=false",
+      "-Dorg.gradle.java.installations.paths=${System.getProperty("java.home")}",
+    )
 
     assertEquals(TaskOutcome.SUCCESS, result.task(":buildHealth")?.outcome, result.output)
     assertEquals(TaskOutcome.SUCCESS, result.task(":generateBuildHealth")?.outcome, result.output)
