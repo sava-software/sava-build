@@ -15,8 +15,11 @@ updates:
       interval: "daily"
       time: "07:00"
       timezone: "Etc/UTC"
-    # One pull request for every docker/* action update, across all directories above.
+    # Group updates for actions maintained together, across all directories above.
     groups:
       docker-actions:
         patterns:
           - "docker/*"
+      gradle-actions:
+        patterns:
+          - "gradle/actions*"

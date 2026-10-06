@@ -1,0 +1,122 @@
+name: Gradle Dependency Submission
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: dependency-submission-${{ github.ref }}
+  # Finish an active submission before the latest pending main push starts.
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b
+        with:
+          website: ${{ vars.JDK_SRC }}
+          release: ${{ vars.GRADLE_JAVA_VERSION }}
+      - name: Refuse unresolved dependencies
+        run: |
+          cat > "$RUNNER_TEMP/dependency-graph-resolution-check.init.gradle" <<'EOF'
+          import org.gradle.api.artifacts.DependencyResolutionListener
+          import org.gradle.api.artifacts.ResolvableDependencies
+          import org.gradle.api.artifacts.result.UnresolvedDependencyResult
+
+          gradle.addListener(new DependencyResolutionListener() {
+              void beforeResolve(ResolvableDependencies dependencies) {}
+
+              void afterResolve(ResolvableDependencies dependencies) {
+                  def unresolved = dependencies.resolutionResult.allDependencies.findAll {
+                      it instanceof UnresolvedDependencyResult
+                  }
+                  if (!unresolved.empty) {
+                      throw new GradleException("Cannot submit an incomplete dependency graph for " +
+                          dependencies.path + ": " + unresolved.collect { it.attempted.displayName }.join(", "))
+                  }
+              }
+          })
+          EOF
+      - name: Generate and upload dependency graph
+        uses: gradle/actions/dependency-submission@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        env:
+          GITHUB_DEPENDENCY_GRAPH_JOB_CORRELATOR: sava-build-main-dependencies
+        with:
+          dependency-graph: generate-and-upload
+          dependency-graph-continue-on-failure: false
+          cache-disabled: true
+          # The action prepends verification=off; this later argument restores strict verification.
+          additional-arguments: >-
+            -Dorg.gradle.dependency.verification=strict
+            --no-configuration-cache --stacktrace
+            --init-script ${{ runner.temp }}/dependency-graph-resolution-check.init.gradle
+      - name: Check dependency graph identity and coverage
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          reports = list(Path("dependency-graph-reports").glob("*.json"))
+          if len(reports) != 1:
+              raise SystemExit(f"Expected one dependency snapshot, found {len(reports)}")
+          snapshot = json.loads(reports[0].read_text())
+          if (snapshot.get("sha"), snapshot.get("ref"), snapshot.get("job", {}).get("id")) != (
+              os.environ["GITHUB_SHA"], "refs/heads/main", os.environ["GITHUB_RUN_ID"]
+          ):
+              raise SystemExit("Dependency snapshot does not describe this main push and workflow run")
+          packages = {
+              dependency["package_url"].split("?", 1)[0]
+              for manifest in snapshot.get("manifests", {}).values()
+              for dependency in manifest.get("resolved", {}).values()
+          }
+          wrapper = Path("gradle/wrapper/gradle-wrapper.properties").read_text()
+          gradle_version = re.search(r"/gradle-(.+)-bin\.zip", wrapper).group(1)
+          if f"pkg:maven/org.gradle/gradle-core@{gradle_version}" not in packages:
+              raise SystemExit("Dependency snapshot omits the configured Gradle version")
+          for anchor in (
+              "pkg:maven/com.autonomousapps/dependency-analysis-gradle-plugin@",
+              "pkg:maven/org.junit.jupiter/junit-jupiter@",
+          ):
+              if not any(package.startswith(anchor) for package in packages):
+                  raise SystemExit(f"Dependency snapshot omits expected build/test dependency: {anchor}")
+          print(f"Verified dependency snapshot for this main push: {len(packages)} packages")
+          PY
+
+  submit:
+    needs: generate
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Require this run's retained dependency graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_ids=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name == "dependency-graph_sava-build-main-dependencies.json" and .expired == false) | .id')
+          if [[ ! "$artifact_ids" =~ ^[0-9]+$ ]]; then
+            echo "::error::Expected exactly one unexpired dependency graph artifact from this workflow run"
+            exit 1
+          fi
+      # For a push event the action downloads artifacts from this workflow run only.
+      # This job has no checkout, JDK setup, Gradle invocation, or repository scripts.
+      - name: Download and submit dependency graph
+        uses: gradle/actions/dependency-submission@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        env:
+          DEPENDENCY_GRAPH_DOWNLOAD_ARTIFACT_NAME: sava-build-main-dependencies.json
+        with:
+          dependency-graph: download-and-submit
+          dependency-graph-continue-on-failure: false
+          cache-disabled: true

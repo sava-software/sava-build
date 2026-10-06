@@ -342,6 +342,13 @@ Reusable workflows (all use the composite action and the repository variables
 | [publish.yml](.github/workflows/publish.yml) | Check, publish to Maven Central and GitHub Packages, attest build provenance. |
 | [publish-gh.yml](.github/workflows/publish-gh.yml) | Check, publish to GitHub Packages only, attest build provenance. |
 
+For this repository, [Gradle Dependency Submission](.github/workflows/gradle_plugin_dependency_submission.yml)
+reports resolved build and test dependencies and the Gradle version to GitHub on pushes to `main`
+for Dependabot vulnerability alerts. A read-only job generates and checks the snapshot with
+strict dependency verification; a separate job receives `contents: write` only to submit
+that run's artifact, without checking out or executing the build. This does not enable
+submission in the reusable workflows or composite action used by consumer repositories.
+
 Example caller:
 
 ```yaml

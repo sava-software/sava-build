@@ -10,6 +10,10 @@
       <!-- Curation notes (any metadata write strips XML comments; restore them):
            * org.apache.groovy and the jmh-gradle-plugin sources jar are only resolved
              by IDE sync (Gradle API / dependency sources), invisible to CLI regeneration.
+           * org.gradle:github-dependency-graph-gradle-plugin is resolved by the
+             dependency-submission action's init script, invisible to ordinary CLI
+             regeneration. Keep its scoped trusted-key entry and keyring key; validate
+             changes with cold dependency-graph generation as well as the strict build below.
            * org.jetbrains.kotlinx is group-wide on purpose: kotlin-gradle-plugin floats
              to new patch releases, and cold caches fetch BOM/parent POMs that a
              warm-cache regeneration narrows away.
@@ -60,6 +64,7 @@
          <trusted-key id="C7BE5BCC9FEC15518CFDA882B0F3710FA64900E7" group="com.google.code.gson"/>
          <trusted-key id="CF4B3A3F53BEF9A2CE2CBFB895962C5E716C39AA" group="com.autonomousapps"/>
          <trusted-key id="DBD744ACE7ADE6AA50DD591F66B50994442D2D40" group="^com[.]squareup($|([.].*))" regex="true"/>
+         <trusted-key id="E2879931BCA1A42E55F2D64DD9B2DFBD9F3298BA" group="org.gradle" name="github-dependency-graph-gradle-plugin"/>
          <trusted-key id="E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB" group="org.jetbrains.kotlinx"/>
          <trusted-key id="EE0CA873074092F806F59B65D364ABAA39A47320" group="com.google.errorprone"/>
          <trusted-key id="FF6E2C001948C5F2F38B0CC385911F425EC61B51">
