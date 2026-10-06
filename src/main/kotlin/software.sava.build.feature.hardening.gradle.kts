@@ -503,7 +503,7 @@ tasks.register<SavaBuildIdentityTask>("savaBuildIdentity") {
       when {
         hardeningLoadedLocalArtifactPath != HardeningPluginIdentityService.NO_LOCAL_ARTIFACT ->
           "verified resolved local test publication"
-        providers.gradleProperty("savaBuildLocalRepo").orNull.isNullOrBlank() -> "inactive"
+        providers.gradleProperty(HardeningOptionNames.SAVA_BUILD_LOCAL_REPO).orNull.isNullOrBlank() -> "inactive"
         else -> "not verified"
       })
   localArtifactPath.set(hardeningLoadedLocalArtifactPath)

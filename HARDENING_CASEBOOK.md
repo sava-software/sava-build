@@ -2048,13 +2048,6 @@ repository added two rules of its own: no restated counts and no ceremony in its
 and a duplicate-prose check before any commit that adds to it. `hardeningInit` scaffolds
 an illustrative skeleton of that shape, and the agent block names the rule.
 
-Reorganizing the registry also changes its evidence: the
-[whole README binds every suite's receipt](HARDENING.md#lifecycle), including
-prose-only edits. Keep each audited timeout's class and method together in one
-[Markdown heading block](HARDENING.md#timed_out-is-detected-but-does-not-diagnose-its-cause).
-`pitest<Suite>Debt -PstrictTimeoutAudit` previews membership shape, cause classification,
-and README mentions without PIT; report-dependent strict findings still require a full run.
-
 Rules: *the README holds the arguments in force, updated in place and never appended to
 as a pass report*; *the totals the build prints are not restated; the measurements it
 cannot reconstruct are kept with their provenance*.

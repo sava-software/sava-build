@@ -56,7 +56,7 @@ owes — not habit in either direction:
 | When | Command | What it proves |
 |---|---|---|
 | While working | the module's `test` (or `--tests` for the touched classes) | The change works. |
-| Once, when the work is complete and reviewed, before it is pushed | each `pitest<Suite>` whose mutated code the unpushed range can reach, including through changed tests; the relevant project's `qualityGate` when those suites are unclear | No new unkilled mutants anywhere the range lives. |
+| Once, when the work is complete and reviewed, before it is pushed | each `pitest<Suite>` whose mutated code the unpushed range can reach, including through changed tests; `./gradlew qualityGate` from the Gradle root when those suites are unclear | No new unkilled mutants anywhere the range lives. |
 | Before a release | `hardeningCertify` on every module; an explicit local `fuzzAll -PmaxFuzzTime=<seconds> -PmaxParallelFuzzTargets=<count>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
 
 A release command without provenance is not durable evidence. Record the repository
@@ -244,7 +244,8 @@ one:
   suites only when it changes what PIT is given: a dependency, a compiler or
   suite setting, the PIT task itself.
 
-When the affected suites are unclear, run the relevant project's `qualityGate`.
+When the affected suites are unclear, run `./gradlew qualityGate` from the Gradle
+root so the task selector includes dependent projects' gates.
 
 The evidence is keyed to the compiled code and to every other input PIT is
 given; when Java source text is the only one that moved and every class came
@@ -887,13 +888,10 @@ invalidates it), its audited timeouts with their causes (a cause members share
 argued once, naming them), and the debt deliberately left with its rationale; tables,
 subsections and shared explanations are fine where they read better, and the
 measurements behind a suite's mutator set stay, with their provenance, since no listing
-reconstructs them. Before reorganizing these arguments, account for the
-[whole-README receipt binding](#lifecycle): even a prose-only edit invalidates the
-project's existing receipts. Audited timeout arguments must keep each member's
-class and method together in one [Markdown heading block](#timed_out-is-detected-but-does-not-diagnose-its-cause).
-Use `pitest<Suite>Debt -PstrictTimeoutAudit` to preview membership shape, cause
-classification, and README mentions without PIT; it does not evaluate report-dependent
-strict findings. A family label
+reconstructs them. Before reorganizing these arguments, see
+[receipt invalidation](#lifecycle) and the
+[timeout documentation requirements and static preview](#timed_out-is-detected-but-does-not-diagnose-its-cause).
+A family label
 never authorizes every superficially similar mutant. Re-read each live family's
 property, oracle, and escape when its code or callers change, and keep historical
 incident prose separate from the current acceptance argument so a stale line or
@@ -1382,10 +1380,11 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   presence — reads committed files only. `hardeningCertify`,
   `pitest<Suite>BaselineRebase`, and explicit `-PstrictTimeoutAudit` run that
   preflight before PIT; a fleet migration therefore fails in seconds rather
-  than after the first full suite. `pitest<Suite>Debt` runs the same check
-  manually (one `TimeoutAudit` implementation, so the tasks cannot disagree):
-  paste a row or write a cause and confirm the tool agrees without a mutation
-  run. Static validation knows no staleness, so it asks every well-formed
+  than after the first full suite. `pitest<Suite>Debt -PstrictTimeoutAudit` runs
+  the same committed-file check manually (one `TimeoutAudit` implementation, so
+  the tasks cannot disagree): paste a row or write a cause and confirm the tool
+  agrees without a mutation run. It does not evaluate report-dependent findings.
+  Static validation knows no staleness, so it asks every well-formed
   committed member for its cause. For an otherwise admissible `cause:liveness`
   member, never remove it on one observation. Wait until the tool emits its **3+
   distinct fresh full-run quiet** notice for identical evidence inputs, then confirm
@@ -2628,8 +2627,8 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 >   `:hardeningCertifyAll`) and `fuzzAll` are the pre-release checks this repo's notes
 >   assign an owner to.
 > - Test-only edits owe the suites whose mutated code those tests exercise; when scope
->   is unclear, run the relevant project's `qualityGate`. Doc and comment edits owe
->   no suite; a build-script edit only when it changes what
+>   is unclear, run `./gradlew qualityGate` from the Gradle root. Doc and comment
+>   edits owe no suite; a build-script edit only when it changes what
 >   PIT is given. A change the gate forced owes it again by the same reachability rule
 >   once reviewed. `pitest<Suite>Verify` answers one way: it keeps its report while only
 >   recompiled Java sources changed and every recompiled class is byte-identical, which

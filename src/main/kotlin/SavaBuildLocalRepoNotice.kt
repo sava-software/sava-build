@@ -105,7 +105,7 @@ abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
       Logging.getLogger(SavaBuildLocalRepoNoticePlugin::class.java).warn(
         "sava-build: -P$LOCAL_REPO_PROPERTY is configured, but the loaded plugin is " +
           "$loadedCoordinates at $loadedArtifactPath rather than the verified local " +
-          "$TEST_VERSION publication; local override is inactive."
+          "$TEST_VERSION publication; local override is not verified."
       )
       return
     }

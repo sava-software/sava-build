@@ -30,6 +30,8 @@ class LocalRepoNoticeFunctionalTest {
     File(fixtureDir, "gradle.properties").writeText(
       "org.gradle.configuration-cache=true\norg.gradle.caching=true\n"
     )
+    // This fixture always resolves the test publication, including with no override
+    // property. It exercises override state, not published-release resolution.
     val escapedRepo = pluginRepo.absolutePath.replace("\\", "\\\\")
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
@@ -300,7 +302,7 @@ class LocalRepoNoticeFunctionalTest {
 
     assertTrue(failed.output.contains("loaded local plugin"), failed.output)
     assertTrue(failed.output.contains("does not match the configured local-repo artifact"), failed.output)
-    assertFalse(failed.output.contains("local override is inactive"), failed.output)
+    assertFalse(failed.output.contains("local override is not verified"), failed.output)
   }
 
   @Test
@@ -416,7 +418,7 @@ class LocalRepoNoticeFunctionalTest {
     writeFixture(hardening = true)
     val unpublished = File(fixtureDir, "never-published").absolutePath
     val result = runBuild("savaBuildIdentity", "-PsavaBuildLocalRepo=$unpublished")
-    assertTrue(result.output.contains("local override is inactive"), result.output)
+    assertTrue(result.output.contains("local override is not verified"), result.output)
     assertTrue(result.output.contains("local override: not verified (property configured;"), result.output)
     assertFalse(result.output.contains("resolved every 'software.sava.build*' plugin"), result.output)
   }

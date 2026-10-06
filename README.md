@@ -198,7 +198,7 @@ Run that project's `savaBuildIdentity` (for example,
 `./gradlew :module:savaBuildIdentity`) to inspect the loaded plugin coordinates, code
 path, SHA-256, and local validation state without running PIT. Use this identity when
 checking a published upgrade: a version pin alone does not prove what Gradle loaded.
-The `local override` state is `inactive` when the property is unset or blank,
+The `local override` state is `inactive` when `savaBuildLocalRepo` is unset or blank,
 `not verified` when it is configured without a verified local resolution, and
 `verified resolved local test publication` when the configured artifact matches the
 loaded local publication. These states do not attest to the validity or provenance of
