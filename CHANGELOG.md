@@ -1,5 +1,25 @@
 # Changelog
 
+## [21.6.5](https://github.com/sava-software/sava-build/compare/21.6.4...21.6.5) (2026-10-06)
+
+
+### Bug Fixes
+
+* **hardening:** clarify test gates and adoption diagnostics ([42da0f3](https://github.com/sava-software/sava-build/commit/42da0f3f9a92f18dc659da972950019e64c2df6e))
+* **hardening:** consolidate guidance after adoption review ([856f9d7](https://github.com/sava-software/sava-build/commit/856f9d7a7b358762fa9a84f21de10cf846297570))
+
+
+### Build System
+
+* **deps:** bump gradle/actions/setup-gradle from 6.3.0 to 6.4.0 ([#129](https://github.com/sava-software/sava-build/issues/129)) ([6c8c7ed](https://github.com/sava-software/sava-build/commit/6c8c7ed868f0f04e745dc62dab151e204adc4445))
+* **deps:** update Kotlin publishing helpers to Bouncy Castle 1.86 ([1062e76](https://github.com/sava-software/sava-build/commit/1062e76a94abd6559c2e4d210846c08671fb43dc))
+
+
+### CI
+
+* **workflows:** restore advanced CodeQL analysis ([dd6aa64](https://github.com/sava-software/sava-build/commit/dd6aa64da6577fd487b147fab9cce098a312c795))
+* **workflows:** submit verified Gradle dependency graphs ([696debb](https://github.com/sava-software/sava-build/commit/696debb3c3c758abd06c576ab5f3ee831db3ff6f))
+
 ## [21.6.4](https://github.com/sava-software/sava-build/compare/21.6.3...21.6.4) (2026-10-04)
 
 
