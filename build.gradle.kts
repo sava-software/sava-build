@@ -258,6 +258,17 @@ dependencies {
   // https://github.com/junit-team/junit-framework
   testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+  // KGP 2.4.10 creates this isolated publishing-helper configuration with BC 1.84.
+  // Constraints preserve its defaultDependencies (adding dependencies would suppress them).
+  // Remove this floor when Gradle's bundled Kotlin tooling supplies BC >= 1.86.
+  constraints {
+    val bouncyCastleVersion = "1.86"
+    add("kotlinBouncyCastleConfiguration", "org.bouncycastle:bcprov-jdk18on:$bouncyCastleVersion")
+    add("kotlinBouncyCastleConfiguration", "org.bouncycastle:bcutil-jdk18on:$bouncyCastleVersion")
+    add("kotlinBouncyCastleConfiguration", "org.bouncycastle:bcpkix-jdk18on:$bouncyCastleVersion")
+    add("kotlinBouncyCastleConfiguration", "org.bouncycastle:bcpg-jdk18on:$bouncyCastleVersion")
+  }
 }
 
 // The default tool versions of the hardening feature live in gradle/libs.versions.toml

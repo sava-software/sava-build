@@ -531,6 +531,21 @@ checkout. When changing dependencies, regenerate the
 ./gradlew --write-verification-metadata pgp,sha256 check generatePrecompiledScriptPluginAccessors
 ```
 
+The root build constrains Kotlin's isolated Bouncy Castle publishing-helper dependencies
+to at least 1.86, addressing [the name-constraints bypass](https://github.com/advisories/GHSA-9pwp-9qqc-pr26)
+and [the lazy ASN.1 depth-limit bypass](https://github.com/advisories/GHSA-qp49-qgx5-5m26).
+These constraints preserve Kotlin's default helper dependencies and do not add dependencies
+to the published convention plugins. Remove them when Gradle's bundled Kotlin tooling
+supplies Bouncy Castle 1.86 or newer.
+
+The separate [Kotlin cache advisory](https://github.com/advisories/GHSA-r937-wjx7-w2jp)
+affects KAPT's incremental-cache deserialization, as shown by the
+[upstream fix](https://github.com/JetBrains/kotlin/commit/bf51df665b458fda7c3eaf436c4d88dc119d7ec6).
+This build does not apply KAPT or configure annotation processors. Keep the alert open
+pending patched tooling compatible with Gradle's `kotlin-dsl` plugin; overriding Kotlin
+independently leaves Gradle's expected tooling combination. Reassess this exposure if
+KAPT is introduced or the Kotlin tooling changes.
+
 ### Local adoption and releasing
 
 The release proof for `sava-build` combines deliberate local adoption passes with the
