@@ -5590,6 +5590,12 @@ $fuzzBlock
     assertTrue(resourceBased.contains("getResource(\"/fuzz/codec\")"), resourceBased)
     assertTrue(resourceBased.contains("Files::isRegularFile"), resourceBased)
     assertTrue(resourceBased.contains("assertFalse(seeds.isEmpty()"), resourceBased)
+    // one dynamic test per seed, named after the seed file, so CI output names a failing seed
+    assertTrue(resourceBased.contains("@TestFactory"), resourceBased)
+    assertTrue(resourceBased.contains("Stream<DynamicTest> replaysSeedCorpus()"), resourceBased)
+    assertTrue(resourceBased.contains("DynamicTest.dynamicTest(") &&
+        resourceBased.contains("seed.getFileName().toString()"), resourceBased)
+    assertFalse(resourceBased.contains("@Test\n"), resourceBased)
     assertFalse(resourceBased.contains(fixtureDir.absolutePath), "resource corpus must not bake an absolute path:\n$resourceBased")
 
     val pathBased = generatedRoot.resolve("OutsideFuzzSeedReplayTest.java").readText()
