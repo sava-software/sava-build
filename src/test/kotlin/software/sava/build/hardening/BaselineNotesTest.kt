@@ -309,6 +309,34 @@ class BaselineNotesTest {
   }
 
   @Test
+  fun `a label mentioned only under a History or Retired heading is undocumented`() {
+    // sava-rpc 2026-10-07: a killed family's label stayed on a live row because the ws
+    // README's History note recorded the sibling's kill, and a whole-file search found it.
+    val historyOnly = "## Families\n\n- **`# ping-state invariant`** — the live argument.\n\n" +
+        "### History notes (ws)\n\n- 2026-10-01: `# retired-state write` was killed by the new test.\n"
+    assertEquals(
+        listOf("retired-state write"),
+        BaselineNotes.undocumentedLabels(listOf("# retired-state write", "# ping-state invariant")) { historyOnly },
+        "a History note records what was argued, not what is",
+    )
+
+    // the exclusion ends at the next heading of the same or a higher level
+    val resumed = "## Retired acceptances\n\n`# old family` was retired.\n\n## Families\n\n`# old family` is back.\n"
+    assertEquals(emptyList<String>(), BaselineNotes.undocumentedLabels(listOf("# old family")) { resumed })
+    val nested = "## Families\n\n### History\n\n`# nested` once.\n\n#### Still history\n\n`# nested` twice.\n\n### Live\n\n`# nested` now.\n"
+    assertEquals(emptyList<String>(), BaselineNotes.undocumentedLabels(listOf("# nested")) { nested })
+    val nestedOnly = "## Families\n\n### History\n\n`# nested` once.\n\n#### Still history\n\n`# nested` twice.\n"
+    assertEquals(listOf("nested"), BaselineNotes.undocumentedLabels(listOf("# nested")) { nestedOnly })
+
+    // a heading that merely mentions a label is not a definition either way
+    assertEquals(
+        "## Families\n\n`# live` argued here.\n## Families again\n\n`# live` again.",
+        BaselineNotes.argumentsInForce(
+            "## Families\n\n`# live` argued here.\n### History notes\n\n`# gone` was killed.\n## Families again\n\n`# live` again."),
+    )
+  }
+
+  @Test
   fun `an undocumented label is named and a documented one is silent`() {
     val readme = "## Triaged\n\n# race guard\n\nThe argument for the family.\n"
 

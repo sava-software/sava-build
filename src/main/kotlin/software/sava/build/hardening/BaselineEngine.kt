@@ -22,28 +22,33 @@ internal object BaselineEngine {
     val ambiguousFallback: Boolean,
   )
 
+  private class MutableCopy(val line: Int?) {
+    var rowIndex: Int? = null
+    var ambiguousFallback = false
+  }
+
   /**
    * Assigns observed copies to accepted rows at one key. A deterministic maximum
    * bipartite match consumes every exact line affinity that can coexist — a row
    * carrying several historical anchors cannot steal the sole anchor of a narrower
    * sibling. Copies still unpaired then consume rows in a stable partition: rows
-   * that name any currently observed line first, then bare or wholly stale rows,
-   * with file order preserved inside both groups. That second phase is the
-   * intentional moved-anchor fallback: a row whose tag names no live line is the
-   * deterministic absent-sibling preference before a duplicate live anchor. It is
-   * uniquely attributable only when the anchor itself is unique. Keeping this allocator
-   * shared by planning and rewriting prevents either surface from selecting a
-   * different same-key sibling when recorded line tags repeat.
+   * that name any currently observed line first, then bare or wholly stale rows.
+   * Inside each group the pairing prefers the row whose recorded line is nearest the
+   * copy's, ties in file order (see [nearestPairing]), so a block of siblings that
+   * moved together keeps its order and a sibling that moved alone follows its own
+   * line rather than its file position. That second phase is the intentional
+   * moved-anchor fallback: a row whose tag names no live line is the deterministic
+   * absent-sibling preference before a duplicate live anchor. It is uniquely
+   * attributable only when the anchor itself is unique, which is why every writer
+   * names the keys it decided this way, and those whose rows carry different labels.
+   * Keeping this allocator shared by planning and rewriting prevents either surface
+   * from selecting a different same-key sibling when recorded line tags repeat.
    */
   private fun assignObservedCopies(
     acceptedRows: List<BaselineNotes.Row>,
     rowIndices: List<Int>,
     observedLines: List<String>,
   ): List<ObservedCopy> {
-    class MutableCopy(val line: Int?) {
-      var rowIndex: Int? = null
-      var ambiguousFallback = false
-    }
     val copies = observedLines
         .map { MutableCopy(it.toIntOrNull()) }
         .sortedWith(compareBy(nullsLast(naturalOrder<Int>())) { it.line })
@@ -76,20 +81,93 @@ internal object BaselineEngine {
     copies.indices.forEach { augment(it, HashSet()) }
 
     val liveLines = observedLines.mapNotNullTo(HashSet()) { it.toIntOrNull() }
-    val unmatchedRows = rowIndices
+    val (liveFirst, rest) = rowIndices
         .filter { it !in rowToCopy }
-        .sortedBy { rowIndex ->
-          if (acceptedRows[rowIndex].recordedLines.any { it in liveLines }) 0 else 1
-        }
-        .toMutableList()
-    for (copy in copies) {
-      if (copy.rowIndex != null || unmatchedRows.isEmpty()) continue
-      // Diagnostic only: allocation still follows the existing stable partition.
-      // With several remaining rows, metadata cannot identify the physical sibling.
-      copy.ambiguousFallback = unmatchedRows.size > 1
-      copy.rowIndex = unmatchedRows.removeAt(0)
+        .partition { rowIndex -> acceptedRows[rowIndex].recordedLines.any { it in liveLines } }
+    var remainingRows = liveFirst.size + rest.size
+    for (group in listOf(liveFirst, rest)) {
+      val pending = copies.filter { it.rowIndex == null }
+      if (group.isEmpty() || pending.isEmpty()) continue
+      // Diagnostic only: with several remaining rows, metadata cannot identify the
+      // physical sibling; the pairing below is a preference, not identity.
+      val ambiguous = remainingRows > 1
+      for ((copyIndex, rowIndex) in nearestPairing(acceptedRows, group, pending)) {
+        pending[copyIndex].rowIndex = rowIndex
+        pending[copyIndex].ambiguousFallback = ambiguous
+      }
+      remainingRows -= group.size
     }
     return copies.map { ObservedCopy(it.line, it.rowIndex, it.ambiguousFallback) }
+  }
+
+  /** Cost of pairing a row with a copy: distance to the row's nearest recorded line. */
+  private fun pairingCost(row: BaselineNotes.Row, line: Int?): Long = when {
+    line == null -> 0L
+    row.recordedLines.isEmpty() -> BARE_ROW_COST
+    else -> row.recordedLines.minOf { kotlin.math.abs(it.toLong() - line) }
+  }
+
+  private const val BARE_ROW_COST = 1L shl 40
+  private const val EXHAUSTIVE_PAIRING_LIMIT = 8
+
+  /**
+   * Pairs rows of one partition group with leftover copies so that the sum of distances
+   * between each row's nearest recorded line and its copy's line is minimal; ties keep
+   * file order (rows in file order, copies in line order, first minimum found wins), so
+   * a block of siblings that moved together keeps its order, and a rewrite is a fixed
+   * point. A bare row costs more than any distance, so it pairs last. Beyond
+   * [EXHAUSTIVE_PAIRING_LIMIT] rows or copies the search would not be cheap, and the
+   * pairing falls back to file order against line order, the rule this replaced.
+   */
+  private fun nearestPairing(
+    acceptedRows: List<BaselineNotes.Row>,
+    group: List<Int>,
+    pending: List<MutableCopy>,
+  ): List<Pair<Int, Int>> {
+    val pairs = minOf(group.size, pending.size)
+    if (group.size > EXHAUSTIVE_PAIRING_LIMIT || pending.size > EXHAUSTIVE_PAIRING_LIMIT) {
+      return (0 until pairs).map { it to group[it] }
+    }
+    val cost = Array(group.size) { r -> LongArray(pending.size) { c -> pairingCost(acceptedRows[group[r]], pending[c].line) } }
+    var best: IntArray? = null
+    var bestCost = Long.MAX_VALUE
+    val chosen = IntArray(group.size) { -1 }
+    val used = BooleanArray(pending.size)
+    fun search(row: Int, assigned: Int, soFar: Long) {
+      if (soFar >= bestCost) return
+      if (assigned == pairs) { best = chosen.copyOf(); bestCost = soFar; return }
+      if (row == group.size) return
+      // this row takes a copy, copies in line order
+      for (c in pending.indices) {
+        if (used[c]) continue
+        used[c] = true; chosen[row] = c
+        search(row + 1, assigned + 1, soFar + cost[row][c])
+        used[c] = false; chosen[row] = -1
+      }
+      // or this row stays unpaired, when enough rows remain for the copies
+      if (group.size - row - 1 >= pairs - assigned) search(row + 1, assigned, soFar)
+    }
+    search(0, 0, 0L)
+    val result = checkNotNull(best)
+    return group.indices.filter { result[it] >= 0 }.map { r -> result[r] to group[r] }
+  }
+
+  /**
+   * Whether the rows a fallback chose among at one key carry different family labels:
+   * the one case where the choice changes what a row claims, since equal labels make the
+   * siblings interchangeable for the reader. The candidates are every row at the key
+   * that no exact line match consumed, paired by the fallback or left behind by it.
+   */
+  private fun fallbackLabelConflict(
+    acceptedRows: List<BaselineNotes.Row>,
+    rowIndices: List<Int>,
+    copies: List<ObservedCopy>,
+  ): Boolean {
+    if (copies.none { it.ambiguousFallback }) return false
+    val exactRows = copies.filter { !it.ambiguousFallback }.mapNotNullTo(HashSet()) { it.rowIndex }
+    return rowIndices.filter { it !in exactRows }
+        .map { BaselineNotes.labelOf(acceptedRows[it].note ?: "") }
+        .distinct().size > 1
   }
 
   /** Multiset difference: the elements of [a] left after each match in [b] consumes one. */
@@ -116,8 +194,9 @@ internal object BaselineEngine {
    *
    *  - [Disposition.MATCHED] — holds part of its key's surviving budget: line
    *    affinity first (a row whose `# line` tag names an observed unkilled line is
-   *    the preferred assignment, unique only when that anchor is unique), then file
-   *    order, the update refresh's own rule.
+   *    the preferred assignment, unique only when that anchor is unique), then rows
+   *    naming a live line before stale or bare rows, nearest recorded line within
+   *    each group and file order on ties, the update refresh's own rule.
    *  - [Disposition.INSURED] — a row at a flip-insured key, kept unconditionally
    *    and decided BEFORE the timeout budget: an insured row spending that budget
    *    vouched for nobody and pushed the sibling the timeout could actually be
@@ -208,13 +287,17 @@ internal object BaselineEngine {
     val written: List<String>,
     val refreshedLineTags: Int,
     val sourceRowIndices: List<Int>,
+    /** Keys where the fallback, not line affinity, decided which kept sibling got which line. */
+    val ambiguousFallbackKeys: List<String> = emptyList(),
+    /** The ambiguous keys whose fallback-paired rows carry different family labels. */
+    val differingLabelFallbackKeys: List<String> = emptyList(),
   )
 
   /**
    * Renders a prune after its caller has proved that the proposed kept multiset
    * accepts the complete current gated population. Rows matched at their own key
    * receive this run's observed line, assigned by recorded-line affinity first and
-   * file order second — the same sibling rule used by [updateRewrite]. Unmatched
+   * the nearest-line fallback second — the same sibling rule used by [updateRewrite]. Unmatched
    * timeout, pending-flip, and flip-insurance rows have no current observation at
    * their own key, so their recorded lines remain intact. Dropped rows are omitted.
    *
@@ -232,6 +315,8 @@ internal object BaselineEngine {
       "prune keep plan has ${keepPlan.size} dispositions for ${acceptedRows.size} rows"
     }
     val refreshedLines = HashMap<Int, List<Int>>()
+    val ambiguousFallbackKeys = mutableListOf<String>()
+    val differingLabelFallbackKeys = mutableListOf<String>()
     val matchedByKey = acceptedRows.indices
         .filter { keepPlan[it] == Disposition.MATCHED }
         .groupBy { acceptedRows[it].key }
@@ -239,6 +324,10 @@ internal object BaselineEngine {
       val copies = assignObservedCopies(acceptedRows, rowIndices, currentLines[key].orEmpty())
       require(copies.size == rowIndices.size) {
         "prune matched ${rowIndices.size} row(s) at '$key' but observed ${copies.size} current copy/copies"
+      }
+      if (copies.any { it.ambiguousFallback }) {
+        ambiguousFallbackKeys.add(key)
+        if (fallbackLabelConflict(acceptedRows, rowIndices, copies)) differingLabelFallbackKeys.add(key)
       }
       copies.forEach { copy ->
         refreshedLines[checkNotNull(copy.rowIndex)] = copy.line?.let(::listOf).orEmpty()
@@ -256,7 +345,8 @@ internal object BaselineEngine {
       if (lines != row.recordedLines) refreshedLineTags++
       BaselineNotes.render(row.key, row.note, lines)
     }
-    return PruneRewrite(written, refreshedLineTags, sourceRowIndices)
+    return PruneRewrite(
+        written, refreshedLineTags, sourceRowIndices, ambiguousFallbackKeys, differingLabelFallbackKeys)
   }
 
   /** Every accepted row retained in place, with current lines assigned only to matched rows. */
@@ -265,6 +355,8 @@ internal object BaselineEngine {
     val refreshedLineTags: Int,
     val sourceRowIndices: List<Int>,
     val ambiguousFallbackKeys: List<String>,
+    /** The ambiguous keys whose fallback-paired rows carry different family labels. */
+    val differingLabelFallbackKeys: List<String> = emptyList(),
   )
 
   /**
@@ -293,9 +385,13 @@ internal object BaselineEngine {
     }
     val refreshedLines = HashMap<Int, List<Int>>()
     val ambiguousFallbackKeys = mutableListOf<String>()
+    val differingLabelFallbackKeys = mutableListOf<String>()
     acceptedRows.indices.groupBy { acceptedRows[it].key }.forEach { (key, rowIndices) ->
       val copies = assignObservedCopies(acceptedRows, rowIndices, currentLines[key].orEmpty())
-      if (copies.any { it.ambiguousFallback }) ambiguousFallbackKeys.add(key)
+      if (copies.any { it.ambiguousFallback }) {
+        ambiguousFallbackKeys.add(key)
+        if (fallbackLabelConflict(acceptedRows, rowIndices, copies)) differingLabelFallbackKeys.add(key)
+      }
       copies.forEach { copy ->
         copy.rowIndex?.let { rowIndex ->
           refreshedLines[rowIndex] = copy.line?.let(::listOf).orEmpty()
@@ -309,7 +405,9 @@ internal object BaselineEngine {
       if (lines != row.recordedLines) refreshedLineTags++
       BaselineNotes.render(row.key, row.note, lines)
     }
-    return RetagRewrite(written, refreshedLineTags, acceptedRows.indices.toList(), ambiguousFallbackKeys)
+    return RetagRewrite(
+        written, refreshedLineTags, acceptedRows.indices.toList(),
+        ambiguousFallbackKeys, differingLabelFallbackKeys)
   }
 
   /**

@@ -2025,6 +2025,23 @@ Rules: *the mutation gate runs once per reviewed unpushed range, never per commi
 amend*; *the evidence is keyed to the compiled code, and a kept report needs the
 recompile to vouch for it*; *a tag is part of its row*.
 
+## The killed family's label that stayed on a live row
+
+On 2026-10-07 a sava-rpc test killed one of two sibling mutants at the
+`SolanaJsonRpcWebsocket.recordFailedPing` `RemoveConditionalMutator_EQUAL_IF` key. The
+killed sibling's family was `# retired-state write`; the survivor's argument was
+`# ping-state invariant`. A prune removed the killed row, and the surviving row kept
+`# retired-state write`, the label its sibling had carried. Every later verify passed
+the label check, because the ws README's `### History notes` section recorded the kill
+and named the label, and the check searched the whole file for `# <label>`. The local
+reviewer caught it; the build did not (sava 26b90db relabelled the row). The same day the
+six-row `onWholeMessage` `EQUAL_IF` key had its labels rotated twice by a retag whose
+fallback assigns leftover rows in file order once their recorded lines no longer match.
+
+Rules: *a mention under a History or Retired heading does not document a label*; *a
+fallback that pairs siblings by file order names the keys whose rows carry different
+labels, and prefers the row whose recorded line is nearest*.
+
 ## The registry that was a journal
 
 vault-stat-service's `config/pitest/README.md` grew, from its first pass on 2026-07-24 to

@@ -259,10 +259,13 @@ class BaselineEngineTest {
       )
 
       // Recover the exact-match rows from update's observable note-to-line
-      // assignments, then independently apply the documented fallback: among
-      // rows left by a maximum exact match, live anchors precede bare/stale rows
-      // and file order breaks ties. A tag-counter subtraction is not a valid
-      // oracle here because one production row can carry several historical tags.
+      // assignments, then independently check the documented fallback: among rows
+      // left by a maximum exact match, every live anchor is retained before any
+      // bare/stale row, and the fallback fills exactly the slots the exact match
+      // left. Which row inside a group takes which slot is the nearest-recorded-line
+      // rule, pinned by the dedicated tests rather than re-derived here. A tag-counter
+      // subtraction is not a valid oracle because one production row can carry
+      // several historical tags.
       val assignments = update.written.mapNotNull { rendered ->
         val output = BaselineNotes.parse(rendered)
         val rowIndex = output.note
@@ -277,21 +280,24 @@ class BaselineEngineTest {
       val liveLines = observed.mapNotNullTo(HashSet()) { it.toIntOrNull() }
       val unmatchedRows = rows.indices.filter { it !in exactRows }
       val fallbackSlots = minOf(rows.size, observed.size) - expected
-      val expectedFallbackRows = unmatchedRows
-          .sortedBy { rowIndex ->
-            if (rows[rowIndex].recordedLines.any { it in liveLines }) 0 else 1
-          }
-          .take(fallbackSlots)
-          .toSet()
+      val liveRows = unmatchedRows.filter { rowIndex -> rows[rowIndex].recordedLines.any { it in liveLines } }
       val fileOrderFallbackRows = unmatchedRows.take(fallbackSlots).toSet()
-      if (expectedFallbackRows != fileOrderFallbackRows) fallbackSelectionCases++
-      val expectedMatchedRows = exactRows + expectedFallbackRows
       val updateMatchedRows = rows.indices.filterTo(HashSet()) { it !in update.droppedIdx }
+      val fallbackRows = updateMatchedRows - exactRows
+      if (fallbackRows != fileOrderFallbackRows) fallbackSelectionCases++
       assertEquals(
-        expectedMatchedRows,
-        updateMatchedRows,
+        fallbackSlots, fallbackRows.size,
+        "seed $seed: update fallback did not fill exactly the slots the exact match left",
+      )
+      assertTrue(
+        fallbackRows.all { it in unmatchedRows },
+        "seed $seed: update fallback paired a row the exact match had consumed",
+      )
+      assertTrue(
+        liveRows.all { it in fallbackRows } || fallbackRows.all { it in liveRows },
         "seed $seed: update fallback did not retain live anchors before bare/stale rows",
       )
+      val expectedMatchedRows = updateMatchedRows
 
       val plan = BaselineEngine.keepPlan(rows, mapOf(key to observed), emptyMap(), emptyMap())
       val planMatchedRows = rows.indices.filterTo(HashSet()) {
@@ -471,20 +477,23 @@ class BaselineEngineTest {
   }
 
   @Test
-  fun `retag reports ambiguous moved siblings without changing file-order allocation`() {
+  fun `retag reports ambiguous moved siblings and pairs them by nearest recorded line`() {
     val key = "com.example.Codec,encode,MathMutator,SURVIVED"
     val accepted = listOf(
       BaselineNotes.Row(key, "# first", listOf(10)),
       BaselineNotes.Row(key, "# second", listOf(20)),
     )
-    // Both anchors moved, but only one observed survivor remains. The existing
-    // allocator updates the first row; the diagnostic must not invent identity.
+    // Both anchors moved, but only one observed survivor remains. The nearer recorded
+    // line (20 -> 50) takes it; the diagnostic still must not invent identity, and the
+    // two rows carry different labels, so the key is named for a reader.
     val rewrite = BaselineEngine.retagRewrite(accepted, mapOf(key to listOf("50")))
     assertEquals(listOf(key), rewrite.ambiguousFallbackKeys)
-    assertEquals(listOf("$key # first # line 50", "$key # second # line 20"), rewrite.written)
+    assertEquals(listOf(key), rewrite.differingLabelFallbackKeys)
+    assertEquals(listOf("$key # first # line 10", "$key # second # line 50"), rewrite.written)
     assertEquals(listOf(0, 1), rewrite.sourceRowIndices)
     assertEquals(1, rewrite.refreshedLineTags)
 
+    // A block that moved together keeps its order: the costs tie and file order decides.
     val shifted = BaselineEngine.retagRewrite(accepted, mapOf(key to listOf("50", "40")))
     assertEquals(listOf(key), shifted.ambiguousFallbackKeys)
     assertEquals(listOf("$key # first # line 40", "$key # second # line 50"), shifted.written)
@@ -492,6 +501,61 @@ class BaselineEngineTest {
         mapOf(key to listOf("40", "50")))
     assertEquals(emptyList<String>(), repeated.ambiguousFallbackKeys)
     assertEquals(shifted.written, repeated.written)
+  }
+
+  @Test
+  fun `fallback pairing follows the nearest recorded line, not file position`() {
+    // sava-rpc 2026-10-07, six-row onWholeMessage EQUAL_IF key reduced to the shape that
+    // rotated: three rows, two survivors. File order would hand the absent-map row the
+    // unique-member construct's line; nearest recorded line keeps each label with its own.
+    val key = "ws.SolanaJsonRpcWebsocket,onWholeMessage,RemoveConditionalMutator_EQUAL_IF,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# pending-work wake hint", listOf(2377)),
+      BaselineNotes.Row(key, "# absent-map removal", listOf(2528)),
+      BaselineNotes.Row(key, "# unique-member rescan", listOf(2541)),
+    )
+    val retag = BaselineEngine.retagRewrite(accepted, mapOf(key to listOf("2386", "2543")))
+    assertEquals(
+      listOf(
+        "$key # pending-work wake hint # line 2386",
+        "$key # absent-map removal # line 2528",
+        "$key # unique-member rescan # line 2543",
+      ),
+      retag.written,
+    )
+    assertEquals(listOf(key), retag.ambiguousFallbackKeys)
+    assertEquals(listOf(key), retag.differingLabelFallbackKeys)
+
+    val keepPlan = BaselineEngine.keepPlan(accepted, mapOf(key to listOf("2386", "2543")), emptyMap(), emptyMap())
+    assertEquals(
+      listOf(BaselineEngine.Disposition.MATCHED, BaselineEngine.Disposition.DROP, BaselineEngine.Disposition.MATCHED),
+      keepPlan,
+    )
+    val prune = BaselineEngine.pruneRewrite(accepted, keepPlan, mapOf(key to listOf("2386", "2543")))
+    assertEquals(
+      listOf("$key # pending-work wake hint # line 2386", "$key # unique-member rescan # line 2543"),
+      prune.written,
+    )
+    assertEquals(listOf(key), prune.ambiguousFallbackKeys)
+    assertEquals(listOf(key), prune.differingLabelFallbackKeys)
+
+    // equal labels make the siblings interchangeable: ambiguous, but no label conflict
+    val sameLabel = accepted.map { it.copy(note = "# one family") }
+    val same = BaselineEngine.retagRewrite(sameLabel, mapOf(key to listOf("2386", "2543")))
+    assertEquals(listOf(key), same.ambiguousFallbackKeys)
+    assertEquals(emptyList<String>(), same.differingLabelFallbackKeys)
+
+    // rows naming a live line still take copies before stale rows, nearest or not
+    val duplicateAnchor = listOf(
+      BaselineNotes.Row(key, "# live twin", listOf(2386)),
+      BaselineNotes.Row(key, "# live twin", listOf(2386)),
+      BaselineNotes.Row(key, "# stale", listOf(2390)),
+    )
+    val plan = BaselineEngine.keepPlan(duplicateAnchor, mapOf(key to listOf("2386", "2400")), emptyMap(), emptyMap())
+    assertEquals(
+      listOf(BaselineEngine.Disposition.MATCHED, BaselineEngine.Disposition.MATCHED, BaselineEngine.Disposition.DROP),
+      plan,
+    )
   }
 
   @Test

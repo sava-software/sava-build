@@ -878,8 +878,12 @@ no `# <label>` mention in `config/pitest/README.md`, so a typo'd label or an
 orphaned argument surfaces instead of silently opening a new bucket — and it
 surfaces in the listing where the counts are read, since a count is exactly
 what makes a mistyped label read as finished triage
-(`# untriaged` is exempt — seeded debt needs no section). This check proves only
-that the pointer resolves; it cannot prove the prose is still true. The README is read
+(`# untriaged` is exempt — seeded debt needs no section). A mention inside a section
+whose heading names history or retirement (`History`, `History notes (ws)`, `Retired
+acceptances`), through the next heading of the same or a higher level, does not count:
+it records what was argued, not what is *(casebook: the killed family's label that
+stayed on a live row)*. This check proves only that the pointer resolves; it cannot
+prove the prose is still true. The README is read
 beside the counts the build prints, so it holds the arguments in force and not a record
 of passes: an argument is updated in place when its code or its members change, and what
 a run counted, added, pruned or killed is the run's output and git's history, never a
@@ -917,10 +921,16 @@ travels, but flagged for re-reading, because a reason written for an
 unreached mutant is not automatically a reason once its behaviour is
 observable *(casebook: the status-blind prune)*. Multiple flipped siblings use the
 same maximum line-affinity assignment as same-status siblings before falling back to
-file order, so uniquely anchored notes do not cross during the carry. Within one key,
-accepted rows are assigned to the run's mutants by **maximum line affinity** first,
-then by file order. A unique `# line` anchor attributes a row; repeated or overlapping
-anchors provide deterministic allocation, not proof of sibling identity. Every note
+the nearest recorded line, so uniquely anchored notes do not cross during the carry.
+Within one key, accepted rows are assigned to the run's mutants by **maximum line
+affinity** first, then, among rows naming a live line before stale or bare rows, by the
+nearest recorded line with file order on ties, so siblings that moved together keep
+their order and one that moved alone follows its own line. A unique `# line` anchor
+attributes a row; repeated or overlapping anchors provide deterministic allocation,
+not proof of sibling identity, which is why Retag and Prune name every key the fallback
+decided and, separately, those whose rows carry different family labels: re-read each
+such row's argument against its new line before committing *(casebook: the killed
+family's label that stayed on a live row)*. Every note
 that leaves a row is named loudly in the dropped listing (`note carried` / `note
 dropped with the row`, losses counted) *(casebook: the note the line shift dropped —
 the carry apparatus that entry describes is retired; affinity plus the fate listing
@@ -1017,7 +1027,7 @@ authority for another writer or certification. Run one suite's workflow at a tim
 gate-load preview runs every suite, but only the named one applies the selection.
 
 Without a selector, Prune also refreshes the `# line` tag of each retained row matched at its own
-key, using line affinity before file order; unmatched rows kept for
+key, using line affinity before the nearest-line fallback; unmatched rows kept for
 `TIMED_OUT`, a pending flip, or flip insurance retain their prior tags because
 that run did not observe them at their own key. Before Prune refreshes any drifted
 tag it prints the exact pre-write signal. Use `BaselineRetag` when metadata is the
@@ -1026,7 +1036,8 @@ when its deletion decision was independently reviewed. "Matching" is the
 verify's own multiset comparison: a key holding more rows than the run's unkilled mutants
 has excess to drop, and which sibling goes is decided by line affinity first
 (a row whose `# line` tag names no live line is preferred as the absent sibling),
-file order after — so a noted live-anchored row is not dropped for its bare sibling,
+nearest recorded line and then file order after — so a noted live-anchored row is not
+dropped for its bare sibling,
 while duplicate same-line siblings remain inherently ambiguous,
 and, for the same report population, the candidate preview and Prune classifier
 name the same row *(casebook:

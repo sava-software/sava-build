@@ -4962,6 +4962,19 @@ hardening.mutation.all {
                 "If only metadata should change, use $evidenceBaselineRetagTaskPath instead.",
             recordOutstanding = false)
         val pruneRewrite = BaselineEngine.pruneRewrite(acceptedRows, keepPlan, currentLines)
+        if (pruneRewrite.ambiguousFallbackKeys.isNotEmpty()) {
+          logger.warn(
+              "pitest baseline '$suiteName': prune pairs kept siblings by fallback for " +
+                  "${pruneRewrite.ambiguousFallbackKeys.size} key(s). After exact line matches, remaining " +
+                  "kept rows are paired by nearest recorded line, ties in file order; this does not " +
+                  "establish physical mutant identity. Review the README pointers and resulting line tags:\n" +
+                  pruneRewrite.ambiguousFallbackKeys.joinToString("\n") { "  $it" } +
+                  BaselineNotes.differingLabelFallbackDetail(pruneRewrite.differingLabelFallbackKeys))
+          advisoryLog.get().record(
+              advisoryScope, "${pruneRewrite.ambiguousFallbackKeys.size} ambiguous prune sibling key(s)" +
+                  (if (pruneRewrite.differingLabelFallbackKeys.isEmpty()) "" else
+                    ", ${pruneRewrite.differingLabelFallbackKeys.size} with differing labels"))
+        }
         val rowSpellingsChanged = pruneRewrite.written != baselineRowLines
         val keptDetail = if (keptUnmatched.isEmpty()) "" else
           "\n  kept ${BaselineNotes.populationSummary(keptUnmatched.map { it.first.key })} unmatched:\n" +
@@ -5043,11 +5056,14 @@ hardening.mutation.all {
           logger.warn(
               "pitest baseline '$suiteName': retag plans ambiguous same-key sibling fallback for " +
                   "${rewrite.ambiguousFallbackKeys.size} key(s). After exact line matches, remaining " +
-                  "rows are assigned by the stable file-order fallback; this does not establish " +
-                  "physical mutant identity. Review the README pointers and resulting line tags:\n" +
-                  rewrite.ambiguousFallbackKeys.joinToString("\n") { "  $it" })
+                  "rows are paired by nearest recorded line, ties in file order; this does not " +
+                  "establish physical mutant identity. Review the README pointers and resulting line tags:\n" +
+                  rewrite.ambiguousFallbackKeys.joinToString("\n") { "  $it" } +
+                  BaselineNotes.differingLabelFallbackDetail(rewrite.differingLabelFallbackKeys))
           advisoryLog.get().record(
-              advisoryScope, "${rewrite.ambiguousFallbackKeys.size} ambiguous retag sibling key(s)")
+              advisoryScope, "${rewrite.ambiguousFallbackKeys.size} ambiguous retag sibling key(s)" +
+                  (if (rewrite.differingLabelFallbackKeys.isEmpty()) "" else
+                    ", ${rewrite.differingLabelFallbackKeys.size} with differing labels"))
         }
         if (rewrite.refreshedLineTags == 0) {
           logger.lifecycle(

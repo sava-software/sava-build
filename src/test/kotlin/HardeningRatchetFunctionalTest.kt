@@ -521,13 +521,16 @@ $fuzzBlock
 
     val output = baselineRetagRunner().build().output
     assertTrue(output.contains("ambiguous same-key sibling fallback for 1 key(s)") &&
-        output.contains("stable file-order fallback") &&
+        output.contains("paired by nearest recorded line, ties in file order") &&
         output.contains("this does not establish physical mutant identity") &&
         output.contains("Review the README pointers and resulting line tags"), output)
+    assertTrue(output.contains(
+        "The fallback-paired rows at 1 of these key(s) carry different family labels"), output)
     assertTrue(output.substringAfterLast("hardening: ")
-        .contains("1 ambiguous retag sibling key(s)"), output)
-    assertEquals("$key # first argument # line 50\n$key # second argument # line 20\n",
-        baselineFile().readText(), "the diagnostic must not change the existing fallback allocation")
+        .contains("1 ambiguous retag sibling key(s), 1 with differing labels"), output)
+    assertEquals("$key # first argument # line 10\n$key # second argument # line 50\n",
+        baselineFile().readText(),
+        "the single surviving copy pairs with the row whose recorded line is nearest (20, not 10)")
   }
 
   @Test

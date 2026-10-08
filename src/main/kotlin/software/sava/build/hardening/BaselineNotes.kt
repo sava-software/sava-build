@@ -310,9 +310,48 @@ internal object BaselineNotes {
   fun undocumentedLabels(notes: List<String>, readme: () -> String): List<String> {
     val labels = notes.map { labelOf(it) }.distinct().filter { it != UNTRIAGED }
     if (labels.isEmpty()) return emptyList()
-    val text = readme()
+    val text = argumentsInForce(readme())
     return labels.filterNot { text.contains("# $it") }
   }
+
+  private val HISTORICAL_HEADING = Regex("histor|retired", RegexOption.IGNORE_CASE)
+  private val HEADING = Regex("^(#{1,6})\\s")
+
+  /**
+   * [readme] with every section whose heading names history or retirement removed: a
+   * section headed `History`, `History notes (ws)`, `Retired acceptances` and the like,
+   * from that heading to the next heading of the same or a higher level. A label named
+   * only there resolves to what was argued, not to what is, which is exactly the case the
+   * check exists to surface *(casebook: the killed family's label that stayed on a live
+   * row)*. Fenced code is not special-cased: a `#` inside a fence is not a heading because
+   * the heading grammar wants the `#` at column 0 followed by a space, which indented
+   * fence content does not have, and a fence that does start a line with `# ` is prose
+   * for this purpose too.
+   */
+  internal fun argumentsInForce(readme: String): String {
+    var excludedLevel = 0
+    return readme.lineSequence().filter { line ->
+      val heading = HEADING.find(line)
+      if (heading != null) {
+        val level = heading.groupValues[1].length
+        if (excludedLevel != 0 && level <= excludedLevel) excludedLevel = 0
+        if (excludedLevel == 0 && HISTORICAL_HEADING.containsMatchIn(line)) excludedLevel = level
+      }
+      excludedLevel == 0
+    }.joinToString("\n")
+  }
+
+  /**
+   * The clause a writer appends when fallback-paired siblings carry different family
+   * labels: the one case where the pairing changes what a row claims, so the rows at
+   * these keys need a reader's eye before the rewrite is committed.
+   */
+  fun differingLabelFallbackDetail(keys: List<String>): String =
+      if (keys.isEmpty()) "" else
+        "\n  The fallback-paired rows at ${keys.size} of these key(s) carry different family " +
+            "labels, so a label may now sit on another construct's line; re-read each row's " +
+            "README argument against its line before committing:\n" +
+            keys.joinToString("\n") { "  $it" }
 
   /** The warning naming [undocumented] labels; callers pass a non-empty list. */
   fun undocumentedLabelWarning(suiteName: String, undocumented: Collection<String>): String =
