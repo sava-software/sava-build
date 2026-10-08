@@ -1,5 +1,28 @@
 # Changelog
 
+## [21.6.6](https://github.com/sava-software/sava-build/compare/21.6.5...21.6.6) (2026-10-08)
+
+
+### Features
+
+* **hardening:** generate one dynamic replay test per fuzz seed ([423c900](https://github.com/sava-software/sava-build/commit/423c90053156244c135037b926a052ee2f67bb9a))
+
+
+### Bug Fixes
+
+* **hardening:** keep a report under ArcMutate when only test-source text changed ([696ee28](https://github.com/sava-software/sava-build/commit/696ee28f7f81559f37e4c35a4893a023aa742dec))
+* **hardening:** name the worktree remedy and the retained marker in the clean-tree refusal ([0acf819](https://github.com/sava-software/sava-build/commit/0acf819f0682ce1e631e4ab29ef1ffd2ef25a07b))
+* **hardening:** pair shifted siblings in recorded order and name every fallback that moved a label ([306bd7f](https://github.com/sava-software/sava-build/commit/306bd7f8b4ffe80e39dfb622e408ccfb95206d6b))
+* **hardening:** print the load average and CPU count beside a RUN_ERROR refusal ([252039a](https://github.com/sava-software/sava-build/commit/252039a6693e77dd7a02a8ca0240eee0c8bb28d6))
+* **hardening:** record a clean-tree refusal as refused and refuse it before PIT ([0fb162f](https://github.com/sava-software/sava-build/commit/0fb162ffbecac5566de841f169cca6c8cbbcfa97))
+* **hardening:** resolve labels against the arguments in force and pair fallback siblings by nearest line ([a9fb492](https://github.com/sava-software/sava-build/commit/a9fb492a2b3739fa331282ccd63eedece4026b0a))
+
+
+### CI
+
+* **workflows:** decide conventional headers with the parser and honour exclude-paths in the guard ([a508551](https://github.com/sava-software/sava-build/commit/a50855192303e254b943e4d14837280a1326b81b))
+* **workflows:** refuse commits release-please would drop from the release notes ([e11a2b7](https://github.com/sava-software/sava-build/commit/e11a2b7f0553064d8aed48441943d11523c26001))
+
 ## [21.6.5](https://github.com/sava-software/sava-build/compare/21.6.4...21.6.5) (2026-10-06)
 
 
