@@ -589,12 +589,30 @@ transition-preflight, and completion tasks as internal implementation boundaries
 Releasing is Release Please plus the ordinary check:
 
 1. Land changes on `main`; a green `Gradle Check` lets Release Please open or refresh its
-   draft release pull request (`always-bump-patch`).
+   draft release pull request (`always-bump-patch`), once the commit guard below passes.
 2. Review the CHANGELOG, mark the pull request ready, and squash-merge it.
 3. The merge is tagged by Release Please, and the tag-triggered workflow re-runs `check`
    without the Gradle build cache, publishes to GitHub Packages, and attests build
    provenance with GitHub's native `actions/attest` — verifiable by consumers through the
    `software.sava.build.check.attestations` feature or `gh attestation verify`.
+
+Release Please reads commits through the GitHub API and drops, at debug level, every
+message its parser cannot read, `BREAKING CHANGE` footer included, while the run stays
+green: sava 1d846b0 was released without its breaking note because a body line beginning
+with `Arrays.compare(a.toByteArray(), b.toByteArray())` was read as a `type(scope)`
+header. So the reusable [release-please.yml](.github/workflows/release-please.yml) first
+checks out the branch with full history and runs
+[release-please-guard](.github/actions/release-please-guard), which parses every commit
+since the manifest version's tag with the parser Release Please uses
+(`@conventional-commits/parser`, pinned by the action's lockfile to the version
+`release-please-action` resolves; bump them together) and fails the run naming any
+conventional commit that parser cannot read, with the parser's own position. Messages
+that are not conventional commits (merges, imports) are notices only, since Release
+Please ignores them by design. The remedy for a flagged commit already on `main` is an
+empty commit that restates its header, body and footers in parseable form and ends with
+the footer `Restates: <sha>`; the guard then reports the original as a notice. The guard
+reads the commit message only: a `BEGIN_COMMIT_OVERRIDE` block in a pull request body is
+not consulted.
 
 Batch fixes and release on a cadence, not per fix: every release is re-adopted across
 the fleet, so each one starts about ten adoption passes.

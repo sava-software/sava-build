@@ -1,0 +1,30 @@
+name: Release Please guard
+description: >-
+  Fails when a conventional commit since the last release cannot be read by the parser
+  release-please uses, which would otherwise drop it from the release notes at debug level.
+  Run on a full-history checkout before release-please.
+inputs:
+  config-file:
+    description: release-please config, read for the tag spelling of the last release.
+    default: release-please-config.json
+  manifest-file:
+    description: release-please manifest, read for the last released version.
+    default: .release-please-manifest.json
+  token:
+    description: Token for the releases API, used only when no tag matches the manifest version.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Install release-please's commit parser
+      shell: bash
+      # The lockfile pins @conventional-commits/parser to the version release-please
+      # 17.6 resolves; bump both together.
+      run: npm ci --prefix "$GITHUB_ACTION_PATH" --ignore-scripts --no-audit --no-fund --silent
+    - name: Refuse commits release-please would drop
+      shell: bash
+      env:
+        CONFIG_FILE: ${{ inputs.config-file }}
+        MANIFEST_FILE: ${{ inputs.manifest-file }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: node "$GITHUB_ACTION_PATH/guard.js"

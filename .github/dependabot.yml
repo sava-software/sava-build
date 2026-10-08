@@ -26,3 +26,11 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action*"
+  # The release-please guard's parser is pinned to the version release-please-action
+  # bundles; a proposed bump is taken only together with that action's.
+  - package-ecosystem: "npm"
+    directory: "/.github/actions/release-please-guard"
+    schedule:
+      interval: "daily"
+      time: "07:00"
+      timezone: "Etc/UTC"

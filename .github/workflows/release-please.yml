@@ -23,6 +23,18 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # release-please reads commits through the GitHub API and drops, at debug level,
+      # every message its parser cannot read, BREAKING CHANGE footer included, while the
+      # run stays green. The guard parses the same range with the same parser first and
+      # fails naming the commit; its README section says how to restate one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: sava-software/sava-build/.github/actions/release-please-guard@main
+        with:
+          config-file: ${{ inputs.config-file }}
+          manifest-file: ${{ inputs.manifest-file }}
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         id: app-token
         with:

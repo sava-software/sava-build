@@ -1,0 +1,8 @@
+{
+  "name": "release-please-guard",
+  "private": true,
+  "description": "Parses commits with the parser release-please uses, so a commit it would drop fails the run first.",
+  "dependencies": {
+    "@conventional-commits/parser": "0.4.1"
+  }
+}
