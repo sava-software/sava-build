@@ -24,6 +24,7 @@ import software.sava.build.hardening.HardeningCertificationAggregateSession
 import software.sava.build.hardening.HardeningOperationSession
 import software.sava.build.hardening.HardeningPluginIdentityGuard
 import software.sava.build.hardening.BaselineFiles
+import software.sava.build.hardening.FilterSourceRecord
 import software.sava.build.hardening.CertificationGitIdentity
 import software.sava.build.hardening.CertificationGitIdentityCapture
 import software.sava.build.hardening.CertificationAggregateProjectRegistration
@@ -976,6 +977,12 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
   @get:Internal abstract val recompiledSourceFiles: ConfigurableFileCollection
   /** What that recompile published about the sources it read. */
   @get:Internal abstract val recompileStamp: RegularFileProperty
+  /**
+   * The roots PIT is given as `--sourceDirs`, which ArcMutate's source-reading filters
+   * read: the PIT task records their fingerprint beside the report, and a kept report
+   * under ArcMutate needs it unchanged.
+   */
+  @get:Internal abstract val filterSourceDirectories: ConfigurableFileCollection
   @get:Input abstract val excludedTaskNames: ListProperty<String>
 
   @get:ServiceReference("hardeningCertificationSession")
@@ -1092,8 +1099,10 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
    *    configuration and report bytes are the recorded ones;
    *  - PIT did not run in this invocation, where a difference means an input changed
    *    under a build that is supposed to be observing it;
-   *  - ArcMutate is not part of the toolchain: its `@Generated` filter reads source text,
-   *    so there identical classes do not imply an identical population;
+   *  - when ArcMutate is part of the toolchain, every file under the source roots PIT is
+   *    given is byte-identical to what the run recorded: its `@Generated` filter reads
+   *    that text, so there identical classes imply an identical population only while
+   *    it stands, and the test sources outside the roots stay the recompile's business;
    *  - every evidence source the recompile does not compile is byte-identical to what the
    *    run recorded, leaving the recompiled Java sources as the only thing that can have
    *    changed;
@@ -1146,17 +1155,33 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
       }
     }
     if (attempted) return KeepRefusal("")
+    val projectDirectory = evidence.projectDirectory.get().asFile
     // A legacy manifest differs in its toolchain field too, so it never reaches here.
     if (toolchain == null || toolchain.arcMutateBaseVersion != null) {
-      return KeepRefusal(
-        hint(
-          "Only source text changed, but ArcMutate is active for this suite and its " +
-            "@Generated filter reads src/main/java, so identical classes do not show an " +
-            "identical population here."),
-        ruleRetry,
-      )
+      val roots = filterSourceDirectories.files
+      val recordedFilterSources = try {
+        FilterSourceRecord.parse(reportDir.resolve(FilterSourceRecord.FILE_NAME).readText())
+      } catch (_: Exception) {
+        null
+      }
+      if (recordedFilterSources == null ||
+        recordedFilterSources.invocationId != recorded.invocationId ||
+        recordedFilterSources.filterSourceSha256 !=
+        FilterSourceRecord.fingerprint(projectDirectory, roots)) {
+        val rootNames = roots.joinToString { root ->
+          runCatching { root.relativeTo(projectDirectory).invariantSeparatorsPath }.getOrElse { root.path }
+        }
+        return KeepRefusal(
+          hint(
+            "Only source text changed, but ArcMutate is active for this suite and its " +
+              "@Generated filter reads $rootNames, where a file changed since the recorded " +
+              "run (or this report carries no record of that tree), so identical classes do " +
+              "not show an identical population here; under ArcMutate only Java sources " +
+              "outside that tree may change under a kept report."),
+          ruleRetry,
+        )
+      }
     }
-    val projectDirectory = evidence.projectDirectory.get().asFile
     val recompiledSources = recompiledSourceFiles.files
     val recordedUncompiled = try {
       UncompiledSourceRecord.parse(reportDir.resolve(UncompiledSourceRecord.FILE_NAME).readText())

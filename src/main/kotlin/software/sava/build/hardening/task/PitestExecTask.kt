@@ -27,6 +27,7 @@ import org.gradle.work.DisableCachingByDefault
 import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.BaselineWriteOperation
 import software.sava.build.hardening.ExclusionAudit
+import software.sava.build.hardening.FilterSourceRecord
 import software.sava.build.hardening.HardeningAdvisoryLog
 import software.sava.build.hardening.HardeningCertificationSession
 import software.sava.build.hardening.HardeningExecutionLock
@@ -696,7 +697,7 @@ abstract class PitestExecTask : JavaExec() {
 
     prepareAttemptDirectory(reportDir)
     reportDir.resolve(RUNNING_MARKER).writeText("")
-    if (!bindsEvidence) return PitestAttempt(invocationId, null, toolchain, null)
+    if (!bindsEvidence) return PitestAttempt(invocationId, null, toolchain, null, null)
 
     Files.deleteIfExists(reportDir.resolve(EVIDENCE_FILE).toPath())
     Files.deleteIfExists(reportDir.resolve(TOOLCHAIN_FILE).toPath())
@@ -712,6 +713,7 @@ abstract class PitestExecTask : JavaExec() {
       ),
       toolchain,
       uncompiledSourceFingerprint(),
+      filterSourceFingerprint(),
     )
   }
 
@@ -721,6 +723,12 @@ abstract class PitestExecTask : JavaExec() {
     recompiledSourceFiles.files,
   )
 
+  /** What ArcMutate's source-reading filters could see: every file under PIT's source roots. */
+  private fun filterSourceFingerprint(): String = FilterSourceRecord.fingerprint(
+    evidenceProjectDirectory.get().asFile,
+    sourceDirectories.files,
+  )
+
   private fun completeAttempt(attempt: PitestAttempt, historyActive: Boolean) {
     val suite = suiteName.get()
     val reportDir = currentReportDirectory()
@@ -728,6 +736,7 @@ abstract class PitestExecTask : JavaExec() {
     val scopedMarker = reportDir.resolve(SCOPED_MARKER)
     var completedEvidence: PitestEvidence? = null
     var completedUncompiledSources: UncompiledSourceRecord? = null
+    var completedFilterSources: FilterSourceRecord? = null
 
     if (bindSuiteEvidence.get()) {
       val report = reportDir.resolve(REPORT_FILE)
@@ -775,8 +784,20 @@ abstract class PitestExecTask : JavaExec() {
             "current=$uncompiledSources"
         )
       }
+      // Likewise a part of sourceSha256: the files under PIT's source roots, which
+      // ArcMutate's filters read, so a verify can tell them from the test sources.
+      val filterSources = filterSourceFingerprint()
+      if (filterSources != attempt.preRunFilterSourceSha256) {
+        throw GradleException(
+          "pitest '$suite': evidence inputs changed while PIT was running — refusing to commit " +
+            "completed evidence; re-run against a stable checkout:\n" +
+            "  filterSourceSha256: recorded=${attempt.preRunFilterSourceSha256} " +
+            "current=$filterSources"
+        )
+      }
       completedEvidence = before.copy(reportSha256 = PitestEvidence.sha256(report))
       completedUncompiledSources = UncompiledSourceRecord(before.invocationId, uncompiledSources)
+      completedFilterSources = FilterSourceRecord(before.invocationId, filterSources)
     }
 
     if (scope == PitestEvidence.FULL_SCOPE) {
@@ -799,6 +820,9 @@ abstract class PitestExecTask : JavaExec() {
       BaselineFiles.writeAtomically(reportDir.resolve(TOOLCHAIN_FILE), completedToolchain.render())
       completedUncompiledSources?.let {
         BaselineFiles.writeAtomically(reportDir.resolve(UNCOMPILED_SOURCES_FILE), it.render())
+      }
+      completedFilterSources?.let {
+        BaselineFiles.writeAtomically(reportDir.resolve(FILTER_SOURCES_FILE), it.render())
       }
       BaselineFiles.writeAtomically(reportDir.resolve(EVIDENCE_FILE), evidence.render())
       certificationSession.get().recordCompleted(certifyingProjectPath.get(), suite, evidence)
@@ -882,6 +906,7 @@ abstract class PitestExecTask : JavaExec() {
     val preRunEvidence: PitestEvidence?,
     val preRunToolchain: MutationToolchainRecord,
     val preRunUncompiledSourceSha256: String?,
+    val preRunFilterSourceSha256: String?,
   )
 
   private enum class AttemptLogDisposition {
@@ -920,6 +945,7 @@ abstract class PitestExecTask : JavaExec() {
       EVIDENCE_FILE,
       TOOLCHAIN_FILE,
       UNCOMPILED_SOURCES_FILE,
+      FILTER_SOURCES_FILE,
       EVIDENCE_INVOCATION_FILE,
       STANDARD_OUTPUT_LOG,
       ERROR_OUTPUT_LOG,
@@ -960,6 +986,7 @@ abstract class PitestExecTask : JavaExec() {
     const val EVIDENCE_FILE = ".evidence.tsv"
     const val TOOLCHAIN_FILE = ".toolchain.tsv"
     const val UNCOMPILED_SOURCES_FILE = UncompiledSourceRecord.FILE_NAME
+    const val FILTER_SOURCES_FILE = FilterSourceRecord.FILE_NAME
     const val EVIDENCE_INVOCATION_FILE = ".evidence-invocation"
     const val STANDARD_OUTPUT_LOG = "pitest.stdout.log"
     const val ERROR_OUTPUT_LOG = "pitest.stderr.log"

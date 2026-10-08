@@ -2786,6 +2786,10 @@ hardening.mutation.all {
   // The PIT task and the validator split the evidence sources by it and the recompile
   // stamps it, so the three read one definition and cannot drift apart.
   val recompiledSourceTree = files(compileForPitest.map { it.source })
+  // The roots PIT is given as --sourceDirs. ArcMutate's source-reading filters read them,
+  // so the PIT task records their fingerprint beside the report and the verify validator
+  // compares it: one definition, so the two cannot drift apart.
+  val pitestSourceDirectories = files(layout.projectDirectory.dir("src/main/java"))
   val evidenceClassFiles = mutationClassTree
   val pitestBuildDirPath = layout.buildDirectory.get().asFile.absolutePath + File.separator
   val pitestResourceDirs = files(
@@ -6067,7 +6071,7 @@ hardening.mutation.all {
     // already run by now, and `from` would keep whatever it added — the lock below
     // would then pin a value nobody here chose rather than the wiring above.
     task.applicationClasspath.setFrom(mutationClassesDir, evidenceClasspathFiles)
-    task.sourceDirectories.setFrom(layout.projectDirectory.dir("src/main/java"))
+    task.sourceDirectories.setFrom(pitestSourceDirectories)
     task.reportDirectory.set(layout.buildDirectory.dir("reports/pitest/$reportSubdir"))
     task.scopedReportDirectory.set(layout.buildDirectory.dir(
         if (isolateScopedReport) "reports/pitest-scoped/$reportSubdir"
@@ -6261,6 +6265,7 @@ hardening.mutation.all {
       keepOnIdenticalClasses.set(true)
       recompiledSourceFiles.from(recompiledSourceTree)
       recompileStamp.set(mutationRecompileStamp)
+      filterSourceDirectories.from(pitestSourceDirectories)
       excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
     }
   }

@@ -265,8 +265,10 @@ suite's configuration — must be exact, and the refusal names the field, or
 the kind of input, that moved. One limit is accepted: a test that opens a
 Java source file by path reads text no field binds once the classes match,
 so keep such inputs under resources, where the processed copy is bound. A
-suite that runs ArcMutate keeps the source-text rule, because its
-`@Generated` filter reads `src/main/java`. Writers, mode snapshots,
+suite that runs ArcMutate keeps the source-text rule for `src/main/java`,
+because its `@Generated` filter reads that tree: every file under it must
+also be byte-identical to the recorded run, so a test-only edit can keep the
+report there and a main-source edit cannot. Writers, mode snapshots,
 convergence and certification never stand on a kept report; `hardeningHelp`
 lists what is compared *(casebook: the gate that ran on every amend)*.
 

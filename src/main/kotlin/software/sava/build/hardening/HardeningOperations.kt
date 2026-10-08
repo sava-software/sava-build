@@ -755,8 +755,10 @@ internal object HardeningHelpText {
             "mutation toolchain, configuration, Java runtime, plugin, scope and report bytes.")
     appendLine(
         "  It keeps the report, and says so on one lifecycle line, only when the source " +
-            "fingerprint is the sole difference and: PIT did not run in this invocation; the " +
-            "suite runs without ArcMutate (its @Generated filter reads source text); every " +
+            "fingerprint is the sole difference and: PIT did not run in this invocation; under " +
+            "ArcMutate, every file under src/main/java is byte-identical to the " +
+            ".filter-sources.tsv the run recorded (its @Generated filter reads that text, so " +
+            "only test sources may change there); every " +
             "evidence source outside the mutation recompile (build scripts, resources, a prune " +
             "selection, module-info.java, recompile-excluded files) is byte-identical to the " +
             ".uncompiled-sources.tsv the run recorded; no task was excluded; and " +

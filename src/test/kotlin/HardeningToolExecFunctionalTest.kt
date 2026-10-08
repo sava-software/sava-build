@@ -882,7 +882,8 @@ $buildTail
 
     assertTrue(failed.contains("failed attempt raw logs"), failed)
     assertTrue(report.resolve(".running").isFile, "failed attempt exposed old evidence")
-    listOf("mutations.csv", "mutations.xml", "index.html", ".evidence.tsv", ".toolchain.tsv")
+    listOf("mutations.csv", "mutations.xml", "index.html", ".evidence.tsv", ".toolchain.tsv",
+        ".uncompiled-sources.tsv", ".filter-sources.tsv")
       .forEach { stale -> assertFalse(report.resolve(stale).exists(), "stale $stale survived") }
     assertTrue(report.resolve("pitest.stderr.log").readText().endsWith("failed before report"))
 
@@ -2448,20 +2449,43 @@ $buildTail
   }
 
   @Test
-  fun `a licensed suite keeps the source rule because ArcMutate reads source text`() {
+  fun `a licensed suite keeps the source rule for the tree ArcMutate reads and not for the tests`() {
     writeFixture(moneyMath = true)
     enableFakeArcMutate()
     runner("pitestEncoding", "-PnoMutationHistory").build()
+    val sidecar = File(fixtureDir, "build/reports/pitest/encoding/.filter-sources.tsv")
+    assertTrue(sidecar.isFile, "the run recorded no filter-source fingerprint")
 
-    File(fixtureDir, "src/main/java/com/example/Codec.java").appendText("\n// harmless comment\n")
+    // Main source text is what the @Generated filter reads: a comment there refuses.
+    val codec = File(fixtureDir, "src/main/java/com/example/Codec.java")
+    val codecBytes = codec.readBytes()
+    codec.appendText("\n// harmless comment\n")
     val stale = runner("pitestEncodingVerify").buildAndFail().output
-
     assertTrue(stale.contains("sourceSha256: recorded="), stale)
     assertTrue(stale.contains("ArcMutate is active for this suite"), stale)
+    assertTrue(stale.contains("@Generated filter reads src/main/java, where a file changed"), stale)
     assertTrue(stale.contains("identical classes do not show an identical population here"), stale)
     assertFalse(stale.contains("owes a run here"), stale)
     assertTrue(stale.contains(RULE_RETRY), stale)
     assertFalse(stale.contains(KEPT_REPORT_NOTICE), stale)
+    codec.writeBytes(codecBytes)
+
+    // A test source is compiled by the same recompile but read by no filter: its
+    // byte-identical class is the whole proof, so the report is kept.
+    File(fixtureDir, "src/test/java/com/example/CodecFuzz.java").appendText("\n// test comment\n")
+    val kept = runner("pitestEncodingVerify").build().output
+    assertTrue(kept.contains(KEPT_REPORT_NOTICE), kept)
+
+    // Without the record the verify cannot tell the two cases apart and refuses.
+    val sidecarBytes = sidecar.readBytes()
+    sidecar.delete()
+    val unrecorded = runner("pitestEncodingVerify").buildAndFail().output
+    assertTrue(unrecorded.contains("ArcMutate is active for this suite"), unrecorded)
+    assertTrue(unrecorded.contains("or this report carries no record of that tree"), unrecorded)
+    assertFalse(unrecorded.contains(KEPT_REPORT_NOTICE), unrecorded)
+    sidecar.writeBytes(sidecarBytes)
+    val restored = runner("pitestEncodingVerify").build().output
+    assertTrue(restored.contains(KEPT_REPORT_NOTICE), restored)
   }
 
   @Test
