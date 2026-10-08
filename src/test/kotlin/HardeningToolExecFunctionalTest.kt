@@ -2999,7 +2999,9 @@ $buildTail
     assertTrue(
       refused.contains("clean Git certification cannot bind 1 source input(s) absent from its captured tree") &&
         refused.contains("  src/main/java/com/example/Integ.java") &&
-        refused.contains("Commit them, move them outside the source roots, or generate them under the build directory"),
+        refused.contains("Commit them, move them outside the source roots, or generate them under the build directory") &&
+        refused.contains("certify from a detached worktree of this commit (git worktree add --detach <dir> <sha>)") &&
+        refused.contains("The .running marker left beside the receipt is the retained record of this refusal"),
       refused,
     )
     assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists(), refused)

@@ -375,7 +375,10 @@ internal object CertificationGitIdentityCapture {
       "clean Git $context cannot bind ${findings.size} source input(s) absent from its captured " +
         "tree (ignored files under the source roots, or links to them):\n" +
         findings.joinToString("\n") { "  $it" } +
-        "\nCommit them, move them outside the source roots, or generate them under the build directory."
+        "\nCommit them, move them outside the source roots, or generate them under the build directory, " +
+        "or certify from a detached worktree of this commit (git worktree add --detach <dir> <sha>), " +
+        "which carries only what the tree binds. The .running marker left beside the receipt is the " +
+        "retained record of this refusal (HARDENING.md, Lifecycle), not a live or abandoned run."
     }
   }
 

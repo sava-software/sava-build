@@ -113,7 +113,10 @@ bytes that tree does not bind: ignored files under the source roots, symlinks th
 to them, and files outside the worktree. Names reached through tracked symlinks and
 files inside pinned submodules are bound by the tree that commits them. Outputs generated
 under the build directory are exempt. The refusal names each path; commit the file, move
-it outside the source roots, or generate it under the build directory.
+it outside the source roots, or generate it under the build directory, or certify from a
+detached worktree of the commit (`git worktree add --detach <dir> <sha>`), which carries
+only what the tree binds. The `refused` marker that refusal leaves beside the receipt is
+its retained record (see below), not a run still in progress.
 `recompileExcludes` keeps a file out of the PIT/Jazzer recompile only; it does not remove
 it from the evidence inventory. Content edits hidden by index flags such as
 assume-unchanged are the owner's own doing and are not checked.
