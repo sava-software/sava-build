@@ -535,6 +535,7 @@ val hardeningCertifyPreflight =
     providers.gradleProperty(it).isPresent
   } + presentSuitePruneSelectionProperties)
   excludedTaskNames.set(gradle.startParameter.excludedTaskNames.sorted())
+  certificationBuildDirectory.set(layout.buildDirectory)
 }
 
 // `hardeningCertify` depends on both this preflight and `qualityGate`; dependency
@@ -580,6 +581,8 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
   hardeningProjectPath.set(project.path)
   certificationProjectDirectory.set(layout.projectDirectory)
   certificationBuildDirectory.set(layout.buildDirectory)
+  durableReceiptFile.set(certificationReceiptFile)
+  durableRunningFile.set(certificationReceiptRunning)
   certificationPluginCode.from(hardeningImplementationCode)
   expectedPluginSha256.set(hardeningExpectedPluginSha256)
   localRepoArtifactPath.set(hardeningLocalRepoArtifactPath)
@@ -5989,6 +5992,7 @@ hardening.mutation.all {
   qualityGate.configure { dependsOn(pitestTaskName) }
   convergeSuiteNames.add(suiteName)
   certificationSuiteNames.add(suiteName)
+  hardeningCertifyPreflight.configure { certifiedSuites.add(suiteName) }
   aggregateProjectInventory.suiteNames.add(suiteName)
   val aggregateTransition = hardeningCertifyAllPreflight.transitionInventory.maybeCreate(
       evidenceBaselineRebaseTaskPath)
@@ -6303,6 +6307,11 @@ hardening.mutation.all {
         evidenceClasspathFiles,
         evidencePitestTask.effectiveToolClasspath,
     )
+    certificationRecordFiles.from(
+        PitestEvidence.mutationRecordFiles(layout.projectDirectory.dir("config/pitest").asFile, suiteName))
+  }
+  hardeningCertifyPreflight.configure {
+    certificationSourceFiles.from(evidenceSourceFiles)
     certificationRecordFiles.from(
         PitestEvidence.mutationRecordFiles(layout.projectDirectory.dir("config/pitest").asFile, suiteName))
   }

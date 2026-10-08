@@ -92,7 +92,11 @@ attempt. Receipt-level `.running` files are structured state records: a first fi
 ownership but has not published success; it can be live or interrupted and is not a
 process-liveness probe. `refused` denotes a terminal refusal whose reason is stored in the
 second field. The plugin deliberately retains that refusal record after the Gradle process exits;
-its filename does not mean a process is still running or was abandoned. Any of those
+its filename does not mean a process is still running or was abandoned. An attempt that
+ends without a receipt, because certification refused, a task it depends on failed, or the
+build was cancelled, replaces its `session` state with that `refused` record, where it
+refused or when the build ends; a killed process cannot, and leaves `session`, which still
+marks an incomplete attempt. Any of those
 states keeps the sibling TSV historical rather than current. `hardeningCertify` fails before
 PIT when `.pitest-history/` is not Git-ignored.
 Each suite row binds the report, compiled code, source, configuration, runtime classpath
@@ -113,10 +117,16 @@ bytes that tree does not bind: ignored files under the source roots, symlinks th
 to them, and files outside the worktree. Names reached through tracked symlinks and
 files inside pinned submodules are bound by the tree that commits them. Outputs generated
 under the build directory are exempt. The refusal names each path; commit the file, move
-it outside the source roots, or generate it under the build directory, or certify from a
-detached worktree of the commit (`git worktree add --detach <dir> <sha>`), which carries
-only what the tree binds. The `refused` marker that refusal leaves beside the receipt is
-its retained record (see below), not a run still in progress.
+it outside the source roots, or generate it under the build directory, or run the
+certification or campaign from a detached worktree of the commit
+(`git worktree add --detach <dir> <sha>`, then the same task in `<dir>`), which carries
+only what the tree binds. Certification asks in its preflight, before the project's tests
+and PIT, and again at its final boundary, because a file can appear while PIT runs;
+`fuzzAll` asks as each target starts. Either way the refusal leaves the `refused` record
+described above beside the receipt, not a run still in progress. A worktree's
+machine-local state is its own and leaves with it: the receipt and its markers land in
+that worktree's `.pitest-history/`, so keep the worktree, or that directory, while the
+receipt is evidence, and a fuzz campaign there starts from the committed seeds.
 `recompileExcludes` keeps a file out of the PIT/Jazzer recompile only; it does not remove
 it from the evidence inventory. Content edits hidden by index flags such as
 assume-unchanged are the owner's own doing and are not checked.

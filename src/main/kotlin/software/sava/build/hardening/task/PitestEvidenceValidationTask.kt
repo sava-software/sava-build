@@ -50,6 +50,11 @@ internal fun certificationRetryGuidance(projectPath: String): String {
     "that invocation; completed receipts from other projects remain independent."
 }
 
+/** The second field of a receipt-level `refused` record: one line, no field delimiter. */
+internal fun certificationRefusalReason(failure: Throwable): String =
+  (failure.message ?: failure::class.java.simpleName)
+    .replace('\t', ' ').replace('\r', ' ').replace('\n', ' ')
+
 /** Retry contract for evidence covering only the projects registered by this Gradle root. */
 internal fun certificationAggregateRetryGuidance(): String =
   "\n  Retry: after resolving the condition above, run :hardeningCertifyAll in a new " +
@@ -613,6 +618,17 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
   @get:Input abstract val hardeningProjectPath: Property<String>
   @get:Input abstract val presentForbiddenProperties: ListProperty<String>
   @get:Input abstract val excludedTaskNames: ListProperty<String>
+  /** The suites this attempt must verify; names what an unfinished attempt lacked. */
+  @get:Internal abstract val certifiedSuites: ListProperty<String>
+  /**
+   * Every suite's evidence sources and committed records, read here only to refuse
+   * early what the final clean-tree boundary would refuse after PIT. Internal: the
+   * preflight runs before anything that produces them and fingerprints nothing.
+   */
+  @get:Internal abstract val certificationSourceFiles: ConfigurableFileCollection
+  @get:Internal abstract val certificationRecordFiles: ConfigurableFileCollection
+  /** Generated outputs under here are exempt from the clean-tree source-input refusal. */
+  @get:Internal abstract val certificationBuildDirectory: DirectoryProperty
 
   @get:ServiceReference("hardeningCertificationSession")
   abstract val certificationSession: Property<HardeningCertificationSession>
@@ -655,7 +671,8 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
 
       val expectedPlugin = expectedPluginSha256.get()
       val session = certificationSession.get()
-      val sessionId = session.activate(projectPath, expectedPlugin, lock)
+      val sessionId = session.activate(
+        projectPath, expectedPlugin, lock, projectDirectory, running, certifiedSuites.get())
 
       // Ownership comes first. A competing process must not overwrite the sentinel
       // belonging to the process that holds the lock. Keep the previous successful
@@ -713,6 +730,22 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
       } catch (failure: IllegalStateException) {
         throw IllegalStateException(
           "${failure.message}; refusing mixed plugin bytes before PIT", failure)
+      }
+      // The final boundary (HardeningCertificationTask) decides, because a file can
+      // appear while PIT runs; asking the same question here first refuses before this
+      // project's tests and PIT spend their minutes on a receipt that cannot publish.
+      val git = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
+      if (git.state == CertificationGitIdentity.State.CLEAN) {
+        CertificationGitIdentityCapture.requireRecordFilesMatchTree(
+          projectDirectory, git, certificationRecordFiles.files, execOperations)
+        CertificationGitIdentityCapture.requireSourceInputsInTree(
+          projectDirectory,
+          git,
+          certificationSourceFiles.files,
+          certificationBuildDirectory.get().asFile,
+          execOperations,
+          "certification",
+        )
       }
     } catch (failure: Exception) {
       val session = certificationSession.get()
@@ -1370,6 +1403,9 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
   @get:Input abstract val expectedLocalRepoArtifactSha256: Property<String>
   @get:Internal abstract val certificationRecordFiles: ConfigurableFileCollection
   @get:Input abstract val hardeningProjectPath: Property<String>
+  /** The durable receipt and state record this attempt owns (`.pitest-history/`). */
+  @get:Internal abstract val durableReceiptFile: RegularFileProperty
+  @get:Internal abstract val durableRunningFile: RegularFileProperty
 
   @get:ServiceReference("hardeningCertificationSession")
   abstract val certificationSession: Property<HardeningCertificationSession>
@@ -1380,8 +1416,33 @@ abstract class HardeningCertificationTask @Inject constructor(objects: org.gradl
   private fun retryGuidance(): String =
     certificationRetryGuidance(hardeningProjectPath.get())
 
+  /**
+   * The final boundary refuses after every suite ran; its refusal is recorded like the
+   * doFirst/doLast refusals around it, so the state record says why rather than
+   * reading `session` as if the attempt were still live or had been interrupted.
+   */
   @TaskAction
   fun validateFinalInputs() {
+    try {
+      validateFinalInputsOrRefuse()
+    } catch (failure: Exception) {
+      try {
+        if (certificationSession.get().ownsCertification(hardeningProjectPath.get())) {
+          BaselineFiles.preserveReceiptUnderIncompleteMarker(
+            certificationProjectDirectory.get().asFile,
+            durableReceiptFile.get().asFile,
+            durableRunningFile.get().asFile,
+            "refused\t${certificationRefusalReason(failure)}\n",
+          )
+        }
+      } catch (stateFailure: Exception) {
+        failure.addSuppressed(stateFailure)
+      }
+      throw failure
+    }
+  }
+
+  private fun validateFinalInputsOrRefuse() {
     val projectDirectory = certificationProjectDirectory.get().asFile
     val gitBefore = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
     if (gitBefore.state == CertificationGitIdentity.State.CLEAN) {

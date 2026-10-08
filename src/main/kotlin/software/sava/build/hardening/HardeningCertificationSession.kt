@@ -50,6 +50,15 @@ abstract class HardeningCertificationSession :
   private val recompileLocks = CertificationFileLocks()
   private val recompileChecked = mutableSetOf<String>()
 
+  /** Where an owned attempt keeps its state record, relative to a trusted root. */
+  private data class AttemptFiles(
+    val trustedProjectDirectory: File,
+    val running: File,
+    val suites: List<String>,
+  )
+
+  private val attemptFiles = linkedMapOf<String, AttemptFiles>()
+
   /** Retains the published service API for non-certifying third-party task wiring. */
   @Synchronized
   fun activate(projectPath: String): String = activateSession(projectPath)
@@ -65,6 +74,25 @@ abstract class HardeningCertificationSession :
     fileLocks.acquire(projectPath, lockFile)
     pluginIdentities.register(projectPath, pluginSha256)
     return activateSession(projectPath)
+  }
+
+  /**
+   * The certification preflight's activation: as above, and remembers where this
+   * attempt's state record lives and which suites it must verify, so [close] can
+   * record why an attempt that never reached `hardeningCertify` ended.
+   */
+  @Synchronized
+  internal fun activate(
+    projectPath: String,
+    pluginSha256: String,
+    lockFile: File,
+    trustedProjectDirectory: File,
+    runningFile: File,
+    suites: Collection<String>,
+  ): String {
+    val sessionId = activate(projectPath, pluginSha256, lockFile)
+    attemptFiles[projectPath] = AttemptFiles(trustedProjectDirectory, runningFile, suites.sorted())
+    return sessionId
   }
 
   fun ownsCertification(projectPath: String): Boolean = fileLocks.isHeld(projectPath)
@@ -370,8 +398,24 @@ abstract class HardeningCertificationSession :
   internal fun mutationRecompileChecked(projectPath: String): Boolean =
     projectPath in recompileChecked
 
+  /**
+   * Gradle skips `hardeningCertify` once a task it depends on fails, so the end of the
+   * build is the one point that sees every owned attempt. An attempt whose state record
+   * still holds its own `session` state never published a receipt: it gets the retained
+   * `refused` record, and the prior receipt stays beside it. A published attempt, or one
+   * that already recorded its refusal, is left alone. This runs before the ownership
+   * locks are released, so no later attempt can own the record being replaced. A killed
+   * process never gets here and leaves `session`, which still marks an incomplete attempt.
+   */
   override fun close() {
     var failure: Exception? = null
+    synchronized(this) { attemptFiles.toMap() }.forEach { (projectPath, files) ->
+      try {
+        refuseUnfinished(projectPath, files)
+      } catch (e: Exception) {
+        failure?.addSuppressed(e) ?: run { failure = e }
+      }
+    }
     listOf(recompileLocks, fileLocks).forEach { locks ->
       try {
         locks.close()
@@ -381,7 +425,33 @@ abstract class HardeningCertificationSession :
     }
     failure?.let { throw it }
   }
+
+  private fun refuseUnfinished(projectPath: String, files: AttemptFiles) {
+    if (!fileLocks.isHeld(projectPath)) return
+    val sessionId = sessionId(projectPath) ?: return
+    BaselineFiles.requireRegularFileOrMissing(files.trustedProjectDirectory, files.running)
+    if (!files.running.isFile || files.running.length() > MAX_CERTIFICATION_STATE_RECORD_BYTES) return
+    if (files.running.readText() != "session\t$sessionId\n") return
+    // The owned marker is intact and already keeps the receipt historical, so a failed
+    // write leaves both as they are rather than deleting last-known-success evidence.
+    BaselineFiles.writeAtomically(
+      files.trustedProjectDirectory,
+      files.running,
+      "refused\t${incompleteReason(projectPath, files.suites)}\n",
+    )
+  }
+
+  /** Why an owned attempt ended without a receipt, from what this invocation observed. */
+  @Synchronized
+  internal fun incompleteReason(projectPath: String, suites: List<String>): String {
+    val unverified = suites.filter { verified[SuiteKey(projectPath, it)] == null }
+    return "hardeningCertify ended without publishing its receipt" + if (unverified.isEmpty()) "" else
+      "; no verified fresh observation in this invocation for: " + unverified.joinToString(", ")
+  }
 }
+
+/** A certification state record is one short line; anything longer is not this attempt's. */
+private const val MAX_CERTIFICATION_STATE_RECORD_BYTES = 256L
 
 /**
  * Cross-process ownership for a project's durable certification state. Gradle build

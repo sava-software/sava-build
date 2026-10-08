@@ -742,6 +742,10 @@ internal object HardeningHelpText {
         "  `refused` is a deliberately retained terminal refusal record, not a live or " +
             "abandoned process.")
     appendLine(
+        "  A project certification or fuzzAll campaign that ends without publishing is " +
+            "recorded `refused` with its reason, where it refused or when the build ends; " +
+            "only a killed process leaves `starting`/`session`.")
+    appendLine(
         "  Any receipt marker makes the sibling TSV historical; success publishes the new " +
             "TSV and removes the marker.")
     appendLine(

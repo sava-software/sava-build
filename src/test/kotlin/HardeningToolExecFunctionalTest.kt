@@ -2660,7 +2660,9 @@ $buildTail
       "failed certification destroyed the last successful receipt",
     )
     assertTrue(
-      File(fixtureDir, ".pitest-history/pitest-certification.running").isFile,
+      File(fixtureDir, ".pitest-history/pitest-certification.running").readText().startsWith(
+        "refused\thardeningCertify ended without publishing its receipt; " +
+          "no verified fresh observation in this invocation for: encoding"),
       "failed certification did not retain its durable invalidation sentinel",
     )
   }
@@ -3010,11 +3012,94 @@ $buildTail
   }
 
   @Test
+  fun `clean certification refuses an ignored source before PIT and records why`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    initializeGitFixture(listOf("Integ.java"))
+    runner("hardeningCertify").build()
+    val receipt = File(fixtureDir, ".pitest-history/pitest-certification.tsv")
+    val lastSuccess = receipt.readBytes()
+    File(fixtureDir, "build/reports/pitest").deleteRecursively()
+    File(fixtureDir, "src/test/java/com/example/Integ.java")
+      .writeText("package com.example; final class Integ {}\n")
+    assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
+
+    val refused = runner("hardeningCertify").buildAndFail()
+
+    assertEquals(TaskOutcome.FAILED, refused.task(":hardeningCertifyPreflight")?.outcome, refused.output)
+    assertTrue(refused.task(":pitestEncoding") == null, refused.output)
+    assertFalse(File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").exists(), refused.output)
+    assertTrue(
+      refused.output.contains("clean Git certification cannot bind 1 source input(s) absent from its captured tree") &&
+        refused.output.contains("  src/test/java/com/example/Integ.java") &&
+        refused.output.contains("run the certification from a detached worktree of this commit"),
+      refused.output,
+    )
+    val running = File(fixtureDir, ".pitest-history/pitest-certification.running").readText()
+    assertTrue(
+      running.startsWith("refused\t") &&
+        running.contains("cannot bind 1 source input(s)") &&
+        running.contains("src/test/java/com/example/Integ.java") &&
+        running.endsWith("\n") && running.count { it == '\n' } == 1 && running.count { it == '\t' } == 1,
+      running,
+    )
+    assertArrayEquals(lastSuccess, receipt.readBytes(), "a refused attempt rewrote the last receipt")
+  }
+
+  @Test
+  fun `a source that appears after PIT is refused at the final boundary and recorded`() {
+    writeFixture(buildTail = """
+      val dropScratch = tasks.register("dropScratch") {
+        val scratch = layout.projectDirectory.file("src/test/java/com/example/Integ.java")
+        mustRunAfter("pitestEncodingVerify")
+        doLast { scratch.asFile.writeText("package com.example; final class Integ {}\n") }
+      }
+      tasks.named("hardeningCertify") { dependsOn(dropScratch) }
+    """.trimIndent())
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    initializeGitFixture(listOf("Integ.java"))
+    assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
+
+    val refused = runner("hardeningCertify").buildAndFail()
+
+    assertEquals(TaskOutcome.SUCCESS, refused.task(":pitestEncoding")?.outcome, refused.output)
+    assertEquals(TaskOutcome.FAILED, refused.task(":hardeningCertify")?.outcome, refused.output)
+    assertTrue(File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").isFile, refused.output)
+    assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists(), refused.output)
+    val running = File(fixtureDir, ".pitest-history/pitest-certification.running").readText()
+    assertTrue(
+      running.startsWith("refused\thardeningCertify: clean Git certification cannot bind 1 source input(s)") &&
+        running.contains("src/test/java/com/example/Integ.java"),
+      running,
+    )
+  }
+
+  @Test
+  fun `an attempt whose PIT failed ends refused naming the suites it did not verify`() {
+    writeFixture()
+    writeSeedCorpus()
+    File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
+    File(fixtureDir, "fake-pit-mode.txt").writeText("fail\n")
+
+    val failed = runner("hardeningCertify").buildAndFail()
+
+    assertEquals(TaskOutcome.FAILED, failed.task(":pitestEncoding")?.outcome, failed.output)
+    assertTrue(failed.task(":hardeningCertify") == null, failed.output)
+    assertEquals(
+      "refused\thardeningCertify ended without publishing its receipt; " +
+        "no verified fresh observation in this invocation for: encoding\n",
+      File(fixtureDir, ".pitest-history/pitest-certification.running").readText(),
+    )
+  }
+
+  @Test
   fun `clean certification refuses ignored source inputs under the source roots`() {
     writeFixture()
     writeSeedCorpus()
     File(fixtureDir, "corpus/hollow").apply { mkdirs() }.resolve("seed").writeText("hollow")
-    initializeGitFixture(listOf("Integ.java", "alias.txt", ".sub-source/"))
+    val (commit, _) = initializeGitFixture(listOf("Integ.java", "alias.txt", ".sub-source/"))
     val ignoredSource = File(fixtureDir, "src/main/java/com/example/Integ.java")
     ignoredSource.writeText("package com.example; final class Integ {}\n")
     assertEquals("", git("status", "--porcelain=v1", "--untracked-files=all"))
@@ -3024,11 +3109,18 @@ $buildTail
       refused.contains("clean Git certification cannot bind 1 source input(s) absent from its captured tree") &&
         refused.contains("  src/main/java/com/example/Integ.java") &&
         refused.contains("Commit them, move them outside the source roots, or generate them under the build directory") &&
-        refused.contains("certify from a detached worktree of this commit (git worktree add --detach <dir> <sha>)") &&
+        refused.contains("run the certification from a detached worktree of this commit " +
+          "(git worktree add --detach <dir> $commit)") &&
+        refused.contains("the receipt and every other .pitest-history/ file that run writes stay in that worktree") &&
         refused.contains("The .running marker left beside the receipt is the retained record of this refusal"),
       refused,
     )
     assertFalse(File(fixtureDir, ".pitest-history/pitest-certification.tsv").exists(), refused)
+    // the message's claim about the marker, checked against the marker
+    assertTrue(
+      File(fixtureDir, ".pitest-history/pitest-certification.running").readText().startsWith("refused\t"),
+      refused,
+    )
     assertTrue(ignoredSource.delete())
 
     // An ignored symlink to a tracked file is refused under its own name: the
@@ -3168,9 +3260,20 @@ $buildTail
     val refused = runner("fuzzAll", "-PmaxFuzzTime=1").buildAndFail().output
     assertTrue(
       refused.contains("clean Git fuzz campaign cannot bind 1 source input(s) absent from its captured tree") &&
-        refused.contains("  src/main/java/com/example/Integ.java"),
+        refused.contains("  src/main/java/com/example/Integ.java") &&
+        refused.contains("run the fuzz campaign from a detached worktree of this commit") &&
+        refused.contains("(git worktree add --detach <dir> ") &&
+        !refused.contains("certify from a detached worktree"),
       refused,
     )
+    val running = File(fixtureDir, ".pitest-history/local-fuzz.running").readText()
+    assertTrue(
+      running.startsWith("refused\tfuzz") &&
+        running.contains("failed: clean Git fuzz campaign cannot bind 1 source input(s)") &&
+        running.endsWith("\n") && running.count { it == '\n' } == 1,
+      running,
+    )
+    assertEquals(3, receipt.readLines().count { it.startsWith("targetSource\t") }, "the last receipt survives")
   }
 
   @Test
@@ -4065,7 +4168,8 @@ $buildTail
       "failing project destroyed its last successful receipt",
     )
     assertTrue(
-      File(fixtureDir, "a/.pitest-history/pitest-certification.running").isFile,
+      File(fixtureDir, "a/.pitest-history/pitest-certification.running").readText()
+        .startsWith("refused\t"),
       "failing project did not retain its running sentinel",
     )
     assertTrue(

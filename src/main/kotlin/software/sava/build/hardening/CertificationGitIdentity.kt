@@ -376,9 +376,11 @@ internal object CertificationGitIdentityCapture {
         "tree (ignored files under the source roots, or links to them):\n" +
         findings.joinToString("\n") { "  $it" } +
         "\nCommit them, move them outside the source roots, or generate them under the build directory, " +
-        "or certify from a detached worktree of this commit (git worktree add --detach <dir> <sha>), " +
-        "which carries only what the tree binds. The .running marker left beside the receipt is the " +
-        "retained record of this refusal (HARDENING.md, Lifecycle), not a live or abandoned run."
+        "or run the $context from a detached worktree of this commit " +
+        "(git worktree add --detach <dir> ${identity.commit}), which carries only what the tree binds; " +
+        "the receipt and every other .pitest-history/ file that run writes stay in that worktree and " +
+        "are removed with it. The .running marker left beside the receipt is the retained record of " +
+        "this refusal (HARDENING.md, Lifecycle), not a live or abandoned run."
     }
   }
 
