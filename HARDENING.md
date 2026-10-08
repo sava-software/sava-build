@@ -2445,8 +2445,9 @@ MINION_DIED, worker EOF, and the daemon log)*:
   every offending CSV row, and `pitest<Suite>Debt` repeats those rows while falling
   back to the committed baseline for its read-only tally. Save that coordinate (or run
   Debt) before a quiet re-run replaces the report. `RUN_ERROR` alone diagnoses neither
-  load nor memory and never justifies retuning the suite. Record system load and
-  PIT/minion RSS as context, then repeat once history-free on a quiet machine.
+  load nor memory and never justifies retuning the suite. The refusal prints the load
+  average and CPU count measured at validation as context beside the coordinates; add
+  PIT/minion RSS when you have it, then repeat once history-free on a quiet machine.
   Recurrence localizes a repeatable observation, not its cause: a stable mutation-unit
   partition can repeatedly attribute an aggregate-contention minion death to the same
   reported coordinate *(casebook: the load average that explained nothing)*. Compare

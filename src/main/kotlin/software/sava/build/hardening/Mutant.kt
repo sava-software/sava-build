@@ -168,7 +168,8 @@ internal data class Mutant(
               "RSS as context when available, and repeat once on a quiet machine. Tune threads " +
               "for measured aggregate contention or evidence-bound minionJvmArgs only when " +
               "PIT's preceding output explicitly diagnoses a process-resource or " +
-              "insufficient-memory failure; generic minion death is not that diagnosis."
+              "insufficient-memory failure; generic minion death is not that diagnosis." +
+              systemLoadContext()
         } else ""
         throw IllegalArgumentException(
             "PIT report contains status(es) that are not valid completed evidence: $statuses:\n" +
@@ -181,5 +182,22 @@ internal data class Mutant(
       }
       return parsed.map { (_, _, mutant) -> mutant }
     }
+  
+  /**
+   * Load as context for a RUN_ERROR, read when the report is validated rather than when
+   * PIT died, so it can only bound the diagnosis. The casebook's rule stands: load is
+   * context, not diagnosis ("The load average that explained nothing").
+   */
+  internal fun systemLoadContext(): String {
+    val load = try {
+      java.lang.management.ManagementFactory.getOperatingSystemMXBean().systemLoadAverage
+    } catch (_: Exception) {
+      -1.0
+    }
+    val cpus = Runtime.getRuntime().availableProcessors()
+    val loadText = if (load < 0) "unavailable on this platform" else String.format(java.util.Locale.ROOT, "%.1f", load)
+    return " Context, measured now rather than when the minion died: one-minute load average " +
+        "$loadText on $cpus CPU(s)."
   }
+}
 }

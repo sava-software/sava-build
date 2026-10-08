@@ -114,6 +114,13 @@ class MutantTest {
       failure.message!!.contains("RUN_ERROR alone diagnoses neither load nor memory"),
       failure.message,
     )
+    // load is printed as context beside the coordinates, never as a diagnosis
+    assertTrue(
+      Regex("one-minute load average (?:\\d+\\.\\d|unavailable on this platform) on \\d+ CPU\\(s\\)")
+          .containsMatchIn(failure.message!!),
+      failure.message,
+    )
+    assertTrue(failure.message!!.contains("measured now rather than when the minion died"), failure.message)
     assertFalse(
       failure.message!!.contains("sufficient closure") ||
           failure.message!!.contains("mutation-record debt") ||
