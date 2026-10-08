@@ -30,5 +30,9 @@ jobs:
         run: |
           bash -n tools/local-fuzz.sh
           tools/local-fuzz.sh --self-test
+      - name: Check the release-please guard
+        run: |
+          npm ci --prefix .github/actions/release-please-guard --ignore-scripts --no-audit --no-fund
+          node --test .github/actions/release-please-guard/guard.test.mjs
       - name: Gradle Check PR
         run: ./gradlew --stacktrace check

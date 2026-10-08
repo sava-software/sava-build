@@ -19,8 +19,8 @@ runs:
     - name: Install release-please's commit parser
       shell: bash
       # The lockfile pins @conventional-commits/parser to the version release-please
-      # 17.6 resolves; bump both together.
-      run: npm ci --prefix "$GITHUB_ACTION_PATH" --ignore-scripts --no-audit --no-fund --silent
+      # 17.6 resolves; bump both together. guard.test.mjs (node --test) covers the script.
+      run: npm ci --prefix "$GITHUB_ACTION_PATH" --ignore-scripts --no-audit --no-fund
     - name: Refuse commits release-please would drop
       shell: bash
       env:

@@ -590,7 +590,9 @@ Releasing is Release Please plus the ordinary check:
 
 1. Land changes on `main`; a green `Gradle Check` lets Release Please open or refresh its
    draft release pull request (`always-bump-patch`), once the commit guard below passes.
-2. Review the CHANGELOG, mark the pull request ready, and squash-merge it.
+2. Review the CHANGELOG, mark the pull request ready, and squash-merge it. While the
+   commit guard is red the pull request is not refreshed: restate the flagged commit first,
+   then merge, or the commits pushed since the run went red are missing from the notes.
 3. The merge is tagged by Release Please, and the tag-triggered workflow re-runs `check`
    without the Gradle build cache, publishes to GitHub Packages, and attests build
    provenance with GitHub's native `actions/attest` — verifiable by consumers through the
@@ -603,16 +605,22 @@ with `Arrays.compare(a.toByteArray(), b.toByteArray())` was read as a `type(scop
 header. So the reusable [release-please.yml](.github/workflows/release-please.yml) first
 checks out the branch with full history and runs
 [release-please-guard](.github/actions/release-please-guard), which parses every commit
-since the manifest version's tag with the parser Release Please uses
+since the manifest version's tag (on a release-merge run, before that tag exists, since
+the nearest earlier tag in the configured spelling) with the parser Release Please uses
 (`@conventional-commits/parser`, pinned by the action's lockfile to the version
-`release-please-action` resolves; bump them together) and fails the run naming any
-conventional commit that parser cannot read, with the parser's own position. Messages
-that are not conventional commits (merges, imports) are notices only, since Release
-Please ignores them by design. The remedy for a flagged commit already on `main` is an
-empty commit that restates its header, body and footers in parseable form and ends with
-the footer `Restates: <sha>`; the guard then reports the original as a notice. The guard
-reads the commit message only: a `BEGIN_COMMIT_OVERRIDE` block in a pull request body is
-not consulted.
+`release-please-action` resolves; bump them together), split the way Release Please
+splits a squashed message, and fails the run naming any commit whose header line parses
+but whose message does not, with the parser's own position. Messages whose header is not
+a conventional commit (merges, imports, git's default `Revert "..."` subject) are notices
+only, since Release Please ignores them by design; a commit that `exclude-paths` keeps
+out of the notes, an empty commit included, is skipped as Release Please skips it. The
+remedy for a flagged commit already on `main` is a commit that restates its header, body
+and footers in parseable form and ends with the footer `Restates: <sha>` (an empty commit,
+unless `exclude-paths` is configured, which excludes empty commits); the guard then
+reports the original as a notice. The guard reads the commit message only: a
+`BEGIN_COMMIT_OVERRIDE` block in a pull request body is not consulted. Its `node --test`
+suite builds scratch repositories for each of these rules and runs in the Gradle Check
+workflows.
 
 Batch fixes and release on a cadence, not per fix: every release is re-adopted across
 the fleet, so each one starts about ten adoption passes.
