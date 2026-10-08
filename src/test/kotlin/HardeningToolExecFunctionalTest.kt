@@ -874,6 +874,8 @@ $buildTail
     runner("pitestEncoding").build()
 
     val report = File(fixtureDir, "build/reports/pitest/encoding")
+    listOf(".uncompiled-sources.tsv", ".filter-sources.tsv")
+      .forEach { sidecar -> assertTrue(report.resolve(sidecar).isFile, "the completed run wrote no $sidecar") }
     report.resolve("mutations.xml").writeText("stale XML")
     report.resolve("index.html").writeText("stale HTML index")
     File(fixtureDir, "fake-pit-mode.txt").writeText("fail-before-report\n")

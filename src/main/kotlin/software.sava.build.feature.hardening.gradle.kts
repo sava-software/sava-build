@@ -3717,7 +3717,17 @@ hardening.mutation.all {
           .groupBy(
               { it.familyLineKey },
               {
-                val test = Regex("method:([^(\\]]+)").find(it.killerText)?.groupValues?.get(1)
+                // JUnit 5 names a killer by unique id: a [method:...] segment for a plain test,
+                // [test-factory:...]/[dynamic-test:#N] for a DynamicTest (the seed replay
+                // tests) and [test-template:...]/[test-template-invocation:#N] for a
+                // parameterized or repeated one; the ordinal tells the invocations apart.
+                val test = Regex("(?:method|test-factory|test-template):([^(\\]]+)").find(it.killerText)
+                    ?.groupValues?.get(1)
+                    ?.let { name ->
+                      val ordinal = Regex("(?:dynamic-test|test-template-invocation):#(\\d+)")
+                          .find(it.killerText)?.groupValues?.get(1)
+                      if (ordinal == null) name else "$name#$ordinal"
+                    }
                 if (it.status == MutantStatus.KILLED && test != null) {
                   "${it.mutatorSimpleName} KILLED by $test"
                 } else {
@@ -4973,7 +4983,10 @@ hardening.mutation.all {
           logger.warn(
               "pitest baseline '$suiteName': prune pairs kept siblings by fallback for " +
                   "${pruneRewrite.ambiguousFallbackKeys.size} key(s). After exact line matches, remaining " +
-                  "kept rows are paired by nearest recorded line, ties in file order; this does not " +
+                  "kept rows are paired by nearest recorded line, ties in file order (file order " +
+                  "against line order once a fallback group's rows or the copies still unpaired " +
+                  "exceed eight), and a dropped row that " +
+                  "shares its recorded line with a kept one lost to it in file order; this does not " +
                   "establish physical mutant identity. Review the README pointers and resulting line tags:\n" +
                   pruneRewrite.ambiguousFallbackKeys.joinToString("\n") { "  $it" } +
                   BaselineNotes.differingLabelFallbackDetail(pruneRewrite.differingLabelFallbackKeys))
@@ -5063,7 +5076,9 @@ hardening.mutation.all {
           logger.warn(
               "pitest baseline '$suiteName': retag plans ambiguous same-key sibling fallback for " +
                   "${rewrite.ambiguousFallbackKeys.size} key(s). After exact line matches, remaining " +
-                  "rows are paired by nearest recorded line, ties in file order; this does not " +
+                  "rows are paired by nearest recorded line, ties in file order (file order against " +
+                  "line order once a fallback group's rows or the copies still unpaired exceed eight); " +
+                  "this does not " +
                   "establish physical mutant identity. Review the README pointers and resulting line tags:\n" +
                   rewrite.ambiguousFallbackKeys.joinToString("\n") { "  $it" } +
                   BaselineNotes.differingLabelFallbackDetail(rewrite.differingLabelFallbackKeys))
@@ -5159,7 +5174,8 @@ hardening.mutation.all {
         // police that carry is gone with the churn it policed.
         //
         // Within a key, accepted rows are assigned to this run's mutants by maximum
-        // LINE AFFINITY first, then by file order. A unique anchor attributes a row;
+        // LINE AFFINITY first, then by nearest recorded line (least squared distance),
+        // file order on ties. A unique anchor attributes a row;
         // repeated/overlapping anchors are only a deterministic allocation. Without
         // line evidence the assignment is arbitrary, which is the documented same-key
         // blind spot, not a bug to police.
@@ -5252,7 +5268,7 @@ hardening.mutation.all {
         // observed statuses are written into the insurance note. The report-driven
         // BaselineUpdate remains a separately reviewed complete rewrite.
         // the merge — per-key max counts, existing rows verbatim after maximum
-        // exact-line affinity and the live-anchor/file-order fallback, added copies
+        // exact-line affinity and the live-anchor/nearest-line fallback, added copies
         // seeded '# untriaged' with the genuinely unclaimed lines — lives in
         // BaselineEngine.unionMerge
         val merge = BaselineEngine.unionMerge(acceptedRows, current, currentLines)

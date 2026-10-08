@@ -733,7 +733,8 @@ abstract class HardeningCertificationPreflightTask : DefaultTask() {
       }
       // The final boundary (HardeningCertificationTask) decides, because a file can
       // appear while PIT runs; asking the same question here first refuses before this
-      // project's tests and PIT spend their minutes on a receipt that cannot publish.
+      // project's tests and PIT spend their minutes on a receipt that cannot publish,
+      // on a fail-fast invocation; under --continue they still run and nothing publishes.
       val git = CertificationGitIdentityCapture.capture(projectDirectory, execOperations)
       if (git.state == CertificationGitIdentity.State.CLEAN) {
         CertificationGitIdentityCapture.requireRecordFilesMatchTree(
@@ -1132,8 +1133,8 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
    *    configuration and report bytes are the recorded ones;
    *  - PIT did not run in this invocation, where a difference means an input changed
    *    under a build that is supposed to be observing it;
-   *  - when ArcMutate is part of the toolchain, every file under the source roots PIT is
-   *    given is byte-identical to what the run recorded: its `@Generated` filter reads
+   *  - when ArcMutate is part of the toolchain, every source-set file under the source
+   *    roots PIT is given is byte-identical to what the run recorded: its `@Generated` filter reads
    *    that text, so there identical classes imply an identical population only while
    *    it stands, and the test sources outside the roots stay the recompile's business;
    *  - every evidence source the recompile does not compile is byte-identical to what the
@@ -1200,7 +1201,7 @@ abstract class PitestEvidenceValidationTask @Inject constructor(objects: org.gra
       if (recordedFilterSources == null ||
         recordedFilterSources.invocationId != recorded.invocationId ||
         recordedFilterSources.filterSourceSha256 !=
-        FilterSourceRecord.fingerprint(projectDirectory, roots)) {
+        FilterSourceRecord.fingerprint(projectDirectory, roots, evidence.sourceFiles.files)) {
         val rootNames = roots.joinToString { root ->
           runCatching { root.relativeTo(projectDirectory).invariantSeparatorsPath }.getOrElse { root.path }
         }

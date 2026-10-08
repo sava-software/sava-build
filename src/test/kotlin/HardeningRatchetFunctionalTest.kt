@@ -887,6 +887,42 @@ $fuzzBlock
   }
 
   @Test
+  fun `prune names the fallback that chose which sibling to drop and its differing labels`() {
+    // Two rows with different labels at one key and a single surviving copy that matches
+    // neither recorded line: the keep plan's fallback decides which row stays, and the
+    // prune must say so, since the kept row alone would look unanimous.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    baselineFile().writeText("$key # first argument # line 10\n$key # second argument # line 20\n")
+    writeReport(
+        listOf(
+            "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators." +
+                "MathMutator,encode,50,SURVIVED,none",
+        ),
+        "",
+    )
+    bindLegacyFixtureRecord()
+    rawBaselinePruneRunner().buildAndFail()
+    rawBaselinePruneRunner().buildAndFail()
+
+    val output = rawBaselinePruneRunner().build().output
+    assertTrue(
+        output.contains("prune pairs kept siblings by fallback for 1 key(s)") &&
+            output.contains("paired by nearest recorded line, ties in file order") &&
+            output.contains("The fallback-paired rows at 1 of these key(s) carry different family labels") &&
+            output.contains("  $key"),
+        output,
+    )
+    assertTrue(
+        output.substringAfterLast("hardening: ").contains("1 ambiguous prune sibling key(s), 1 with differing labels"),
+        output,
+    )
+    assertEquals("$key # second argument # line 50\n", baselineFile().readText(),
+        "the row whose recorded line is nearest keeps the copy; the other is dropped")
+  }
+
+  @Test
   fun `selective prune refuses mixed siblings even with distinct labels and line tags`() {
     writeFixture()
     baselineFile().parentFile.mkdirs()
@@ -1221,7 +1257,9 @@ $fuzzBlock
       listOf(
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_IF,encode,12,SURVIVED,none",
         "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_IF,encode,12,SURVIVED,none",
-        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_ELSE,encode,12,KILLED,com.example.CodecTest.[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:encodesTheBoundary()]"
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_EQUAL_ELSE,encode,12,KILLED,com.example.CodecTest.[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:encodesTheBoundary()]",
+        // a DynamicTest killer, as the generated seed replay tests report since 423c900
+        "Codec.java,com.example.Codec,org.pitest.mutationtest.engine.gregor.mutators.RemoveConditionalMutator_ORDER_IF,encode,12,KILLED,com.example.CodecSeedReplayTest.[engine:junit-jupiter]/[class:com.example.CodecSeedReplayTest]/[test-factory:replaysSeedCorpus()]/[dynamic-test:#2]"
       ),
       ""
     )
@@ -1234,8 +1272,9 @@ $fuzzBlock
     // the killed sibling at the same coordinate names its test, so the survivor's
     // branch direction can be inferred
     assertTrue(
-      output.contains("detected sibling at this line: RemoveConditionalMutator_EQUAL_ELSE KILLED by encodesTheBoundary"),
-      "sibling hint missing:\n$output"
+      output.contains("detected sibling at this line: RemoveConditionalMutator_EQUAL_ELSE KILLED by encodesTheBoundary; " +
+          "RemoveConditionalMutator_ORDER_IF KILLED by replaysSeedCorpus#2"),
+      "sibling hint missing or a dynamic-test killer printed bare:\n$output"
     )
   }
 
@@ -6300,7 +6339,7 @@ $fuzzBlock
     // only the family label: '# untriaged' is the seeded-debt convention and argues
     // nothing, so it is never expected to have a section of its own
     assertTrue(
-      warned.contains("config/pitest/README.md — '# race guard family' — document the family"),
+      warned.contains("config/pitest/README.md (a mention under a heading containing 'histor' or 'retired' does not count) — '# race guard family' — document the family"),
       warned
     )
 
@@ -6327,7 +6366,7 @@ $fuzzBlock
     val output = runner("pitestEncodingDebt").build().output
     assertTrue(output.contains("baseline labels: 1 '# capacity hint', 1 '# untriaged'"), output)
     assertTrue(
-      output.contains("config/pitest/README.md — '# capacity hint' — document the family"),
+      output.contains("config/pitest/README.md (a mention under a heading containing 'histor' or 'retired' does not count) — '# capacity hint' — document the family"),
       output
     )
 

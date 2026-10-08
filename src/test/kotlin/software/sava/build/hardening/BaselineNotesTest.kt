@@ -328,6 +328,16 @@ class BaselineNotesTest {
     val nestedOnly = "## Families\n\n### History\n\n`# nested` once.\n\n#### Still history\n\n`# nested` twice.\n"
     assertEquals(listOf("nested"), BaselineNotes.undocumentedLabels(listOf("# nested")) { nestedOnly })
 
+    // a shell comment inside a fence is not a heading, so it neither starts nor ends an
+    // exclusion; a label quoted in a heading does not make it a history heading
+    val fenced = "## Families\n\n```sh\n# History: run the suite\n```\n\n`# live` argued here.\n\n" +
+        "### History\n\n`# gone` was killed.\n\n```\n# Setup\n```\n\n`# gone` still history.\n"
+    assertEquals(listOf("gone"), BaselineNotes.undocumentedLabels(listOf("# live", "# gone")) { fenced })
+    val quoted = "## The `# retired-state write` family\n\n`# retired-state write` is the live argument.\n"
+    assertEquals(emptyList<String>(), BaselineNotes.undocumentedLabels(listOf("# retired-state write")) { quoted })
+    val doubleQuoted = "## The ``# retired-state write`` family\n\n`# retired-state write` is the live argument.\n"
+    assertEquals(emptyList<String>(), BaselineNotes.undocumentedLabels(listOf("# retired-state write")) { doubleQuoted })
+
     // a heading that merely mentions a label is not a definition either way
     assertEquals(
         "## Families\n\n`# live` argued here.\n## Families again\n\n`# live` again.",
@@ -348,7 +358,7 @@ class BaselineNotesTest {
         "a typo must be named rather than silently opening a bucket of its own"
     )
     assertEquals(
-        "pitest baseline 'encoding': label(s) with no argument in config/pitest/README.md — " +
+        "pitest baseline 'encoding': label(s) with no argument in force in config/pitest/README.md (a mention under a heading containing 'histor' or 'retired' does not count) — " +
             "'# race gaurd' — document the family there, or fix the label if it is a typo",
         BaselineNotes.undocumentedLabelWarning("encoding", undocumented)
     )
@@ -357,7 +367,7 @@ class BaselineNotesTest {
     val many = BaselineNotes.undocumentedLabels(listOf("# alpha", "# beta", "# alpha")) { readme }
     assertEquals(listOf("alpha", "beta"), many)
     assertEquals(
-        "pitest baseline 'encoding': label(s) with no argument in config/pitest/README.md — " +
+        "pitest baseline 'encoding': label(s) with no argument in force in config/pitest/README.md (a mention under a heading containing 'histor' or 'retired' does not count) — " +
             "'# alpha', '# beta' — document the family there, or fix the label if it is a typo",
         BaselineNotes.undocumentedLabelWarning("encoding", many)
     )

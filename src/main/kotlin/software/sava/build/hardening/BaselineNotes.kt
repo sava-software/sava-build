@@ -316,26 +316,29 @@ internal object BaselineNotes {
 
   private val HISTORICAL_HEADING = Regex("histor|retired", RegexOption.IGNORE_CASE)
   private val HEADING = Regex("^(#{1,6})\\s")
+  // A code span of any backtick run length, closed by a run of the same length.
+  private val INLINE_CODE = Regex("(?<!`)(`+)(?!`).+?(?<!`)\\1(?!`)")
 
   /**
-   * [readme] with every section whose heading names history or retirement removed: a
-   * section headed `History`, `History notes (ws)`, `Retired acceptances` and the like,
-   * from that heading to the next heading of the same or a higher level. A label named
-   * only there resolves to what was argued, not to what is, which is exactly the case the
-   * check exists to surface *(casebook: the killed family's label that stayed on a live
-   * row)*. Fenced code is not special-cased: a `#` inside a fence is not a heading because
-   * the heading grammar wants the `#` at column 0 followed by a space, which indented
-   * fence content does not have, and a fence that does start a line with `# ` is prose
-   * for this purpose too.
+   * [readme] with every section whose heading contains `histor` or `retired`, in any
+   * case, removed: a section headed `History`, `History notes (ws)`, `Retired acceptances`
+   * and the like, from that heading to the next heading of the same or a higher level. A
+   * label named only there resolves to what was argued, not to what is, which is exactly
+   * the case the check exists to surface *(casebook: the killed family's label that stayed
+   * on a live row)*. A `#` line inside a fenced snippet is not a heading (the same
+   * [TimeoutAudit.neutralizeFences] the timeout audit reads through), and a label quoted in
+   * a heading, as in `` ## The `# retired-state write` family ``, does not make it a
+   * history heading: inline code is dropped before the test.
    */
   internal fun argumentsInForce(readme: String): String {
     var excludedLevel = 0
-    return readme.lineSequence().filter { line ->
+    return TimeoutAudit.neutralizeFences(readme).lineSequence().filter { line ->
       val heading = HEADING.find(line)
       if (heading != null) {
         val level = heading.groupValues[1].length
         if (excludedLevel != 0 && level <= excludedLevel) excludedLevel = 0
-        if (excludedLevel == 0 && HISTORICAL_HEADING.containsMatchIn(line)) excludedLevel = level
+        val title = INLINE_CODE.replace(line, "")
+        if (excludedLevel == 0 && HISTORICAL_HEADING.containsMatchIn(title)) excludedLevel = level
       }
       excludedLevel == 0
     }.joinToString("\n")
@@ -355,7 +358,8 @@ internal object BaselineNotes {
 
   /** The warning naming [undocumented] labels; callers pass a non-empty list. */
   fun undocumentedLabelWarning(suiteName: String, undocumented: Collection<String>): String =
-      "pitest baseline '$suiteName': label(s) with no argument in config/pitest/README.md — " +
+      "pitest baseline '$suiteName': label(s) with no argument in force in config/pitest/README.md " +
+          "(a mention under a heading containing 'histor' or 'retired' does not count) — " +
           undocumented.joinToString(", ") { "'# $it'" } +
           " — document the family there, or fix the label if it is a typo"
 

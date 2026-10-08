@@ -120,8 +120,9 @@ under the build directory are exempt. The refusal names each path; commit the fi
 it outside the source roots, or generate it under the build directory, or run the
 certification or campaign from a detached worktree of the commit
 (`git worktree add --detach <dir> <sha>`, then the same task in `<dir>`), which carries
-only what the tree binds. Certification asks in its preflight, before the project's tests
-and PIT, and again at its final boundary, because a file can appear while PIT runs;
+only what the tree binds. Certification asks in its preflight, which on a fail-fast
+invocation spares the project's tests and PIT (under `--continue` they still run, and
+nothing publishes), and again at its final boundary, because a file can appear while PIT runs;
 `fuzzAll` asks as each target starts. Either way the refusal leaves the `refused` record
 described above beside the receipt, not a run still in progress. A worktree's
 machine-local state is its own and leaves with it: the receipt and its markers land in
@@ -276,8 +277,8 @@ the kind of input, that moved. One limit is accepted: a test that opens a
 Java source file by path reads text no field binds once the classes match,
 so keep such inputs under resources, where the processed copy is bound. A
 suite that runs ArcMutate keeps the source-text rule for `src/main/java`,
-because its `@Generated` filter reads that tree: every file under it must
-also be byte-identical to the recorded run, so a test-only edit can keep the
+because its `@Generated` filter reads that tree: every source-set file under it
+(Gradle's default excludes aside) must also be byte-identical to the recorded run, so a test-only edit can keep the
 report there and a main-source edit cannot. Writers, mode snapshots,
 convergence and certification never stand on a kept report; `hardeningHelp`
 lists what is compared *(casebook: the gate that ran on every amend)*.
@@ -891,8 +892,10 @@ orphaned argument surfaces instead of silently opening a new bucket — and it
 surfaces in the listing where the counts are read, since a count is exactly
 what makes a mistyped label read as finished triage
 (`# untriaged` is exempt — seeded debt needs no section). A mention inside a section
-whose heading names history or retirement (`History`, `History notes (ws)`, `Retired
-acceptances`), through the next heading of the same or a higher level, does not count:
+whose heading contains `histor` or `retired` in any case (`History`, `History notes
+(ws)`, `Retired acceptances`; a label quoted in the heading counts as neither, and a `#`
+line inside a fenced snippet is not a heading), through the next heading of the same or
+a higher level, does not count:
 it records what was argued, not what is *(casebook: the killed family's label that
 stayed on a live row)*. This check proves only that the pointer resolves; it cannot
 prove the prose is still true. The README is read
@@ -936,11 +939,17 @@ same maximum line-affinity assignment as same-status siblings before falling bac
 the nearest recorded line, so uniquely anchored notes do not cross during the carry.
 Within one key, accepted rows are assigned to the run's mutants by **maximum line
 affinity** first, then, among rows naming a live line before stale or bare rows, by the
-nearest recorded line with file order on ties, so siblings that moved together keep
-their order and one that moved alone follows its own line. A unique `# line` anchor
+nearest recorded line (least total squared distance, file order on ties; exhaustive while
+neither the rows a fallback group holds nor the copies still unpaired exceed eight, file
+order against line order beyond that), so
+siblings that moved together keep their order and one that moved alone, by less than
+the gap to its neighbours, follows its own line. A unique `# line` anchor
 attributes a row; repeated or overlapping anchors provide deterministic allocation,
 not proof of sibling identity, which is why Retag and Prune name every key the fallback
-decided and, separately, those whose rows carry different family labels: re-read each
+decided (a key whose rows repeat an anchor included, since line affinity itself chose
+there, and for Prune a dropped row that shares its anchor with a kept one, which lost to
+it in file order) and, separately, those whose rows carry different family labels:
+re-read each
 such row's argument against its new line before committing *(casebook: the killed
 family's label that stayed on a live row)*. Every note
 that leaves a row is named loudly in the dropped listing (`note carried` / `note
@@ -1083,8 +1092,9 @@ every unmatched licensed-engine/subsumed row, and refreshes only the `# line`
 metadata of rows matched by the fresh history-free report. This is deliberately a
 separate operation: Union invoked to accept unrelated new debt and Update invoked for
 a complete rewrite must not silently erase the same-key-swap signal before it is read.
-When several same-key rows lose their anchors, Retag warns that its file-order fallback
-cannot establish which physical sibling each note describes. Review those notes against
+When several same-key rows lose their anchors, Retag and Prune warn that their
+nearest-line fallback cannot establish which physical sibling each note describes, and
+name the keys whose rows carry different labels. Review those notes against
 the current source and report; refreshed tags alone do not establish that correspondence.
 Prune's possible-location diagnostics show each observed status and its copy count, including
 mixed statuses at one line. Candidate previews, timeout-budget protection, and ambiguous
@@ -2660,7 +2670,7 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 >   once reviewed. `pitest<Suite>Verify` answers one way: it keeps its report while only
 >   recompiled Java sources changed and every recompiled class is byte-identical, which
 >   proves that suite is owed nothing; a refusal (a moved line, a resource, a build
->   script, an ArcMutate suite) names its cause and proves nothing by itself.
+>   script, `src/main/java` under ArcMutate) names its cause and proves nothing by itself.
 > - When the gate reports unkilled mutants, iterate on one cluster with
 >   `-PmutateOnly=<class-glob>`. Before any record decision, re-run unscoped with
 >   `-PnoMutationHistory`: a `[history]` report cannot support adding, removing, or

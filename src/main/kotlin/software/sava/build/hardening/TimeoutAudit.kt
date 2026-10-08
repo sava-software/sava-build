@@ -598,17 +598,27 @@ internal object TimeoutAudit {
   // (failing -PstrictTimeoutAudit). Fenced '#' lines are indented out of the
   // heading grammar; their CONTENT is kept, because a snippet may legitimately
   // carry the member mention its section argues with. Backtick and tilde
-  // fences both count — CommonMark treats them identically.
-  private fun neutralizeFences(text: String): String {
-    var fenced = false
+  // fences both count, and as CommonMark reads them: a fence closes only on a run of
+  // its opener's character at least as long, with nothing after it, so a fence-like
+  // line of the other character, or a shorter run, inside a fence is content.
+  internal fun neutralizeFences(text: String): String {
+    var opener: Pair<Char, Int>? = null
     return text.lineSequence().joinToString("\n") { line ->
       val trimmed = line.trimStart()
+      val run = trimmed.takeWhile { it == '`' || it == '~' }
+      val fenceLine = run.length >= 3 && run.all { it == run[0] }
+      val open = opener
       when {
-        trimmed.startsWith("```") || trimmed.startsWith("~~~") -> {
-          fenced = !fenced
+        open == null && fenceLine -> {
+          opener = run[0] to run.length
           line
         }
-        fenced && line.startsWith("#") -> " $line"
+        open != null && fenceLine && run[0] == open.first && run.length >= open.second &&
+          trimmed.substring(run.length).isBlank() -> {
+          opener = null
+          line
+        }
+        open != null && line.startsWith("#") -> " $line"
         else -> line
       }
     }

@@ -409,18 +409,23 @@ abstract class HardeningCertificationSession :
    */
   override fun close() {
     var failure: Exception? = null
-    synchronized(this) { attemptFiles.toMap() }.forEach { (projectPath, files) ->
-      try {
-        refuseUnfinished(projectPath, files)
-      } catch (e: Exception) {
-        failure?.addSuppressed(e) ?: run { failure = e }
+    try {
+      synchronized(this) { attemptFiles.toMap() }.forEach { (projectPath, files) ->
+        try {
+          refuseUnfinished(projectPath, files)
+        } catch (e: Exception) {
+          failure?.addSuppressed(e) ?: run { failure = e }
+        }
       }
-    }
-    listOf(recompileLocks, fileLocks).forEach { locks ->
-      try {
-        locks.close()
-      } catch (e: Exception) {
-        failure?.addSuppressed(e) ?: run { failure = e }
+    } finally {
+      // The locks go whatever the refuse pass threw, an Error included; a held lock
+      // would otherwise outlive this build in the daemon.
+      listOf(recompileLocks, fileLocks).forEach { locks ->
+        try {
+          locks.close()
+        } catch (e: Exception) {
+          failure?.addSuppressed(e) ?: run { failure = e }
+        }
       }
     }
     failure?.let { throw it }

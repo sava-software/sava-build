@@ -2032,15 +2032,16 @@ On 2026-10-07 a sava-rpc test killed one of two sibling mutants at the
 killed sibling's family was `# retired-state write`; the survivor's argument was
 `# ping-state invariant`. A prune removed the killed row, and the surviving row kept
 `# retired-state write`, the label its sibling had carried. Every later verify passed
-the label check, because the ws README's `### History notes` section recorded the kill
+the label check, because the ws README's `### ws history notes` section recorded the kill
 and named the label, and the check searched the whole file for `# <label>`. The local
-reviewer caught it; the build did not (sava 26b90db relabelled the row). The same day the
-six-row `onWholeMessage` `EQUAL_IF` key had its labels rotated twice by a retag whose
-fallback assigns leftover rows in file order once their recorded lines no longer match.
+reviewer caught it; the build did not (sava 26b90db relabelled the row). The same day a
+baseline rewrite (sava 6625786) dropped one row of the seven-row `onWholeMessage` `EQUAL_IF`
+key and paired the leftover rows in file order once their recorded lines no longer
+matched, so two labels sat on other constructs' lines until 26b90db put them back.
 
-Rules: *a mention under a History or Retired heading does not document a label*; *a
-fallback that pairs siblings by file order names the keys whose rows carry different
-labels, and prefers the row whose recorded line is nearest*.
+Rules: *a mention under a History or Retired heading does not document a label*; *the
+fallback pairs siblings by nearest recorded line, and Retag and Prune name the keys it
+decided and those whose rows carry different labels*.
 
 ## The registry that was a journal
 

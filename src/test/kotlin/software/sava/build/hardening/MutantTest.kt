@@ -116,7 +116,7 @@ class MutantTest {
     )
     // load is printed as context beside the coordinates, never as a diagnosis
     assertTrue(
-      Regex("one-minute load average (?:\\d+\\.\\d|unavailable on this platform) on \\d+ CPU\\(s\\)")
+      Regex("one-minute host load average (?:\\d+\\.\\d|unavailable on this platform) on \\d+ CPU\\(s\\) visible to this JVM")
           .containsMatchIn(failure.message!!),
       failure.message,
     )

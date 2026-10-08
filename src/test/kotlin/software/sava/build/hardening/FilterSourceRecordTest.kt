@@ -35,34 +35,38 @@ class FilterSourceRecordTest {
   }
 
   @Test
-  fun `fingerprint covers every file under the source roots and nothing outside them`() {
+  fun `fingerprint covers the evidence sources under the roots and nothing else`() {
     val main = file("src/main/java/p/A.java", "package p; class A {}")
     val moduleInfo = file("src/main/java/module-info.java", "module p {}")
     val test = file("src/test/java/p/ATest.java", "package p; class ATest {}")
     val resource = file("src/main/resources/p/cases.json", "{}")
     val roots = listOf(File(projectDir, "src/main/java"))
+    val sources = listOf(main, moduleInfo, test, resource)
 
-    val before = FilterSourceRecord.fingerprint(projectDir, roots)
+    val before = FilterSourceRecord.fingerprint(projectDir, roots, sources)
 
     test.writeText("package p; class ATest { // a test comment\n}")
-    assertEquals(before, FilterSourceRecord.fingerprint(projectDir, roots),
+    assertEquals(before, FilterSourceRecord.fingerprint(projectDir, roots, sources),
       "a test source is outside the roots the filter reads")
     resource.writeText("{\"changed\": true}")
-    assertEquals(before, FilterSourceRecord.fingerprint(projectDir, roots),
+    assertEquals(before, FilterSourceRecord.fingerprint(projectDir, roots, sources),
       "a resource is outside the roots too; the uncompiled-source record covers it")
+    file("src/main/java/.DS_Store", "finder noise")
+    assertEquals(before, FilterSourceRecord.fingerprint(projectDir, roots, sources),
+      "a file under the roots that the source set excludes is not an evidence source")
     main.writeText("package p; class A {} // a comment")
-    val mainEdit = FilterSourceRecord.fingerprint(projectDir, roots)
-    assertNotEquals(before, mainEdit, "text under the roots moves it, compiled or not")
+    assertNotEquals(before, FilterSourceRecord.fingerprint(projectDir, roots, sources),
+      "text under the roots moves it, compiled or not")
     main.writeText("package p; class A {}")
     moduleInfo.writeText("module p { requires java.logging; }")
-    assertNotEquals(before, FilterSourceRecord.fingerprint(projectDir, roots),
+    assertNotEquals(before, FilterSourceRecord.fingerprint(projectDir, roots, sources),
       "module-info sits under the roots")
     moduleInfo.writeText("module p {}")
-    assertEquals(before, FilterSourceRecord.fingerprint(projectDir, roots), "restored")
+    assertEquals(before, FilterSourceRecord.fingerprint(projectDir, roots, sources), "restored")
     assertEquals(
-      FilterSourceRecord.fingerprint(projectDir, listOf(File(projectDir, "src/absent/java"))),
+      FilterSourceRecord.fingerprint(projectDir, listOf(File(projectDir, "src/absent/java")), sources),
       PitestEvidence.fingerprint(projectDir, emptyList()),
-      "a missing root records the empty fingerprint",
+      "a root with no member records the empty fingerprint",
     )
   }
 }

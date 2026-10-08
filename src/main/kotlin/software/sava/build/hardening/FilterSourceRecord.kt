@@ -3,8 +3,8 @@ package software.sava.build.hardening
 import java.io.File
 
 /**
- * Fingerprint of every file under the source roots PIT is given (`--sourceDirs`),
- * recorded beside a completed report. ArcMutate's `@Generated` filter reads those files,
+ * Fingerprint of every evidence source under the source roots PIT is given
+ * (`--sourceDirs`), recorded beside a completed report. ArcMutate's `@Generated` filter reads those files,
  * so under ArcMutate identical classes show an identical population only while this part
  * of the source text is byte-identical too. The Java sources outside the roots, the tests
  * the recompile also compiles, are vouched for by their classes alone.
@@ -51,11 +51,23 @@ internal data class FilterSourceRecord(
     }
 
     /**
-     * Every regular file under [sourceDirectories], fingerprinted as the evidence itself
-     * is. A root that does not exist contributes nothing, so a project without the tree
-     * records the empty fingerprint rather than failing to record.
+     * The members of [sourceFiles] under any of [sourceDirectories], fingerprinted as the
+     * evidence itself is. [sourceFiles] is the source-set view the manifest's
+     * `sourceSha256` reads, so Gradle's default excludes (`.DS_Store`, editor backups) and
+     * anything outside the source sets count for neither, and the two fingerprints cannot
+     * disagree about which files exist. A root with no member contributes nothing.
      */
-    fun fingerprint(projectDirectory: File, sourceDirectories: Iterable<File>): String =
-      PitestEvidence.fingerprint(projectDirectory, sourceDirectories)
+    fun fingerprint(
+      projectDirectory: File,
+      sourceDirectories: Iterable<File>,
+      sourceFiles: Iterable<File>,
+    ): String {
+      val roots = sourceDirectories.map { it.absoluteFile.normalize().toPath() }
+      val underRoots = sourceFiles.filter { file ->
+        val path = file.absoluteFile.normalize().toPath()
+        roots.any { path.startsWith(it) }
+      }
+      return PitestEvidence.fingerprint(projectDirectory, underRoots)
+    }
   }
 }

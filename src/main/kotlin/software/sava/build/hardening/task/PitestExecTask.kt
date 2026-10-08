@@ -723,10 +723,11 @@ abstract class PitestExecTask : JavaExec() {
     recompiledSourceFiles.files,
   )
 
-  /** What ArcMutate's source-reading filters could see: every file under PIT's source roots. */
+  /** What ArcMutate's source-reading filters could see: the evidence sources under PIT's source roots. */
   private fun filterSourceFingerprint(): String = FilterSourceRecord.fingerprint(
     evidenceProjectDirectory.get().asFile,
     sourceDirectories.files,
+    evidenceSourceFiles.files,
   )
 
   private fun completeAttempt(attempt: PitestAttempt, historyActive: Boolean) {

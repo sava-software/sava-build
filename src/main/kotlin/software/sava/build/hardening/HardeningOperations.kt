@@ -744,7 +744,8 @@ internal object HardeningHelpText {
     appendLine(
         "  A project certification or fuzzAll campaign that ends without publishing is " +
             "recorded `refused` with its reason, where it refused or when the build ends; " +
-            "only a killed process leaves `starting`/`session`.")
+            "only a killed process, or an end-of-build write that failed (the build reports " +
+            "it), leaves `starting`/`session`.")
     appendLine(
         "  Any receipt marker makes the sibling TSV historical; success publishes the new " +
             "TSV and removes the marker.")
@@ -760,9 +761,10 @@ internal object HardeningHelpText {
     appendLine(
         "  It keeps the report, and says so on one lifecycle line, only when the source " +
             "fingerprint is the sole difference and: PIT did not run in this invocation; under " +
-            "ArcMutate, every file under src/main/java is byte-identical to the " +
-            ".filter-sources.tsv the run recorded (its @Generated filter reads that text, so " +
-            "only test sources may change there); every " +
+            "ArcMutate, every source-set file under src/main/java (not Gradle's default " +
+            "excludes) is byte-identical to the " +
+            ".filter-sources.tsv the run recorded (its @Generated filter reads that text; only " +
+            "Java sources outside that tree, the tests, may change under a kept report); every " +
             "evidence source outside the mutation recompile (build scripts, resources, a prune " +
             "selection, module-info.java, recompile-excluded files) is byte-identical to the " +
             ".uncompiled-sources.tsv the run recorded; no task was excluded; and " +
