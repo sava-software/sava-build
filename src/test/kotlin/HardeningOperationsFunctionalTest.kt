@@ -1399,6 +1399,64 @@ class HardeningOperationsFunctionalTest {
   }
 
   @Test
+  fun `Debt names the plugin build that wrote the report when it is not the loaded one`() {
+    writeFixture()
+    disableArcMutate()
+    acceptedBaseline()
+    runner("pitestEncoding").build()
+    val evidence = File(fixtureDir, "build/reports/pitest/encoding/.evidence.tsv")
+    val loaded = requireNotNull(
+      Regex("(?m)^pluginSha256\t([0-9a-f]{64})$").find(evidence.readText()),
+    ) { "no pluginSha256 in the manifest:\n${evidence.readText()}" }.groupValues[1]
+
+    val current = runner("pitestEncodingDebt").build().output
+    assertTrue(current.contains("pitest 'encoding' debt (latest full report"), current)
+    assertFalse(current.contains("written under plugin build"), current)
+
+    // The same report as a checkout upgraded past the plugin that wrote it holds it. The
+    // age clause joins the line once the report is two minutes old, so a slow run may see
+    // it; the provenance clause and the advice must be there either way.
+    val earlier = "f".repeat(64)
+    evidence.writeText(evidence.readText().replace("pluginSha256\t$loaded", "pluginSha256\t$earlier"))
+    val foreign = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      Regex(
+        "pitest 'encoding' debt \\(latest full report, written under plugin build ${earlier.take(12)} " +
+            "\\(loaded: ${loaded.take(12)}\\)(, \\d+m old)? — rerun :pitestEncoding before decisions; " +
+            "a verify will not keep this report\\)",
+      ).containsMatchIn(foreign),
+      foreign,
+    )
+
+    // A report with nothing unkilled carries the same note: it is the one that reads as
+    // current when nothing says which plugin wrote it. The report is rewritten by hand
+    // beside the tampered manifest, as the fake PIT would write a kill.
+    File(fixtureDir, "build/reports/pitest/encoding/mutations.csv").writeText(
+      "FakePit.java,com.example.FakePit,org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+          "main,12,KILLED,com.example.FakePitTest\n",
+    )
+    val none = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      Regex(
+        "pitest 'encoding' debt: none — nothing unkilled in the latest full report, written under " +
+            "plugin build ${earlier.take(12)} \\(loaded: ${loaded.take(12)}\\)(, \\d+m old)? — rerun " +
+            ":pitestEncoding before decisions; a verify will not keep this report",
+      ).containsMatchIn(none),
+      none,
+    )
+
+    // Without a manifest the preview says nothing about provenance: Debt stays the
+    // surface that survives a broken run.
+    assertTrue(evidence.delete())
+    val unmanifested = runner("pitestEncodingDebt").build().output
+    assertTrue(
+      unmanifested.contains("pitest 'encoding' debt: none — nothing unkilled in the latest full report"),
+      unmanifested,
+    )
+    assertFalse(unmanifested.contains("written under plugin build"), unmanifested)
+  }
+
+  @Test
   fun `late JavaExec classpath customization remains evidence-bound across cold and reused verify`() {
     writeFixture()
     acceptedBaseline()

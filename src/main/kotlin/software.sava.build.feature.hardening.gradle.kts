@@ -5945,8 +5945,32 @@ hardening.mutation.all {
                 "run $evidencePitestTaskPath -PnoMutationHistory before any accepted-baseline or " +
                 "timeout-audit decision.")
       }
+      // The report is a snapshot, not live state: name its age so numbers from a
+      // run made before the current change are not read as current, and the plugin
+      // build that wrote it when that is not the loaded one — by age alone a report
+      // from an earlier plugin reads as merely old, while no verify keeps it.
+      val foreignPlugin = if (reportPairs == null) null else {
+        val recorded = csv.parentFile.resolve(".evidence.tsv").takeIf { it.isFile }
+            ?.let { manifest -> runCatching { PitestEvidence.parse(manifest.readText()).pluginSha256 }.getOrNull() }
+        val loaded = (this as PitestDebtTask).currentEvidence.expectedPluginSha256.orNull
+        if (recorded == null || loaded == null || recorded == loaded) null
+        else ", written under plugin build ${recorded.take(12)} (loaded: ${loaded.take(12)})"
+      }
+      val age = if (reportPairs == null) "" else {
+        val minutes = (System.currentTimeMillis() - csv.lastModified()) / 60_000
+        val old = if (minutes < 2) "" else ", ${minutes}m old"
+        val history = if (historyAssistedDebt) " -PnoMutationHistory" else ""
+        when {
+          foreignPlugin != null ->
+            "$foreignPlugin$old — rerun $evidencePitestTaskPath$history before decisions; " +
+                "a verify will not keep this report"
+          old.isEmpty() -> ""
+          historyAssistedDebt -> "$old — rerun $evidencePitestTaskPath -PnoMutationHistory before decisions"
+          else -> "$old — rerun $evidencePitestTaskPath if stale"
+        }
+      }
       if (debt.isEmpty()) {
-        logger.lifecycle("pitest '$suiteName' debt: none — nothing unkilled in the $source")
+        logger.lifecycle("pitest '$suiteName' debt: none — nothing unkilled in the $source$age")
         strictDebtFailure?.let { throw GradleException(it) }
         return@doLast
       }
@@ -5968,16 +5992,6 @@ hardening.mutation.all {
           }
       val totalSurvived = debt.values.sumOf { it.first }
       val totalNoCoverage = debt.values.sumOf { it.second }
-      // The report is a snapshot, not live state: name its age so numbers from a
-      // run made before the current change are not read as current.
-      val age = if (reportPairs == null) "" else {
-        val minutes = (System.currentTimeMillis() - csv.lastModified()) / 60_000
-        if (minutes < 2) "" else if (historyAssistedDebt) {
-          ", ${minutes}m old — rerun $evidencePitestTaskPath -PnoMutationHistory before decisions"
-        } else {
-          ", ${minutes}m old — rerun $evidencePitestTaskPath if stale"
-        }
-      }
       // Label breakdown from the baseline (the well-formed rows parsed above):
       // family labels point to acceptance arguments, seeded debt reads '# untriaged',
       // and unlabeled rows have unknown triage state.
