@@ -117,7 +117,8 @@ bytes that tree does not bind: ignored files under the source roots, symlinks th
 to them, and files outside the worktree. Names reached through tracked symlinks and
 files inside pinned submodules are bound by the tree that commits them. Outputs generated
 under the build directory are exempt. The refusal names each path; commit the file, move
-it outside the source roots, or generate it under the build directory, or run the
+it to a source set the plugin never reads (the rule under "The class path is PIT's
+world"), or generate it under the build directory, or run the
 certification or campaign from a detached worktree of the commit
 (`git worktree add --detach <dir> <sha>`, then the same task in `<dir>`), which carries
 only what the tree binds. Certification asks in its preflight, which on a fail-fast
@@ -2000,12 +2001,28 @@ the triage section is about.
 That world is built by recompiling **every** main and test source into one
 class-path root, which makes a git-ignored source file a parity hazard: it is
 compiled on the machine that has it and absent everywhere else, so the tools
-see a different class path per checkout. `hardening.recompileExcludes =
-listOf("Integ.java")` drops such files by file name (a suite's
-`excludedClasses` only keeps them out of the *mutant population* — the class
-is still on the path, still loadable, still able to drag a dependency in).
-Reach for it for scratch drivers and local experiment classes; anything a
-build contract depends on belongs in the repo instead.
+see a different class path per checkout, and a clean certification refuses it
+outright, because the captured tree does not bind its bytes (Lifecycle). The
+rule is about location, not exclusion: git-ignored scratch sources, the
+`Integ.java` drivers written to try something quickly, never sit in a
+hardened project's `main` or `test` source set. The plugin reads nothing
+else: the evidence inventory and the PIT and Jazzer recompiles take those two
+source sets alone, so a third source set in the same project is invisible to
+every suite and certification. Register one per hardened project as a
+`scratch` JvmTestSuite at `src/scratch/java`, git-ignore the tree, disable
+its test task, and tell the dependency analysis to ignore the source set so
+`check` never compiles it; the programs keep their package and with it
+package-private access to what they try out, which a separate project cannot
+give them under JPMS (a module cannot share a package with another), and the
+IDE runs them from there as before. A hardened project then carries no
+`recompileExcludes` entry and no class exclusion for them.
+`hardening.recompileExcludes = listOf("Integ.java")` remains the narrow patch
+for a file that has not moved yet: it drops such files from the recompile by
+file name (a suite's `excludedClasses` only keeps them out of the *mutant
+population* — the class is still on the path, still loadable, still able to
+drag a dependency in), and it leaves them in the evidence inventory, so a
+clean certification still refuses them. Anything a build contract depends on
+belongs in the repo instead.
 
 ## Test conventions for new or changed API
 
@@ -2624,7 +2641,9 @@ Java toolchain, and the generated replay/support sources require Java 17+.
    section) — and say which in `AGENTS.md`.
 6. `hardeningInit` has already added `.pitest-history/` to `.gitignore`; leave that
    machine-local PIT-history and fuzz-campaign state boundary in place whether or not
-   this repo is licensed. If the package,
+   this repo is licensed. Git-ignored scratch sources (`Integ.java` drivers) go to a
+   source set the plugin never reads, such as a git-ignored `scratch` test suite (the
+   class-path section), never in a hardened project's `main` or `test`. If the package,
    repository visibility, and entitlement all apply to an eligible public Sava repo,
    deliberately copy the `sava-build` repository-root certificate here and commit it
    as `arcmutate-licence.txt`. The plugin never distributes it. Never copy the Sava OSS
@@ -2660,14 +2679,13 @@ The source block below is quoted only so it renders as one unit in this document
 the task prints it unquoted between `<!-- hardening-template block:start -->` and
 `<!-- hardening-template block:end -->`.
 
-> - Work with the module's `test` task. The mutation suites are a final gate, run once
->   per unpushed range when the work is complete and reviewed, before the push: each
->   `pitest<Suite>` whose mutated code the range can reach, including suites in
->   dependent modules, plus `mutationOwnershipAudit` when production classes or
->   target/exclusion rules changed. Never per commit, amend or review round; a change
->   the gate forces goes back through review as a delta. `hardeningCertify` (or
->   `:hardeningCertifyAll`) and `fuzzAll` are the pre-release checks this repo's notes
->   assign an owner to.
+> - Work with the module's `test` task. The mutation suites are a final gate, run once per
+>   unpushed range when the work is complete and reviewed, before the push: each
+>   `pitest<Suite>` whose mutated code the range can reach, including suites in dependent
+>   modules, plus `mutationOwnershipAudit` when production classes or target/exclusion
+>   rules changed. Never per commit, amend or review round; a change the gate forces goes
+>   back through review as a delta. `hardeningCertify` (or `:hardeningCertifyAll`) and
+>   `fuzzAll` are the pre-release checks this repo's notes assign an owner to.
 > - Test-only edits owe the suites whose mutated code those tests exercise; when scope
 >   is unclear, run `./gradlew qualityGate` from the Gradle root. Doc and comment
 >   edits owe no suite; a build-script edit only when it changes what
@@ -2689,13 +2707,12 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 >   oracle independent of the implementation before writing the killing test. If they
 >   contradict current behaviour, prove the bug with a failing regression test first,
 >   then fix production; never lock a bug in with a passing assertion.
-> - Write records only through the installed writer tasks: `BaselineUnion` adds
->   reviewed rows, `BaselineRetag` refreshes `# line` metadata, `BaselinePrune` deletes
->   only after two matching fresh history-free previews, `BaselineUpdate` is for a
->   first seed or a reviewed complete rewrite, and `pitest<Suite>BaselineRebase`
->   follows a PIT, PIT-plugin/tool-artifact, ArcMutate-base, or certificate change.
->   Never hand-edit baseline
->   rows or provenance stamps.
+> - Write records only through the installed writer tasks: `BaselineUnion` adds reviewed
+>   rows, `BaselineRetag` refreshes `# line` metadata, `BaselinePrune` deletes only after
+>   two matching fresh history-free previews, `BaselineUpdate` is for a first seed or a
+>   reviewed complete rewrite, and `pitest<Suite>BaselineRebase` follows a PIT,
+>   PIT-plugin/tool-artifact, ArcMutate-base, or certificate change. Never hand-edit
+>   baseline rows or provenance stamps.
 > - Baseline keys are line-less (`class,method,mutator,STATUS`); `# line` tags are
 >   review metadata that belong to their row: `BaselineRetag` refreshes them, a hand
 >   edit is a hand-edited row. Identical rows are sibling mutants and the comparison
@@ -2712,6 +2729,8 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 > - Tests are deterministic: fixed seeds, no sleeps, a clock with a non-zero origin,
 >   stubs that return distinguishable non-default values, and the subject built inside
 >   the test body. Exclusions must cover the test source set, not a naming convention.
+> - Git-ignored scratch sources (`Integ.java` drivers) never sit in a hardened project's
+>   `main` or `test` source set; keep them in a git-ignored `scratch` source set instead.
 > - Verify by the absence of failures: trust the exit code and the `.running`
 >   sentinel, not a summary. `MINION_DIED` and `RUN_ERROR` are not results; re-run once
 >   on a quiet machine. A suite that got faster without getting narrower is a bug report.

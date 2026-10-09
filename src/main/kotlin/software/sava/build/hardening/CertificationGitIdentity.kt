@@ -375,7 +375,9 @@ internal object CertificationGitIdentityCapture {
       "clean Git $context cannot bind ${findings.size} source input(s) absent from its captured " +
         "tree (ignored files under the source roots, or links to them):\n" +
         findings.joinToString("\n") { "  $it" } +
-        "\nCommit them, move them outside the source roots, or generate them under the build directory, " +
+        "\nCommit them, move them to a source set the hardening plugin never reads (a git-ignored " +
+        "scratch test suite; HARDENING.md, The class path is PIT's world), or generate them under the " +
+        "build directory, " +
         "or run the $context from a detached worktree of this commit " +
         "(git worktree add --detach <dir> ${identity.commit}), which carries only what the tree binds; " +
         "the receipt and every other .pitest-history/ file that run writes stay in that worktree and " +

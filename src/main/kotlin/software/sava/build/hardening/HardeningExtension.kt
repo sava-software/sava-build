@@ -67,10 +67,12 @@ abstract class HardeningExtension @Inject constructor(objects: ObjectFactory) {
   abstract val testSupportPackage: Property<String>
 
   /**
-   * Source FILE NAMES excluded from the PIT/Jazzer recompiles (e.g. "Integ.java"
-   * for git-ignored scratch files: present on a dev machine, absent in CI — the
-   * exclusion restores parity, and the mutation suite's excludedClasses already
-   * keeps them out of the mutant population).
+   * Source FILE NAMES excluded from the PIT/Jazzer recompiles (e.g. "Integ.java").
+   * A narrow patch, not the rule: git-ignored scratch sources belong in a source set
+   * the plugin never reads, such as a git-ignored scratch test suite (HARDENING.md,
+   * "The class path is PIT's world"). For a file that has not moved yet this restores
+   * class-path parity (present on a dev machine, absent in CI); it leaves the file in
+   * the evidence inventory, so a clean certification still refuses it.
    */
   abstract val recompileExcludes: ListProperty<String>
 

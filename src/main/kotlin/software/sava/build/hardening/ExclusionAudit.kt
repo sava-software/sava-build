@@ -287,8 +287,9 @@ object ExclusionAudit {
       else "pitest '$suiteName': ${swallowed.size} production class(es) swallowed by excludedClasses — " +
           "not mutated, not counted, and not missed by anything:\n" +
           swallowed.joinToString("\n") { "  ${it.binaryName} (glob '${it.glob}')" } + "\n" +
-          "Rename the class, narrow the glob, keep the source out of the recompile via " +
-          "recompileExcludes, or — when the exclusion is a deliberate opt-out (generated " +
+          "Rename the class, narrow the glob, move a scratch source to a source set the plugin " +
+          "never reads (or keep it out of the recompile via recompileExcludes), or — when " +
+          "the exclusion is a deliberate opt-out (generated " +
           "bindings, vendored code, a live-credential main) — record the argument with " +
           "declineExclusionAudit(\"<glob>\", \"<what these are, and what carries their " +
           "correctness instead>\"). Declines are suite-local and attach to the first matching " +

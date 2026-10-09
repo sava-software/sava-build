@@ -3110,7 +3110,8 @@ $buildTail
     assertTrue(
       refused.contains("clean Git certification cannot bind 1 source input(s) absent from its captured tree") &&
         refused.contains("  src/main/java/com/example/Integ.java") &&
-        refused.contains("Commit them, move them outside the source roots, or generate them under the build directory") &&
+        refused.contains("Commit them, move them to a source set the hardening plugin never reads (a git-ignored " +
+          "scratch test suite; HARDENING.md, The class path is PIT's world), or generate them under the build directory") &&
         refused.contains("run the certification from a detached worktree of this commit " +
           "(git worktree add --detach <dir> $commit)") &&
         refused.contains("the receipt and every other .pitest-history/ file that run writes stay in that worktree") &&
