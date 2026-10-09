@@ -206,6 +206,14 @@ a published artifact; read the loaded coordinates and SHA-256 separately.
 An empty `-PsavaBuildLocalRepo=` clears an inherited override in the consumer setup
 shown below.
 
+An upgrade owes the project's mutation suites once, at the unpushed range's pre-push
+gate, unless the notes of every release between the two pins state that neither the
+PIT task nor what PIT is given changed; HARDENING.md (Lifecycle) holds the rule.
+Completed reports and certification receipts bind the plugin binary that wrote them,
+so those written under the previous plugin stay historical and the next release
+certifies fresh under the new one; a verify refuses a report whose recorded plugin
+build is not the loaded one.
+
 ## Plugins
 
 ### Settings plugins

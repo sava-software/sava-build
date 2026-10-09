@@ -256,7 +256,12 @@ one:
 - doc and comment changes owe no suite at all, even when the verify below
   cannot keep its report over them. A build-script change owes the project's
   suites only when it changes what PIT is given: a dependency, a compiler or
-  suite setting, the PIT task itself.
+  suite setting, the PIT task itself. A plugin upgrade is that kind of change
+  unless the notes of every release between the two pins state that neither
+  the PIT task nor what PIT is given changed, so a range that bumps the pin
+  owes the project's suites once, at its gate. A verify refuses a report
+  whose recorded plugin build is not the loaded one, and that refusal proves
+  nothing by itself.
 
 When the affected suites are unclear, run `./gradlew qualityGate` from the Gradle
 root so the task selector includes dependent projects' gates.
