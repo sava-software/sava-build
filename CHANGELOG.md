@@ -1,5 +1,29 @@
 # Changelog
 
+## [21.6.7](https://github.com/sava-software/sava-build/compare/21.6.6...21.6.7) (2026-10-12)
+
+
+### Bug Fixes
+
+* **build:** update Gradle wrapper to 9.8.1 ([cd8b542](https://github.com/sava-software/sava-build/commit/cd8b5422bf9fb742227934e096798a554f25f3b8))
+* **hardening:** name the plugin build that wrote the report a debt preview reads ([a340a9d](https://github.com/sava-software/sava-build/commit/a340a9d265a64fd088fa38d17fcfe86a57f0ca81))
+* **hardening:** rule that git-ignored scratch sources live in a source set the plugin never reads ([928cac5](https://github.com/sava-software/sava-build/commit/928cac5b0da8999f07f8c35279969804e2b00f97))
+
+
+### Build System
+
+* **ci:** update cache and CodeQL actions ([c3580c7](https://github.com/sava-software/sava-build/commit/c3580c7787f4126778a850b7cae1c3803464f491))
+
+
+### Documentation
+
+* **hardening:** say what a plugin upgrade owes at the mutation gate ([6444b40](https://github.com/sava-software/sava-build/commit/6444b406902594f2b7242159b772791a5af651b3))
+
+
+### Performance
+
+* **ci:** speed up checks and balance TestKit suites ([e8ba91f](https://github.com/sava-software/sava-build/commit/e8ba91f63a66806934526b2691578b54d8c54c56))
+
 ## [21.6.6](https://github.com/sava-software/sava-build/compare/21.6.5...21.6.6) (2026-10-08)
 
 
