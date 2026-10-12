@@ -23,13 +23,27 @@ jobs:
         with:
           website: ${{ vars.JDK_SRC }}
           release: ${{ vars.GRADLE_JAVA_VERSION }}
-      - name: Check release tooling
-        run: |
-          bash -n tools/local-fuzz.sh
-          tools/local-fuzz.sh --self-test
-      - name: Check the release-please guard
-        run: |
-          npm ci --prefix .github/actions/release-please-guard --ignore-scripts --no-audit --no-fund
-          node --test .github/actions/release-please-guard/guard.test.mjs
-      - name: Gradle Check
-        run: ./gradlew --stacktrace check
+      # TestKit has a separate Gradle home under the test worker directory.
+      # Match files only: tar would recursively include excluded children if a
+      # parent directory were in the manifest. Keep keys, locks and task outputs out.
+      - name: Restore TestKit caches
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            build/tmp/test/work/.gradle-test-kit/caches/**/*
+            !build/tmp/test/work/.gradle-test-kit/caches/**/
+            !build/tmp/test/work/.gradle-test-kit/caches/**/*.lock
+            !build/tmp/test/work/.gradle-test-kit/caches/**/cc-keystore/**
+            !build/tmp/test/work/.gradle-test-kit/caches/**/build-cache-*/**
+          key: testkit-v1-${{ runner.os }}-${{ runner.arch }}-jdk${{ vars.GRADLE_JAVA_VERSION }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}
+          restore-keys: |
+            testkit-v1-${{ runner.os }}-${{ runner.arch }}-jdk${{ vars.GRADLE_JAVA_VERSION }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}-
+      # check already includes the local-fuzz syntax check and self-test.
+      # These independent checks share a runner; their failures still fail the job.
+      - parallel:
+          - name: Check the release-please guard
+            run: |
+              npm ci --prefix .github/actions/release-please-guard --ignore-scripts --no-audit --no-fund
+              node --test .github/actions/release-please-guard/guard.test.mjs
+          - name: Gradle Check
+            run: ./gradlew --stacktrace check

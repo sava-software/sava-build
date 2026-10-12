@@ -538,8 +538,21 @@ strict and disables build/configuration caches and Kotlin incremental compilatio
 CodeQL observes the sources being compiled. The scan uses the repository's `JDK_SRC` and
 `GRADLE_JAVA_VERSION` variables, matching the Gradle build workflow.
 
-The `check` task also runs TestKit smoke tests that configure a minimal consumer fixture against the
-checkout. When changing dependencies, regenerate the
+The `check` task also runs TestKit functional tests against a local publication of the
+checkout. Tests use fresh fixture directories and two workers by default. The larger
+functional suites are split by feature so both workers can stay busy. To compare worker
+counts on a particular machine, force just the test task to execute with, for example,
+`./gradlew test --rerun -PsavaBuildTestForks=4`; compare with the default two workers using
+the same warm caches. Extra workers also need extra TestKit daemons and memory.
+
+The plugin check workflows cache TestKit's separate dependency and compiled-script caches
+under `build/tmp/test/work/.gradle-test-kit/caches`, in addition to the outer build's
+`setup-gradle` cache. Only successful main builds save TestKit caches; PRs restore them.
+Fixture outputs, daemon state, file locks, and configuration-cache encryption keys are
+not retained. The release-please guard runs in parallel with `check`, which also runs
+the local fuzz runner's syntax check and self-test.
+
+When changing dependencies, regenerate the
 [verification metadata](gradle/verification-metadata.xml):
 
 ```shell

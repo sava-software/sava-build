@@ -376,13 +376,13 @@ val savaTestRepoPublishTask = "${savaTestRepoPublishPrefix}SavaTestRepoRepositor
 
 tasks.test {
   useJUnitPlatform()
-  // Every fork gets its own TestKit daemon, so the fork count trades daemon cold-starts
-  // against overlap and does NOT scale with cores: past a couple of forks the suite's
-  // ~30 fixture builds are split too thin for any daemon to go warm. Measured here
-  // (11 test classes), warm cache / cold cache: 1 fork 32s/82s, 2 forks 28s/75s,
-  // 4 forks 32s/-, 8 forks 45s/183s. Re-measure if the suite grows a lot -- what
-  // matters is fixture builds per daemon, not the machine.
-  maxParallelForks = 2
+  // Each concurrent fixture build needs a TestKit daemon. Keep a conservative
+  // default, and benchmark on the target runner before increasing it. Smaller
+  // functional-test classes let these workers share the work more evenly.
+  maxParallelForks = providers.gradleProperty("savaBuildTestForks").map { value ->
+    value.toIntOrNull()?.takeIf { it > 0 }
+      ?: throw GradleException("savaBuildTestForks must be a positive integer, got '$value'")
+  }.getOrElse(2)
   dependsOn(savaTestRepoPublishTask)
   // The paths handed to the tests are absolute, so they are passed through an argument
   // provider that declares them as relocatable inputs instead of as 'systemProperty'
@@ -428,7 +428,8 @@ val localFuzzSelfTest = tasks.register<Exec>("localFuzzSelfTest") {
   description = "Runs the local fuzz evidence runner's hermetic self-test."
   dependsOn(localFuzzSyntax)
   inputs.file(localFuzzScript)
-  commandLine("bash", localFuzzScript.asFile.absolutePath, "--self-test")
+  // Direct execution also checks the executable bit and shebang, as CI did before.
+  commandLine(localFuzzScript.asFile.absolutePath, "--self-test")
 }
 tasks.named("check") {
   dependsOn(localFuzzSelfTest)
