@@ -1142,6 +1142,8 @@ self_test() {
   path_fixture=$(cd "$path_fixture" && pwd -P)
   local_fuzz_self_test_cleanup_path=$path_fixture
   consumer_args_probe="$path_fixture/consumer-args-probe"
+  # Expand these variables when the generated probe runs.
+  # shellcheck disable=SC2016
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'for argument in "$@"; do printf "<%s>\n" "$argument"; done' > "$consumer_args_probe"
@@ -2144,6 +2146,8 @@ record_repo() {
 failed=""
 expected_execution_rows=$(wc -l < "$plan_file" | tr -d ' ')
 processed_execution_rows=0
+# read_execution_plan_row assigns these variables by name.
+declare pre_sha pre_origin pre_receipt_fingerprint
 while read_execution_plan_row slug repo pre_sha pre_origin pre_receipt_fingerprint; do
   processed_execution_rows=$((processed_execution_rows + 1))
   safe_slug=$(artifact_key "$slug")
