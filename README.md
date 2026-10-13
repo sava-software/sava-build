@@ -656,9 +656,25 @@ remedy for a flagged commit already on `main` is a commit that restates its head
 and footers in parseable form and ends with the footer `Restates: <sha>` (an empty commit,
 unless `exclude-paths` is configured, which excludes empty commits); the guard then
 reports the original as a notice. The guard reads the commit message only: a
-`BEGIN_COMMIT_OVERRIDE` block in a pull request body is not consulted. Its `node --test`
-suite builds scratch repositories for each of these rules and runs in the Gradle Check
-workflows.
+`BEGIN_COMMIT_OVERRIDE` block in a pull request body is not consulted. It also checks the
+releases Release Please is about to cut, since the publishing workflows refuse a tag that is
+not a plain `X.Y.Z` version. Release Please decides a release's tag from the merged release
+pull request: from its title, or from its body (more than one release section, or a body
+re-read from a branch file through its overflow message), read through a parse, serialize
+and parse again. A `Release-As` footer, an override block, the config's `release-as`, the
+manifest, contributor commit text in the body and an edited title can each steer it. So the
+guard runs Release Please's own release-building code (the `release-please` package at the
+version `release-please-action` bundles, pinned by the guard's lockfile) over a GitHub client
+that only reads, and requires every tag it would cut to be a plain `X.Y.Z` version and to
+carry the version the release pull request wrote into the manifest at its own commit, so a
+body that puts in another plain version fails too. Release Please must also read nothing for
+a release pull request but its overflow file from `<head branch>--release-notes`, the only
+place it writes one: a link in the body to any other ref names a file someone else controls,
+which could change between the check and the release. A merged release pull request about to
+be tagged fails the run; an open one, built as if merged, is a warning, so Release Please
+keeps running and can rewrite it once the source is fixed. Its `node --test` suite builds scratch repositories for
+each of these rules, and stands in for the GitHub API with a fake `gh`; it runs in the
+Gradle Check workflows.
 
 Batch fixes and release on a cadence, not per fix: every release is re-adopted across
 the fleet, so each one starts about ten adoption passes.

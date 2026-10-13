@@ -171,4 +171,228 @@ for (const { sha, header, reason } of failures) {
 console.log(`checked ${shas.length} commit(s) since ${baseText ?? 'the start of history'}: ` +
   `${failures.length} unparseable conventional commit(s), ${dropped.length} release-please will not read` +
   (excludeConfigured ? `, ${excluded.length} excluded by exclude-paths` : ''));
-process.exit(failures.length ? 1 : 0);
+
+// Release versions. The publishing workflows refuse a tag that is not a plain X.Y.Z
+// version, and release-please decides each tag from a merged release pull request: its
+// title, or its body (more than one release section, or a body re-read from a branch file
+// when it carries the overflow message), read through a parse, serialize and parse again.
+// A Release-As footer, a BEGIN_COMMIT_OVERRIDE block, the config's release-as, the
+// manifest, contributor commit text in the body and an edited title can each steer it.
+// Rather than re-derive that, this runs release-please's own release-building code
+// (Manifest.fromManifest and buildReleases, from the release-please package at the version
+// release-please-action bundles) over a GitHub client that can only read. Each tag it would
+// cut must be a plain X.Y.Z version and carry the version the release pull request wrote
+// into the manifest at its own commit, so a body that substitutes another plain version
+// fails too. And release-please must read nothing for a pull request but its overflow file
+// from <head branch>--release-notes, the only place it writes one: a link in the body to
+// any other ref names a file someone else controls, which can change between this check
+// and the release. A merged release pull request about to be tagged fails the run; an
+// open one, built as if merged, is a warning.
+const { Manifest, setLogger } = require('release-please');
+const nodePath = require('node:path');
+const PLAIN_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+const RELEASE_LABELS = config.label != null ? String(config.label).split(',') : ['autorelease: pending'];
+const labelText = RELEASE_LABELS.map((label) => `'${label}'`).join(' and ');
+// Where a wrong version comes from, and how each source is overridden.
+const REMEDY = 'a Release-As footer gives way to a later commit with a valid one (the newest wins); release-as ' +
+  'is set in the config; release sections, an overflow message or a link in the body come from commit text, which ' +
+  'a BEGIN_COMMIT_OVERRIDE block in the description of the pull request that merged that commit replaces.';
+// A failed gh call: the API, not the pull requests, so re-running can help.
+class GitHubReadError extends Error {}
+// What a pull request names does not exist: re-running cannot help.
+class MissingFileError extends Error {}
+// A GitHub client for release-please that only reads, through gh, the way release-please's
+// own client reads (github-api.ts pullRequestIteratorWithoutFiles; github.ts
+// getFileContentsOnBranch and getFileJson). Nothing else is provided, so release-please
+// calling anything else fails the check. Every file read is recorded with the pull request
+// release-please was reading at the time: it reads a pull request's overflow file before
+// it asks for the next one. With openAsMerged, open pull requests are listed as merged at
+// their head commit, to see what each would be tagged once merged.
+function readOnlyGitHub(repository, defaultBranch, { openAsMerged = false } = {}) {
+  const [owner, repo] = repository.split('/');
+  const reads = [];
+  let current = null;
+  const api = (query, accept) => {
+    try {
+      return execFileSync('gh', ['api', ...(accept ? ['-H', `Accept: ${accept}`] : []), query],
+        { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    } catch (error) {
+      throw new (/HTTP 404/.test(String(error.stderr ?? error.message)) ? MissingFileError : GitHubReadError)(
+        oneLine(error));
+    }
+  };
+  const getFileContentsOnBranch = async (path, branch) => {
+    reads.push({ pullRequest: current, path, branch });
+    try {
+      const text = api(`repos/${repository}/contents/${path.split('/').map(encodeURIComponent).join('/')}` +
+        `?ref=${encodeURIComponent(branch)}`, 'application/vnd.github.raw');
+      return { sha: '', content: Buffer.from(text).toString('base64'), parsedContent: text, mode: '100644' };
+    } catch (error) {
+      if (!(error instanceof MissingFileError)) throw error;
+      throw new MissingFileError(`${path} does not exist on ${JSON.stringify(branch)}` +
+        (current ? `, which release pull request #${current.number} makes release-please read` : ''));
+    }
+  };
+  return {
+    repository: { owner, repo, defaultBranch },
+    reads,
+    current: () => current,
+    getFileContentsOnBranch,
+    async getFileJson(path, branch) {
+      return JSON.parse((await getFileContentsOnBranch(path, branch)).parsedContent);
+    },
+    async *pullRequestIterator(targetBranch, status = 'MERGED', maxResults = Number.MAX_SAFE_INTEGER) {
+      const state = openAsMerged || status === 'OPEN' ? 'open' : 'closed';
+      let results = 0;
+      // current is cleared only when the listing ends normally: when release-please throws on
+      // a pull request it closes this generator at the yield, and current still names it.
+      for (let page = 1; ; page++) {
+        const pulls = JSON.parse(api(`repos/${repository}/pulls?state=${state}&base=${encodeURIComponent(targetBranch)}` +
+          `&sort=updated&direction=desc&per_page=100&page=${page}`));
+        for (const pull of pulls) {
+          if (!openAsMerged && status === 'MERGED' && !pull.merged_at) continue;
+          results += 1;
+          current = {
+            headBranchName: pull.head.ref, baseBranchName: pull.base.ref, number: pull.number,
+            title: pull.title, body: pull.body || '', labels: (pull.labels || []).map((label) => label.name),
+            files: [], sha: openAsMerged ? pull.head.sha : pull.merge_commit_sha || undefined,
+          };
+          yield current;
+          if (results >= maxResults) break;
+        }
+        if (results >= maxResults || pulls.length < 100) break;
+      }
+      current = null;
+    },
+  };
+}
+// Why a release release-please would cut is not safe to tag, or null.
+function releaseProblem(release, expected, manifestPath) {
+  const tag = release.tag.toString();
+  const reasons = [];
+  if (!PLAIN_VERSION.test(tag)) reasons.push('not a plain X.Y.Z version');
+  if (release.tag.version.toString() !== expected) {
+    reasons.push(`not ${JSON.stringify(expected ?? null)}, the version the release pull request wrote into ` +
+      manifestPath);
+  }
+  return reasons.length ? `release-please would tag it ${JSON.stringify(tag)}, which is ${reasons.join(', and ')}` : null;
+}
+// Reads release-please made for a pull request from anywhere but where it writes: its
+// overflow file from <head branch>--release-notes, anything else from the target branch.
+const foreignReads = (reads, targetBranch) => reads.filter(({ pullRequest, path, branch }) => pullRequest &&
+  branch !== (path === 'release-notes.md' ? `${pullRequest.headBranchName}--release-notes` : targetBranch));
+const describeForeignRead = ({ pullRequest, path, branch }) =>
+  `merged release pull request #${pullRequest.number} makes release-please read ${path} from ` +
+  `${JSON.stringify(branch)}, not from ${JSON.stringify(`${pullRequest.headBranchName}--release-notes`)}, ` +
+  'where release-please writes an overflowing body; a link in the body named that ref, and its file can change ' +
+  `between this check and the release. Nothing has been tagged. Remove the link from #${pullRequest.number}'s ` +
+  `body, or remove ${labelText} from it to skip the release; then ${REMEDY}`;
+async function checkReleases(repository) {
+  const quiet = () => {};
+  setLogger({ error: quiet, warn: quiet, info: quiet, debug: quiet, trace: quiet });
+  // release-please targets the repository's default branch unless told otherwise.
+  const targetBranch = process.env.TARGET_BRANCH || process.env.GITHUB_REF_NAME;
+  if (!targetBranch) throw new Error('no target branch: TARGET_BRANCH and GITHUB_REF_NAME are empty');
+  // release-please reads the config and the manifest by repository path, as given: a
+  // relative path is used unchanged; an absolute one is made relative to the repository.
+  const repoPath = (file) => {
+    if (!nodePath.isAbsolute(file)) return nodePath.posix.normalize(file.split(nodePath.sep).join('/'));
+    const top = fs.realpathSync(git('rev-parse', '--show-toplevel').trim());
+    return nodePath.relative(top, fs.realpathSync(file)).split(nodePath.sep).join('/');
+  };
+  const configPath = repoPath(process.env.CONFIG_FILE);
+  const manifestPath = repoPath(process.env.MANIFEST_FILE);
+  // The manifest at a release's own commit: the merge commit, or an open pull request's head.
+  const manifests = new Map();
+  const manifestAt = async (github, sha) => {
+    if (!manifests.has(sha)) manifests.set(sha, await github.getFileJson(manifestPath, sha));
+    return manifests.get(sha);
+  };
+  // Builds the releases. A failure while release-please reads a pull request, other than the
+  // API failing, names that pull request, since release-please would fail on it the same
+  // way; a read from a foreign ref before the failure is reported as such.
+  const build = async (github) => {
+    try {
+      return await (await Manifest.fromManifest(github, targetBranch, configPath, manifestPath)).buildReleases();
+    } catch (error) {
+      const pr = github.current();
+      if (error instanceof GitHubReadError || !pr) throw error;
+      const foreign = foreignReads(github.reads, targetBranch).map(describeForeignRead);
+      throw new Error(foreign.length ? foreign.join(' ') : `release-please fails on release pull request ` +
+        `#${pr.number} (${oneLine(error)}), and would fail the same way when releasing; fix that pull request's ` +
+        `title or body, or remove ${labelText} from it`);
+    }
+  };
+  const errors = [];
+  const mergedGitHub = readOnlyGitHub(repository, targetBranch);
+  const merged = await build(mergedGitHub);
+  errors.push(...foreignReads(mergedGitHub.reads, targetBranch).map(describeForeignRead));
+  for (const release of merged) {
+    let expected;
+    try {
+      expected = (await manifestAt(mergedGitHub, release.sha))[release.path];
+    } catch (error) {
+      if (!(error instanceof MissingFileError)) throw error;
+      throw new Error(`release pull request #${release.pullRequest.number}'s merge commit has no readable ` +
+        `${manifestPath} (${oneLine(error)})`);
+    }
+    const problem = releaseProblem(release, expected, manifestPath);
+    if (problem) {
+      errors.push(`merged release pull request #${release.pullRequest.number} is about to be tagged, but ${problem}. ` +
+        'The publishing workflows refuse a tag that is not a plain X.Y.Z version or not the version of its ' +
+        `commit's manifest. Nothing has been tagged. Edit #${release.pullRequest.number} so release-please reads the ` +
+        "manifest's version from it (its title, with no release section, overflow message or link in its body), " +
+        `then re-run this job; or remove ${labelText} from it to skip the release. Then fix where the version came ` +
+        `from, or the next release repeats it: ${REMEDY}`);
+    }
+  }
+  const openGitHub = readOnlyGitHub(repository, targetBranch, { openAsMerged: true });
+  let open = [];
+  try {
+    open = await build(openGitHub);
+  } catch (error) {
+    console.log(`::warning::open release pull requests not checked: ${oneLine(error)}`);
+  }
+  for (const { pullRequest, path, branch } of foreignReads(openGitHub.reads, targetBranch)) {
+    console.log(`::warning::open release pull request #${pullRequest.number} makes release-please read ${path} ` +
+      `from ${JSON.stringify(branch)}; merged as it is, this guard fails the release run. Fix the source: ${REMEDY}`);
+  }
+  for (const release of open) {
+    let expected;
+    try {
+      expected = (await manifestAt(openGitHub, release.sha))[release.path];
+    } catch (error) {
+      console.log(`::warning::open release pull request #${release.pullRequest.number} not checked: ${manifestPath} ` +
+        `at its head could not be read (${oneLine(error)})`);
+      continue;
+    }
+    const problem = releaseProblem(release, expected, manifestPath);
+    if (problem) {
+      console.log(`::warning::open release pull request #${release.pullRequest.number}: once merged, ${problem}. ` +
+        'Merged as it is, this guard fails the release run and nothing is tagged until the merged pull request is ' +
+        `fixed. Fix where the version came from first: ${REMEDY} release-please rewrites the pull request on its ` +
+        'next run.');
+    }
+  }
+  console.log(`checked the releases release-please would cut: ${merged.length} from merged and ${open.length} ` +
+    'from open release pull request(s)');
+  return errors;
+}
+const repository = process.env.GITHUB_REPOSITORY;
+(async () => {
+  let releaseErrors = [];
+  if (!repository) {
+    console.log('releases not checked: GITHUB_REPOSITORY is not set');
+  } else {
+    try {
+      releaseErrors = await checkReleases(repository);
+    } catch (error) {
+      console.log(error instanceof GitHubReadError
+        ? `::error::could not read the release pull requests from GitHub (${oneLine(error)}); re-run the job.`
+        : `::error::could not work out the releases release-please would cut: ${oneLine(error)}`);
+      process.exit(1);
+    }
+  }
+  for (const message of releaseErrors) console.log(`::error::${message}`);
+  process.exit(failures.length || releaseErrors.length ? 1 : 0);
+})();
