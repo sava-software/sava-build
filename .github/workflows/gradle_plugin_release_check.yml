@@ -40,6 +40,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+      # release-please writes the version into .release-please-manifest.json in the release
+      # pull request and tags that pull request's merge commit, so a release tag must name the
+      # version its own commit's manifest holds. This reads only the tagged commit, which nothing
+      # can change afterwards, so it holds whatever happened while the tag was cut.
+      - name: Check the tag against the release manifest
+        shell: bash
+        run: |
+          manifest=.release-please-manifest.json
+          if ! jq -e -n --arg tag "$RELEASE_TAG" '[inputs] | length == 1 and (.[0] | type) == "object" and .[0]["."] == $tag' "$manifest" > /dev/null; then
+            named=$(jq -c -n '[inputs][0]["."]' "$manifest" 2> /dev/null) || named='nothing readable'
+            echo "::error::Tag '$RELEASE_TAG' is not the version the tagged commit's $manifest names ($named): release-please tags a release pull request's merge commit with the version that pull request wrote there."
+            exit 1
+          fi
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
       - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b
         with:

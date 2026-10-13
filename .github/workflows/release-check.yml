@@ -5,6 +5,12 @@ permissions:
 
 on:
   workflow_call:
+    inputs:
+      manifest-file:
+        description: release-please's manifest, as passed to release-please.yml; a release tag must be the version it names.
+        required: false
+        type: string
+        default: .release-please-manifest.json
     secrets:
       READ_SAVA_PACKAGES:
         description: Token used to read sava GitHub Packages.
@@ -46,6 +52,7 @@ jobs:
           default-java-version: ${{ vars.JAVA_VERSION }}
           jdk-src: ${{ vars.JDK_SRC }}
           gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
+          release-manifest: ${{ inputs.manifest-file }}
 
       - name: Check
         run: ./gradlew --stacktrace -Psign=true -PjavaVersion="$SETUP_JAVA_VERSION" -Pversion="$RELEASE_TAG" check

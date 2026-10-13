@@ -14,6 +14,10 @@ inputs:
     description: "Passed to setup-gradle. A publishing job sets 'true': nothing an earlier build, tests included, left in the Gradle cache reaches the job that signs."
     required: false
     default: 'false'
+  release-manifest:
+    description: "release-please's manifest, as release-please.yml's manifest-file names it. On a tag ref the tag must be the version it names; a repository without the default one is not checked."
+    required: false
+    default: '.release-please-manifest.json'
   persist-credentials:
     description: "Passed to actions/checkout. A publishing job sets 'false', so checkout persists no git credential for later steps (checkout v6 and later would write the job token to a file under RUNNER_TEMP that the repository's git config includes). The GitHub Packages step still passes the job token to Gradle, which needs it to publish."
     required: false
@@ -53,6 +57,28 @@ runs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: ${{ inputs.persist-credentials }}
+    # release-please writes the version into .release-please-manifest.json in the release
+    # pull request and tags that pull request's merge commit, so a release tag must name the
+    # version its own commit's manifest holds. This reads only the tagged commit, which nothing
+    # can change afterwards, so it holds whatever happened while the tag was cut.
+    # A repository without the default manifest is not checked; a manifest named otherwise
+    # must exist. jq compares exactly, and fails on anything but one JSON object.
+    - name: Check the tag against the release manifest
+      if: github.ref_type == 'tag'
+      shell: bash
+      env:
+        REF_NAME: ${{ github.ref_name }}
+        MANIFEST: ${{ inputs.release-manifest }}
+      run: |
+        if [ ! -f "$MANIFEST" ] && [ "$MANIFEST" = .release-please-manifest.json ]; then
+          echo "No $MANIFEST at the tagged commit: the tag is not checked against a release manifest."
+          exit 0
+        fi
+        if ! jq -e -n --arg tag "$REF_NAME" '[inputs] | length == 1 and (.[0] | type) == "object" and .[0]["."] == $tag' "$MANIFEST" > /dev/null; then
+          named=$(jq -c -n '[inputs][0]["."]' "$MANIFEST" 2> /dev/null) || named='nothing readable'
+          echo "::error::Tag '$REF_NAME' is not the version the tagged commit's $MANIFEST names ($named): release-please tags a release pull request's merge commit with the version that pull request wrote there."
+          exit 1
+        fi
     - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
       with:
         cache-disabled: ${{ inputs.cache-disabled }}

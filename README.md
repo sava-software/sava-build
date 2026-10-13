@@ -340,7 +340,9 @@ The composite action ([action.yml](action.yml)) checks out the repository, sets 
 provisions JDKs. It derives the Java version from the branch (`java-21`) or tag (`21.0.3`) name,
 falling back to `default-java-version`, and exposes it as the `java-version` output. On a tag
 ref it first refuses any tag that is not a plain `X.Y.Z` version, whichever workflow calls it,
-and takes the tag's major as the Java version. A pull
+then, after checkout, any tag other than the version the tagged commit's
+`.release-please-manifest.json` names, when the repository has one, and takes the tag's major
+as the Java version. A pull
 request from a fork receives no configuration variables, so there it falls back to
 `javaVersion` in `gradle/sava.properties` (which a repository taking outside pull requests must
 set) for both JDKs and to `oracle.com` as the download site.
@@ -355,9 +357,13 @@ Reusable workflows (all use the composite action and the repository variables
 | [publish.yml](.github/workflows/publish.yml) | Check, publish to Maven Central and GitHub Packages, attest build provenance. |
 | [publish-gh.yml](.github/workflows/publish-gh.yml) | Check, publish to GitHub Packages only, attest build provenance. |
 
-Both publishing workflows run only for a tag that is a plain `X.Y.Z` version, and every
-expression reaches their scripts through environment variables, since release-please
-takes the tag from the merged release PR's title. Each runs `check` through
+Both publishing workflows run only for a tag that is a plain `X.Y.Z` version and, in a
+release-please repository, the version the tagged commit's manifest names (pass `manifest-file`
+when release-please.yml is given one), which no edit made while the tag was cut can change.
+The release-please guard reads a release pull request before Release Please reads it again, so
+someone able to edit that pull request in between could still have a tag and a GitHub release
+created; this check keeps such a tag from being published. Every expression reaches their scripts through environment
+variables, since release-please takes the tag from the merged release PR's title. Each runs `check` through
 [release-check.yml](.github/workflows/release-check.yml), a separate workflow passed only
 `READ_SAVA_PACKAGES`, so no publishing secret is in its secrets context. GitHub's docs say
 Actions "scrubs secrets from memory that are not referenced in the workflow", so a test job
