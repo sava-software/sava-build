@@ -10,6 +10,14 @@ inputs:
   gradle-java-version:
     description: "Java version Gradle runs on. Empty on a pull request from a fork: javaVersion in gradle/sava.properties is used there."
     required: true
+  cache-disabled:
+    description: "Passed to setup-gradle. A publishing job sets 'true': nothing an earlier build, tests included, left in the Gradle cache reaches the job that signs."
+    required: false
+    default: 'false'
+  persist-credentials:
+    description: "Passed to actions/checkout. A publishing job sets 'false', so checkout persists no git credential for later steps (checkout v6 and later would write the job token to a file under RUNNER_TEMP that the repository's git config includes). The GitHub Packages step still passes the job token to Gradle, which needs it to publish."
+    required: false
+    default: 'true'
 
 outputs:
   java-version:
@@ -43,7 +51,11 @@ runs:
         release_tag_re='^(0|[123456789][0123456789]*)\.(0|[123456789][0123456789]*)\.(0|[123456789][0123456789]*)$'
         [[ "$REF_NAME" =~ $release_tag_re ]] || { echo "::error::Refusing tag '$REF_NAME': a release tag is a plain X.Y.Z version (digits only, no leading zeros, no prefix or suffix)."; exit 1; }
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: ${{ inputs.persist-credentials }}
     - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+      with:
+        cache-disabled: ${{ inputs.cache-disabled }}
 
     - name: Extract Java version from branch
       id: java-version

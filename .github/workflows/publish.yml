@@ -26,7 +26,17 @@ on:
         required: true
 
 jobs:
+  # Tests run in a separate workflow passed only READ_SAVA_PACKAGES (release-check.yml says
+  # why); this workflow's publish job builds the artifacts again without running tests.
+  check:
+    uses: sava-software/sava-build/.github/workflows/release-check.yml@main
+    permissions:
+      contents: read
+    secrets:
+      READ_SAVA_PACKAGES: ${{ secrets.READ_SAVA_PACKAGES }}
+
   publish:
+    needs: check
     runs-on: ubuntu-latest
 
     permissions:
@@ -56,19 +66,16 @@ jobs:
           [[ "$REF_TYPE" == tag ]] || { echo "::error::Publishing runs only on a release tag push; this run's ref type is '$REF_TYPE'."; exit 1; }
           [[ "$RELEASE_TAG" =~ $release_tag_re ]] || { echo "::error::Refusing to publish tag '$RELEASE_TAG': a release tag is a plain X.Y.Z version (digits only, no leading zeros, no prefix or suffix)."; exit 1; }
 
+      # No Gradle cache: earlier builds, tests included, wrote it, and nothing they
+      # left may reach the job that signs. Checkout persists no git credential for later steps.
       - id: setup
         uses: sava-software/sava-build@main
         with:
           default-java-version: ${{ vars.JAVA_VERSION }}
           jdk-src: ${{ vars.JDK_SRC }}
           gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
-
-      - name: Check
-        run: ./gradlew --stacktrace -Psign=true -PjavaVersion="$SETUP_JAVA_VERSION" -Pversion="$RELEASE_TAG" check
-        env:
-          SETUP_JAVA_VERSION: ${{ steps.setup.outputs.java-version }}
-          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
-          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
+          cache-disabled: 'true'
+          persist-credentials: 'false'
 
       # 'publishAggregationToCentralPortal' is the deprecated alias of
       # 'publishCentralPortalDeployment'. Consumers use this workflow @main while their
@@ -77,7 +84,7 @@ jobs:
       # repository using this workflow is on a plugin version that provides
       # 'publishCentralPortalDeployment'.
       - name: Maven Central
-        run: ./gradlew --stacktrace -Psign=true -PjavaVersion="$SETUP_JAVA_VERSION" -Pversion="$RELEASE_TAG" -PmavenCentralExcludeChecksums="$MAVEN_CENTRAL_EXCLUDE_CHECKSUMS" :aggregation:publishAggregationToCentralPortal
+        run: ./gradlew --stacktrace --no-build-cache -Psign=true -PjavaVersion="$SETUP_JAVA_VERSION" -Pversion="$RELEASE_TAG" -PmavenCentralExcludeChecksums="$MAVEN_CENTRAL_EXCLUDE_CHECKSUMS" :aggregation:publishAggregationToCentralPortal
         env:
           SETUP_JAVA_VERSION: ${{ steps.setup.outputs.java-version }}
           MAVEN_CENTRAL_EXCLUDE_CHECKSUMS: ${{ inputs.maven-central-exclude-checksums }}
@@ -89,7 +96,7 @@ jobs:
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
 
       - name: Github Packages
-        run: ./gradlew --stacktrace -Psign=true -PjavaVersion="$SETUP_JAVA_VERSION" -Pversion="$RELEASE_TAG" :aggregation:publishToGitHubPackages
+        run: ./gradlew --stacktrace --no-build-cache -Psign=true -PjavaVersion="$SETUP_JAVA_VERSION" -Pversion="$RELEASE_TAG" :aggregation:publishToGitHubPackages
         env:
           SETUP_JAVA_VERSION: ${{ steps.setup.outputs.java-version }}
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}

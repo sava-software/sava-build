@@ -353,6 +353,18 @@ Reusable workflows (all use the composite action and the repository variables
 | [publish.yml](.github/workflows/publish.yml) | Check, publish to Maven Central and GitHub Packages, attest build provenance. |
 | [publish-gh.yml](.github/workflows/publish-gh.yml) | Check, publish to GitHub Packages only, attest build provenance. |
 
+Both publishing workflows run only for a tag that is a plain `X.Y.Z` version, and every
+expression reaches their scripts through environment variables, since release-please
+takes the tag from the merged release PR's title. Each runs `check` through
+[release-check.yml](.github/workflows/release-check.yml), a separate workflow passed only
+`READ_SAVA_PACKAGES`, so no publishing secret is in its secrets context. GitHub's docs say
+Actions "scrubs secrets from memory that are not referenced in the workflow", so a test job
+inside the publishing workflow might still reach the signing key. The publish job then
+builds again without running tests and without the Gradle cache (`cache-disabled`,
+`--no-build-cache`), and its checkout persists no git credential for later steps
+(`persist-credentials`). The plugin's own release does the same through
+[gradle_plugin_release_check.yml](.github/workflows/gradle_plugin_release_check.yml).
+
 For this repository, [Gradle Dependency Submission](.github/workflows/gradle_plugin_dependency_submission.yml)
 reports resolved build and test dependencies and the Gradle version to GitHub on pushes to `main`
 for Dependabot vulnerability alerts. A read-only job generates and checks the snapshot with
@@ -618,9 +630,11 @@ Releasing is Release Please plus the ordinary check:
    commit guard is red the pull request is not refreshed: restate the flagged commit first,
    then merge, or the commits pushed since the run went red are missing from the notes.
 3. The merge is tagged by Release Please, and the tag-triggered workflow re-runs `check`
-   without the Gradle build cache, publishes to GitHub Packages, and attests build
-   provenance with GitHub's native `actions/attest` — verifiable by consumers through the
-   `software.sava.build.check.attestations` feature or `gh attestation verify`.
+   without the Gradle build cache in a separate workflow that holds no publishing secret,
+   then, in a job that runs no tests and uses no Gradle cache, publishes to GitHub Packages
+   and attests build provenance with GitHub's native `actions/attest` — verifiable by
+   consumers through the `software.sava.build.check.attestations` feature or
+   `gh attestation verify`.
 
 Release Please reads commits through the GitHub API and drops, at debug level, every
 message its parser cannot read, `BREAKING CHANGE` footer included, while the run stays

@@ -1,0 +1,58 @@
+name: Plugin Release Check
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    secrets:
+      READ_SAVA_PACKAGES:
+        description: Token used to read sava GitHub Packages.
+        required: false
+
+# The check job of gradle_plugin_publish.yml, kept in its own workflow and passed only
+# READ_SAVA_PACKAGES (beside the job token, contents: read), so no publishing secret is in
+# its secrets context; release-check.yml says why.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    # The tag reaches the scripts below only through this variable, never pasted
+    # into a run script: release-please cuts it from the merged release PR's title,
+    # which a Release-As commit footer or a title edit sets.
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+
+    steps:
+      # First, before checkout or setup: run only for a tag push whose name is a
+      # plain X.Y.Z release version.
+      - name: Validate release tag
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        # Fail-closed: under sh a negated test would let a malformed check pass.
+        # Digits are listed, not ranged, so no locale widens what they match.
+        run: |
+          release_tag_re='^(0|[123456789][0123456789]*)\.(0|[123456789][0123456789]*)\.(0|[123456789][0123456789]*)$'
+          [[ "$REF_TYPE" == tag ]] || { echo "::error::Publishing runs only on a release tag push; this run's ref type is '$REF_TYPE'."; exit 1; }
+          [[ "$RELEASE_TAG" =~ $release_tag_re ]] || { echo "::error::Refusing to publish tag '$RELEASE_TAG': a release tag is a plain X.Y.Z version (digits only, no leading zeros, no prefix or suffix)."; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+      - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b
+        with:
+          website: ${{ vars.JDK_SRC }}
+          release: ${{ vars.GRADLE_JAVA_VERSION }}
+
+      - name: Check release tooling
+        run: |
+          bash -n tools/local-fuzz.sh
+          tools/local-fuzz.sh --self-test
+
+      - name: Check
+        run: ./gradlew --stacktrace --no-build-cache -Psign=true -Pversion="$RELEASE_TAG" check
+        env:
+          ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
