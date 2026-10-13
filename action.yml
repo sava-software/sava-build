@@ -2,13 +2,13 @@ name: 'Setup Java and Gradle'
 
 inputs:
   default-java-version:
-    description: 'Default Java version'
+    description: "Default Java version. Empty on a pull request from a fork, which receives no configuration variables: javaVersion in gradle/sava.properties is used there."
     required: true
   jdk-src:
-    description: 'JDK source URL'
+    description: "JDK download site. Empty on a pull request from a fork: oracle.com is used there."
     required: true
   gradle-java-version:
-    description: 'Gradle Java version'
+    description: "Java version Gradle runs on. Empty on a pull request from a fork: javaVersion in gradle/sava.properties is used there."
     required: true
 
 outputs:
@@ -53,9 +53,28 @@ runs:
         REF_NAME: ${{ github.ref_name }}
         EVENT_NAME: ${{ github.event_name }}
         HEAD_REF: ${{ github.head_ref }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        REPOSITORY: ${{ github.repository }}
         DEFAULT_JAVA_VERSION: ${{ inputs.default-java-version }}
+        GRADLE_JAVA_VERSION: ${{ inputs.gradle-java-version }}
         JDK_SRC: ${{ inputs.jdk-src }}
+        LC_ALL: C
       run: |
+        # A pull request from a fork receives no configuration variables, so the
+        # vars.* inputs arrive empty there: it falls back to the repository's
+        # gradle/sava.properties and the default JDK site. Any other run must get them.
+        fork_pr=false
+        if [ "$EVENT_NAME" = "pull_request" ] && [ "$HEAD_REPO" != "$REPOSITORY" ]; then
+          fork_pr=true
+        fi
+        # The last javaVersion entry of gradle/sava.properties, '=' or ':' separated.
+        project_java_version() {
+          [ -f gradle/sava.properties ] || return 0
+          tr -d '\r' < gradle/sava.properties |
+            sed -nE 's/^[[:space:]]*javaVersion[[:space:]]*[=:][[:space:]]*([^[:space:]]+).*$/\1/p' |
+            tail -n 1
+        }
+
         if [ "$REF_TYPE" = "tag" ]; then
           TAG_NAME="$REF_NAME"
           echo "Tag: $TAG_NAME"
@@ -81,45 +100,62 @@ runs:
           # Fallback to default if no version found in branch name
           if [ -z "$JAVA_VERSION" ]; then
             JAVA_VERSION="$DEFAULT_JAVA_VERSION"
+            if [ -z "$JAVA_VERSION" ] && [ "$fork_pr" = true ]; then
+              JAVA_VERSION=$(project_java_version)
+              if [ -n "$JAVA_VERSION" ]; then
+                echo "::notice::vars.JAVA_VERSION does not reach pull requests from forks: using javaVersion '$JAVA_VERSION' from gradle/sava.properties."
+              fi
+            fi
             echo "No Java version found in branch name, using default: $JAVA_VERSION"
           fi
         fi
-        
-        # Fail here by name, not later in setup-java ("Could not find website for"):
-        # an empty value means the caller's vars.* never reached this run.
-        # setup-java's release input is a feature release number or a project name.
-        if [[ ! "$JAVA_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
-          echo "::error::Java version '$JAVA_VERSION' is empty or not a single release: check default-java-version (vars.JAVA_VERSION), or a java-NN branch name holding more than one number."
-          exit 1
+
+        if [ -z "$GRADLE_JAVA_VERSION" ] && [ "$fork_pr" = true ]; then
+          # The project's own version, never one a fork's branch name picked.
+          GRADLE_JAVA_VERSION=$(project_java_version)
+          if [ -n "$GRADLE_JAVA_VERSION" ]; then
+            echo "::notice::vars.GRADLE_JAVA_VERSION does not reach pull requests from forks: running Gradle on javaVersion '$GRADLE_JAVA_VERSION' from gradle/sava.properties."
+          fi
         fi
-        if [ -z "$JDK_SRC" ]; then
-          echo "::error::jdk-src (vars.JDK_SRC) is empty."
-          exit 1
+        if [ -z "$JDK_SRC" ] && [ "$fork_pr" = true ]; then
+          JDK_SRC=oracle.com
+          echo "::notice::vars.JDK_SRC does not reach pull requests from forks: downloading JDKs from $JDK_SRC."
         fi
 
-        echo "java-version=$JAVA_VERSION" >> $GITHUB_OUTPUT
+        # Fail here by name, not later in setup-java ("Could not find website for").
+        # setup-java's release input is a feature release number or a project name.
+        release_re='^[A-Za-z0-9._-]+$'
+        [[ "$JAVA_VERSION" =~ $release_re ]] || { echo "::error::Java version '$JAVA_VERSION' is empty or not a single release: check default-java-version (vars.JAVA_VERSION; javaVersion in gradle/sava.properties for a pull request from a fork), or a java-NN branch name holding more than one number."; exit 1; }
+        [[ "$GRADLE_JAVA_VERSION" =~ $release_re ]] || { echo "::error::gradle-java-version (vars.GRADLE_JAVA_VERSION) is empty or not a single release."; exit 1; }
+        [[ "$JDK_SRC" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::jdk-src (vars.JDK_SRC) is empty or not a host name."; exit 1; }
+
+        {
+          echo "java-version=$JAVA_VERSION"
+          echo "gradle-java-version=$GRADLE_JAVA_VERSION"
+          echo "jdk-src=$JDK_SRC"
+        } >> "$GITHUB_OUTPUT"
         echo "Downloading JDK $JAVA_VERSION from $JDK_SRC."
 
     - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b
-      if: ${{ inputs.gradle-java-version != steps.java-version.outputs.java-version }}
+      if: ${{ steps.java-version.outputs.gradle-java-version != steps.java-version.outputs.java-version }}
       with:
-        website: ${{ inputs.jdk-src }}
-        release: ${{ inputs.gradle-java-version }}
+        website: ${{ steps.java-version.outputs.jdk-src }}
+        release: ${{ steps.java-version.outputs.gradle-java-version }}
 
     - run: |
         printf "\norg.gradle.java.home=%s" "$JAVA_HOME" >> gradle.properties
         java --version
       shell: bash
-      if: ${{ inputs.gradle-java-version != steps.java-version.outputs.java-version }}
+      if: ${{ steps.java-version.outputs.gradle-java-version != steps.java-version.outputs.java-version }}
 
     - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b
       with:
-        website: ${{ inputs.jdk-src }}
+        website: ${{ steps.java-version.outputs.jdk-src }}
         release: ${{ steps.java-version.outputs.java-version }}
 
     - run: printf "\norg.gradle.java.home=%s" "$JAVA_HOME" >> gradle.properties
       shell: bash
-      if: ${{ inputs.gradle-java-version == steps.java-version.outputs.java-version }}
+      if: ${{ steps.java-version.outputs.gradle-java-version == steps.java-version.outputs.java-version }}
 
     - name: Set Java Home
       shell: bash

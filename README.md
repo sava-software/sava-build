@@ -338,14 +338,17 @@ Repositories that publish nothing (services) simply omit the aggregation build f
 
 The composite action ([action.yml](action.yml)) checks out the repository, sets up Gradle, and
 provisions JDKs. It derives the Java version from the branch (`java-21`) or tag (`21.0.3`) name,
-falling back to `default-java-version`, and exposes it as the `java-version` output.
+falling back to `default-java-version`, and exposes it as the `java-version` output. A pull
+request from a fork receives no configuration variables, so there it falls back to
+`javaVersion` in `gradle/sava.properties` (which a repository taking outside pull requests must
+set) for both JDKs and to `oracle.com` as the download site.
 
 Reusable workflows (all use the composite action and the repository variables
 `JAVA_VERSION`, `JDK_SRC`, and `GRADLE_JAVA_VERSION`):
 
 | Workflow | Purpose |
 |---|---|
-| [check-pr.yml](.github/workflows/check-pr.yml) | `gradlew check` on pull requests (skips release-please and dependabot PRs). |
+| [check-pr.yml](.github/workflows/check-pr.yml) | `gradlew check` on pull requests (skips release-please and dependabot PRs). A pull request from a fork receives no secrets, so it builds offline from `main`'s Gradle cache, and it fails if it changes Gradle scripts, the wrapper, `gradle/`, version catalogs, release-please configuration, `.github/`, or a `requires` directive on a module outside the JDK in `module-info.java`. |
 | [build.yml](.github/workflows/build.yml) | `gradlew check` on push. |
 | [publish.yml](.github/workflows/publish.yml) | Check, publish to Maven Central and GitHub Packages, attest build provenance. |
 | [publish-gh.yml](.github/workflows/publish-gh.yml) | Check, publish to GitHub Packages only, attest build provenance. |
