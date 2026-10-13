@@ -28,15 +28,36 @@ runs:
       run: |
         echo "::error::sava-build's setup action was invoked from a pull_request_target event: checkout resolves the base branch, so the PR's changes are never built. Trigger on pull_request instead."
         exit 1
+    # Branch and tag names are attacker-reachable text: a fork names its own branch
+    # (github.head_ref), and release-please cuts the tag from the merged release PR's
+    # title, which a Release-As commit footer or a title edit sets. No github.* or
+    # inputs.* value is pasted into a run script in this action; each one arrives
+    # through env. A tag must also be a plain X.Y.Z release version, checked here
+    # before anything is checked out.
+    - name: Validate release tag
+      if: github.ref_type == 'tag'
+      shell: bash
+      env:
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        release_tag_re='^(0|[123456789][0123456789]*)\.(0|[123456789][0123456789]*)\.(0|[123456789][0123456789]*)$'
+        [[ "$REF_NAME" =~ $release_tag_re ]] || { echo "::error::Refusing tag '$REF_NAME': a release tag is a plain X.Y.Z version (digits only, no leading zeros, no prefix or suffix)."; exit 1; }
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
     - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
 
     - name: Extract Java version from branch
       id: java-version
       shell: bash
+      env:
+        REF_TYPE: ${{ github.ref_type }}
+        REF_NAME: ${{ github.ref_name }}
+        EVENT_NAME: ${{ github.event_name }}
+        HEAD_REF: ${{ github.head_ref }}
+        DEFAULT_JAVA_VERSION: ${{ inputs.default-java-version }}
+        JDK_SRC: ${{ inputs.jdk-src }}
       run: |
-        if [ "${{ github.ref_type }}" = "tag" ]; then
-          TAG_NAME="${{ github.ref_name }}"
+        if [ "$REF_TYPE" = "tag" ]; then
+          TAG_NAME="$REF_NAME"
           echo "Tag: $TAG_NAME"
         
           JAVA_VERSION=$(echo "$TAG_NAME" | grep -oE '^([[:alnum:]_-]+-)?[0-9]+' | grep -oE '[0-9]+')
@@ -47,10 +68,10 @@ runs:
             exit 1
           fi
         else 
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BRANCH_NAME="${{ github.head_ref }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BRANCH_NAME="$HEAD_REF"
           else
-            BRANCH_NAME="${{ github.ref_name }}"
+            BRANCH_NAME="$REF_NAME"
           fi
           echo "Branch: $BRANCH_NAME"
         
@@ -59,13 +80,25 @@ runs:
         
           # Fallback to default if no version found in branch name
           if [ -z "$JAVA_VERSION" ]; then
-            JAVA_VERSION="${{ inputs.default-java-version }}"
+            JAVA_VERSION="$DEFAULT_JAVA_VERSION"
             echo "No Java version found in branch name, using default: $JAVA_VERSION"
           fi
         fi
         
+        # Fail here by name, not later in setup-java ("Could not find website for"):
+        # an empty value means the caller's vars.* never reached this run.
+        # setup-java's release input is a feature release number or a project name.
+        if [[ ! "$JAVA_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo "::error::Java version '$JAVA_VERSION' is empty or not a single release: check default-java-version (vars.JAVA_VERSION), or a java-NN branch name holding more than one number."
+          exit 1
+        fi
+        if [ -z "$JDK_SRC" ]; then
+          echo "::error::jdk-src (vars.JDK_SRC) is empty."
+          exit 1
+        fi
+
         echo "java-version=$JAVA_VERSION" >> $GITHUB_OUTPUT
-        echo "Downloading JDK $JAVA_VERSION from ${{ inputs.jdk-src }}."
+        echo "Downloading JDK $JAVA_VERSION from $JDK_SRC."
 
     - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b
       if: ${{ inputs.gradle-java-version != steps.java-version.outputs.java-version }}

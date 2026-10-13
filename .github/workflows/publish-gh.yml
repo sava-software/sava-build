@@ -30,7 +30,26 @@ jobs:
       attestations: write
       artifact-metadata: write
 
+    # The tag reaches the scripts below only through this variable, never pasted
+    # into a run script: release-please cuts it from the merged release PR's title,
+    # which a Release-As commit footer or a title edit sets.
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+
     steps:
+      # First, before checkout, setup or any secret-bearing step: publish only a
+      # tag push whose name is a plain X.Y.Z release version.
+      - name: Validate release tag
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        # Fail-closed: under sh a negated test would let a malformed check pass.
+        # Digits are listed, not ranged, so no locale widens what they match.
+        run: |
+          release_tag_re='^(0|[123456789][0123456789]*)\.(0|[123456789][0123456789]*)\.(0|[123456789][0123456789]*)$'
+          [[ "$REF_TYPE" == tag ]] || { echo "::error::Publishing runs only on a release tag push; this run's ref type is '$REF_TYPE'."; exit 1; }
+          [[ "$RELEASE_TAG" =~ $release_tag_re ]] || { echo "::error::Refusing to publish tag '$RELEASE_TAG': a release tag is a plain X.Y.Z version (digits only, no leading zeros, no prefix or suffix)."; exit 1; }
+
       - id: setup
         uses: sava-software/sava-build@main
         with:
@@ -39,14 +58,16 @@ jobs:
           gradle-java-version: ${{ vars.GRADLE_JAVA_VERSION }}
 
       - name: Check
-        run: ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} check
+        run: ./gradlew --stacktrace -Psign=true -PjavaVersion="$SETUP_JAVA_VERSION" -Pversion="$RELEASE_TAG" check
         env:
+          SETUP_JAVA_VERSION: ${{ steps.setup.outputs.java-version }}
           ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
 
       - name: Github Packages
-        run: ./gradlew --stacktrace -Psign=true -PjavaVersion=${{ steps.setup.outputs.java-version }} -Pversion=${{ github.ref_name }} :aggregation:publishToGitHubPackages
+        run: ./gradlew --stacktrace -Psign=true -PjavaVersion="$SETUP_JAVA_VERSION" -Pversion="$RELEASE_TAG" :aggregation:publishToGitHubPackages
         env:
+          SETUP_JAVA_VERSION: ${{ steps.setup.outputs.java-version }}
           GPG_PUBLISH_SECRET: ${{ secrets.GPG_PUBLISH_SECRET }}
           GPG_PUBLISH_PHRASE: ${{ secrets.GPG_PUBLISH_PHRASE }}
           ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
