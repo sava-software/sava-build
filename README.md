@@ -338,7 +338,9 @@ Repositories that publish nothing (services) simply omit the aggregation build f
 
 The composite action ([action.yml](action.yml)) checks out the repository, sets up Gradle, and
 provisions JDKs. It derives the Java version from the branch (`java-21`) or tag (`21.0.3`) name,
-falling back to `default-java-version`, and exposes it as the `java-version` output. A pull
+falling back to `default-java-version`, and exposes it as the `java-version` output. On a tag
+ref it first refuses any tag that is not a plain `X.Y.Z` version, whichever workflow calls it,
+and takes the tag's major as the Java version. A pull
 request from a fork receives no configuration variables, so there it falls back to
 `javaVersion` in `gradle/sava.properties` (which a repository taking outside pull requests must
 set) for both JDKs and to `oracle.com` as the download site.

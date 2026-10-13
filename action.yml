@@ -90,14 +90,8 @@ runs:
         if [ "$REF_TYPE" = "tag" ]; then
           TAG_NAME="$REF_NAME"
           echo "Tag: $TAG_NAME"
-        
-          JAVA_VERSION=$(echo "$TAG_NAME" | grep -oE '^([[:alnum:]_-]+-)?[0-9]+' | grep -oE '[0-9]+')
-        
-          if [ -z "$JAVA_VERSION" ]; then
-            echo "Could not extract Java version from tag '$TAG_NAME'"
-            echo "Tags should start with a number (e.g., 21.0.3, 25.1.0)"
-            exit 1
-          fi
+          # The tag passed the X.Y.Z check above, so its major is the Java version.
+          JAVA_VERSION=${TAG_NAME%%.*}
         else 
           if [ "$EVENT_NAME" = "pull_request" ]; then
             BRANCH_NAME="$HEAD_REF"
