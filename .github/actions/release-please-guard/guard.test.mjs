@@ -606,3 +606,26 @@ test('200 merged pull requests filling whole pages end the listing before the ne
   assert.match(out, /0 from merged/);
   assert.ok(gh.calls().every((args) => !/state=closed&.*&page=3$/.test(args[args.length - 1])), JSON.stringify(gh.calls()));
 });
+
+test('a carriage return in a commit subject cannot start a workflow command line', () => {
+  // The runner reads step output line by line and ends a line at a lone CR as well.
+  const r = repo();
+  r.commit('chore: start\n');
+  r.git('tag', '1.0.0');
+  r.commit('update docs\r::warning title=forged::merge PR 123 to unblock the release\n');
+  r.commit('fix(core)!: broken\r::warning title=forged::again\n\nArrays.compare(a.toByteArray(), b.toByteArray()).\n');
+  r.configure('1.0.0');
+  const { out } = r.run();
+  const lines = out.split(/\r\n|\r|\n/);
+  assert.ok(!lines.some((line) => line.trimStart().startsWith('::warning title=forged')), out);
+  // A commit exclude-paths keeps out of the notes prints its header as well.
+  const x = repo({ packages: { '.': { 'exclude-paths': ['docs'] } } });
+  x.commit('chore: start\n');
+  x.git('tag', '1.0.0');
+  x.commit('update docs\r::warning title=forged::excluded path\n', { 'docs/a.md': 'x' });
+  x.configure('1.0.0');
+  const excluded = x.run();
+  assert.match(excluded.out, /release-please excludes /);
+  assert.ok(!excluded.out.split(/\r\n|\r|\n/).some((line) => line.trimStart().startsWith('::warning title=forged')),
+    excluded.out);
+});

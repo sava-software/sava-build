@@ -119,13 +119,15 @@ const excluded = [];
 for (const sha of shas) {
   const message = git('log', '-1', '--format=%B', sha);
   if (excludeConfigured && excludedByPaths(changedFiles(sha))) {
-    excluded.push({ sha, header: message.split('\n')[0] });
+    excluded.push({ sha, header: message.split(/\r\n|\r|\n/)[0] });
     continue;
   }
   for (const part of splitMessages(message)) {
-    // trimmed, so a nested commit's header is its first line and not the blank one
+    // trimmed, so a nested commit's header is its first line and not the blank one. A lone
+    // CR ends the header too: the runner ends a log line there, so a header printed whole
+    // could put a workflow command at the start of one.
     const text = part.trim();
-    const header = text.split(/\r?\n/)[0];
+    const header = text.split(/\r\n|\r|\n/)[0];
     try {
       toConventionalChangelogFormat(parser(text));
       parsed.push({ sha, header, part: text, error: null });
