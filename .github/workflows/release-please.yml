@@ -25,12 +25,20 @@ jobs:
     steps:
       # release-please reads commits through the GitHub API and drops, at debug level,
       # every message its parser cannot read, BREAKING CHANGE footer included, while the
-      # run stays green. The guard parses the same range with the same parser first and
-      # fails naming the commit; its README section says how to restate one.
+      # run stays green. The guard parses the same range with the same grammar first and
+      # fails naming the commit; its README section says how to restate one. It also
+      # refuses a release pull request release-please would tag with anything but the plain
+      # X.Y.Z version the pull request wrote into the manifest. It is a Java program,
+      # compiled by the JDK set up here: the one the repository builds with, as
+      # vars.JAVA_VERSION and vars.JDK_SRC name it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b
+        with:
+          website: ${{ vars.JDK_SRC }}
+          release: ${{ vars.JAVA_VERSION }}
       - uses: sava-software/sava-build/.github/actions/release-please-guard@main
         with:
           config-file: ${{ inputs.config-file }}

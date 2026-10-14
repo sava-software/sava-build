@@ -414,6 +414,37 @@ tasks.test {
   )
 }
 
+// The composite actions under .github/actions carry Java programs: a composite action runs
+// without a build, which rules out Kotlin and this plugin's jar, so each action compiles its
+// sources with javac on the JDK its workflow set up (Java 21, the oldest a sava workflow runs
+// them on) and runs them. This build compiles the same sources the same way and tests them
+// under check, from the Kotlin tests in src/guardTest.
+val guardSources = listOf(".github/actions/release-please-guard/src")
+val guard by sourceSets.creating {
+  java.setSrcDirs(guardSources.map { layout.projectDirectory.dir(it) })
+  resources.setSrcDirs(emptyList<File>())
+}
+tasks.named<JavaCompile>(guard.compileJavaTaskName) {
+  options.release = 21
+  options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
+}
+val guardTest by sourceSets.creating {
+  compileClasspath += guard.output
+  runtimeClasspath += guard.output
+}
+dependencies {
+  "guardTestImplementation"("org.junit.jupiter:junit-jupiter:6.1.3")
+  "guardTestRuntimeOnly"("org.junit.platform:junit-platform-launcher")
+}
+val guardTestTask = tasks.register<Test>("guardTest") {
+  description = "Tests the Java programs the composite actions under .github/actions run."
+  group = "verification"
+  useJUnitPlatform()
+  testClassesDirs = guardTest.output.classesDirs
+  classpath = guardTest.runtimeClasspath
+}
+tasks.check { dependsOn(guardTestTask) }
+
 // Local fuzz evidence replaced scheduled fuzz workflows, so its cheap parser and
 // self-test belong on the ordinary plugin check.
 val localFuzzScript = layout.projectDirectory.file("tools/local-fuzz.sh")

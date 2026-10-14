@@ -1,34 +1,42 @@
 name: Release Please guard
 description: >-
-  Fails when a conventional commit since the last release cannot be read by the parser
-  release-please uses, which would otherwise drop it from the release notes at debug level,
-  and when release-please would tag a merged release pull request with anything but the
-  plain X.Y.Z version the pull request wrote into the manifest. Run on a full-history
-  checkout before release-please.
+  Fails when a conventional commit since the last release cannot be read by the grammar
+  release-please uses, which would otherwise drop it from the release notes at debug level;
+  when the Release-As footer release-please would take the next version from belongs to a
+  pull request, in a commit or in the commit override of the pull request's body; and when
+  release-please would tag a merged release pull request with anything but the plain X.Y.Z
+  version the pull request wrote into the manifest. Run on a full-history checkout, with a
+  JDK 21 or later on the PATH, before release-please.
 inputs:
   config-file:
-    description: release-please config, read for the tag spelling of the last release.
+    description: release-please config, read for its settings and the tag spelling of the last release.
     default: release-please-config.json
   manifest-file:
     description: release-please manifest, read for the last released version.
     default: .release-please-manifest.json
   token:
     description: >-
-      Token for the GitHub API: reads the pull requests and the files release-please reads
+      Token for the GitHub API: reads the pull requests, the pull requests each commit
+      belongs to (a GraphQL query), the manifest at a release pull request's commit
       (pull-requests and contents read), and the releases API when no tag matches the
       manifest version.
     default: ${{ github.token }}
 runs:
   using: composite
   steps:
-    - name: Install release-please and its commit parser
+    # A composite action runs without a build, so the guard is Java compiled here by the JDK
+    # the workflow set up (Java 21, the oldest a sava workflow runs it on). sava-build's
+    # Gradle check compiles the same sources with every lint as an error and tests them,
+    # against a corpus recorded from release-please's own parser; here a lint a newer JDK
+    # adds must not fail every repository's release run.
+    - name: Compile the guard
       shell: bash
-      # The lockfile pins release-please and @conventional-commits/parser to the versions
-      # release-please-action bundles, and package.json's overrides pin node-html-parser
-      # and its dependencies to the action's; bump them with the action. guard.test.mjs
-      # (node --test) covers the script.
-      run: npm ci --prefix "$GITHUB_ACTION_PATH" --ignore-scripts --no-audit --no-fund
-    - name: Refuse commits release-please would drop, and release versions that are not X.Y.Z
+      run: |
+        classes="$RUNNER_TEMP/release-please-guard"
+        mkdir -p "$classes"
+        find "$GITHUB_ACTION_PATH/src" -name '*.java' -print0 |
+          xargs -0 javac --release 21 -d "$classes"
+    - name: Refuse commits release-please would drop, a pull request's Release-As, and release versions that are not X.Y.Z
       shell: bash
       env:
         CONFIG_FILE: ${{ inputs.config-file }}
@@ -36,4 +44,4 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         # release-please targets the default branch unless told otherwise.
         TARGET_BRANCH: ${{ github.event.repository.default_branch }}
-      run: node "$GITHUB_ACTION_PATH/guard.js"
+      run: java -cp "$RUNNER_TEMP/release-please-guard" software.sava.build.guard.Guard

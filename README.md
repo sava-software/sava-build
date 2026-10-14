@@ -572,8 +572,11 @@ The plugin check workflows cache TestKit's separate dependency and compiled-scri
 under `build/tmp/test/work/.gradle-test-kit/caches`, in addition to the outer build's
 `setup-gradle` cache. Only successful main builds save TestKit caches; PRs restore them.
 Fixture outputs, daemon state, file locks, and configuration-cache encryption keys are
-not retained. The release-please guard runs in parallel with `check`, which also runs
-the local fuzz runner's syntax check and self-test.
+not retained. `check` also runs the local fuzz runner's syntax check and self-test, and
+`guardTest`, the tests of the Java programs the composite actions under `.github/actions`
+run, each action's source directory compiled on its own at Java 21 with every lint as an
+error (the actions compile the same directories without the lints, so a lint a newer JDK
+adds cannot fail every repository's release run).
 
 When changing dependencies, regenerate the
 [verification metadata](gradle/verification-metadata.xml):
@@ -649,40 +652,44 @@ message its parser cannot read, `BREAKING CHANGE` footer included, while the run
 green: sava 1d846b0 was released without its breaking note because a body line beginning
 with `Arrays.compare(a.toByteArray(), b.toByteArray())` was read as a `type(scope)`
 header. So the reusable [release-please.yml](.github/workflows/release-please.yml) first
-checks out the branch with full history and runs
-[release-please-guard](.github/actions/release-please-guard), which parses every commit
-since the manifest version's tag (on a release-merge run, before that tag exists, since
-the nearest earlier tag in the configured spelling) with the parser Release Please uses
-(`@conventional-commits/parser`, pinned by the action's lockfile to the version
-`release-please-action` resolves; bump them together), split the way Release Please
-splits a squashed message, and fails the run naming any commit whose header line parses
-but whose message does not, with the parser's own position. Messages whose header is not
-a conventional commit (merges, imports, git's default `Revert "..."` subject) are notices
-only, since Release Please ignores them by design; a commit that `exclude-paths` keeps
-out of the notes, an empty commit included, is skipped as Release Please skips it. The
-remedy for a flagged commit already on `main` is a commit that restates its header, body
-and footers in parseable form and ends with the footer `Restates: <sha>` (an empty commit,
-unless `exclude-paths` is configured, which excludes empty commits); the guard then
-reports the original as a notice. The guard reads the commit message only: a
-`BEGIN_COMMIT_OVERRIDE` block in a pull request body is not consulted. It also checks the
-releases Release Please is about to cut, since the publishing workflows refuse a tag that is
-not a plain `X.Y.Z` version. Release Please decides a release's tag from the merged release
-pull request: from its title, or from its body (more than one release section, or a body
-re-read from a branch file through its overflow message), read through a parse, serialize
-and parse again. A `Release-As` footer, an override block, the config's `release-as`, the
-manifest, contributor commit text in the body and an edited title can each steer it. So the
-guard runs Release Please's own release-building code (the `release-please` package at the
-version `release-please-action` bundles, pinned by the guard's lockfile) over a GitHub client
-that only reads, and requires every tag it would cut to be a plain `X.Y.Z` version and to
-carry the version the release pull request wrote into the manifest at its own commit, so a
-body that puts in another plain version fails too. Release Please must also read nothing for
-a release pull request but its overflow file from `<head branch>--release-notes`, the only
-place it writes one: a link in the body to any other ref names a file someone else controls,
-which could change between the check and the release. A merged release pull request about to
-be tagged fails the run; an open one, built as if merged, is a warning, so Release Please
-keeps running and can rewrite it once the source is fixed. Its `node --test` suite builds scratch repositories for
-each of these rules, and stands in for the GitHub API with a fake `gh`; it runs in the
-Gradle Check workflows.
+checks out the branch with full history, sets up the repository's JDK, and runs
+[release-please-guard](.github/actions/release-please-guard): a Java program the action
+compiles there, since a composite action runs without a build, which rules out Kotlin and
+the plugin jar. It parses every commit since the manifest version's tag (on a release-merge
+run, before that tag exists, since the nearest earlier tag in the configured spelling) with
+a port of the grammar Release Please uses (`@conventional-commits/parser` 0.4.1, as
+release-please 17.6, the version `release-please-action` bundles, drives it; bump the port
+with the action, against the golden corpus under `src/guardTest/resources`, which was
+recorded from the JavaScript original over every commit message of the sava repositories),
+split the way Release Please splits a squashed message, and fails the run naming any commit
+whose header line parses but whose message does not, with the parser's own position.
+Messages whose header is not a conventional commit (merges, imports, git's default
+`Revert "..."` subject) are notices only, since Release Please ignores them by design; a
+commit that `exclude-paths` keeps out of the notes, an empty commit included, is skipped as
+Release Please skips it. The remedy for a flagged commit already on `main` is a commit that
+restates its header, body and footers in parseable form and ends with the footer
+`Restates: <sha>` (an empty commit, unless `exclude-paths` is configured, which excludes
+empty commits); the guard then reports the original as a notice. The guard reads each commit
+as Release Please reads it: with the pull request the commit belongs to (asked of GitHub in
+one GraphQL query per hundred commits), whose `BEGIN_COMMIT_OVERRIDE` block, when its body
+carries one, replaces the commit message.
+
+The guard also checks the release Release Please is about to cut from each release pull
+request, since the publishing workflows refuse a tag that is not a plain `X.Y.Z` version.
+Release Please tags a merged release pull request with the version in its title, unless its
+body parses into more than one release section, when the body's version wins, and it reads
+the body from a branch file instead when the body carries its overflow message; the sections
+are HTML `details` elements found by an HTML parser, after a parse, serialize and parse again
+that decodes escaped markup. Rather than predict that parse, the guard refuses a body whose
+notes hold the markup a section is made of, as a tag or in any escaped spelling, or the
+overflow message, and then requires the title's version (the body's single section's, for a
+grouped title that names none) to be a plain `X.Y.Z` version and the one the pull request
+wrote into the manifest at its own commit. A merged release pull request about to be tagged
+fails the run; an open one, checked as if merged, is a warning, so Release Please keeps
+running and can rewrite it once the source is fixed. A body that overflows GitHub's limit
+is refused too, a legitimate one included; the remedy is to edit the merged pull request's
+body and re-run. The `guardTest` suite builds scratch repositories for each of these rules
+and stands in for the GitHub API with a local server; it runs under `check`.
 
 Batch fixes and release on a cadence, not per fix: every release is re-adopted across
 the fleet, so each one starts about ten adoption passes.
