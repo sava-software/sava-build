@@ -84,8 +84,9 @@ class Repo(private val config: Map<String, Any?> = emptyMap()) {
   }
 
   fun configure(version: String, extra: Map<String, Any?> = emptyMap()) {
+    // The settings every sava repository's config has.
     val top = linkedMapOf<String, Any?>("release-type" to "simple", "include-v-in-tag" to false,
-      "include-component-in-tag" to false)
+      "include-component-in-tag" to false, "versioning" to "always-bump-patch")
     top.putAll(config)
     @Suppress("UNCHECKED_CAST")
     val configuredPackage = (config["packages"] as? Map<String, Any?>)?.get(".") as? Map<String, Any?> ?: emptyMap()
@@ -152,9 +153,9 @@ fun assoc(number: Int, mergeCommit: String? = null, body: String = ""): Map<Stri
  * A stand-in for the GitHub API: serves the requested page of the given pull requests in
  * that state, file contents by ref and path, and the pull requests each commit belongs to
  * (the GraphQL query, from [commitPulls]; a commit in [unknownCommits] is one GitHub does
- * not have); logs every call. Every call fails with [fail], and a file read with the status
- * [failing] holds for its ref|path, or for its path on any ref. A file mapped to null does
- * not exist.
+ * not have), and whether a GitHub release exists for a tag (those in [releases]); logs every
+ * call. Every call fails with [fail], and a file read with the status [failing] holds for its
+ * ref|path, or for its path on any ref. A file mapped to null does not exist.
  */
 class FakeGitHub(
   repo: Repo,
@@ -165,6 +166,7 @@ class FakeGitHub(
   private val failing: Map<String, Int> = emptyMap(),
   private val commitPulls: Map<String, List<Map<String, Any?>>> = emptyMap(),
   private val unknownCommits: Set<String> = emptySet(),
+  private val releases: Set<String> = emptySet(),
 ) : AutoCloseable {
   private val files: Map<String, String?>
   private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
@@ -203,6 +205,12 @@ class FakeGitHub(
       val text = files[key] ?: return respond(exchange, 404, "{\"message\":\"Not Found $key\"}")
       return respond(exchange, 200, text)
     }
+    val release = Regex("^/repos/o/r/releases/tags/(.+)$").find(query)
+    if (release != null) {
+      val tag = URLDecoder.decode(release.groupValues[1], StandardCharsets.UTF_8)
+      return if (tag in releases) respond(exchange, 200, toJson(mapOf("tag_name" to tag)))
+      else respond(exchange, 404, "{\"message\":\"Not Found\"}")
+    }
     if (query == "/graphql") {
       val request = exchange.requestBody.readAllBytes().toString(StandardCharsets.UTF_8)
       val repository = linkedMapOf<String, Any?>()
@@ -233,11 +241,11 @@ class FakeGitHub(
   override fun close() = server.stop(0)
 }
 
-/** After a release pull request merged: the manifest holds the version it wrote. */
+/** After a release pull request merged: the manifest holds the version it wrote, the patch bump of the last tag. */
 fun released(config: Map<String, Any?> = emptyMap(), version: String = "25.12.1"): Repo {
   val r = Repo(config)
   r.commit("chore: start\n")
-  r.git("tag", "1.0.0")
+  r.git("tag", "25.12.0")
   r.commit("fix: later\n")
   r.configure(version)
   return r

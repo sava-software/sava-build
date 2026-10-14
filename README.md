@@ -362,7 +362,12 @@ release-please repository, the version the tagged commit's manifest names (pass 
 when release-please.yml is given one), which no edit made while the tag was cut can change.
 The release-please guard reads a release pull request before Release Please reads it again, so
 someone able to edit that pull request in between could still have a tag and a GitHub release
-created; this check keeps such a tag from being published. Every expression reaches their scripts through environment
+created; this check keeps such a tag from being published. The guard also reads the commit
+overrides in the merged pull requests' bodies before Release Please does, so a merged pull
+request's author editing one in between could steer the version of the release pull request
+Release Please then writes; the guard's version check (a release pull request's version must
+be the one the commits give now, under `always-bump-patch`, `release-as` or a `Release-As`
+footer, the cases it computes) refuses that pull request on its next run. Every expression reaches their scripts through environment
 variables, since release-please takes the tag from the merged release PR's title. Each runs `check` through
 [release-check.yml](.github/workflows/release-check.yml), a separate workflow passed only
 `READ_SAVA_PACKAGES`, so no publishing secret is in its secrets context. GitHub's docs say
@@ -669,10 +674,27 @@ commit that `exclude-paths` keeps out of the notes, an empty commit included, is
 Release Please skips it. The remedy for a flagged commit already on `main` is a commit that
 restates its header, body and footers in parseable form and ends with the footer
 `Restates: <sha>` (an empty commit, unless `exclude-paths` is configured, which excludes
-empty commits); the guard then reports the original as a notice. The guard reads each commit
+empty commits); the guard then reports the original as a notice. The guard parses no more
+than 2,000 lines of body text (Release Please's parser fails at a few thousand), in a message
+or in a footer Release Please re-reads as a commit; past that it refuses the commit, since
+Release Please may read on, a `Release-As` footer included: a commit pushed directly takes
+the `Restates` remedy, one a pull request brought needs a shorter message in that pull
+request's `BEGIN_COMMIT_OVERRIDE` block instead. The guard reads each commit
 as Release Please reads it: with the pull request the commit belongs to (asked of GitHub in
 one GraphQL query per hundred commits), whose `BEGIN_COMMIT_OVERRIDE` block, when its body
 carries one, replaces the commit message.
+
+A `Release-As` footer sets the next version outright, and Release Please reads it from any
+commit since the last release, a squash-merged pull request's included, from a pull
+request's commit override as much as from the commit itself, and from a footer's
+continuation line as much as from a footer of its own, taking the newest. The guard finds
+the footer Release Please would take (the config's `release-as` wins over every footer) in
+the commits as Release Please reads them: a commit pushed to the branch directly sets the
+version, and one that belongs to a pull request fails the run, since a pull request may not
+choose the version. The remedy is a newer commit pushed directly with the intended footer
+(an empty commit will do, unless `exclude-paths` is configured, which excludes empty
+commits), or `release-as` in the config. A footer that is not a plain `X.Y.Z` version, or
+one Release Please cannot read at all, is a warning before Release Please acts on it.
 
 The guard also checks the release Release Please is about to cut from each release pull
 request, since the publishing workflows refuse a tag that is not a plain `X.Y.Z` version.
@@ -683,8 +705,11 @@ are HTML `details` elements found by an HTML parser, after a parse, serialize an
 that decodes escaped markup. Rather than predict that parse, the guard refuses a body whose
 notes hold the markup a section is made of, as a tag or in any escaped spelling, or the
 overflow message, and then requires the title's version (the body's single section's, for a
-grouped title that names none) to be a plain `X.Y.Z` version and the one the pull request
-wrote into the manifest at its own commit. A merged release pull request about to be tagged
+grouped title that names none) to be a plain `X.Y.Z` version, the one the pull request
+wrote into the manifest at its own commit, and the one the commits give now: the config's
+`release-as`, else the `Release-As` footer Release Please takes, else, under
+`always-bump-patch`, the patch bump of the last release (under another versioning strategy,
+or before a first release, that last part goes unchecked). A merged release pull request about to be tagged
 fails the run; an open one, checked as if merged, is a warning, so Release Please keeps
 running and can rewrite it once the source is fixed. A body that overflows GitHub's limit
 is refused too, a legitimate one included; the remedy is to edit the merged pull request's

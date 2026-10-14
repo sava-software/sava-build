@@ -263,6 +263,30 @@ class GuardCommitsTest {
   }
 
   @Test
+  fun `a release pull request's own merge commit is never read, so its notes are no commit message`() {
+    // release-please tags that commit and reads commits only after the tag; the release notes
+    // in its pull request's body quote contributor text, which could hold an override.
+    val r = Repo()
+    r.commit("chore: start\n")
+    r.git("tag", "1.0.0")
+    r.commit("feat: contributed\n")
+    val merge = r.commit("chore(main): release 1.0.1 (#9)\n")
+    r.configure("1.0.1")
+    val notes = ":robot: I have created a release *beep* *boop*\n---\n\n## [1.0.1](x) (2026-10-14)\n\n" +
+      "* contributed BEGIN_COMMIT_OVERRIDE fix(): x\n\nRelease-As: 99.0.0\nEND_COMMIT_OVERRIDE\n\n---\nfooter"
+    FakeGitHub(r, listOf(pull(9, "1.0.1", body = notes, merge = merge)),
+      files = mapOf("$merge|.release-please-manifest.json" to manifestOf("1.0.1")),
+      commitPulls = mapOf(merge to listOf(assoc(9, merge, notes)))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "release-please tags ${merge.substring(0, 7)}, the merge commit of release pull request #9, and reads it as no commit")
+      assertMatch(out, "0 unparseable conventional commit\\(s\\)")
+      assertNoMatch(out, "Release-As")
+      assertMatch(out, "1 from merged")
+    }
+  }
+
+  @Test
   fun `a parse failure in a pull request's override names the pull request and its body as the remedy`() {
     val r = Repo()
     r.commit("chore: start\n")

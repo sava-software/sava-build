@@ -153,11 +153,11 @@ class GuardReleasesTest {
       assertEquals(0, fine.code, fine.out)
     }
     val edited = released(version = "25.12.0")
-    FakeGitHub(edited, listOf(pull(29, "25.12.0")),
+    FakeGitHub(edited, listOf(pull(29, "25.12.2")),
       files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
       val older = edited.run(gh.env)
       assertEquals(1, older.code, older.out)
-      assertMatch(older.out, "#29 is about to be tagged, but release-please would tag it \"25\\.12\\.0\", which is not \"25\\.12\\.1\"")
+      assertMatch(older.out, "#29 is about to be tagged, but release-please would tag it \"25\\.12\\.2\", which is not \"25\\.12\\.1\"")
     }
   }
 
@@ -334,7 +334,7 @@ class GuardReleasesTest {
     // matches only against a package without one.
     val r = Repo()
     r.commit("chore: start\n")
-    r.git("tag", "1.0.0")
+    r.git("tag", "25.12.0")
     r.commit("fix: later\n")
     r.configure("25.12.1", mapOf("package-name" to Unset))
     FakeGitHub(r, listOf(pull(27, "25.12.1", title = "chore: release main", head = "release-please--branches--main"),
@@ -420,6 +420,117 @@ class GuardReleasesTest {
       assertMatch(out, "::error::merged release pull request #46 is about to be tagged, but release-please would tag it \"25\\.12\\.1-\\$\\(id\\)\"")
       assertMatch(out, "2 from merged")
       assertEquals(1, gh.calls().count { it.endsWith("ref=$MERGE") }, gh.calls().joinToString("\n"))
+    }
+  }
+
+  @Test
+  fun `a release pull request's version must be the one the commits give, under always-bump-patch`() {
+    // A plain version in the title and the manifest alike, with nothing in the commits to
+    // justify it: what an override edited after the guard read it, then edited away, leaves.
+    val r = released()
+    FakeGitHub(r, listOf(pull(60, "99.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #60 is about to be tagged, but its version \"99\\.0\\.0\" is not " +
+        "\"25\\.12\\.1\", the patch bump of 25\\.12\\.0 that always-bump-patch gives; release-please computed it from commits " +
+        "or pull request edits that are not there now")
+    }
+    // A Release-As footer pushed directly justifies it, as does release-as in the config.
+    val carrier = r.commit("chore: release 99.0.0\n\nRelease-As: 99.0.0\n", emptyMap())
+    FakeGitHub(r, listOf(pull(61, "99.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "from the Release-As footer of ${carrier.substring(0, 7)} .*, which was pushed directly")
+    }
+    val configured = released(mapOf("release-as" to "99.0.0"))
+    FakeGitHub(configured, listOf(pull(62, "99.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = configured.run(gh.env)
+      assertEquals(0, code, out)
+    }
+    // An open pull request lagging a just-pushed footer is a warning, cleared once release-please rewrites it.
+    val open = released(version = "25.12.0")
+    open.commit("chore: release 2.0.0\n\nRelease-As: 2.0.0\n", emptyMap())
+    FakeGitHub(open, listOf(pull(63, "25.12.1", open = true)),
+      files = mapOf("$HEAD_SHA|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = open.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "::warning::open release pull request #63: once merged, its version \"25\\.12\\.1\" is not \"2\\.0\\.0\", " +
+        "the version the Release-As footer of [0-9a-f]{7} gives; it comes from release-please's last run, or from an " +
+        "edit since: a pull request that only predates a newer footer is rewritten by release-please once this run is " +
+        "green, an edited title is not")
+    }
+  }
+
+  @Test
+  fun `a merged release pull request whose GitHub release exists is left to release-please to label, with nothing checked`() {
+    // A run that released but failed to relabel the pull request leaves it pending:
+    // release-please's create fails as a duplicate, it labels the pull request, and the guard
+    // must not stand in the way. A tag alone is no release: release-please creates one on it,
+    // so that case is checked like any other, and here refused.
+    val r = Repo()
+    r.commit("chore: start\n")
+    r.git("tag", "25.12.0")
+    r.commit("fix: later\n")
+    r.commit("chore(main): release 25.12.1 (#70)\n")
+    r.git("tag", "25.12.1")
+    r.configure("25.12.1")
+    FakeGitHub(r, listOf(pull(70, "25.12.1")), releases = setOf("25.12.1")).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "::notice::merged release pull request #70 is already released as \"25\\.12\\.1\" \\(a GitHub release " +
+        "exists for that tag\\): release-please labels it tagged and tags nothing")
+      assertMatch(out, "0 from merged")
+    }
+    FakeGitHub(r, listOf(pull(70, "25.12.1"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #70 is about to be tagged, but its version \"25\\.12\\.1\" is not " +
+        "\"25\\.12\\.2\", the patch bump of 25\\.12\\.1 that always-bump-patch gives")
+    }
+  }
+
+  @Test
+  fun `a commit the guard could not read, left to release-please, leaves the version unchecked too`() {
+    // release-please may read a Release-As footer in it, so a release pull request naming
+    // another version than the patch bump may well be right.
+    val r = Repo()
+    r.commit("chore: start\n")
+    r.git("tag", "25.12.0")
+    val deep = r.commit("fix: deep\n\n" + "line\n".repeat(2_500) + "\nRelease-As: 2.0.0\n")
+    r.commit("fix: restate\n\nRestates: ${deep.substring(0, 7)}\n")
+    r.configure("2.0.0")
+    FakeGitHub(r, listOf(pull(80, "2.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("2.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "not checked against the commits: ${deep.substring(0, 7)} may carry a Release-As footer this guard cannot read")
+      assertMatch(out, "1 from merged")
+    }
+    // A footer the guard did read in a newer commit is what release-please takes, so it is known.
+    val carrier = r.commit("chore: release 3.0.0\n\nRelease-As: 3.0.0\n", emptyMap())
+    FakeGitHub(r, listOf(pull(81, "2.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("2.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "#81 is about to be tagged, but its version \"2\\.0\\.0\" is not \"3\\.0\\.0\", the version the Release-As " +
+        "footer of ${carrier.substring(0, 7)} gives")
+    }
+  }
+
+  @Test
+  fun `under another versioning strategy, or before a first release, the version is not checked against the commits`() {
+    val r = released(mapOf("versioning" to "default"))
+    FakeGitHub(r, listOf(pull(64, "99.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "the release pull requests' versions are not checked against the commits: versioning is default")
+    }
+    val first = Repo()
+    first.commit("chore: start\n")
+    first.commit("feat: first\n")
+    first.configure("0.0.0")
+    FakeGitHub(first, listOf(pull(65, "1.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("1.0.0"))).use { gh ->
+      val (code, out) = first.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "not checked against the commits: there is no release to bump from")
     }
   }
 

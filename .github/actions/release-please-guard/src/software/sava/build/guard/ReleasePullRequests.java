@@ -6,6 +6,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -69,12 +70,15 @@ final class ReleasePullRequests {
   record Expected(String version, String source) {
   }
 
-  static void check(GitHub github, ReleaseConfig config, String targetBranch, String manifestPath, Report report) {
-    check(github, config, targetBranch, manifestPath, merged(github, targetBranch), null, report);
-  }
-
+  /**
+   * Checks the merged (as listed, release-please's way) and open release pull requests.
+   * releaseExists says whether a GitHub release exists for a tag: a merged release pull
+   * request whose release exists is one release-please only labels (its create fails as a
+   * duplicate), so nothing is checked for it. A bare tag without a release is no such thing:
+   * release-please creates the release on it.
+   */
   static void check(GitHub github, ReleaseConfig config, String targetBranch, String manifestPath,
-                    List<PullRequest> merged, Expected expected, Report report) {
+                    List<PullRequest> merged, Expected expected, Predicate<String> releaseExists, Report report) {
     if (config.skipGithubRelease) {
       report.lines.add("release pull requests not checked: skip-github-release is set, so release-please tags nothing");
       return;
@@ -82,28 +86,76 @@ final class ReleasePullRequests {
     final Map<String, String> manifests = new HashMap<>();
     for (final PullRequest pull : merged) {
       if (hasAllLabels(config.labels, pull.labels())) {
-        checkOne(github, config, manifestPath, pull, true, manifests, expected, report);
+        checkOne(github, config, manifestPath, pull, true, manifests, expected, releaseExists, report);
       }
     }
     for (final PullRequest pull : open(github, targetBranch)) {
       if (hasAllLabels(config.labels, pull.labels())) {
-        checkOne(github, config, manifestPath, pull, false, manifests, expected, report);
+        checkOne(github, config, manifestPath, pull, false, manifests, expected, releaseExists, report);
       }
     }
   }
 
-  /** The merge commits of the merged release pull requests release-please is about to tag, keyed to their numbers. */
+  /**
+   * The merge commits of the merged release pull requests release-please is about to tag,
+   * keyed to their numbers: those with every configured label that it reads as a release
+   * pull request, as {@link #wouldTag} has it. Any other labelled merged pull request is
+   * passed over, and its commits read like any other's.
+   */
   static Map<String, Long> releaseMergeCommits(ReleaseConfig config, List<PullRequest> merged) {
     final Map<String, Long> commits = new HashMap<>();
     if (config.skipGithubRelease) {
       return commits;
     }
     for (final PullRequest pull : merged) {
-      if (hasAllLabels(config.labels, pull.labels()) && pull.mergeCommitSha() != null) {
+      if (hasAllLabels(config.labels, pull.labels()) && pull.mergeCommitSha() != null && wouldTag(config, pull)) {
         commits.put(pull.mergeCommitSha(), pull.number());
       }
     }
     return commits;
+  }
+
+  /**
+   * Whether release-please reads the pull request as one to tag, by the same rules as
+   * {@link #checkOne} reports them: a body with the overflow message or section markup
+   * counts (release-please reads it, and this guard then refuses it), a body without a
+   * delimiter line, a title or head branch it cannot read, a component mismatch beside a
+   * section, or no version at all does not.
+   */
+  static boolean wouldTag(ReleaseConfig config, PullRequest pull) {
+    if (OVERFLOW.matcher(pull.body()).find()) {
+      return true;
+    }
+    final BodyParts body = splitBody(pull.body());
+    if (body == null) {
+      return false;
+    }
+    if (SECTION_MARKUP.matcher(body.content()).find()) {
+      return true;
+    }
+    final TitleMatch title = parseTitle(pull.title(), config.pullRequestTitlePattern, config.componentNoSpace);
+    final TitleMatch grouped = title != null ? title
+        : parseTitle(pull.title(), config.groupPullRequestTitlePattern, config.componentNoSpace);
+    if (grouped == null) {
+      return false;
+    }
+    if (grouped.version() != null) {
+      try {
+        parseVersion(grouped.version());
+      } catch (IllegalArgumentException e) {
+        return true;
+      }
+    }
+    final String branchComponent = branchComponent(pull.headRef());
+    if (branchComponent == null) {
+      return false;
+    }
+    final Matcher single = SINGLE_RELEASE.matcher(ConventionalCommits.jsTrim(body.content()));
+    final boolean section = single.find();
+    if (section && !branchComponent.equals(config.component)) {
+      return false;
+    }
+    return grouped.version() != null || section;
   }
 
   /** The merged pull requests release-please reads: the 200 most recently updated, as it lists them. */
@@ -171,7 +223,8 @@ final class ReleasePullRequests {
   }
 
   private static void checkOne(GitHub github, ReleaseConfig config, String manifestPath, PullRequest pull,
-                               boolean merged, Map<String, String> manifests, Expected expected, Report report) {
+                               boolean merged, Map<String, String> manifests, Expected expected,
+                               Predicate<String> releaseExists, Report report) {
     final String which = (merged ? "merged" : "open") + " release pull request #" + pull.number();
     final String sha = merged ? pull.mergeCommitSha() : pull.headSha();
     final List<String> reasons = new ArrayList<>();
@@ -258,18 +311,19 @@ final class ReleasePullRequests {
           + "tags nothing from it");
       return;
     }
+    // A merged release pull request whose GitHub release exists was released by a run that
+    // then failed to relabel it: release-please's create fails as a duplicate, it labels the
+    // pull request tagged and tags nothing, and nothing here may stand in the way of that.
+    if (merged && releaseExists.test(config.tagOf(version))) {
+      report.notices.add(which + " is already released as " + quote(config.tagOf(version)) + " (a GitHub release "
+          + "exists for that tag): release-please labels it tagged and tags nothing, so its version is not checked");
+      return;
+    }
 
     if (merged) {
       report.fromMerged++;
     } else {
       report.fromOpen++;
-    }
-    // The version must be the one the commits give now: one computed from a Release-As
-    // footer or a commit override that has since been edited away, or from any other
-    // source, is refused whether or not it is plain and in the manifest.
-    if (expected != null && !version.equals(expected.version())) {
-      reasons.add("its version " + quote(version) + " is not " + quote(expected.version()) + ", " + expected.source()
-          + "; release-please computed it from commits or pull request edits that are not there now");
     }
     String manifestVersion = null;
     boolean manifestRead = false;
@@ -296,6 +350,15 @@ final class ReleasePullRequests {
     }
     if (!tagReasons.isEmpty()) {
       reasons.add("release-please would tag it " + quote(tag) + ", which is " + String.join(", and ", tagReasons));
+    }
+    // The version must also be the one the commits give now: one computed from a Release-As
+    // footer or a commit override that has since been edited away, or from any other source,
+    // is refused whether or not it is plain and in the manifest.
+    if (expected != null && !version.equals(expected.version())) {
+      reasons.add("its version " + quote(version) + " is not " + quote(expected.version()) + ", " + expected.source()
+          + (merged ? "; release-please computed it from commits or pull request edits that are not there now"
+          : "; it comes from release-please's last run, or from an edit since: a pull request that only predates a "
+          + "newer footer is rewritten by release-please once this run is green, an edited title is not"));
     }
     if (!reasons.isEmpty()) {
       report(config, pull, merged, reasons, report);

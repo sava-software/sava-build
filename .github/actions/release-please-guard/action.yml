@@ -18,8 +18,8 @@ inputs:
     description: >-
       Token for the GitHub API: reads the pull requests, the pull requests each commit
       belongs to (a GraphQL query), the manifest at a release pull request's commit
-      (pull-requests and contents read), and the releases API when no tag matches the
-      manifest version.
+      (pull-requests and contents read), and the releases API, for whether a merged release
+      pull request's release exists and when no tag matches the manifest version.
     default: ${{ github.token }}
 runs:
   using: composite

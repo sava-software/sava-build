@@ -59,10 +59,6 @@ final class CommitRange {
     this.tagged = tagged;
   }
 
-  static CommitRange read(Git git, ReleaseConfig config, GitHub github) {
-    return read(git, config, github, Map.of());
-  }
-
   /**
    * Reads the range. A commit in releaseMergeCommits (a merged release pull request's merge
    * commit, keyed to its number) is skipped: release-please tags it and reads commits only

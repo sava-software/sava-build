@@ -27,10 +27,11 @@ jobs:
       # every message its parser cannot read, BREAKING CHANGE footer included, while the
       # run stays green. The guard parses the same range with the same grammar first and
       # fails naming the commit; its README section says how to restate one. It also
-      # refuses a release pull request release-please would tag with anything but the plain
-      # X.Y.Z version the pull request wrote into the manifest. It is a Java program,
-      # compiled by the JDK set up here: the one the repository builds with, as
-      # vars.JAVA_VERSION and vars.JDK_SRC name it.
+      # refuses a Release-As footer that belongs to a pull request, in a commit or in the
+      # commit override of the pull request's body, and a release pull request
+      # release-please would tag with anything but the plain X.Y.Z version the pull request
+      # wrote into the manifest. It is a Java program, compiled by the JDK set up here: the
+      # one the repository builds with, as vars.JAVA_VERSION and vars.JDK_SRC name it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

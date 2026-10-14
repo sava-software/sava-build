@@ -187,6 +187,16 @@ final class GitHub {
         "application/vnd.github.raw+json");
   }
 
+  /** Whether a GitHub release exists for the tag (a tag alone is none). */
+  boolean releaseExists(String tag) {
+    try {
+      json("repos/" + repository + "/releases/tags/" + encode(tag));
+      return true;
+    } catch (NotFoundException e) {
+      return false;
+    }
+  }
+
   /** The tag of the latest GitHub release, or null when there is none. */
   String latestReleaseTag() {
     try {
