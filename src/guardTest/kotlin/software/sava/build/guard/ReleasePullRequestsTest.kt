@@ -40,6 +40,9 @@ class ReleasePullRequestsTest {
     assertEquals("p-v1.0.0", ReleasePullRequests.branchComponent("release-please--branches--main--components--p-v1.0.0"))
     assertEquals("p", ReleasePullRequests.branchComponent("release-p-v1.2.3"))
     assertEquals("", ReleasePullRequests.branchComponent("release-v1.2.3"))
+    // A component release-please rounds still names the branch: its parse finds a version.
+    assertEquals("", ReleasePullRequests.branchComponent("release-v9007199254740993.0.0"))
+    assertEquals("p", ReleasePullRequests.branchComponent("release-p-v1.0.9007199254740993"))
     // An autorelease name whose version release-please cannot parse names no branch to it.
     assertNull(ReleasePullRequests.branchComponent("release-v1"))
     assertNull(ReleasePullRequests.branchComponent("release-p-v2"))
@@ -60,6 +63,14 @@ class ReleasePullRequestsTest {
     assertEquals("7.0.0", ReleasePullRequests.parseVersion("version 007.0.0 please"))
     // An empty build part is dropped, as release-please's toString drops it.
     assertEquals("1.2.3", ReleasePullRequests.parseVersion("1.2.3+"))
+    // A component release-please would round (past 2^53) is refused rather than kept exact;
+    // 2^53 itself is exact in a JavaScript Number.
+    assertEquals("9007199254740991.0.0", ReleasePullRequests.parseVersion("9007199254740991.0.0"))
+    assertEquals("9007199254740992.0.0", ReleasePullRequests.parseVersion("9007199254740992.0.0"))
+    assertThrows(IllegalArgumentException::class.java) { ReleasePullRequests.parseVersion("9007199254740993.0.0") }
+    assertEquals("a version component past 2^53 in 9007199254740993.0.0, which release-please rounds",
+      assertThrows(IllegalArgumentException::class.java) { ReleasePullRequests.parseVersion("9007199254740993.0.0") }.message)
+    assertThrows(IllegalArgumentException::class.java) { ReleasePullRequests.parseVersion("1.0.1000000000000000000000") }
     assertThrows(IllegalArgumentException::class.java) { ReleasePullRequests.parseVersion("1") }
   }
 
@@ -103,8 +114,10 @@ class ReleasePullRequestsTest {
     val value = Json.asObject(Json.parse("{\"a\": [1, 2.5, -3e2, true, null, \"s\\u0041\\n\"], \"b\": {}}"), "test")
     assertEquals(listOf(1L, 2.5, -300.0, true, null, "sA\n"), value["a"])
     assertEquals(emptyMap<String, Any>(), value["b"])
-    for (bad in listOf("", "{", "[1,]", "{\"a\" 1}", "nul", "\"unterminated", "1 2", "{\"a\":1}x")) {
+    for (bad in listOf("", "{", "[1,]", "{\"a\" 1}", "nul", "\"unterminated", "1 2", "{\"a\":1}x",
+      "0500", "-0500", "[01]", "\"\\u+031\"", "\"\\u00G1\"", "\"\\u-001\"")) {
       assertThrows(IllegalArgumentException::class.java, { Json.parse(bad) }, bad)
     }
+    assertEquals(listOf(0L, -0L, 0.5, 10L, "\u0041"), Json.parse("[0, -0, 0.5, 10, \"\\u0041\"]"))
   }
 }

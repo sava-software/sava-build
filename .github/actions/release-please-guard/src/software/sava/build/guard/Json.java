@@ -200,11 +200,15 @@ final class Json {
             if (pos + 4 > text.length()) {
               throw error("truncated \\u escape");
             }
-            try {
-              out.append((char) Integer.parseInt(text.substring(pos, pos + 4), 16));
-            } catch (NumberFormatException e) {
-              throw error("invalid \\u escape");
+            int code = 0;
+            for (int i = 0; i < 4; i++) {
+              final int digit = hexDigit(text.charAt(pos + i));
+              if (digit < 0) {
+                throw error("invalid \\u escape");
+              }
+              code = code * 16 + digit;
             }
+            out.append((char) code);
             pos += 4;
           }
           default -> throw error("invalid escape '\\" + escaped + "'");
@@ -217,10 +221,28 @@ final class Json {
     }
   }
 
+  // The four hex digits of a backslash-u escape, ASCII only.
+  private static int hexDigit(char c) {
+    if (c >= '0' && c <= '9') {
+      return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+      return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+      return c - 'A' + 10;
+    }
+    return -1;
+  }
+
   private Object number() {
     final int start = pos;
     if (peek() == '-') {
       pos++;
+    }
+    // A leading zero stands alone, as in JSON.
+    if (peek() == '0' && pos + 1 < text.length() && text.charAt(pos + 1) >= '0' && text.charAt(pos + 1) <= '9') {
+      throw error("leading zero");
     }
     digits();
     boolean integral = true;

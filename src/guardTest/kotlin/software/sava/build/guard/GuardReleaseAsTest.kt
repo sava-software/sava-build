@@ -220,8 +220,8 @@ class GuardReleaseAsTest {
     FakeGitHub(r, emptyList()).use { gh ->
       val (code, out) = r.run(gh.env)
       assertEquals(0, code, out)
-      assertMatch(out, "::warning::the Release-As footer of [0-9a-f]{7} \\(\"soon\"\\) is one release-please cannot read " +
-        "\\(unable to parse version string: soon\\), so release-please fails")
+      assertMatch(out, "::warning::the Release-As footer of [0-9a-f]{7} \\(\"soon\"\\) names a version this guard refuses " +
+        "\\(unable to parse version string: soon, on which release-please fails\\)")
     }
   }
 

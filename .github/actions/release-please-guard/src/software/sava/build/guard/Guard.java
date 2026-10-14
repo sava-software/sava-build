@@ -3,6 +3,7 @@ package software.sava.build.guard;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -101,11 +102,11 @@ public final class Guard {
     }
     final int failures = checkCommits(config, range, github != null);
     final List<String> errors = new ArrayList<>();
-    final CommitRange.Part releaseAs = checkReleaseAs(config, range, github, errors);
+    checkReleaseAs(config, range, github, errors);
     if (github == null) {
       out.println("releases not checked: GITHUB_REPOSITORY is not set");
     } else {
-      checkReleases(config, github, targetBranch, merged, expectedVersion(config, range, releaseAs), errors);
+      checkReleases(config, github, git, targetBranch, merged, range, errors);
     }
     for (final String message : new LinkedHashSet<>(errors)) {
       out.println("::error::" + message);
@@ -247,8 +248,8 @@ public final class Guard {
         }
       } catch (IllegalArgumentException e) {
         reads = "nothing (" + e.getMessage() + ")";
-        out.println("::warning::" + footer + " is one release-please cannot read (" + e.getMessage() + "), so "
-            + "release-please fails; push a newer commit with a valid Release-As footer");
+        out.println("::warning::" + footer + " names a version this guard refuses (" + e.getMessage()
+            + "); push a newer commit with a valid Release-As footer");
       }
       if (github == null) {
         out.println("::warning::" + footer + " sets the next version, but whether " + carrier
@@ -271,46 +272,142 @@ public final class Guard {
   }
 
   /**
-   * The version release-please computes for the next release, when the guard can tell: the
-   * config's release-as, else the Release-As footer release-please takes, else, under
-   * always-bump-patch, the patch bump of the base release. Under another versioning strategy,
-   * or before a first release, it is not computed, and the release pull requests' versions go
-   * unchecked against the commits.
+   * The version release-please computes from a range of commits under a config, when the
+   * guard can tell: the config's release-as, else the Release-As footer release-please takes,
+   * else, under always-bump-patch, the patch bump of the base release. Under another
+   * versioning strategy, or before a first release, it is not computed, and the release pull
+   * requests' versions go unchecked against the commits.
    */
-  private ReleasePullRequests.Expected expectedVersion(ReleaseConfig config, CommitRange range, CommitRange.Part releaseAs) {
-    try {
-      if (config.releaseAs != null) {
+  private ReleasePullRequests.Expected expectedVersion(ReleaseConfig config, List<CommitRange.Part> parts,
+                                                       String baseVersion, String whose) {
+    // A version this guard refuses where the expectation comes from (one release-please fails
+    // on, or rounds: the config's release-as, a direct footer, the manifest's version it bumps)
+    // refuses the release outright: release-please would tag whatever the pull request names,
+    // which the refused version can never justify.
+    if (config.releaseAs != null) {
+      try {
         return new ReleasePullRequests.Expected(ReleasePullRequests.parseVersion(config.releaseAs),
             "release-as in " + config.configFile);
+      } catch (IllegalArgumentException e) {
+        return new ReleasePullRequests.Expected(null, "release-as in " + config.configFile
+            + " names a version this guard refuses (" + e.getMessage() + ")");
       }
-      // A commit this guard could not read, newer than any footer it did read, may carry the
-      // footer release-please takes: then the version is not known here.
-      for (final CommitRange.Part part : range.parts) {
-        if (part == releaseAs) {
-          break;
+    }
+    // The first footer release-please takes, newest commit first. A commit this guard could
+    // not read to its end may carry one, so from there on the version is not known here
+    // until a footer this guard did read decides it. Every part that may decide it answers
+    // to the same rule as the next release's footer: one that belongs to a pull request
+    // refuses the release, whatever it names or may name, since a pull request may not
+    // choose the version; a direct one this guard could not read hides nothing behind it.
+    String unread = null;
+    for (final CommitRange.Part part : parts) {
+      final boolean footer = part.parsed() && part.releaseAs() != null;
+      if (!part.limited() && !footer) {
+        continue;
+      }
+      final String sha = part.sha().substring(0, 7);
+      if (part.pullRequest() != null) {
+        return new ReleasePullRequests.Expected(null, (part.limited()
+            ? "a commit among its commits that this guard cannot read, " + sha + ", belongs to pull request #"
+            + part.pullRequest() + " and may carry the Release-As footer release-please takes"
+            : "the Release-As footer release-please takes among its commits is that of " + sha
+            + ", which belongs to pull request #" + part.pullRequest())
+            + ": a pull request may not choose the version");
+      }
+      if (part.limited()) {
+        if (unread == null) {
+          unread = sha;
         }
-        if (part.limited()) {
-          out.println("the release pull requests' versions are not checked against the commits: "
-              + part.sha().substring(0, 7) + " may carry a Release-As footer this guard cannot read");
-          return null;
-        }
+        continue;
       }
-      if (releaseAs != null) {
-        return new ReleasePullRequests.Expected(ReleasePullRequests.parseVersion(releaseAs.releaseAs()),
-            "the version the Release-As footer of " + releaseAs.sha().substring(0, 7) + " gives");
+      if (unread != null) {
+        // The footer release-please takes is this one or the unread commit's: not known here.
+        break;
       }
-    } catch (IllegalArgumentException e) {
+      try {
+        return new ReleasePullRequests.Expected(ReleasePullRequests.parseVersion(part.releaseAs()),
+            "the version the Release-As footer of " + sha + " gives");
+      } catch (IllegalArgumentException e) {
+        return new ReleasePullRequests.Expected(null, "the Release-As footer release-please takes among its commits, "
+            + "that of " + sha + ", names a version this guard refuses (" + e.getMessage() + ")");
+      }
+    }
+    if (unread != null) {
+      out.println(whose + " not checked against the commits: " + unread
+          + " may carry a Release-As footer this guard cannot read");
       return null;
     }
-    final Matcher base = range.baseVersion == null ? null : ReleasePullRequests.PLAIN_VERSION.matcher(range.baseVersion);
+    if (config.versioning.equals("always-bump-patch") && config.version != null) {
+      // release-please bumps the manifest's version, its tag found or not: one this guard
+      // refuses justifies nothing, whatever tag the commits were read from.
+      try {
+        ReleasePullRequests.parseVersion(config.version);
+      } catch (IllegalArgumentException e) {
+        return new ReleasePullRequests.Expected(null, "the manifest's version " + config.version + " in "
+            + config.manifestFile + ", which release-please bumps, names a version this guard refuses ("
+            + e.getMessage() + ")");
+      }
+    }
+    final Matcher base = baseVersion == null ? null : ReleasePullRequests.PLAIN_VERSION.matcher(baseVersion);
     if (config.versioning.equals("always-bump-patch") && base != null && base.matches()) {
       final String next = base.group(1) + "." + base.group(2) + "." + (Long.parseLong(base.group(3)) + 1);
-      return new ReleasePullRequests.Expected(next, "the patch bump of " + range.baseVersion + " that always-bump-patch gives");
+      return new ReleasePullRequests.Expected(next, "the patch bump of " + baseVersion + " that always-bump-patch gives");
     }
-    out.println("the release pull requests' versions are not checked against the commits: "
-        + (range.baseVersion == null ? "there is no release to bump from" : "versioning is " + config.versioning
-        + ", which this guard does not compute"));
+    out.println(whose + " not checked against the commits: " + (!config.versioning.equals("always-bump-patch")
+        ? "versioning is " + config.versioning + ", which this guard does not compute"
+        : baseVersion == null ? "there is no release to bump from"
+        : "the last release's version " + baseVersion + " is not a plain X.Y.Z version, whose patch bump this guard "
+        + "does not compute"));
     return null;
+  }
+
+  /**
+   * The version each merged release pull request should carry: what the commits up to its
+   * merge gave under the config as of its merge, since release-please built it from those,
+   * whatever landed or changed after the merge. The commits are read from the merge commit's
+   * first parent, with the depth that config gives, as release-please read them. A merge
+   * commit the checkout does not have (the merge landed after the checkout fetched, or sits
+   * on no branch) has no expectation ({@link ReleasePullRequests.Expected#MISSING_MERGE}),
+   * which refuses the release where release-please would tag it: judged from the branch as
+   * checked out, the commits it was built from would go unread, a contributor's footer among
+   * them included. A config the checkout cannot read there is replaced by the config as
+   * checked out, with a note.
+   */
+  private Map<String, ReleasePullRequests.Expected> mergedExpectations(ReleaseConfig config, Git git, GitHub github,
+                                                                        List<ReleasePullRequests.PullRequest> merged) {
+    final Map<String, ReleasePullRequests.Expected> expectations = new HashMap<>();
+    final Map<String, Long> releaseMergeCommits = ReleasePullRequests.releaseMergeCommits(config, merged);
+    for (final ReleasePullRequests.PullRequest pull : merged) {
+      if (!ReleasePullRequests.hasAllLabels(config.labels, pull.labels()) || pull.mergeCommitSha() == null
+          || !ReleasePullRequests.wouldTag(config, pull)) {
+        continue;
+      }
+      final String which = "merged release pull request #" + pull.number();
+      final String before = pull.mergeCommitSha() + "^1";
+      if (!git.commitExists(before)) {
+        expectations.put(pull.mergeCommitSha(), ReleasePullRequests.Expected.MISSING_MERGE);
+        continue;
+      }
+      final ReleaseConfig asMerged = configAt(git, config, pull.mergeCommitSha().substring(0, 7) + "^1", before, which);
+      final CommitRange boundary = CommitRange.read(git, asMerged, github, releaseMergeCommits, before);
+      expectations.put(pull.mergeCommitSha(), expectedVersion(asMerged, boundary.parts, boundary.baseVersion,
+          which + "'s version is"));
+    }
+    return expectations;
+  }
+
+  /** The config and manifest at a revision, else the ones as checked out, with a note. */
+  private ReleaseConfig configAt(Git git, ReleaseConfig config, String at, String revision, String which) {
+    final String configPath = repositoryPath(env("CONFIG_FILE"));
+    final String manifestPath = repositoryPath(env("MANIFEST_FILE"));
+    try {
+      return ReleaseConfig.parse(configPath + " at " + at, git.show(revision, configPath),
+          manifestPath + " at " + at, git.show(revision, manifestPath));
+    } catch (Git.GitException | ReleaseConfig.ConfigException e) {
+      out.println(which + "'s release-please config or manifest at " + at + " could not be read ("
+          + CommitRange.oneLine(e.getMessage()) + "); its version is judged with the config as checked out");
+      return config;
+    }
   }
 
   // release-please targets the repository's default branch unless told otherwise.
@@ -322,12 +419,13 @@ public final class Guard {
     return targetBranch;
   }
 
-  private void checkReleases(ReleaseConfig config, GitHub github, String targetBranch,
-                             List<ReleasePullRequests.PullRequest> merged, ReleasePullRequests.Expected expected,
-                             List<String> errors) {
+  private void checkReleases(ReleaseConfig config, GitHub github, Git git, String targetBranch,
+                             List<ReleasePullRequests.PullRequest> merged, CommitRange range, List<String> errors) {
+    final ReleasePullRequests.Expected open = expectedVersion(config, range.parts, range.baseVersion,
+        "the open release pull requests' versions are");
     final ReleasePullRequests.Report report = new ReleasePullRequests.Report();
-    ReleasePullRequests.check(github, config, targetBranch, repositoryPath(env("MANIFEST_FILE")), merged, expected,
-        github::releaseExists, report);
+    ReleasePullRequests.check(github, config, targetBranch, repositoryPath(env("MANIFEST_FILE")), merged, open,
+        mergedExpectations(config, git, github, merged), github::releaseExists, report);
     report.lines.forEach(out::println);
     for (final String notice : report.notices) {
       out.println("::notice::" + notice);

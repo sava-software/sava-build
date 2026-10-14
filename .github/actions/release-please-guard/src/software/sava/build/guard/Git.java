@@ -74,14 +74,29 @@ final class Git {
     }
   }
 
-  /** The nearest tag matching the glob that HEAD descends from, or null. */
-  String nearestTag(String glob) {
+  /** The nearest tag matching the glob that the commit descends from, or null. */
+  String nearestTag(String glob, String commit) {
     try {
-      final String tag = run("describe", "--tags", "--abbrev=0", "--match=" + glob, "HEAD").trim();
+      final String tag = run("describe", "--tags", "--abbrev=0", "--match=" + glob, commit).trim();
       return tag.isEmpty() ? null : tag;
     } catch (GitException e) {
       return null;
     }
+  }
+
+  /** Whether the revision names a commit the checkout has. */
+  boolean commitExists(String revision) {
+    try {
+      run("rev-parse", "-q", "--verify", revision + "^{commit}");
+      return true;
+    } catch (GitException e) {
+      return false;
+    }
+  }
+
+  /** A file's text at a revision, by its path from the repository's top level. */
+  String show(String revision, String path) {
+    return run("show", revision + ":" + path);
   }
 
   /** The commits of the range, newest first, as rev-list orders them, at most max of them. */

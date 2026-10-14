@@ -42,15 +42,15 @@ final class CommitRange {
 
   /** What the range was read from, for the summary line; null when there is no base. */
   final String baseText;
-  /** The version of the base tag, or null when there is no base or its tag names none. */
+  /** The version of the base tag, or null when there is no base or its tag names none this guard accepts. */
   final String baseVersion;
   final int commitCount;
   final List<Part> parts;
   final List<Excluded> excluded;
   final List<Tagged> tagged;
 
-  private CommitRange(String baseText, String baseVersion, int commitCount, List<Part> parts, List<Excluded> excluded,
-                      List<Tagged> tagged) {
+  private CommitRange(String baseText, String baseVersion, int commitCount, List<Part> parts,
+                      List<Excluded> excluded, List<Tagged> tagged) {
     this.baseText = baseText;
     this.baseVersion = baseVersion;
     this.commitCount = commitCount;
@@ -66,6 +66,16 @@ final class CommitRange {
    * are ever read as a commit.
    */
   static CommitRange read(Git git, ReleaseConfig config, GitHub github, Map<String, Long> releaseMergeCommits) {
+    return read(git, config, github, releaseMergeCommits, "HEAD");
+  }
+
+  /**
+   * Reads the range up to {@code head}: HEAD for the commits release-please reads next, or a
+   * merged release pull request's merge commit's first parent for those it built that pull
+   * request from, read with the same depth from there.
+   */
+  static CommitRange read(Git git, ReleaseConfig config, GitHub github, Map<String, Long> releaseMergeCommits,
+                          String head) {
     String base = null;
     String baseText = null;
     if (config.version != null) {
@@ -78,7 +88,7 @@ final class CommitRange {
       }
       if (base == null) {
         for (final String glob : config.tagGlobs()) {
-          final String tag = git.nearestTag(glob);
+          final String tag = git.nearestTag(glob, head);
           if (tag != null) {
             base = tag;
             baseText = "nearest tag " + tag + " (manifest version " + config.version + " has no tag yet)";
@@ -99,10 +109,11 @@ final class CommitRange {
       try {
         baseVersion = ReleasePullRequests.parseVersion(base);
       } catch (IllegalArgumentException e) {
-        // a tag that names no version
+        // a tag that names no version this guard accepts: release-please's base is the
+        // manifest's version, which is checked where it is bumped
       }
     }
-    final List<Git.Commit> commits = git.log(config.commitSearchDepth, base != null ? base + "..HEAD" : "HEAD");
+    final List<Git.Commit> commits = git.log(config.commitSearchDepth, base != null ? base + ".." + head : head);
     final Map<String, GitHub.AssociatedPullRequest> pullRequests = github == null ? Map.of()
         : pullRequestsOf(commits, github, config.commitBatchSize);
     final List<Part> parts = new ArrayList<>();

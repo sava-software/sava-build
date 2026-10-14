@@ -61,6 +61,20 @@ final class ReleaseConfig {
         manifestFile.toString(), readJson(manifestFile, "manifest"));
   }
 
+  /** The config and manifest as given, named for the messages that cite them. */
+  static ReleaseConfig parse(String configName, String configText, String manifestName, String manifestText) {
+    return new ReleaseConfig(configName, parseJson(configText, "config", configName),
+        manifestName, parseJson(manifestText, "manifest", manifestName));
+  }
+
+  private static Object parseJson(String text, String what, String name) {
+    try {
+      return Json.parse(text);
+    } catch (IllegalArgumentException e) {
+      throw new ConfigException("the release-please " + what + " " + name + " is not JSON: " + e.getMessage());
+    }
+  }
+
   private static Object readJson(Path file, String what) {
     final String text;
     try {

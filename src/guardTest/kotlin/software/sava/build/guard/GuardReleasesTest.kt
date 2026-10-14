@@ -283,7 +283,7 @@ class GuardReleasesTest {
       assertMatch(out, "::notice::merged release pull request #25 is left alone: its head branch's component \"q\" is not the configured component \"p\"")
       assertMatch(out, "::notice::merged release pull request #26 is left alone: its body has no '---' line")
       assertMatch(out, "::notice::merged release pull request #30 is left alone: its head branch \"release-v1\" is not a release-please branch name")
-      assertNoMatch(out, "#27")
+      assertNoMatch(out, "::notice::.*#27|::error::.*#27")
       assertMatch(out, "1 from merged")
     }
   }
@@ -329,6 +329,193 @@ class GuardReleasesTest {
   }
 
   @Test
+  fun `a version component past 2^53, which release-please rounds, is refused where it would be tagged, and still names a branch`() {
+    // release-please's Number keeps an integer exact up to 2^53: past that it tags a rounded
+    // version, which this guard refuses rather than predicts. A branch named with one is still
+    // its branch, so the pull request is checked, not left alone.
+    val r = released()
+    FakeGitHub(r, listOf(pull(32, "25.12.1", title = "chore(main): release 1.0.9007199254740993"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #32 is about to be tagged, but its title names a version this " +
+        "guard refuses \\(a version component past 2\\^53 in 1\\.0\\.9007199254740993, which release-please rounds\\)")
+    }
+    FakeGitHub(r, listOf(pull(33, "25.12.1-\$(id)", head = "release-p-v9007199254740993.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertNoMatch(out, "#33 is left alone")
+      assertMatch(out, "::error::merged release pull request #33 is about to be tagged, but release-please would tag it " +
+        "\"25\\.12\\.1-\\$\\(id\\)\"")
+    }
+    // A grouped title names no version, so the body's single section does, and it is refused
+    // the same way, naming the pull request.
+    val grouped = Repo()
+    grouped.commit("chore: start\n")
+    grouped.git("tag", "25.12.0")
+    grouped.commit("fix: later\n")
+    grouped.configure("25.12.1", mapOf("package-name" to Unset))
+    FakeGitHub(grouped, listOf(pull(34, "25.12.1", title = "chore: release main", head = "release-please--branches--main",
+      body = releaseBody("1.0.9007199254740993")))).use { gh ->
+      val (code, out) = grouped.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #34 is about to be tagged, but its body's release section names a " +
+        "version this guard refuses \\(a version component past 2\\^53 in 1\\.0\\.9007199254740993.*, which release-please rounds\\)")
+    }
+    // With a section, release-please leaves a pull request whose branch names another
+    // component alone, whatever the section names: so does the guard, before refusing it.
+    FakeGitHub(r, listOf(pull(35, "25.12.1", head = "release-please--branches--main--components--q",
+      body = releaseBody("1.0.9007199254740993")))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "::notice::merged release pull request #35 is left alone: its head branch's component \"q\" is not the " +
+        "configured component \"p\"")
+      assertMatch(out, "0 from merged")
+    }
+    // And a title past 2^53 is refused only where release-please would tag it: on a branch
+    // that is not release-please's, or one of another component beside a section, the pull
+    // request is left alone, as release-please leaves it after rounding the title.
+    FakeGitHub(r, listOf(pull(36, "25.12.1", title = "chore(main): release 1.0.9007199254740993", head = "feature"),
+      pull(37, "25.12.1", title = "chore(main): release 1.0.9007199254740993",
+        head = "release-please--branches--main--components--q"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "::notice::merged release pull request #36 is left alone: its head branch \"feature\" is not a " +
+        "release-please branch name")
+      assertMatch(out, "::notice::merged release pull request #37 is left alone: its head branch's component \"q\" is not the " +
+        "configured component \"p\"")
+      assertMatch(out, "0 from merged")
+    }
+    // A section past 2^53 under a title that names a plain version is not read at all:
+    // release-please tags the title's version.
+    FakeGitHub(r, listOf(pull(38, "25.12.1", body = releaseBody("1.0.9007199254740993"))),
+      files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "1 from merged")
+      assertNoMatch(out, "#38 is about to be tagged")
+    }
+  }
+
+  @Test
+  fun `a version this guard refuses where the expectation comes from refuses the release, rather than leaving it unchecked`() {
+    // A direct Release-As past 2^53, or release-as in the config past it: release-please
+    // tags whatever the pull request names (its oracle tags 99.0.0 here), and the refused
+    // version justifies nothing, so the release is refused rather than left unchecked.
+    val r = Repo()
+    r.configure("25.12.0")
+    r.commit("chore: start\n", r.configFiles())
+    r.git("tag", "25.12.0")
+    val huge = r.commit("chore: release\n\nRelease-As: 9007199254740993.0.0\n", emptyMap())
+    val merge = r.commit("chore(main): release 99.0.0 (#86)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    r.configure("99.0.0")
+    FakeGitHub(r, listOf(pull(86, "99.0.0", merge = merge)),
+      files = mapOf("$merge|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #86 is about to be tagged, but the Release-As footer release-please " +
+        "takes among its commits, that of ${huge.substring(0, 7)}, names a version this guard refuses \\(a version component " +
+        "past 2\\^53 in 9007199254740993\\.0\\.0, which release-please rounds\\)")
+      assertNoMatch(out, "#86's version is not checked")
+    }
+    val configured = Repo(mapOf("release-as" to "9007199254740993.0.0"))
+    configured.configure("25.12.0")
+    configured.commit("chore: start\n", configured.configFiles())
+    configured.git("tag", "25.12.0")
+    configured.commit("fix: later\n")
+    val merge87 = configured.commit("chore(main): release 99.0.0 (#87)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    configured.configure("99.0.0")
+    FakeGitHub(configured, listOf(pull(87, "99.0.0", merge = merge87)),
+      files = mapOf("$merge87|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = configured.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #87 is about to be tagged, but release-as in " +
+        "release-please-config\\.json at ${merge87.substring(0, 7)}\\^1 names a version this guard refuses \\(a version " +
+        "component past 2\\^53 in 9007199254740993\\.0\\.0, which release-please rounds\\)")
+    }
+  }
+
+  @Test
+  fun `a manifest version this guard refuses refuses the next release, its tag found or not, rather than reading as none`() {
+    // release-please bumps the manifest's version, rounded, whether or not a tag exists for
+    // it; what that gives is not predicted here, and a release read as the first would go
+    // unchecked.
+    val r = Repo()
+    r.configure("9007199254740993.0.0")
+    r.commit("chore: start\n", r.configFiles())
+    r.git("tag", "9007199254740993.0.0")
+    r.commit("fix: later\n")
+    val merge = r.commit("chore(main): release 99.0.0 (#85)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    r.configure("99.0.0")
+    FakeGitHub(r, listOf(pull(85, "99.0.0", merge = merge)),
+      files = mapOf("$merge|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #85 is about to be tagged, but the manifest's version " +
+        "9007199254740993\\.0\\.0 in \\.release-please-manifest\\.json at ${merge.substring(0, 7)}\\^1, which release-please " +
+        "bumps, names a version this guard refuses \\(a version component past 2\\^53 in 9007199254740993\\.0\\.0, which " +
+        "release-please rounds\\)")
+      assertNoMatch(out, "#85's version is not checked")
+    }
+    // The same with no tag for the manifest's version and an unrelated one the nearest-tag
+    // fallback finds: release-please still bumps the manifest's version.
+    val untagged = Repo()
+    untagged.configure("9007199254740993.0.0")
+    untagged.commit("chore: start\n", untagged.configFiles())
+    untagged.git("tag", "9007199254740994.0.0")
+    untagged.commit("fix: later\n")
+    val merge78 = untagged.commit("chore(main): release 99.0.0 (#78)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    untagged.configure("99.0.0")
+    FakeGitHub(untagged, listOf(pull(78, "99.0.0", merge = merge78)),
+      files = mapOf("$merge78|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = untagged.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #78 is about to be tagged, but the manifest's version " +
+        "9007199254740993\\.0\\.0 in \\.release-please-manifest\\.json at ${merge78.substring(0, 7)}\\^1, which release-please " +
+        "bumps, names a version this guard refuses")
+      assertNoMatch(out, "#78's version is not checked")
+    }
+    // A valid manifest version with no tag of its own, beside a stray tag the nearest-tag
+    // fallback finds: no reason to refuse; the version goes unchecked, as with no tag at all.
+    val stray = Repo()
+    stray.configure("25.12.0")
+    stray.commit("chore: start\n", stray.configFiles())
+    stray.git("tag", "2026.10")
+    stray.commit("fix: later\n")
+    val merge88 = stray.commit("chore(main): release 25.12.1 (#88)\n", mapOf(".release-please-manifest.json" to manifestOf("25.12.1")))
+    stray.configure("25.12.1")
+    FakeGitHub(stray, listOf(pull(88, "25.12.1", merge = merge88)),
+      files = mapOf("$merge88|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = stray.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "#88's version is not checked against the commits: there is no release to bump from")
+      assertNoMatch(out, "names a version this guard refuses")
+    }
+  }
+
+  @Test
+  fun `a missing merge commit is refused only where release-please would tag it`() {
+    // With skip-github-release set, or for a release that already exists, release-please tags
+    // nothing, so the unread commits do not matter and nothing stands in its way.
+    val missing = "e".repeat(40)
+    val skipped = released(mapOf("skip-github-release" to true))
+    FakeGitHub(skipped, listOf(pull(83, "25.12.1", merge = missing)),
+      files = mapOf("$missing|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = skipped.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "release pull requests not checked: skip-github-release is set")
+      assertNoMatch(out, "is not in this checkout")
+    }
+    val done = released()
+    FakeGitHub(done, listOf(pull(84, "25.12.1", merge = missing)), releases = setOf("25.12.1"),
+      files = mapOf("$missing|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = done.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "::notice::merged release pull request #84 is already released as \"25\\.12\\.1\"")
+      assertNoMatch(out, "is not in this checkout")
+    }
+  }
+
+  @Test
   fun `a grouped title names no version, so the body's single section does, as release-please reads it`() {
     // A grouped release pull request's branch names no component, which release-please
     // matches only against a package without one.
@@ -354,14 +541,14 @@ class GuardReleasesTest {
     FakeGitHub(r, listOf(pull(30, "25.12.1", title = "chore(main): release 1"))).use { gh ->
       val (code, out) = r.run(gh.env)
       assertEquals(1, code, out)
-      assertMatch(out, "::error::merged release pull request #30 is about to be tagged, but release-please fails on its title " +
-        "\\(unable to parse version string: 1\\)")
+      assertMatch(out, "::error::merged release pull request #30 is about to be tagged, but its title names a version this " +
+        "guard refuses \\(unable to parse version string: 1, on which release-please fails\\)")
     }
     val open = released(version = "25.12.0")
     FakeGitHub(open, listOf(pull(31, "25.12.1", title = "chore(main): release 1", open = true))).use { gh ->
       val warned = open.run(gh.env)
       assertEquals(0, warned.code, warned.out)
-      assertMatch(warned.out, "::warning::open release pull request #31: once merged, release-please fails on its title")
+      assertMatch(warned.out, "::warning::open release pull request #31: once merged, its title names a version this guard refuses")
     }
   }
 
@@ -416,36 +603,62 @@ class GuardReleasesTest {
       val (code, out) = r.run(gh.env)
       assertEquals(1, code, out)
       assertMatch(out, "::error::release pull request #45's merge commit has no readable \\.release-please-manifest\\.json \\(.*does not exist on \"e{40}\"")
+      assertMatch(out, "::error::merged release pull request #45's merge commit e{7} is not in this checkout")
       assertNoMatch(out, "#45 is about to be tagged")
       assertMatch(out, "::error::merged release pull request #46 is about to be tagged, but release-please would tag it \"25\\.12\\.1-\\$\\(id\\)\"")
       assertMatch(out, "2 from merged")
-      assertEquals(1, gh.calls().count { it.endsWith("ref=$MERGE") }, gh.calls().joinToString("\n"))
+      assertEquals(1, gh.calls().count { it.endsWith("ref=${gh.merges[46]}") }, gh.calls().joinToString("\n"))
     }
   }
 
   @Test
   fun `a release pull request's version must be the one the commits give, under always-bump-patch`() {
-    // A plain version in the title and the manifest alike, with nothing in the commits to
-    // justify it: what an override edited after the guard read it, then edited away, leaves.
-    val r = released()
-    FakeGitHub(r, listOf(pull(60, "99.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+    // A plain version in the title and the manifest alike, with nothing in the commits up to
+    // the merge to justify it: what an override edited after the guard read it, then edited
+    // away, leaves. The config and manifest are committed, so the merge reads its own.
+    val r = Repo()
+    r.configure("25.12.0")
+    r.commit("chore: start\n", r.configFiles())
+    r.git("tag", "25.12.0")
+    r.commit("fix: later\n")
+    val merge = r.commit("chore(main): release 99.0.0 (#60)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    r.configure("99.0.0")
+    FakeGitHub(r, listOf(pull(60, "99.0.0", merge = merge)), files = mapOf("$merge|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
       val (code, out) = r.run(gh.env)
       assertEquals(1, code, out)
       assertMatch(out, "::error::merged release pull request #60 is about to be tagged, but its version \"99\\.0\\.0\" is not " +
         "\"25\\.12\\.1\", the patch bump of 25\\.12\\.0 that always-bump-patch gives; release-please computed it from commits " +
         "or pull request edits that are not there now")
+      assertNoMatch(out, "could not be read|is not in the checkout")
     }
-    // A Release-As footer pushed directly justifies it, as does release-as in the config.
-    val carrier = r.commit("chore: release 99.0.0\n\nRelease-As: 99.0.0\n", emptyMap())
-    FakeGitHub(r, listOf(pull(61, "99.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
-      val (code, out) = r.run(gh.env)
+    // A Release-As footer pushed directly before the merge justifies it, as does release-as
+    // in the config as of the merge.
+    val justified = Repo()
+    justified.configure("25.12.0")
+    justified.commit("chore: start\n", justified.configFiles())
+    justified.git("tag", "25.12.0")
+    val carrier = justified.commit("chore: release 99.0.0\n\nRelease-As: 99.0.0\n", emptyMap())
+    val merge61 = justified.commit("chore(main): release 99.0.0 (#61)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    justified.configure("99.0.0")
+    FakeGitHub(justified, listOf(pull(61, "99.0.0", merge = merge61)),
+      files = mapOf("$merge61|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = justified.run(gh.env)
       assertEquals(0, code, out)
       assertMatch(out, "from the Release-As footer of ${carrier.substring(0, 7)} .*, which was pushed directly")
+      assertNoMatch(out, "#61 is about to be tagged|could not be read")
     }
-    val configured = released(mapOf("release-as" to "99.0.0"))
-    FakeGitHub(configured, listOf(pull(62, "99.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+    val configured = Repo(mapOf("release-as" to "99.0.0"))
+    configured.configure("25.12.0")
+    configured.commit("chore: start\n", configured.configFiles())
+    configured.git("tag", "25.12.0")
+    configured.commit("fix: later\n")
+    val merge62 = configured.commit("chore(main): release 99.0.0 (#62)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    configured.configure("99.0.0")
+    FakeGitHub(configured, listOf(pull(62, "99.0.0", merge = merge62)),
+      files = mapOf("$merge62|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
       val (code, out) = configured.run(gh.env)
       assertEquals(0, code, out)
+      assertNoMatch(out, "#62 is about to be tagged|could not be read")
     }
     // An open pull request lagging a just-pushed footer is a warning, cleared once release-please rewrites it.
     val open = released(version = "25.12.0")
@@ -466,26 +679,29 @@ class GuardReleasesTest {
     // A run that released but failed to relabel the pull request leaves it pending:
     // release-please's create fails as a duplicate, it labels the pull request, and the guard
     // must not stand in the way. A tag alone is no release: release-please creates one on it,
-    // so that case is checked like any other, and here refused.
+    // so that case is checked like any other, and here passes: the commits up to the merge
+    // give its version, whatever tag sits on the merge commit itself.
     val r = Repo()
-    r.commit("chore: start\n")
+    r.configure("25.12.0")
+    r.commit("chore: start\n", r.configFiles())
     r.git("tag", "25.12.0")
     r.commit("fix: later\n")
-    r.commit("chore(main): release 25.12.1 (#70)\n")
+    val merge = r.commit("chore(main): release 25.12.1 (#70)\n", mapOf(".release-please-manifest.json" to manifestOf("25.12.1")))
     r.git("tag", "25.12.1")
     r.configure("25.12.1")
-    FakeGitHub(r, listOf(pull(70, "25.12.1")), releases = setOf("25.12.1")).use { gh ->
+    FakeGitHub(r, listOf(pull(70, "25.12.1", merge = merge)), releases = setOf("25.12.1")).use { gh ->
       val (code, out) = r.run(gh.env)
       assertEquals(0, code, out)
       assertMatch(out, "::notice::merged release pull request #70 is already released as \"25\\.12\\.1\" \\(a GitHub release " +
         "exists for that tag\\): release-please labels it tagged and tags nothing")
       assertMatch(out, "0 from merged")
     }
-    FakeGitHub(r, listOf(pull(70, "25.12.1"))).use { gh ->
+    FakeGitHub(r, listOf(pull(70, "25.12.1", merge = merge)),
+      files = mapOf("$merge|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
       val (code, out) = r.run(gh.env)
-      assertEquals(1, code, out)
-      assertMatch(out, "::error::merged release pull request #70 is about to be tagged, but its version \"25\\.12\\.1\" is not " +
-        "\"25\\.12\\.2\", the patch bump of 25\\.12\\.1 that always-bump-patch gives")
+      assertEquals(0, code, out)
+      assertMatch(out, "1 from merged")
+      assertNoMatch(out, "#70 is about to be tagged|could not be read")
     }
   }
 
@@ -494,20 +710,27 @@ class GuardReleasesTest {
     // release-please may read a Release-As footer in it, so a release pull request naming
     // another version than the patch bump may well be right.
     val r = Repo()
-    r.commit("chore: start\n")
+    r.configure("25.12.0")
+    r.commit("chore: start\n", r.configFiles())
     r.git("tag", "25.12.0")
     val deep = r.commit("fix: deep\n\n" + "line\n".repeat(2_500) + "\nRelease-As: 2.0.0\n")
     r.commit("fix: restate\n\nRestates: ${deep.substring(0, 7)}\n")
+    val merge = r.commit("chore(main): release 2.0.0 (#80)\n", mapOf(".release-please-manifest.json" to manifestOf("2.0.0")))
     r.configure("2.0.0")
-    FakeGitHub(r, listOf(pull(80, "2.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("2.0.0"))).use { gh ->
+    FakeGitHub(r, listOf(pull(80, "2.0.0", merge = merge)), files = mapOf("$merge|.release-please-manifest.json" to manifestOf("2.0.0"))).use { gh ->
       val (code, out) = r.run(gh.env)
       assertEquals(0, code, out)
-      assertMatch(out, "not checked against the commits: ${deep.substring(0, 7)} may carry a Release-As footer this guard cannot read")
+      assertMatch(out, "#80's version is not checked against the commits: ${deep.substring(0, 7)} may carry a Release-As footer " +
+        "this guard cannot read")
       assertMatch(out, "1 from merged")
+      assertNoMatch(out, "could not be read")
     }
-    // A footer the guard did read in a newer commit is what release-please takes, so it is known.
+    // A footer the guard did read in a newer commit, before the merge, is what release-please
+    // takes, so it is known.
     val carrier = r.commit("chore: release 3.0.0\n\nRelease-As: 3.0.0\n", emptyMap())
-    FakeGitHub(r, listOf(pull(81, "2.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("2.0.0"))).use { gh ->
+    val merge81 = r.commit("chore(main): release 2.0.0 (#81)\n", mapOf(".release-please-manifest.json" to manifestOf("2.0.0")))
+    FakeGitHub(r, listOf(pull(81, "2.0.0", merge = merge81)),
+      files = mapOf("$merge81|.release-please-manifest.json" to manifestOf("2.0.0"))).use { gh ->
       val (code, out) = r.run(gh.env)
       assertEquals(1, code, out)
       assertMatch(out, "#81 is about to be tagged, but its version \"2\\.0\\.0\" is not \"3\\.0\\.0\", the version the Release-As " +
@@ -516,21 +739,292 @@ class GuardReleasesTest {
   }
 
   @Test
-  fun `under another versioning strategy, or before a first release, the version is not checked against the commits`() {
-    val r = released(mapOf("versioning" to "default"))
-    FakeGitHub(r, listOf(pull(64, "99.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+  fun `a merged release pull request is judged from the commits it was built from, not from what landed after its merge`() {
+    // Merged 25.12.1, then a Release-As carrier pushed directly before the tagging run: the
+    // release stands, and the carrier sets the next one, as release-please has it.
+    val r = Repo()
+    r.configure("25.12.0")
+    r.commit("chore: start\n", r.configFiles())
+    r.git("tag", "25.12.0")
+    r.commit("fix: in the release\n")
+    val merge = r.commit("chore(main): release 25.12.1 (#90)\n", mapOf(".release-please-manifest.json" to manifestOf("25.12.1")))
+    val carrier = r.commit("chore: release 2.0.0\n\nRelease-As: 2.0.0\n", emptyMap())
+    r.configure("25.12.1")
+    FakeGitHub(r, listOf(pull(90, "25.12.1", merge = merge)),
+      files = mapOf("$merge|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
       val (code, out) = r.run(gh.env)
       assertEquals(0, code, out)
-      assertMatch(out, "the release pull requests' versions are not checked against the commits: versioning is default")
+      assertMatch(out, "release-please takes the next version, version \"2\\.0\\.0\", from the Release-As footer of ${carrier.substring(0, 7)}")
+      assertMatch(out, "release-please tags ${merge.substring(0, 7)}, the merge commit of release pull request #90")
+      assertMatch(out, "1 from merged")
+      assertNoMatch(out, "#90 is about to be tagged|could not be read")
+    }
+    // The same through the config: release-as added after the merge applies to the next
+    // release, as release-please has it, and release-as removed after the merge leaves the
+    // release it produced standing. The merge is judged under the config as of the merge.
+    val added = Repo()
+    added.configure("25.12.0")
+    added.commit("chore: start\n", added.configFiles())
+    added.git("tag", "25.12.0")
+    added.commit("fix: in the release\n")
+    val merge97 = added.commit("chore(main): release 25.12.1 (#97)\n", mapOf(".release-please-manifest.json" to manifestOf("25.12.1")))
+    added.configure("25.12.1", mapOf("release-as" to "26.0.0"))
+    added.commit("chore: the next release is 26.0.0\n", added.configFiles())
+    FakeGitHub(added, listOf(pull(97, "25.12.1", merge = merge97)),
+      files = mapOf("$merge97|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = added.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "1 from merged")
+      assertNoMatch(out, "#97 is about to be tagged|could not be read")
+    }
+    val removed = Repo()
+    removed.configure("25.12.0", mapOf("release-as" to "26.0.0"))
+    removed.commit("chore: start\n", removed.configFiles())
+    removed.git("tag", "25.12.0")
+    removed.commit("fix: in the release\n")
+    val merge98 = removed.commit("chore(main): release 26.0.0 (#98)\n", mapOf(".release-please-manifest.json" to manifestOf("26.0.0")))
+    removed.configure("26.0.0")
+    removed.commit("chore: release-as is done\n", removed.configFiles())
+    FakeGitHub(removed, listOf(pull(98, "26.0.0", merge = merge98)),
+      files = mapOf("$merge98|.release-please-manifest.json" to manifestOf("26.0.0"))).use { gh ->
+      val (code, out) = removed.run(gh.env)
+      assertEquals(0, code, out)
+      assertNoMatch(out, "#98 is about to be tagged|could not be read")
+    }
+    // The boundary cuts both ways: a version the pull request's own commits do not give is
+    // refused even when a carrier pushed after the merge names it.
+    val later = Repo()
+    later.configure("25.12.0")
+    later.commit("chore: start\n", later.configFiles())
+    later.git("tag", "25.12.0")
+    later.commit("fix: x\n")
+    val merge2 = later.commit("chore(main): release 99.0.0 (#91)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    later.commit("chore: release 99.0.0\n\nRelease-As: 99.0.0\n", emptyMap())
+    later.configure("99.0.0")
+    FakeGitHub(later, listOf(pull(91, "99.0.0", merge = merge2)),
+      files = mapOf("$merge2|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = later.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "#91 is about to be tagged, but its version \"99\\.0\\.0\" is not \"25\\.12\\.1\", the patch bump of 25\\.12\\.0")
+    }
+    // A tag pushed after the merge is not the base either: the base is the release the
+    // manifest named as of the merge.
+    val tagged = Repo()
+    tagged.configure("25.12.0")
+    tagged.commit("chore: start\n", tagged.configFiles())
+    tagged.git("tag", "25.12.0")
+    tagged.commit("fix: y\n")
+    val merge99 = tagged.commit("chore(main): release 25.12.1 (#99)\n", mapOf(".release-please-manifest.json" to manifestOf("25.12.1")))
+    tagged.commit("chore: elsewhere\n")
+    tagged.git("tag", "25.12.5")
+    tagged.configure("25.12.1")
+    FakeGitHub(tagged, listOf(pull(99, "25.12.1", merge = merge99)),
+      files = mapOf("$merge99|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = tagged.run(gh.env)
+      assertEquals(0, code, out)
+      assertNoMatch(out, "#99 is about to be tagged|could not be read")
+    }
+    // A release pull request merged before release-please refreshed it for a newer carrier
+    // names a version its own commits do not give, and is refused as such: release-please
+    // would tag the stale title.
+    val stale = Repo()
+    stale.configure("25.12.0")
+    stale.commit("chore: start\n", stale.configFiles())
+    stale.git("tag", "25.12.0")
+    stale.commit("fix: in the release\n")
+    val late = stale.commit("chore: release 2.0.0\n\nRelease-As: 2.0.0\n", emptyMap())
+    val merge88 = stale.commit("chore(main): release 25.12.1 (#88)\n", mapOf(".release-please-manifest.json" to manifestOf("25.12.1")))
+    stale.configure("25.12.1")
+    FakeGitHub(stale, listOf(pull(88, "25.12.1", merge = merge88)),
+      files = mapOf("$merge88|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = stale.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "#88 is about to be tagged, but its version \"25\\.12\\.1\" is not \"2\\.0\\.0\", the version the Release-As " +
+        "footer of ${late.substring(0, 7)} gives; release-please computed it from commits or pull request edits that are not " +
+        "there now, or the pull request was merged before release-please refreshed it")
+    }
+    // A merge commit the checkout does not have (a run from behind the branch) refuses the
+    // release: the commits it was built from, a contributor's footer among them included,
+    // cannot be checked from here.
+    val elsewhere = released()
+    val missing = "e".repeat(40)
+    FakeGitHub(elsewhere, listOf(pull(92, "25.12.1", merge = missing)),
+      files = mapOf("$missing|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = elsewhere.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #92's merge commit e{7} is not in this checkout, so the commits " +
+        "it was built from cannot be checked here, and release-please is about to tag it\\. Nothing has been tagged\\. Run " +
+        "this workflow from the branch's current head once it has the merge \\(a push, or a dispatch\\), or remove " +
+        "'autorelease: pending' from #92 to skip the release\\.")
+      assertNoMatch(out, "#92 is about to be tagged")
+    }
+    // A config the checkout cannot read at the merge is judged with the config as checked out.
+    val uncommitted = Repo()
+    uncommitted.commit("chore: start\n")
+    uncommitted.git("tag", "25.12.0")
+    uncommitted.commit("fix: z\n")
+    val merge89 = uncommitted.commit("chore(main): release 25.12.1 (#89)\n")
+    uncommitted.configure("25.12.1")
+    FakeGitHub(uncommitted, listOf(pull(89, "25.12.1", merge = merge89)),
+      files = mapOf("$merge89|.release-please-manifest.json" to manifestOf("25.12.1"))).use { gh ->
+      val (code, out) = uncommitted.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "merged release pull request #89's release-please config or manifest at ${merge89.substring(0, 7)}\\^1 could " +
+        "not be read \\(.*\\); its version is judged with the config as checked out")
+      assertMatch(out, "1 from merged")
+    }
+  }
+
+  @Test
+  fun `a footer a pull request brought is refused inside a merged release pull request's own commits too`() {
+    // A contributor's footer that reached the release pull request (say through the override
+    // race) must not pass at tagging time because a direct carrier landed after the merge.
+    val r = Repo()
+    r.commit("chore: start\n")
+    r.git("tag", "25.12.0")
+    val contributed = r.commit("feat: contributed\n\nRelease-As: 99.0.0\n")
+    val merge = r.commit("chore(main): release 99.0.0 (#93)\n")
+    r.commit("chore: release 2.0.0\n\nRelease-As: 2.0.0\n", emptyMap())
+    r.configure("99.0.0")
+    FakeGitHub(r, listOf(pull(93, "99.0.0", merge = merge)),
+      files = mapOf("$merge|.release-please-manifest.json" to manifestOf("99.0.0")),
+      commitPulls = mapOf(contributed to listOf(assoc(12, contributed)))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #93 is about to be tagged, but the Release-As footer release-please " +
+        "takes among its commits is that of ${contributed.substring(0, 7)}, which belongs to pull request #12: a pull request " +
+        "may not choose the version")
+    }
+  }
+
+  @Test
+  fun `a pull request's commit the guard cannot read, inside a merged release's own commits, refuses the release`() {
+    // The override race with a body too deep for the guard: outside HEAD's window, the commit
+    // is read only for the merged release, where its unread footer still counts as the pull
+    // request's.
+    val r = Repo(mapOf("commit-search-depth" to 3))
+    r.commit("chore: start\n")
+    r.git("tag", "25.12.0")
+    val contributed = r.commit("feat: contributed\n")
+    r.commit("fix: one\n")
+    r.commit("fix: two\n")
+    val merge = r.commit("chore(main): release 99.0.0 (#95)\n")
+    r.configure("99.0.0")
+    val override = "BEGIN_COMMIT_OVERRIDE\nfeat: contributed\n\n" + "line\n".repeat(2_500) + "\nRelease-As: 99.0.0\nEND_COMMIT_OVERRIDE"
+    FakeGitHub(r, listOf(pull(95, "99.0.0", merge = merge)),
+      files = mapOf("$merge|.release-please-manifest.json" to manifestOf("99.0.0")),
+      commitPulls = mapOf(contributed to listOf(assoc(12, contributed, override)))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #95 is about to be tagged, but a commit among its commits that this " +
+        "guard cannot read, ${contributed.substring(0, 7)}, belongs to pull request #12 and may carry the Release-As footer " +
+        "release-please takes: a pull request may not choose the version")
+    }
+  }
+
+  @Test
+  fun `a direct commit the guard cannot read hides no pull request's part behind it inside a merged release's commits`() {
+    // release-please reads past the guard's limit: a direct commit it could not read may
+    // carry no footer, and then the footer release-please took is the older one a pull
+    // request brought, read or not. Both sit outside HEAD's window, inside the boundary.
+    val r = Repo(mapOf("commit-search-depth" to 3))
+    r.commit("chore: start\n")
+    r.git("tag", "25.12.0")
+    val contributed = r.commit("feat: contributed\n")
+    r.commit("fix: big\n\n" + "line\n".repeat(2_500))
+    val merge = r.commit("chore(main): release 99.0.0 (#96)\n")
+    r.commit("fix: one\n")
+    r.commit("fix: two\n")
+    r.configure("99.0.0")
+    val files = mapOf("$merge|.release-please-manifest.json" to manifestOf("99.0.0"))
+    val unread = "BEGIN_COMMIT_OVERRIDE\nfeat: contributed\n\n" + "line\n".repeat(2_500) + "\nRelease-As: 99.0.0\nEND_COMMIT_OVERRIDE"
+    FakeGitHub(r, listOf(pull(96, "99.0.0", merge = merge)), files = files,
+      commitPulls = mapOf(contributed to listOf(assoc(12, contributed, unread)))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #96 is about to be tagged, but a commit among its commits that this " +
+        "guard cannot read, ${contributed.substring(0, 7)}, belongs to pull request #12 and may carry the Release-As footer " +
+        "release-please takes")
+      assertNoMatch(out, "#96's version is not checked")
+    }
+    val read = "BEGIN_COMMIT_OVERRIDE\nfeat: contributed\n\nRelease-As: 99.0.0\nEND_COMMIT_OVERRIDE"
+    FakeGitHub(r, listOf(pull(96, "99.0.0", merge = merge)), files = files,
+      commitPulls = mapOf(contributed to listOf(assoc(12, contributed, read)))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(1, code, out)
+      assertMatch(out, "::error::merged release pull request #96 is about to be tagged, but the Release-As footer release-please " +
+        "takes among its commits is that of ${contributed.substring(0, 7)}, which belongs to pull request #12: a pull request " +
+        "may not choose the version")
+    }
+  }
+
+  @Test
+  fun `a direct footer behind a direct commit the guard cannot read leaves the version unchecked`() {
+    // Either commit's footer is the one release-please takes, and both are the maintainer's.
+    val r = Repo()
+    r.commit("chore: start\n")
+    r.git("tag", "25.12.0")
+    val carrier = r.commit("chore: release 3.0.0\n\nRelease-As: 3.0.0\n", emptyMap())
+    val deep = r.commit("fix: deep\n\n" + "line\n".repeat(2_500))
+    r.commit("fix: restate\n\nRestates: ${deep.substring(0, 7)}\n")
+    r.configure("2.0.0")
+    FakeGitHub(r, listOf(pull(82, "2.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("2.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "not checked against the commits: ${deep.substring(0, 7)} may carry a Release-As footer this guard cannot read")
+      assertNoMatch(out, "footer of ${carrier.substring(0, 7)} gives")
+    }
+  }
+
+  @Test
+  fun `a merged release pull request's commits are read from its merge with the configured depth, not from HEAD's window`() {
+    // With commit-search-depth 3, the carrier that set 99.0.0 has left HEAD's window once the
+    // release merge and two fixes follow it; release-please read it when it built the pull
+    // request, and so must the guard.
+    val r = Repo(mapOf("commit-search-depth" to 3))
+    r.commit("chore: start\n")
+    r.git("tag", "25.12.0")
+    r.commit("chore: release 99.0.0\n\nRelease-As: 99.0.0\n", emptyMap())
+    r.commit("fix: one\n")
+    r.commit("fix: two\n")
+    val merge = r.commit("chore(main): release 99.0.0 (#94)\n")
+    r.configure("99.0.0")
+    FakeGitHub(r, listOf(pull(94, "99.0.0", merge = merge)),
+      files = mapOf("$merge|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "checked 3 commit\\(s\\) since")
+      assertMatch(out, "1 from merged")
+      assertNoMatch(out, "#94 is about to be tagged")
+    }
+  }
+
+  @Test
+  fun `under another versioning strategy, or before a first release, the version is not checked against the commits`() {
+    val r = Repo(mapOf("versioning" to "default"))
+    r.configure("25.12.0")
+    r.commit("chore: start\n", r.configFiles())
+    r.git("tag", "25.12.0")
+    r.commit("fix: later\n")
+    val merge = r.commit("chore(main): release 99.0.0 (#64)\n", mapOf(".release-please-manifest.json" to manifestOf("99.0.0")))
+    r.configure("99.0.0")
+    FakeGitHub(r, listOf(pull(64, "99.0.0", merge = merge)), files = mapOf("$merge|.release-please-manifest.json" to manifestOf("99.0.0"))).use { gh ->
+      val (code, out) = r.run(gh.env)
+      assertEquals(0, code, out)
+      assertMatch(out, "#64's version is not checked against the commits: versioning is default")
+      assertNoMatch(out, "could not be read")
     }
     val first = Repo()
-    first.commit("chore: start\n")
-    first.commit("feat: first\n")
     first.configure("0.0.0")
-    FakeGitHub(first, listOf(pull(65, "1.0.0")), files = mapOf("$MERGE|.release-please-manifest.json" to manifestOf("1.0.0"))).use { gh ->
+    first.commit("chore: start\n", first.configFiles())
+    first.commit("feat: first\n")
+    val merge65 = first.commit("chore(main): release 1.0.0 (#65)\n", mapOf(".release-please-manifest.json" to manifestOf("1.0.0")))
+    first.configure("1.0.0")
+    FakeGitHub(first, listOf(pull(65, "1.0.0", merge = merge65)), files = mapOf("$merge65|.release-please-manifest.json" to manifestOf("1.0.0"))).use { gh ->
       val (code, out) = first.run(gh.env)
       assertEquals(0, code, out)
-      assertMatch(out, "not checked against the commits: there is no release to bump from")
+      assertMatch(out, "#65's version is not checked against the commits: there is no release to bump from")
+      assertNoMatch(out, "could not be read")
     }
   }
 

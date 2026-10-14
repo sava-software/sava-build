@@ -55,19 +55,25 @@ final class ReleasePullRequests {
   private static final String DEFAULT_TITLE_PATTERN = "chore${scope}: release${component} ${version}";
   private static final int MERGED_SEARCH_DEPTH = 200;
 
-  private static final String REMEDY = "A Release-As footer gives way to a later commit with a valid one (the newest wins), "
-      + "or to release-as in the config; the body's notes come from commit text, which a BEGIN_COMMIT_OVERRIDE block in "
-      + "the description of the pull request that merged that commit replaces.";
+  private static final String REMEDY = "The newest valid Release-As footer wins, so a later commit with one, or "
+      + "release-as in the config, sets the next release's version; the commits a merged release pull request was built "
+      + "from are fixed, and a footer among them, like the commit text the body's notes come from, leaves only through "
+      + "a BEGIN_COMMIT_OVERRIDE block in the description of the pull request that merged that commit, which replaces "
+      + "its commit text.";
 
   private ReleasePullRequests() {
   }
 
   /**
-   * The version release-please computes for the next release, when the guard can tell, and
-   * where it comes from: a release pull request naming another version was built from commits
-   * or edits that are not there now.
+   * The version release-please computes for a release, when the guard can tell, and where it
+   * comes from: a release pull request naming another version was built from commits or edits
+   * that are not there now. A null version with a source is one a pull request chose, or may
+   * have chosen through a commit this guard cannot read, with a Release-As footer that belongs
+   * to it: refused whatever the pull request names.
    */
   record Expected(String version, String source) {
+    /** No expectation at all: the merge commit is not in the checkout, so the commits are unread. */
+    static final Expected MISSING_MERGE = new Expected(null, null);
   }
 
   /**
@@ -78,7 +84,8 @@ final class ReleasePullRequests {
    * release-please creates the release on it.
    */
   static void check(GitHub github, ReleaseConfig config, String targetBranch, String manifestPath,
-                    List<PullRequest> merged, Expected expected, Predicate<String> releaseExists, Report report) {
+                    List<PullRequest> merged, Expected openExpected, Map<String, Expected> mergedExpected,
+                    Predicate<String> releaseExists, Report report) {
     if (config.skipGithubRelease) {
       report.lines.add("release pull requests not checked: skip-github-release is set, so release-please tags nothing");
       return;
@@ -86,12 +93,14 @@ final class ReleasePullRequests {
     final Map<String, String> manifests = new HashMap<>();
     for (final PullRequest pull : merged) {
       if (hasAllLabels(config.labels, pull.labels())) {
-        checkOne(github, config, manifestPath, pull, true, manifests, expected, releaseExists, report);
+        // Built from the commits up to its merge: judged against what those gave, not HEAD.
+        checkOne(github, config, manifestPath, pull, true, manifests, mergedExpected.get(pull.mergeCommitSha()),
+            releaseExists, report);
       }
     }
     for (final PullRequest pull : open(github, targetBranch)) {
       if (hasAllLabels(config.labels, pull.labels())) {
-        checkOne(github, config, manifestPath, pull, false, manifests, expected, releaseExists, report);
+        checkOne(github, config, manifestPath, pull, false, manifests, openExpected, releaseExists, report);
       }
     }
   }
@@ -118,9 +127,11 @@ final class ReleasePullRequests {
   /**
    * Whether release-please reads the pull request as one to tag, by the same rules as
    * {@link #checkOne} reports them: a body with the overflow message or section markup
-   * counts (release-please reads it, and this guard then refuses it), a body without a
+   * counts (release-please reads it, and this guard then refuses it), as does a title version
+   * release-please fails on (it fails there before it looks at the branch); a body without a
    * delimiter line, a title or head branch it cannot read, a component mismatch beside a
-   * section, or no version at all does not.
+   * section, or no version at all does not. A version past 2^53, which release-please rounds,
+   * counts like any other: this guard refuses it only where release-please would tag it.
    */
   static boolean wouldTag(ReleaseConfig config, PullRequest pull) {
     if (OVERFLOW.matcher(pull.body()).find()) {
@@ -139,12 +150,8 @@ final class ReleasePullRequests {
     if (grouped == null) {
       return false;
     }
-    if (grouped.version() != null) {
-      try {
-        parseVersion(grouped.version());
-      } catch (IllegalArgumentException e) {
-        return true;
-      }
+    if (grouped.version() != null && !VERSION.matcher(grouped.version()).find()) {
+      return true;
     }
     final String branchComponent = branchComponent(pull.headRef());
     if (branchComponent == null) {
@@ -277,15 +284,22 @@ final class ReleasePullRequests {
           + " does not match the release pull request title pattern, so release-please tags nothing from it");
       return;
     }
+    // A title version release-please fails on fails it before it looks at the branch; one
+    // release-please rounds (past 2^53) is refused only where release-please would tag it,
+    // after the branch and component checks.
     String version = null;
+    String rounded = null;
     if (grouped.version() != null) {
       try {
         version = parseVersion(grouped.version());
       } catch (IllegalArgumentException e) {
-        reasons.add("release-please fails on its title (" + e.getMessage() + "), and would fail the same way when "
-            + "releasing; fix the title, or remove " + labelText(config) + " from it");
-        report(config, pull, merged, reasons, report);
-        return;
+        if (!VERSION.matcher(grouped.version()).find()) {
+          reasons.add("its title names a version this guard refuses (" + e.getMessage() + "); fix the title, or remove "
+              + labelText(config) + " from it");
+          report(config, pull, merged, reasons, report);
+          return;
+        }
+        rounded = e.getMessage();
       }
     }
     final String branchComponent = branchComponent(pull.headRef());
@@ -295,13 +309,33 @@ final class ReleasePullRequests {
       return;
     }
     // The body's one section, if it has one. release-please compares the branch's component
-    // with the configured one only then; with no section it tags the title's version.
+    // with the configured one only then, and leaves the pull request alone on a mismatch
+    // whatever the section names; with no section it tags the title's version.
     final Matcher single = SINGLE_RELEASE.matcher(ConventionalCommits.jsTrim(body.content()));
-    final String sectionVersion = single.find() ? parseVersion(single.group(1)) : null;
-    if (sectionVersion != null && !branchComponent.equals(config.component)) {
+    final boolean section = single.find();
+    if (section && !branchComponent.equals(config.component)) {
       report.notices.add(which + " is left alone: its head branch's component " + quote(branchComponent)
           + " is not the configured component " + quote(config.component) + ", so release-please tags nothing from it");
       return;
+    }
+    if (rounded != null) {
+      reasons.add("its title names a version this guard refuses (" + rounded + "); fix the title, or remove "
+          + labelText(config) + " from it");
+      report(config, pull, merged, reasons, report);
+      return;
+    }
+    // The section's version counts only when the title names none; release-please does not
+    // read it otherwise.
+    String sectionVersion = null;
+    if (section && version == null) {
+      try {
+        sectionVersion = parseVersion(single.group(1));
+      } catch (IllegalArgumentException e) {
+        reasons.add("its body's release section names a version this guard refuses (" + e.getMessage()
+            + "); edit the body, or remove " + labelText(config) + " from it");
+        report(config, pull, merged, reasons, report);
+        return;
+      }
     }
     if (version == null) {
       version = sectionVersion;
@@ -324,6 +358,17 @@ final class ReleasePullRequests {
       report.fromMerged++;
     } else {
       report.fromOpen++;
+    }
+    // A merged pull request whose merge commit the checkout does not have (the merge landed
+    // after the checkout fetched, or sits on no branch): the commits it was built from cannot
+    // be checked from here, a contributor's footer among them included, so the release is
+    // refused until a run from a checkout that has the merge.
+    if (expected == Expected.MISSING_MERGE) {
+      report.errors.add(which + "'s merge commit " + sha.substring(0, 7) + " is not in this checkout, so the commits it "
+          + "was built from cannot be checked here, and release-please is about to tag it. Nothing has been tagged. Run "
+          + "this workflow from the branch's current head once it has the merge (a push, or a dispatch), or remove "
+          + labelText(config) + " from #" + pull.number() + " to skip the release.");
+      expected = null;
     }
     String manifestVersion = null;
     boolean manifestRead = false;
@@ -351,12 +396,16 @@ final class ReleasePullRequests {
     if (!tagReasons.isEmpty()) {
       reasons.add("release-please would tag it " + quote(tag) + ", which is " + String.join(", and ", tagReasons));
     }
-    // The version must also be the one the commits give now: one computed from a Release-As
-    // footer or a commit override that has since been edited away, or from any other source,
-    // is refused whether or not it is plain and in the manifest.
-    if (expected != null && !version.equals(expected.version())) {
+    // The version must also be the one the commits give (those it was built from, for a
+    // merged one): one computed from a Release-As footer or a commit override that has since
+    // been edited away, or from any other source, is refused whether or not it is plain and
+    // in the manifest; and one a pull request chose, or may have, is refused whatever it names.
+    if (expected != null && expected.version() == null) {
+      reasons.add(expected.source());
+    } else if (expected != null && !version.equals(expected.version())) {
       reasons.add("its version " + quote(version) + " is not " + quote(expected.version()) + ", " + expected.source()
-          + (merged ? "; release-please computed it from commits or pull request edits that are not there now"
+          + (merged ? "; release-please computed it from commits or pull request edits that are not there now, or the "
+          + "pull request was merged before release-please refreshed it"
           : "; it comes from release-please's last run, or from an edit since: a pull request that only predates a "
           + "newer footer is rewritten by release-please once this run is green, an edited title is not"));
     }
@@ -510,10 +559,9 @@ final class ReleasePullRequests {
   static String branchComponent(String branchName) {
     Matcher m = AUTORELEASE_BRANCH.matcher(branchName);
     if (!branchName.startsWith("release-please--branches") && m.matches()) {
-      // release-please parses the version there and fails, naming no branch, when it is none.
-      try {
-        parseVersion(m.group(2));
-      } catch (IllegalArgumentException e) {
+      // release-please parses the version there and fails, naming no branch, when it finds
+      // none; a component it would round still names the branch.
+      if (!VERSION.matcher(m.group(2)).find()) {
         return null;
       }
       return m.group(1) == null ? "" : m.group(1);
@@ -541,15 +589,28 @@ final class ReleasePullRequests {
 
   // ---- release-please's Version.parse and toString
 
-  /** The version string release-please makes of the text: the first X.Y.Z[-pre][+build] in it. */
+  // 2^53: a JavaScript Number keeps an integer exact up to here, so release-please does too.
+  private static final BigInteger MAX_EXACT_COMPONENT = BigInteger.valueOf(9_007_199_254_740_992L);
+
+  /**
+   * The version string release-please makes of the text: the first X.Y.Z[-pre][+build] in it.
+   * A component release-please would round (past 2^53) is refused rather than kept exact. The
+   * message says what release-please does with the text: fail, as its own message has it, or
+   * round.
+   */
   static String parseVersion(String text) {
     final Matcher m = VERSION.matcher(text);
     if (!m.find()) {
-      throw new IllegalArgumentException("unable to parse version string: " + text);
+      throw new IllegalArgumentException("unable to parse version string: " + text + ", on which release-please fails");
     }
     final StringBuilder version = new StringBuilder();
-    version.append(new BigInteger(m.group(1))).append('.').append(new BigInteger(m.group(2))).append('.')
-        .append(new BigInteger(m.group(3)));
+    for (int group = 1; group <= 3; group++) {
+      final BigInteger component = new BigInteger(m.group(group));
+      if (component.compareTo(MAX_EXACT_COMPONENT) > 0) {
+        throw new IllegalArgumentException("a version component past 2^53 in " + text + ", which release-please rounds");
+      }
+      version.append(group > 1 ? "." : "").append(component);
+    }
     if (m.group(5) != null) {
       version.append('-').append(m.group(5));
     }

@@ -129,13 +129,14 @@ final class GitHub {
    * commits. A commit pushed directly belongs to none.
    */
   Map<String, List<AssociatedPullRequest>> associatedPullRequests(List<String> shas) {
-    final Map<String, List<AssociatedPullRequest>> result = new HashMap<>();
     final String[] ownerAndRepo = repository.split("/", 2);
     if (ownerAndRepo.length != 2) {
       throw new ReadException("GITHUB_REPOSITORY is not owner/repo: " + repository);
     }
-    for (int from = 0; from < shas.size(); from += 100) {
-      final List<String> batch = shas.subList(from, Math.min(shas.size(), from + 100));
+    // Asked once per commit: a later range (a merged release pull request's) shares most of them.
+    final List<String> missing = shas.stream().filter(sha -> !known.containsKey(sha)).distinct().toList();
+    for (int from = 0; from < missing.size(); from += 100) {
+      final List<String> batch = missing.subList(from, Math.min(missing.size(), from + 100));
       final StringBuilder query = new StringBuilder("query { repository(owner: ").append(Json.string(ownerAndRepo[0]))
           .append(", name: ").append(Json.string(ownerAndRepo[1])).append(") {");
       for (int i = 0; i < batch.size(); i++) {
@@ -168,11 +169,17 @@ final class GitHub {
               pull.get("body") instanceof String body ? body : "",
               merge instanceof Map<?, ?> m && Json.asObject(m, "mergeCommit").get("oid") instanceof String oid ? oid : null));
         }
-        result.put(batch.get(i), pulls);
+        known.put(batch.get(i), pulls);
       }
+    }
+    final Map<String, List<AssociatedPullRequest>> result = new HashMap<>();
+    for (final String sha : shas) {
+      result.put(sha, known.get(sha));
     }
     return result;
   }
+
+  private final Map<String, List<AssociatedPullRequest>> known = new HashMap<>();
 
   /** A file's text at a ref; NotFoundException when the ref or the file does not exist there. */
   String fileAt(String path, String ref) {

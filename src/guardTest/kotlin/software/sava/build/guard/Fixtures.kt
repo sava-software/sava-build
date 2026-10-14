@@ -98,6 +98,10 @@ class Repo(private val config: Map<String, Any?> = emptyMap()) {
     Files.writeString(dir.resolve(".release-please-manifest.json"), toJson(mapOf("." to version)))
   }
 
+  /** The config and manifest as written, to commit them where the guard reads them at a revision. */
+  fun configFiles(): Map<String, String> = listOf("release-please-config.json", ".release-please-manifest.json")
+    .associateWith { Files.readString(dir.resolve(it)) }
+
   fun run(env: Map<String, String> = emptyMap()): Run {
     val full = linkedMapOf(
       "CONFIG_FILE" to dir.resolve("release-please-config.json").toString(),
@@ -159,29 +163,60 @@ fun assoc(number: Int, mergeCommit: String? = null, body: String = ""): Map<Stri
  */
 class FakeGitHub(
   repo: Repo,
-  private val pulls: List<Map<String, Any?>>,
+  pulls: List<Map<String, Any?>>,
   files: Map<String, String?> = emptyMap(),
   private val branch: String = "main",
   private val fail: Int? = null,
-  private val failing: Map<String, Int> = emptyMap(),
+  failing: Map<String, Int> = emptyMap(),
   private val commitPulls: Map<String, List<Map<String, Any?>>> = emptyMap(),
   private val unknownCommits: Set<String> = emptySet(),
   private val releases: Set<String> = emptySet(),
 ) : AutoCloseable {
+  /**
+   * The merge commit made for each merged pull request given the stand-in [MERGE] sha, by
+   * number: a commit on top of the repository's HEAD that moves no ref, so the guard reads
+   * the commits up to the merge as those up to HEAD, and the range from HEAD stays as the
+   * test built it. A merge commit the checkout must not have takes another sha.
+   */
+  val merges: Map<Int, String>
+  private val pulls: List<Map<String, Any?>>
   private val files: Map<String, String?>
+  private val failing: Map<String, Int>
   private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
   private val log = mutableListOf<String>()
 
   init {
+    val merges = linkedMapOf<Int, String>()
+    this.pulls = pulls.map { pull ->
+      if (pull["merge_commit_sha"] != MERGE) pull
+      else {
+        val number = pull["number"] as Int
+        val sha = repo.git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "chore(main): release (#$number)")
+        merges[number] = sha
+        pull + ("merge_commit_sha" to sha)
+      }
+    }
+    this.merges = merges
     val manifest = Files.readString(repo.dir.resolve(".release-please-manifest.json"))
     // The manifest at a release's own commit (MERGE for merged, HEAD_SHA for open pull
-    // requests) is the scratch repository's unless a test says otherwise.
-    this.files = linkedMapOf<String, String?>(
+    // requests) is the scratch repository's unless a test says otherwise; a MERGE key
+    // stands for every merge commit made above.
+    this.files = resolve(linkedMapOf<String, String?>(
       "$MERGE|.release-please-manifest.json" to manifest,
       "$HEAD_SHA|.release-please-manifest.json" to manifest,
-    ).apply { putAll(files) }
+    ).apply { putAll(files) })
+    this.failing = resolve(failing)
     server.createContext("/") { exchange -> handle(exchange) }
     server.start()
+  }
+
+  private fun <V> resolve(byKey: Map<String, V>): Map<String, V> {
+    val resolved = linkedMapOf<String, V>()
+    for ((key, value) in byKey) {
+      if (key.startsWith("$MERGE|")) merges.values.forEach { resolved[it + key.removePrefix(MERGE)] = value }
+      else resolved[key] = value
+    }
+    return resolved
   }
 
   val env: Map<String, String>
