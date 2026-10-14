@@ -59,37 +59,33 @@ jobs:
             --init-script ${{ runner.temp }}/dependency-graph-resolution-check.init.gradle
       - name: Check dependency graph identity and coverage
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          reports = list(Path("dependency-graph-reports").glob("*.json"))
-          if len(reports) != 1:
-              raise SystemExit(f"Expected one dependency snapshot, found {len(reports)}")
-          snapshot = json.loads(reports[0].read_text())
-          if (snapshot.get("sha"), snapshot.get("ref"), snapshot.get("job", {}).get("id")) != (
-              os.environ["GITHUB_SHA"], "refs/heads/main", os.environ["GITHUB_RUN_ID"]
-          ):
-              raise SystemExit("Dependency snapshot does not describe this main push and workflow run")
-          packages = {
-              dependency["package_url"].split("?", 1)[0]
-              for manifest in snapshot.get("manifests", {}).values()
-              for dependency in manifest.get("resolved", {}).values()
-          }
-          wrapper = Path("gradle/wrapper/gradle-wrapper.properties").read_text()
-          gradle_version = re.search(r"/gradle-(.+)-bin\.zip", wrapper).group(1)
-          if f"pkg:maven/org.gradle/gradle-core@{gradle_version}" not in packages:
-              raise SystemExit("Dependency snapshot omits the configured Gradle version")
-          for anchor in (
-              "pkg:maven/com.autonomousapps/dependency-analysis-gradle-plugin@",
-              "pkg:maven/org.junit.jupiter/junit-jupiter@",
-          ):
-              if not any(package.startswith(anchor) for package in packages):
-                  raise SystemExit(f"Dependency snapshot omits expected build/test dependency: {anchor}")
-          print(f"Verified dependency snapshot for this main push: {len(packages)} packages")
-          PY
+          shopt -s nullglob
+          reports=(dependency-graph-reports/*.json)
+          if [ "${#reports[@]}" -ne 1 ]; then
+            echo "::error::Expected one dependency snapshot, found ${#reports[@]}"
+            exit 1
+          fi
+          snapshot="${reports[0]}"
+          if ! jq -e --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
+              '.sha == $sha and .ref == "refs/heads/main" and (.job.id | tostring) == $run' "$snapshot" > /dev/null; then
+            echo "::error::Dependency snapshot does not describe this main push and workflow run"
+            exit 1
+          fi
+          # Every resolved package URL without its qualifiers, once each.
+          jq -r '[.manifests // {} | .[] | .resolved // {} | .[] | .package_url | split("?")[0]] | unique | .[]' \
+            "$snapshot" > "$RUNNER_TEMP/packages"
+          gradle_version=$(sed -nE 's#.*/gradle-(.+)-bin\.zip.*#\1#p' gradle/wrapper/gradle-wrapper.properties | head -n 1)
+          if ! grep -qxF "pkg:maven/org.gradle/gradle-core@$gradle_version" "$RUNNER_TEMP/packages"; then
+            echo "::error::Dependency snapshot omits the configured Gradle version"
+            exit 1
+          fi
+          for anchor in pkg:maven/com.autonomousapps/dependency-analysis-gradle-plugin@ pkg:maven/org.junit.jupiter/junit-jupiter@; do
+            if ! awk -v anchor="$anchor" 'index($0, anchor) == 1 { found = 1 } END { exit !found }' "$RUNNER_TEMP/packages"; then
+              echo "::error::Dependency snapshot omits expected build/test dependency: $anchor"
+              exit 1
+            fi
+          done
+          echo "Verified dependency snapshot for this main push: $(wc -l < "$RUNNER_TEMP/packages" | tr -d ' ') packages"
 
   submit:
     needs: generate

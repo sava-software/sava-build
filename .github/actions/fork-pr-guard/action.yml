@@ -1,0 +1,71 @@
+name: Fork pull request guard
+description: >-
+  Fails a pull request from a fork that changes the build or a dependency: Gradle scripts,
+  the wrapper, gradle/, version catalogs, release-please configuration, .github/, or a
+  requires directive on a module outside the JDK in module-info.java. Outside contributors
+  never change the build; maintainers do. Run after the checkout, with a JDK 21 or later on
+  the PATH, on a pull_request event whose head repository is another one.
+runs:
+  using: composite
+  steps:
+    # A composite action runs without a build, so the reader of requires directives is Java
+    # compiled here by the JDK the workflow set up. sava-build's Gradle check compiles the
+    # same source with every lint as an error and tests it.
+    - name: Compile the requires reader
+      shell: bash
+      run: |
+        classes="$RUNNER_TEMP/fork-pr-guard"
+        mkdir -p "$classes"
+        javac --release 21 -d "$classes" "$GITHUB_ACTION_PATH/src/software/sava/build/guard/RequiresOf.java"
+    # A pull request from a fork runs the workflow files of its own branch, so this tells an
+    # honest contributor early; it cannot stop a hostile one, which review does.
+    - name: Refuse build and dependency changes from forks
+      shell: bash
+      run: |
+        # The requires directives of a module-info.java at a commit, one per line, sorted,
+        # as RequiresOf.java reads them: comments removed, one holding only "runtime"
+        # (/*runtime*/ or //runtime), which the module plugin reads as a runtime-only
+        # dependency, read as a modifier, whitespace and modifiers normalized, and JDK
+        # modules left out. A file that does not exist at that commit has none.
+        requires_of() {
+          git cat-file -e "$1:$2" 2>/dev/null || return 0
+          git show "$1:$2" | java -cp "$RUNNER_TEMP/fork-pr-guard" software.sava.build.guard.RequiresOf
+        }
+        protected() {
+          case "$1" in
+            .github|.github/*|gradle|gradle/*|buildSrc|buildSrc/*|build-logic|build-logic/*) return 0 ;;
+            gradlew|gradlew.bat|*.gradle|*.gradle.kts|*.versions.toml) return 0 ;;
+            gradle.properties|*/gradle.properties) return 0 ;;
+            release-please-config.json|.release-please-manifest.json) return 0 ;;
+          esac
+          return 1
+        }
+        # The checkout is the merge commit at depth 1; its first parent is the base. The
+        # list goes through a file so a failing git command fails the step, and without
+        # rename detection a protected file moved elsewhere still lists its old path.
+        git fetch --quiet --no-tags --depth=2 origin "$GITHUB_SHA"
+        git diff --no-renames --name-only -z HEAD^1 HEAD > "$RUNNER_TEMP/pr-changed-paths"
+        refused=0
+        while IFS= read -r -d '' path; do
+          reason=
+          if protected "$path"; then
+            reason="dependency, build, release and workflow changes come from maintainers"
+          elif [[ "$path" == module-info.java || "$path" == */module-info.java ]]; then
+            # The module plugin reads dependencies from requires directives, so an added,
+            # removed or changed one on a module outside the JDK is a dependency change.
+            # Both versions are read whole: a directive can span lines or share one.
+            # Through files, so a failing read fails the step.
+            requires_of HEAD^1 "$path" > "$RUNNER_TEMP/requires-was"
+            requires_of HEAD "$path" > "$RUNNER_TEMP/requires-now"
+            changed=$(LC_ALL=C comm -3 "$RUNNER_TEMP/requires-was" "$RUNNER_TEMP/requires-now" |
+              awk -F '\t' '{ printf "%s%s", (NR > 1 ? ", " : ""), ($1 == "" ? "now " $2 : "was " $1) }')
+            if [ -n "$changed" ]; then
+              reason="it changes requires directives ($changed), and dependency changes come from maintainers"
+            fi
+          fi
+          [ -n "$reason" ] || continue
+          refused=1
+          path=${path//'%'/%25}; path=${path//$'\r'/%0D}; path=${path//$'\n'/%0A}
+          echo "::error::A pull request from a fork may not change $path: $reason."
+        done < "$RUNNER_TEMP/pr-changed-paths"
+        exit "$refused"

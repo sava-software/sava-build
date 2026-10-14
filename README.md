@@ -352,7 +352,7 @@ Reusable workflows (all use the composite action and the repository variables
 
 | Workflow | Purpose |
 |---|---|
-| [check-pr.yml](.github/workflows/check-pr.yml) | `gradlew check` on pull requests (skips release-please and dependabot PRs). A pull request from a fork receives no secrets, so it builds offline from `main`'s Gradle cache, and it fails if it changes Gradle scripts, the wrapper, `gradle/`, version catalogs, release-please configuration, `.github/`, or a `requires` directive on a module outside the JDK in `module-info.java`. |
+| [check-pr.yml](.github/workflows/check-pr.yml) | `gradlew check` on pull requests (skips release-please and dependabot PRs). A pull request from a fork receives no secrets, so it builds offline from `main`'s Gradle cache, and the [fork-pr-guard](.github/actions/fork-pr-guard) action fails it if it changes Gradle scripts, the wrapper, `gradle/`, version catalogs, release-please configuration, `.github/`, or a `requires` directive on a module outside the JDK in `module-info.java` (read by a Java program the action compiles, tested by `guardTest`). |
 | [build.yml](.github/workflows/build.yml) | `gradlew check` on push. |
 | [publish.yml](.github/workflows/publish.yml) | Check, publish to Maven Central and GitHub Packages, attest build provenance. |
 | [publish-gh.yml](.github/workflows/publish-gh.yml) | Check, publish to GitHub Packages only, attest build provenance. |

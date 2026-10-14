@@ -416,21 +416,27 @@ tasks.test {
 
 // The composite actions under .github/actions carry Java programs: a composite action runs
 // without a build, which rules out Kotlin and this plugin's jar, so each action compiles its
-// sources with javac on the JDK its workflow set up (Java 21, the oldest a sava workflow runs
-// them on) and runs them. This build compiles the same sources the same way and tests them
-// under check, from the Kotlin tests in src/guardTest.
-val guardSources = listOf(".github/actions/release-please-guard/src")
-val guard by sourceSets.creating {
-  java.setSrcDirs(guardSources.map { layout.projectDirectory.dir(it) })
-  resources.setSrcDirs(emptyList<File>())
-}
-tasks.named<JavaCompile>(guard.compileJavaTaskName) {
-  options.release = 21
-  options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
-}
+// own source directory with javac on the JDK its workflow set up (Java 21, the oldest a sava
+// workflow runs them on) and runs it. This build compiles each directory on its own the same
+// way, with every lint as an error, and tests them under check from the Kotlin tests in
+// src/guardTest.
+val actionSourceSets = listOf("releasePleaseGuard" to "release-please-guard", "forkPrGuard" to "fork-pr-guard")
+  .map { (name, action) ->
+    val sourceSet = sourceSets.create(name) {
+      java.setSrcDirs(listOf(layout.projectDirectory.dir(".github/actions/$action/src")))
+      resources.setSrcDirs(emptyList<File>())
+    }
+    tasks.named<JavaCompile>(sourceSet.compileJavaTaskName) {
+      options.release = 21
+      options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
+    }
+    sourceSet
+  }
 val guardTest by sourceSets.creating {
-  compileClasspath += guard.output
-  runtimeClasspath += guard.output
+  actionSourceSets.forEach { actionSourceSet ->
+    compileClasspath += actionSourceSet.output
+    runtimeClasspath += actionSourceSet.output
+  }
 }
 dependencies {
   "guardTestImplementation"("org.junit.jupiter:junit-jupiter:6.1.3")
@@ -442,6 +448,11 @@ val guardTestTask = tasks.register<Test>("guardTest") {
   useJUnitPlatform()
   testClassesDirs = guardTest.output.classesDirs
   classpath = guardTest.runtimeClasspath
+  // ReleasePleaseActionPinTest reads the workflow for the pinned release-please-action: an
+  // input, so a moved pin re-runs the task rather than finding it up to date or in the cache.
+  inputs.file(layout.projectDirectory.file(".github/workflows/release-please.yml"))
+    .withPropertyName("releasePleaseWorkflow")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 tasks.check { dependsOn(guardTestTask) }
 
