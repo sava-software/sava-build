@@ -1,5 +1,31 @@
 # Changelog
 
+## [21.6.8](https://github.com/sava-software/sava-build/compare/21.6.7...21.6.8) (2026-10-14)
+
+
+### Features
+
+* **ci:** build pull requests from forks offline from main's Gradle cache ([0a6dbd4](https://github.com/sava-software/sava-build/commit/0a6dbd46b34995e6f84caae78611d7a1fdc7a48a))
+* **ci:** port the release-please guard to Java, with no JavaScript left ([723db8e](https://github.com/sava-software/sava-build/commit/723db8ea7966b3e13be489cd3ef4d75c29c68363))
+* **ci:** refuse a Release-As footer that belongs to a pull request ([2794215](https://github.com/sava-software/sava-build/commit/2794215dd187a2566b0f3a471d39501e636d2f79))
+
+
+### Bug Fixes
+
+* **ci:** end commit headers at a lone CR in the release-please guard ([c03a5c6](https://github.com/sava-software/sava-build/commit/c03a5c60566f02d2aace970ac5245d8463c6fd21))
+* **ci:** judge a merged release pull request's version from the commits it was built from ([33144b7](https://github.com/sava-software/sava-build/commit/33144b78f3cde273876930cdfaa00f5d8fe9753a))
+* **ci:** keep ref names out of shell scripts and publish only X.Y.Z tags ([595aa08](https://github.com/sava-software/sava-build/commit/595aa0812d3039c31e537c6ab9f2040a3c709177))
+* **ci:** publish a tag only when its commit's release manifest names it ([75b88a3](https://github.com/sava-software/sava-build/commit/75b88a3db83d1de7c8534b38fff953a08a041cb7))
+* **ci:** refuse a release whose tag is not the X.Y.Z version it should be ([ff73f1b](https://github.com/sava-software/sava-build/commit/ff73f1b478ceb50911d57e115b10d2d5549043dc))
+* **ci:** report every finding of the release guard's check, open or merged ([ac38089](https://github.com/sava-software/sava-build/commit/ac38089ff2e68f52feb5a157e5445cc8c8a64588))
+* **ci:** run release tests where no publishing secret reaches them ([9b80f43](https://github.com/sava-software/sava-build/commit/9b80f43cc5d8badf66c6b16c27b9c0d0040afcf7))
+
+
+### Refactors
+
+* **ci:** read requires directives with Java and the dependency snapshot with jq, with no Python left ([bfad414](https://github.com/sava-software/sava-build/commit/bfad414cb8b38462da8621f24aba8f559a54f5d8))
+* **ci:** take the Java version from a checked tag's major ([22b3e6c](https://github.com/sava-software/sava-build/commit/22b3e6c2d606de99e840c9b2408e31d62294dd58))
+
 ## [21.6.7](https://github.com/sava-software/sava-build/compare/21.6.6...21.6.7) (2026-10-12)
 
 
