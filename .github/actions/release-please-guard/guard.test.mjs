@@ -245,8 +245,9 @@ test('an empty exclude-paths list still excludes an empty commit, as release-ple
 });
 
 // A stand-in for gh against the GitHub API: serves the requested page of the given pull
-// requests in that state, and file contents by ref and path; logs every call, and fails
-// every call when asked to.
+// requests in that state, and file contents by ref and path; logs every call. Every call
+// fails with the status GH_STUB_FAIL holds, and a file read with the status the fixture's
+// failing map holds for its ref|path, or for its path on any ref.
 const GH_STUB = `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
@@ -254,11 +255,13 @@ fs.appendFileSync(process.env.GH_STUB_LOG, JSON.stringify(args) + '\\n');
 const query = args[args.length - 1] || '';
 const fixture = JSON.parse(fs.readFileSync(process.env.GH_STUB_FIXTURE, 'utf8'));
 const fail = (status) => { process.stderr.write('HTTP ' + status); process.exit(1); };
-if (process.env.GH_STUB_FAIL) fail('502: Bad Gateway');
+if (process.env.GH_STUB_FAIL) fail(process.env.GH_STUB_FAIL);
 const file = /^repos\\/o\\/r\\/contents\\/(.+)\\?ref=(.+)$/.exec(query);
-if (file && (fixture.unavailable || []).includes(decodeURIComponent(file[1]))) fail('502: Bad Gateway');
 if (file) {
-  const key = decodeURIComponent(file[2]) + '|' + file[1].split('/').map(decodeURIComponent).join('/');
+  const path = file[1].split('/').map(decodeURIComponent).join('/');
+  const key = decodeURIComponent(file[2]) + '|' + path;
+  const status = fixture.failing[key] ?? fixture.failing[path];
+  if (status) fail(status);
   if (!(key in fixture.files)) fail('404: Not Found ' + key);
   process.stdout.write(fixture.files[key]);
   process.exit(0);
@@ -272,7 +275,8 @@ process.stdout.write(JSON.stringify(fixture.pulls.filter((p) => p.state === stat
 
 // The guard reads the config and manifest the way release-please does, from the target
 // branch through the API, so the stub serves the scratch repository's own files there.
-function ghStub(r, pulls, { files = {}, branch = 'main', fail = false, env = {}, unavailable = [] } = {}) {
+// fail: true, or the status every call fails with; failing: { 'ref|path' or 'path': status }.
+function ghStub(r, pulls, { files = {}, branch = 'main', fail = false, env = {}, failing = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'gh-'));
   const log = join(dir, 'calls.log');
   const read = (name) => readFileSync(join(r.dir, name), 'utf8');
@@ -285,11 +289,12 @@ function ghStub(r, pulls, { files = {}, branch = 'main', fail = false, env = {},
     [`${MERGE}|.release-please-manifest.json`]: read('.release-please-manifest.json'),
     [`${HEAD_SHA}|.release-please-manifest.json`]: read('.release-please-manifest.json'),
     ...files,
-  }, unavailable }));
+  }, failing }));
   writeFileSync(log, '');
   return {
     env: { PATH: `${dir}:${process.env.PATH}`, GH_TOKEN: 'stub', GITHUB_REPOSITORY: 'o/r', TARGET_BRANCH: branch,
-      GH_STUB_FIXTURE: join(dir, 'fixture.json'), GH_STUB_LOG: log, ...(fail ? { GH_STUB_FAIL: '1' } : {}), ...env },
+      GH_STUB_FIXTURE: join(dir, 'fixture.json'), GH_STUB_LOG: log,
+      ...(fail ? { GH_STUB_FAIL: fail === true ? '502: Bad Gateway' : fail } : {}), ...env },
     calls: () => readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)),
   };
 }
@@ -305,11 +310,11 @@ const releaseBody = (version, notes = '* later') => ':robot: I have created a re
   '---\nThis PR was generated with [Release Please](https://github.com/googleapis/release-please).';
 const pull = (number, version, {
   title = `chore(main): release ${version}`, body = releaseBody(version), merged = true, open = false,
-  labels = ['autorelease: pending'], head = HEAD, base = 'main',
+  labels = ['autorelease: pending'], head = HEAD, base = 'main', merge = MERGE,
 } = {}) => ({
   number, title, body, head: { ref: head, sha: HEAD_SHA }, base: { ref: base },
   state: open ? 'open' : 'closed', merged_at: merged && !open ? '2026-10-13T00:00:00Z' : null,
-  merge_commit_sha: merged && !open ? MERGE : null, labels: labels.map((name) => ({ name })),
+  merge_commit_sha: merged && !open ? merge : null, labels: labels.map((name) => ({ name })),
 });
 const filler = (from, count, opts) => Array.from({ length: count }, (_, i) =>
   pull(from + i, '0.0.1', { title: 'fix: x', body: 'x', labels: [], ...opts }));
@@ -506,7 +511,7 @@ test('a GitHub API failure fails the run rather than skipping the check', () => 
   const r = released();
   const { code, out } = r.run(ghStub(r, [], { fail: true }).env);
   assert.equal(code, 1, out);
-  assert.match(out, /::error::could not read the release pull requests from GitHub \(.*\); re-run the job/);
+  assert.match(out, /::error::could not read from GitHub \(.*\); re-run the job/);
 });
 
 test('a pull request release-please would not tag is left alone', () => {
@@ -555,6 +560,7 @@ test('a file a pull request names that does not exist names the pull request, wi
   const link = foreign.run(ghStub(foreign, [pull(35, '25.12.1', { body: overflow('pull/9/head') })]).env);
   assert.equal(link.code, 1, link.out);
   assert.match(link.out, /#35 makes release-please read release-notes\.md from "pull\/9\/head"/);
+  assert.doesNotMatch(link.out, /fails on release pull request #35/);
   assert.doesNotMatch(link.out, /re-run the job/);
   const noManifest = released();
   const merge = noManifest.run(ghStub(noManifest, [pull(36, '25.12.1')],
@@ -569,9 +575,10 @@ test('the API failing while release-please reads a pull request still asks for a
   const body = ':robot: I have created a release *beep* *boop*\n---\n\n\nThis release is too large to preview in ' +
     `the pull request body. View the full release notes here: https://github.com/o/r/blob/${HEAD}--release-notes/release-notes.md` +
     '\n\n---\nfooter';
-  const { code, out } = r.run(ghStub(r, [pull(37, '25.12.1', { body })], { unavailable: ['release-notes.md'] }).env);
+  const { code, out } = r.run(ghStub(r, [pull(37, '25.12.1', { body })],
+    { failing: { 'release-notes.md': '502: Bad Gateway' } }).env);
   assert.equal(code, 1, out);
-  assert.match(out, /::error::could not read the release pull requests from GitHub \(.*\); re-run the job/);
+  assert.match(out, /::error::could not read from GitHub \(.*\); re-run the job/);
 });
 
 test('an open release pull request linking a foreign ref, or whose head manifest cannot be read, is a warning', () => {
@@ -628,4 +635,109 @@ test('a carriage return in a commit subject cannot start a workflow command line
   assert.match(excluded.out, /release-please excludes /);
   assert.ok(!excluded.out.split(/\r\n|\r|\n/).some((line) => line.trimStart().startsWith('::warning title=forged')),
     excluded.out);
+});
+
+const overflowTo = (ref) => ':robot: I have created a release *beep* *boop*\n---\n\n\nThis release is too large to ' +
+  `preview in the pull request body. View the full release notes here: https://github.com/o/r/blob/${ref}/release-notes.md` +
+  '\n\n---\nfooter';
+
+test('an open release pull request whose foreign link names no file is one warning, as an open one', () => {
+  const r = released({}, '25.12.0');
+  const { code, out } = r.run(ghStub(r, [pull(42, '25.12.1', { body: overflowTo('pull/9/head'), open: true })]).env);
+  assert.equal(code, 0, out);
+  const lines = out.split('\n').filter((line) => line.includes('#42'));
+  assert.equal(lines.length, 1, out);
+  assert.match(lines[0], /^::warning::open release pull request #42 makes release-please read release-notes\.md from "pull\/9\/head"/);
+  assert.doesNotMatch(out, /merged release pull request/);
+  assert.match(out, /0 from merged and none from open/);
+});
+
+test('a foreign read is reported beside a failure on, or an unreadable manifest of, another merged pull request', () => {
+  // release-please reads the pull requests in order: #43 makes a foreign read, then the next one fails.
+  const linked = pull(43, '25.12.1', { body: overflowTo('pull/9/head') });
+  const files = { 'pull/9/head|release-notes.md': releaseBody('25.12.1') };
+  const r = released();
+  const failed = r.run(ghStub(r, [linked,
+    pull(44, '25.12.1', { body: releaseBody('25.12.1', '* see <details>x</details>') })], { files }).env);
+  assert.equal(failed.code, 1, failed.out);
+  assert.match(failed.out, /::error::merged release pull request #43 makes release-please read release-notes\.md from "pull\/9\/head"/);
+  assert.match(failed.out, /::error::could not work out the releases release-please would cut: release-please fails on release pull request #44 /);
+  assert.match(failed.out, /none from merged/);
+  // #45's unreadable manifest neither ends the check before #46 nor is taken for a version.
+  const unreadable = r.run(ghStub(r, [linked, pull(45, '25.12.1', { merge: 'e'.repeat(40) }),
+    pull(46, '25.12.1', { title: 'chore(main): release 25.12.1-$(id)' })], { files }).env);
+  assert.equal(unreadable.code, 1, unreadable.out);
+  assert.match(unreadable.out, /::error::merged release pull request #43 makes release-please read/);
+  assert.match(unreadable.out, /::error::release pull request #45's merge commit has no readable \.release-please-manifest\.json \(.*does not exist on "e{40}"\)/);
+  assert.doesNotMatch(unreadable.out, /#45 is about to be tagged/);
+  assert.match(unreadable.out, /::error::merged release pull request #46 is about to be tagged, but release-please would tag it "25\.12\.1-\$\(id\)"/);
+  assert.match(unreadable.out, /3 from merged/);
+});
+
+test("a rate-limited or failing API asks for a re-run, on every read or at a merge commit's manifest", () => {
+  const r = released();
+  for (const options of [
+    { fail: '403: API rate limit exceeded' },
+    { failing: { [`${MERGE}|.release-please-manifest.json`]: '403: API rate limit exceeded' } },
+    { failing: { [`${MERGE}|.release-please-manifest.json`]: '502: Bad Gateway' } },
+  ]) {
+    const { code, out } = r.run(ghStub(r, [pull(46, '25.12.1')], options).env);
+    assert.equal(code, 1, out);
+    assert.match(out, /::error::could not read from GitHub \(.*HTTP (403|502): .*\); re-run the job/);
+    assert.doesNotMatch(out, /no readable|does not exist/);
+  }
+});
+
+test('a config missing from the target branch, or not JSON there, fails naming it without asking for a re-run', () => {
+  const r = released();
+  const missing = r.run(ghStub(r, [pull(47, '25.12.1')], { files: { 'main|release-please-config.json': undefined } }).env);
+  assert.equal(missing.code, 1, missing.out);
+  assert.match(missing.out, /::error::could not work out the releases release-please would cut: release-please-config\.json does not exist on "main"/);
+  assert.doesNotMatch(missing.out, /re-run the job/);
+  const invalid = r.run(ghStub(r, [pull(47, '25.12.1')], { files: { 'main|release-please-config.json': '{ "packages": ' } }).env);
+  assert.equal(invalid.code, 1, invalid.out);
+  assert.match(invalid.out, /::error::could not work out the releases release-please would cut: base \(o\/r\): Failed to parse manifest config JSON: release-please-config\.json/);
+  assert.doesNotMatch(invalid.out, /re-run the job/);
+});
+
+test("on the open path too, a failure on one pull request is reported beside another one's foreign read", () => {
+  const r = released({}, '25.12.0');
+  const { code, out } = r.run(ghStub(r, [
+    pull(61, '25.12.1', { body: overflowTo('pull/9/head'), open: true }),
+    pull(62, '25.12.1', { body: releaseBody('25.12.1', '* see <details>x</details>'), open: true }),
+  ], { files: { 'pull/9/head|release-notes.md': releaseBody('25.12.1'),
+    [`${HEAD_SHA}|.release-please-manifest.json`]: manifestOf('25.12.1') } }).env);
+  assert.equal(code, 0, out);
+  assert.match(out, /::warning::open release pull request #61 makes release-please read release-notes\.md from "pull\/9\/head"/);
+  assert.match(out, /::warning::open release pull requests not checked: release-please fails on release pull request #62 /);
+  assert.match(out, /none from open/);
+});
+
+test('a grouped release pull request whose commit has no readable manifest is read once and reported once', () => {
+  // release-please builds one release per package from it, all at the same commit.
+  const r = released();
+  writeFileSync(join(r.dir, 'release-please-config.json'), JSON.stringify({
+    'release-type': 'simple', 'include-v-in-tag': false, 'include-component-in-tag': true,
+    packages: { a: { component: 'a' }, b: { component: 'b' } },
+  }));
+  writeFileSync(join(r.dir, '.release-please-manifest.json'), JSON.stringify({ a: '1.1.0', b: '2.1.0' }));
+  const section = (name, version) => `<details><summary>${name}: ${version}</summary>\n\n` +
+    `## [${version}](https://github.com/o/r/compare/${name}-1.0.0...${name}-${version}) (2026-10-13)\n\n\n` +
+    '### Bug Fixes\n\n* x\n</details>';
+  const grouped = { title: 'chore: release main', head: 'release-please--branches--main',
+    body: `:robot: I have created a release *beep* *boop*\n---\n\n\n${section('a', '1.1.0')}\n\n${section('b', '2.1.0')}` +
+      '\n\n---\nfooter' };
+  const gh = ghStub(r, [pull(50, '1.1.0', grouped)], { files: { [`${MERGE}|.release-please-manifest.json`]: undefined } });
+  const merged = r.run(gh.env);
+  assert.equal(merged.code, 1, merged.out);
+  assert.match(merged.out, /2 from merged/);
+  assert.equal(merged.out.split('\n').filter((line) => line.startsWith('::error::')).length, 1, merged.out);
+  assert.match(merged.out, /::error::release pull request #50's merge commit has no readable/);
+  assert.equal(gh.calls().filter((args) => args.at(-1).endsWith(`ref=${MERGE}`)).length, 1, JSON.stringify(gh.calls()));
+  const open = r.run(ghStub(r, [pull(51, '1.1.0', { ...grouped, open: true })],
+    { files: { [`${HEAD_SHA}|.release-please-manifest.json`]: undefined } }).env);
+  assert.equal(open.code, 0, open.out);
+  assert.match(open.out, /2 from open/);
+  assert.equal(open.out.split('\n').filter((line) => line.startsWith('::warning::')).length, 1, open.out);
+  assert.match(open.out, /::warning::open release pull request #51 not checked/);
 });

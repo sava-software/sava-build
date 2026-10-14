@@ -283,12 +283,19 @@ function releaseProblem(release, expected, manifestPath) {
 // overflow file from <head branch>--release-notes, anything else from the target branch.
 const foreignReads = (reads, targetBranch) => reads.filter(({ pullRequest, path, branch }) => pullRequest &&
   branch !== (path === 'release-notes.md' ? `${pullRequest.headBranchName}--release-notes` : targetBranch));
-const describeForeignRead = ({ pullRequest, path, branch }) =>
-  `merged release pull request #${pullRequest.number} makes release-please read ${path} from ` +
+// state is 'merged' or 'open'; the caller adds what to do about it.
+const describeForeignRead = ({ pullRequest, path, branch }, state) =>
+  `${state} release pull request #${pullRequest.number} makes release-please read ${path} from ` +
   `${JSON.stringify(branch)}, not from ${JSON.stringify(`${pullRequest.headBranchName}--release-notes`)}, ` +
   'where release-please writes an overflowing body; a link in the body named that ref, and its file can change ' +
-  `between this check and the release. Nothing has been tagged. Remove the link from #${pullRequest.number}'s ` +
-  `body, or remove ${labelText} from it to skip the release; then ${REMEDY}`;
+  'between this check and the release.';
+// release-please failing on a pull request, which it would do the same way when releasing.
+const describeFailure = ({ pullRequest, error }) => `release-please fails on release pull request ` +
+  `#${pullRequest.number} (${oneLine(error)}), and would fail the same way when releasing; fix that pull request's ` +
+  `title or body, or remove ${labelText} from it`;
+// A failure on a pull request that made a foreign read is reported as that read, its likelier cause.
+const unexplained = (result, foreign) => result?.failure &&
+  !foreign.some(({ pullRequest }) => pullRequest.number === result.failure.pullRequest.number);
 async function checkReleases(repository) {
   const quiet = () => {};
   setLogger({ error: quiet, warn: quiet, info: quiet, debug: quiet, trace: quiet });
@@ -304,39 +311,48 @@ async function checkReleases(repository) {
   };
   const configPath = repoPath(process.env.CONFIG_FILE);
   const manifestPath = repoPath(process.env.MANIFEST_FILE);
-  // The manifest at a release's own commit: the merge commit, or an open pull request's head.
+  // The manifest at a release's own commit: the merge commit, or an open pull request's head,
+  // read once per commit whether or not the read succeeds. A grouped release pull request
+  // yields one release per package, all at that commit.
   const manifests = new Map();
-  const manifestAt = async (github, sha) => {
-    if (!manifests.has(sha)) manifests.set(sha, await github.getFileJson(manifestPath, sha));
+  const manifestAt = (github, sha) => {
+    if (!manifests.has(sha)) manifests.set(sha, github.getFileJson(manifestPath, sha));
     return manifests.get(sha);
   };
-  // Builds the releases. A failure while release-please reads a pull request, other than the
-  // API failing, names that pull request, since release-please would fail on it the same
-  // way; a read from a foreign ref before the failure is reported as such.
+  // Builds the releases. The API failing, or release-please failing before it reads a pull
+  // request, ends the check. release-please failing on a pull request ends the build: no
+  // releases, and the failure with the pull request it names.
   const build = async (github) => {
     try {
-      return await (await Manifest.fromManifest(github, targetBranch, configPath, manifestPath)).buildReleases();
+      return { releases: await (await Manifest.fromManifest(github, targetBranch, configPath, manifestPath)).buildReleases() };
     } catch (error) {
-      const pr = github.current();
-      if (error instanceof GitHubReadError || !pr) throw error;
-      const foreign = foreignReads(github.reads, targetBranch).map(describeForeignRead);
-      throw new Error(foreign.length ? foreign.join(' ') : `release-please fails on release pull request ` +
-        `#${pr.number} (${oneLine(error)}), and would fail the same way when releasing; fix that pull request's ` +
-        `title or body, or remove ${labelText} from it`);
+      const pullRequest = github.current();
+      if (error instanceof GitHubReadError || !pullRequest) throw error;
+      return { releases: [], failure: { pullRequest, error } };
     }
   };
+  // Every foreign read is reported, whether or not the build got past it.
   const errors = [];
   const mergedGitHub = readOnlyGitHub(repository, targetBranch);
   const merged = await build(mergedGitHub);
-  errors.push(...foreignReads(mergedGitHub.reads, targetBranch).map(describeForeignRead));
-  for (const release of merged) {
+  const mergedForeign = foreignReads(mergedGitHub.reads, targetBranch);
+  for (const read of mergedForeign) {
+    errors.push(`${describeForeignRead(read, 'merged')} Nothing has been tagged. Remove the link from ` +
+      `#${read.pullRequest.number}'s body, or remove ${labelText} from it to skip the release; then ${REMEDY}`);
+  }
+  if (unexplained(merged, mergedForeign)) {
+    errors.push(`could not work out the releases release-please would cut: ${describeFailure(merged.failure)}`);
+  }
+  for (const release of merged.releases) {
     let expected;
     try {
       expected = (await manifestAt(mergedGitHub, release.sha))[release.path];
     } catch (error) {
-      if (!(error instanceof MissingFileError)) throw error;
-      throw new Error(`release pull request #${release.pullRequest.number}'s merge commit has no readable ` +
-        `${manifestPath} (${oneLine(error)})`);
+      if (error instanceof GitHubReadError) throw error;
+      errors.push(`release pull request #${release.pullRequest.number}'s merge commit has no readable ` +
+        `${manifestPath} (${oneLine(error)}), so the version it is about to be tagged with cannot be checked. ` +
+        `Nothing has been tagged. Remove ${labelText} from #${release.pullRequest.number} to skip the release.`);
+      continue;
     }
     const problem = releaseProblem(release, expected, manifestPath);
     if (problem) {
@@ -348,37 +364,47 @@ async function checkReleases(repository) {
         `from, or the next release repeats it: ${REMEDY}`);
     }
   }
+  const warnings = [];
   const openGitHub = readOnlyGitHub(repository, targetBranch, { openAsMerged: true });
-  let open = [];
+  let open = null;
   try {
     open = await build(openGitHub);
   } catch (error) {
-    console.log(`::warning::open release pull requests not checked: ${oneLine(error)}`);
+    warnings.push(`open release pull requests not checked: ${oneLine(error)}`);
   }
-  for (const { pullRequest, path, branch } of foreignReads(openGitHub.reads, targetBranch)) {
-    console.log(`::warning::open release pull request #${pullRequest.number} makes release-please read ${path} ` +
-      `from ${JSON.stringify(branch)}; merged as it is, this guard fails the release run. Fix the source: ${REMEDY}`);
+  const openForeign = foreignReads(openGitHub.reads, targetBranch);
+  for (const read of openForeign) {
+    warnings.push(`${describeForeignRead(read, 'open')} Merged as it is, this guard fails the release run. ` +
+      `Fix the source: ${REMEDY}`);
   }
-  for (const release of open) {
+  if (unexplained(open, openForeign)) {
+    warnings.push(`open release pull requests not checked: ${describeFailure(open.failure)}`);
+  }
+  for (const release of open?.releases ?? []) {
     let expected;
     try {
       expected = (await manifestAt(openGitHub, release.sha))[release.path];
     } catch (error) {
-      console.log(`::warning::open release pull request #${release.pullRequest.number} not checked: ${manifestPath} ` +
+      warnings.push(`open release pull request #${release.pullRequest.number} not checked: ${manifestPath} ` +
         `at its head could not be read (${oneLine(error)})`);
       continue;
     }
     const problem = releaseProblem(release, expected, manifestPath);
     if (problem) {
-      console.log(`::warning::open release pull request #${release.pullRequest.number}: once merged, ${problem}. ` +
+      warnings.push(`open release pull request #${release.pullRequest.number}: once merged, ${problem}. ` +
         'Merged as it is, this guard fails the release run and nothing is tagged until the merged pull request is ' +
         `fixed. Fix where the version came from first: ${REMEDY} release-please rewrites the pull request on its ` +
         'next run.');
     }
   }
-  console.log(`checked the releases release-please would cut: ${merged.length} from merged and ${open.length} ` +
+  // A finding about a grouped release pull request's commit repeats once per package: each
+  // message is reported once.
+  for (const message of new Set(warnings)) console.log(`::warning::${message}`);
+  // 'none' where the build failed, so a count of 0 always means nothing to check.
+  const tally = (result) => (result && !result.failure ? result.releases.length : 'none');
+  console.log(`checked the releases release-please would cut: ${tally(merged)} from merged and ${tally(open)} ` +
     'from open release pull request(s)');
-  return errors;
+  return [...new Set(errors)];
 }
 const repository = process.env.GITHUB_REPOSITORY;
 (async () => {
@@ -390,7 +416,7 @@ const repository = process.env.GITHUB_REPOSITORY;
       releaseErrors = await checkReleases(repository);
     } catch (error) {
       console.log(error instanceof GitHubReadError
-        ? `::error::could not read the release pull requests from GitHub (${oneLine(error)}); re-run the job.`
+        ? `::error::could not read from GitHub (${oneLine(error)}); re-run the job.`
         : `::error::could not work out the releases release-please would cut: ${oneLine(error)}`);
       process.exit(1);
     }
