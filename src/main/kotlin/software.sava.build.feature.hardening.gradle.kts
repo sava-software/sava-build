@@ -31,6 +31,7 @@ import software.sava.build.hardening.knownInvalidExecutionClosure
 import software.sava.build.hardening.MutationToolchainRecord
 import software.sava.build.hardening.PitestEvidence
 import software.sava.build.hardening.PitestReportLocation
+import software.sava.build.hardening.PopulationChange
 import software.sava.build.hardening.HardeningExecutionLock
 import software.sava.build.hardening.PreparedMutationWrite
 import software.sava.build.hardening.PrunePreviewHistory
@@ -64,6 +65,7 @@ import software.sava.build.hardening.task.TimeoutAuditPreflightTask
 import software.sava.build.hardening.task.certificationRetryGuidance
 import software.sava.build.hardening.task.generatedReportRetryGuidance
 import software.sava.build.hardening.task.workflowRetryGuidance
+import java.time.Instant
 
 plugins {
   id("java")
@@ -3976,6 +3978,17 @@ hardening.mutation.all {
         }
         val previous = if (staleFormat) emptyMap() else tally(stashEntries)
         val current = tally(rows.map { it.coordinate to it.rawStatus })
+        // The population by class from the same stash, the one view of a narrowing that
+        // took only killed mutants (PopulationChange). Any current-format stash is a base,
+        // an empty one included; a stale one was just reset. Lifecycle, and only when a
+        // class moved: ordinary code changes move it, so it stays out of the advisory
+        // summary. Read before the rewrite below moves the stash's modification time.
+        if (!staleFormat && stashLines.firstOrNull() == stashFormatHeader) {
+          PopulationChange.notice(
+              advisoryScope, previous, current, ".pitest-history/${statusStash.name}",
+              Instant.ofEpochMilli(statusStash.lastModified()),
+          )?.let { logger.lifecycle(it) }
+        }
         if (previous.isNotEmpty()) {
           // classification semantics live in BaselineEngine.driftCompare: the
           // dangerous flavours name each lost-unkilled origin (a key can lose

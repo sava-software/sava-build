@@ -1189,6 +1189,20 @@ establishes watchdog detection, not benign load, mutant identity, or cause.
   and re-observe it fresh under the relevant load; `pitestModeCompareUnion`
   has nothing sound to write because neither status crosses the unkilled
   boundary.
+- **A changed population is announced too.** From the same stash, a fresh full run
+  in which any class's mutant count moved prints the suite's total against the
+  stashed one and the five classes that moved most, as `before -> after`. The date
+  it gives is when a verify last wrote the stash, which a re-verify of an unchanged
+  report also moves, so it is not necessarily the last PIT run. A stash holding only
+  its header counts as a population of zero. Every status counts, `KILLED` included,
+  because nothing else sees a narrowing that took only killed mutants: `Debt` and the
+  prune previews read unkilled rows, the ownership audit whole classes, and the drift
+  above timeouts. Removed code explains a drop; a drop it does not explain is a
+  method exclusion, an `avoidCallsTo`, or a mutator or filter change narrowing the
+  suite, the input "faster without getting narrower" needs. The line is
+  lifecycle-level and stays out of the advisory summary, because ordinary code
+  changes move it; a scoped, history-assisted or kept report neither prints it nor
+  moves the stash.
 - **Use Union for reviewed incremental acceptance; use the mode union for measured
   flips.** `pitest<Suite>BaselineUnion` appends the current unkilled rows in canonical
   form without dropping accepted rows absent from this run. That makes it the safe

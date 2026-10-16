@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import software.sava.build.hardening.PitestEvidence
 import java.io.File
+import java.time.Instant
 
 /** Timeout membership, cause metadata, drift, and retirement observations. */
 class HardeningRatchetTimeoutFunctionalTest : HardeningRatchetFunctionalFixture() {
@@ -628,6 +629,63 @@ class HardeningRatchetTimeoutFunctionalTest : HardeningRatchetFunctionalFixture(
     val second = runner("pitestEncodingVerify").build().output
     assertFalse(second.contains("predates the current stash format"), "reset announced twice:\n$second")
     assertFalse(second.contains("timed-out drift vs previous run"), "settled run reported drift:\n$second")
+  }
+
+  @Test
+  fun `a changed population names the classes that moved since the stashed observation`() {
+    // Debt and the prune previews read unkilled rows and the ownership audit whole
+    // classes, so a suite that lost only killed mutants narrowed unseen: glam-sdk-java's
+    // sdk went 664 -> 650 (2026-10-16) and only commit archaeology explained it.
+    writeFixture()
+    val mathMutator = "org.pitest.mutationtest.engine.gregor.mutators.MathMutator"
+    fun killed(cls: String, method: String, line: Int) =
+      "${cls.substringAfterLast('.')}.java,$cls,$mathMutator,$method,$line,KILLED,${cls}Test"
+    writeReport(
+      listOf(
+        killed("com.example.Codec", "encode", 12),
+        killed("com.example.Codec", "decode", 20),
+        killed("com.example.Codec", "close", 30),
+        killed("com.example.Parser", "parse", 8),
+      ),
+      "",
+    )
+    val first = runner("pitestEncodingVerify").build().output
+    assertFalse(first.contains("the classes that moved"), "a first observation has nothing to compare:\n$first")
+    assertTrue(
+      File(fixtureDir, ".pitest-history/encoding.statuses")
+        .setLastModified(Instant.parse("2026-10-09T19:06:00Z").toEpochMilli())
+    )
+
+    writeReport(listOf(killed("com.example.Codec", "encode", 12), killed("com.example.Parser", "parse", 8)), "")
+    val narrowed = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      narrowed.contains(
+        "pitest 'encoding': 2 mutants, 2 fewer than the 4 in .pitest-history/encoding.statuses " +
+            "(written 2026-10-09 19:06 UTC); the classes that moved:\n  com.example.Codec 3 -> 1\n" +
+            "  A drop that removed code does not explain"
+      ),
+      narrowed,
+    )
+
+    // The same report again moved nothing, so nothing prints.
+    val steady = runner("pitestEncodingVerify").build().output
+    assertFalse(steady.contains("the classes that moved"), steady)
+
+    // A stash with no mutants is a population of zero, not a missing base.
+    File(fixtureDir, ".pitest-history/encoding.statuses").writeText("# stash format 3\n")
+    val fromNothing = runner("pitestEncodingVerify").build().output
+    assertTrue(
+      fromNothing.contains("pitest 'encoding': 2 mutants, 2 more than the 0 in .pitest-history/encoding.statuses"),
+      fromNothing,
+    )
+
+    // The current header over five-field entries is still a stale stash: it resets with its
+    // own notice and is no base for a population.
+    File(fixtureDir, ".pitest-history/encoding.statuses")
+      .writeText("# stash format 3\ncom.example.Codec,encode,12,MathMutator,KILLED\n")
+    val stale = runner("pitestEncodingVerify").build().output
+    assertTrue(stale.contains("status stash predates the current stash format"), stale)
+    assertFalse(stale.contains("in .pitest-history/encoding.statuses (written"), stale)
   }
 
   @Test
