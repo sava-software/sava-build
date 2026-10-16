@@ -68,7 +68,7 @@ class JlinkFeatureFunctionalTest {
 
   private fun runBuild(vararg arguments: String): BuildResult = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--stacktrace")
+    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
     .build()
 
   @Test

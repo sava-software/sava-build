@@ -31,7 +31,7 @@ class CentralPortalBundleFunctionalTest {
 
   private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--stacktrace")
+    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
 
   private fun writeFixture() {
     File(fixtureDir, "settings.gradle.kts").writeText(

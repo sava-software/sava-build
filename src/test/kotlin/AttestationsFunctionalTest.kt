@@ -27,7 +27,7 @@ class AttestationsFunctionalTest {
 
   private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--stacktrace")
+    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
 
   private fun writeFixture(apiPort: Int, extraConfig: String = "") {
     val repoDir = File(fixtureDir, "repo/software/sava/fake-lib/1.0.0")

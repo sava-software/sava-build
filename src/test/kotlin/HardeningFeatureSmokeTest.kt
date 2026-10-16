@@ -143,7 +143,7 @@ class HardeningFeatureSmokeTest {
 
     val result = GradleRunner.create()
       .withProjectDir(fixtureDir)
-      .withArguments("verifyHardeningConventions", "tasks", "--group=verification", "--stacktrace")
+      .withArguments("verifyHardeningConventions", "tasks", "--group=verification", "--no-watch-fs", "--stacktrace")
       .build()
 
     assertTrue(result.output.contains("pitestEncoding"), "pitestEncoding task missing:\n" + result.output)
@@ -155,7 +155,7 @@ class HardeningFeatureSmokeTest {
     // the ratchet without a PIT report fails fast with a pointer to the run task
     val verifyWithoutReport = GradleRunner.create()
       .withProjectDir(fixtureDir)
-      .withArguments("pitestEncodingVerify", "--stacktrace")
+      .withArguments("pitestEncodingVerify", "--no-watch-fs", "--stacktrace")
       .buildAndFail()
     assertTrue(
       verifyWithoutReport.output.contains("no PIT report"),
@@ -164,7 +164,7 @@ class HardeningFeatureSmokeTest {
 
     val override = GradleRunner.create()
       .withProjectDir(fixtureDir)
-      .withArguments("help", "-PmaxFuzzTime=15", "--stacktrace")
+      .withArguments("help", "-PmaxFuzzTime=15", "--no-watch-fs", "--stacktrace")
       .build()
     assertFalse(override.output.contains("FAILED"), override.output)
   }
@@ -179,7 +179,7 @@ class HardeningFeatureSmokeTest {
       expectedFuzzRelease = 21,
     )
     val unsafeSuite = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("help", "--stacktrace").buildAndFail().output
+      .withArguments("help", "--no-watch-fs", "--stacktrace").buildAndFail().output
     assertTrue(unsafeSuite.contains("mutation suite name '..' is unsafe"), unsafeSuite)
 
     writeFixture(
@@ -194,7 +194,7 @@ class HardeningFeatureSmokeTest {
       writeText("preserve")
     }
     val unsafeClass = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("generateFuzzReplayTests", "--stacktrace").buildAndFail().output
+      .withArguments("generateFuzzReplayTests", "--no-watch-fs", "--stacktrace").buildAndFail().output
     assertTrue(
       unsafeClass.contains("fuzz target 'escape' targetClass '../Escape' must be a dotted Java package name"),
       unsafeClass)
@@ -206,7 +206,7 @@ class HardeningFeatureSmokeTest {
     writeFixture(emptyList(), expectedMutationRelease = 21, expectedFuzzRelease = 21)
 
     val without = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
+      .withArguments("fuzzWorkflowInSync", "--no-watch-fs", "--stacktrace").build()
     assertFalse(without.output.contains("FAILED"), without.output)
     assertTrue(without.output.contains("scheduled fuzz workflows are optional"), without.output)
 
@@ -217,14 +217,14 @@ class HardeningFeatureSmokeTest {
     workflow.writeText("run: ./gradlew --continue fuzzCodec fuzzUnset fuzzPlainExtra\n")
 
     val optional = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzWorkflowInSync", "--stacktrace").build()
+      .withArguments("fuzzWorkflowInSync", "--no-watch-fs", "--stacktrace").build()
     assertFalse(optional.output.contains("FAILED"), optional.output)
 
     val tasks = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("tasks", "--all", "--stacktrace").build().output
+      .withArguments("tasks", "--all", "--no-watch-fs", "--stacktrace").build().output
     assertTrue(tasks.contains("fuzzAll - Runs every registered fuzz target locally"), tasks)
     val plan = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzAll", "--dry-run", "--stacktrace").build().output
+      .withArguments("fuzzAll", "--dry-run", "--no-watch-fs", "--stacktrace").build().output
     listOf(":fuzzCodec SKIPPED", ":fuzzPlain SKIPPED", ":fuzzUnset SKIPPED").forEach { task ->
       assertTrue(plan.contains(task), "fuzzAll omitted $task:\n$plan")
     }
@@ -234,7 +234,7 @@ class HardeningFeatureSmokeTest {
       writeText("old success\n")
     }
     GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzAll", "-PmaxFuzzTime=0", "--stacktrace").buildAndFail()
+      .withArguments("fuzzAll", "-PmaxFuzzTime=0", "--no-watch-fs", "--stacktrace").buildAndFail()
     assertEquals(
       "old success\n",
       oldReceipt.readText(),
@@ -258,7 +258,7 @@ class HardeningFeatureSmokeTest {
     )
     oldReceipt.writeText("old success\n")
     GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzAll", "--stacktrace").buildAndFail()
+      .withArguments("fuzzAll", "--no-watch-fs", "--stacktrace").buildAndFail()
     assertEquals(
       "old success\n",
       oldReceipt.readText(),
@@ -270,7 +270,7 @@ class HardeningFeatureSmokeTest {
 
     listOf("0", "00", "abc", "2147483648").forEach { invalid ->
       val refused = GradleRunner.create().withProjectDir(fixtureDir)
-        .withArguments("validateFuzzBudget", "-PmaxFuzzTime=$invalid", "--stacktrace")
+        .withArguments("validateFuzzBudget", "-PmaxFuzzTime=$invalid", "--no-watch-fs", "--stacktrace")
         .buildAndFail().output
       assertTrue(refused.contains("0 is libFuzzer's run-forever sentinel"), refused)
     }
@@ -278,7 +278,7 @@ class HardeningFeatureSmokeTest {
       val refused = GradleRunner.create().withProjectDir(fixtureDir)
         .withArguments(
           "validateFuzzBudget", "-PmaxFuzzTime=1",
-          "-PmaxParallelFuzzTargets=$invalid", "--stacktrace",
+          "-PmaxParallelFuzzTargets=$invalid", "--no-watch-fs", "--stacktrace",
         )
         .buildAndFail().output
       assertTrue(refused.contains("-PmaxParallelFuzzTargets must be positive"), refused)
@@ -306,7 +306,7 @@ class HardeningFeatureSmokeTest {
     val result = GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments(
         "clean", "fuzzAll", "generateFuzzReplayTests", "-PmaxFuzzTime=1",
-        "--configuration-cache", "--stacktrace")
+        "--configuration-cache", "--no-watch-fs", "--stacktrace")
       .build()
     val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
 
@@ -341,7 +341,7 @@ class HardeningFeatureSmokeTest {
 
     val result = GradleRunner.create()
       .withProjectDir(fixtureDir)
-      .withArguments("verifyHardeningConventions", "--stacktrace")
+      .withArguments("verifyHardeningConventions", "--no-watch-fs", "--stacktrace")
       .build()
     assertFalse(result.output.contains("FAILED"), result.output)
   }

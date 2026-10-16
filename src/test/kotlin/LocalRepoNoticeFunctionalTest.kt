@@ -65,7 +65,7 @@ class LocalRepoNoticeFunctionalTest {
 
   private fun runBuild(vararg arguments: String): BuildResult = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments)
+    .withArguments(*arguments, "--no-watch-fs")
     .build()
 
   private val localRepo: String = savaBuildTestProperty("savaBuild.testRepo")
@@ -262,7 +262,7 @@ class LocalRepoNoticeFunctionalTest {
 
     val failed = GradleRunner.create()
       .withProjectDir(fixtureDir)
-      .withArguments("help", "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace")
+      .withArguments("help", "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace")
       .buildAndFail()
 
     assertTrue(failed.output.contains("local publication provenance is missing"), failed.output)
@@ -282,7 +282,7 @@ class LocalRepoNoticeFunctionalTest {
 
     val failed = GradleRunner.create()
       .withProjectDir(fixtureDir)
-      .withArguments("help", "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace")
+      .withArguments("help", "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace")
       .buildAndFail()
 
     assertTrue(failed.output.contains("provenance claims JAR SHA-256"), failed.output)
@@ -297,7 +297,7 @@ class LocalRepoNoticeFunctionalTest {
 
     val failed = GradleRunner.create()
       .withProjectDir(fixtureDir)
-      .withArguments("help", "-PsavaBuildLocalRepo=$configuredRepo", "--stacktrace")
+      .withArguments("help", "-PsavaBuildLocalRepo=$configuredRepo", "--no-watch-fs", "--stacktrace")
       .buildAndFail()
 
     assertTrue(failed.output.contains("loaded local plugin"), failed.output)
@@ -326,7 +326,7 @@ class LocalRepoNoticeFunctionalTest {
       .withProjectDir(fixtureDir)
       .withArguments(
         "replaceLocalProvenance", "--configuration-cache", "--refresh-dependencies",
-        "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace",
+        "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace",
       )
       .buildAndFail()
 
@@ -361,7 +361,7 @@ class LocalRepoNoticeFunctionalTest {
       .withProjectDir(fixtureDir)
       .withArguments(
         "replaceLocalPlugin", "--configuration-cache", "--refresh-dependencies",
-        "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace",
+        "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace",
       )
       .buildAndFail()
 
@@ -400,7 +400,7 @@ class LocalRepoNoticeFunctionalTest {
       .withArguments(
         ":a:hardeningCertifyPreflight", ":b:hardeningCertifyPreflight",
         "--configuration-cache", "--refresh-dependencies",
-        "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace",
+        "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace",
       )
       .buildAndFail()
 

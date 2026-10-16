@@ -24,7 +24,7 @@ class JmhFeatureSmokeTest {
 
   private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--stacktrace")
+    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
 
   @Test
   fun `jmh feature configures benchmark task and service jvm args`() {

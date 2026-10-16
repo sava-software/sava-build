@@ -139,7 +139,7 @@ class HardeningTestSelectionFunctionalTest {
 
   private fun runner(vararg args: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*args, "--stacktrace")
+    .withArguments(*args, "--no-watch-fs", "--stacktrace")
     .withPluginClasspath()
     .forwardOutput()
 

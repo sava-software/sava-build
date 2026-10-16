@@ -423,12 +423,12 @@ $buildTail
    */
   protected fun runner(vararg args: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*args, "--configuration-cache", "--stacktrace")
+    .withArguments(*args, "--configuration-cache", "--no-watch-fs", "--stacktrace")
 
   protected fun runnerWithoutConfigurationCache(vararg args: String): GradleRunner =
     GradleRunner.create()
       .withProjectDir(fixtureDir)
-      .withArguments(*args, "--no-configuration-cache", "--stacktrace")
+      .withArguments(*args, "--no-configuration-cache", "--no-watch-fs", "--stacktrace")
 
   protected fun occurrences(haystack: String, needle: String) = haystack.split(needle).size - 1
 

@@ -140,7 +140,7 @@ class HardeningOperationsFunctionalTest {
 
   private fun runner(vararg arguments: String) = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--configuration-cache", "--stacktrace")
+    .withArguments(*arguments, "--configuration-cache", "--no-watch-fs", "--stacktrace")
 
   private fun acceptedBaseline(schemaMarked: Boolean = true): Pair<File, String> {
     val file = File(fixtureDir, "config/pitest/encoding-accepted.csv")

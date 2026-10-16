@@ -45,7 +45,7 @@ class HardeningFuzzReceiptLifecycleFunctionalTest {
 
   private fun runner(vararg args: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*args, "--configuration-cache", "--stacktrace")
+    .withArguments(*args, "--configuration-cache", "--no-watch-fs", "--stacktrace")
 
   @Test
   fun `successful aggregate survives clean without becoming a configuration input`() {

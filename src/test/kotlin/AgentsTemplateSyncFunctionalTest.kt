@@ -66,7 +66,7 @@ class AgentsTemplateSyncFunctionalTest {
 
   private fun runner(vararg arguments: String) = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--stacktrace")
+    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
 
   @Test
   fun `template task prints the baked block unquoted between its boundaries`() {

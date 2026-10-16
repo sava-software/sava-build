@@ -48,7 +48,7 @@ class HardeningInitFunctionalTest {
 
   private fun runner(): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
-    .withArguments("hardeningInit", "--stacktrace")
+    .withArguments("hardeningInit", "--no-watch-fs", "--stacktrace")
 
   @Test
   fun `a fresh repo gets the README, the gitignore line, and the checklist, idempotently`() {
