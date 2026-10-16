@@ -962,6 +962,47 @@ class HardeningRatchetTimeoutFunctionalTest : HardeningRatchetFunctionalFixture(
   }
 
   @Test
+  fun `a quiet stash without member rows resets without a notice`() {
+    // An empty audited set still writes a headers-only stash, and every input change then
+    // announced a reset of counts it never held (glam-sdk-java's sdk, 2026-10-16). The
+    // notice names dropped counts, so it needs a count to name.
+    writeFixture()
+    File(fixtureDir, "config/pitest").apply { mkdirs() }
+      .resolve("encoding-timeouts.csv").writeText("# no audited members\n")
+    writeReport(
+      listOf(
+        "Codec.java,com.example.Codec," +
+            "org.pitest.mutationtest.engine.gregor.mutators.MathMutator," +
+            "encode,12,KILLED,com.example.CodecTest",
+      ),
+      "",
+    )
+    val quietStash = File(fixtureDir, ".pitest-history/encoding.timeout-quiet")
+    fun inputs() = quietStash.readLines().first { it.startsWith("# inputs ") }
+    val resetNotice = "the quiet-run counter resets this run"
+
+    runner("pitestEncoding").build()
+    assertTrue(quietStash.readLines().filter { it.isNotBlank() }.all { it.startsWith("# ") }, quietStash.readText())
+    val before = inputs()
+    File(fixtureDir, "src/main/java/com/example/FakePit.java")
+      .appendText("\n// changed source inputs\n")
+    val changed = runner("pitestEncoding").build().output
+    assertTrue(before != inputs(), "the inputs did not change, so nothing was tested:\n${quietStash.readText()}")
+    assertFalse(changed.contains(resetNotice), changed)
+
+    // The older-format and malformed-identity resets follow the same rule; each run still
+    // rewrites the stash, so the silence is not a skipped observation.
+    quietStash.writeText("# timeout quiet format 3\n# inputs ${"a".repeat(64)}\n# invocation old\n")
+    val older = runner("pitestEncoding").build().output
+    assertFalse(older.contains(resetNotice), older)
+    assertEquals("# timeout quiet format 4", quietStash.readLines().first(), quietStash.readText())
+    quietStash.writeText("# timeout quiet format 4\n# inputs nope\n# invocation old\n")
+    val malformed = runner("pitestEncoding").build().output
+    assertFalse(malformed.contains(resetNotice), malformed)
+    assertTrue(Regex("# inputs [0-9a-f]{64}").matches(inputs()), quietStash.readText())
+  }
+
+  @Test
   fun `timeout retirement streak survives a plugin identity-only change`() {
     writeFixture()
     val configDir = File(fixtureDir, "config/pitest").apply { mkdirs() }

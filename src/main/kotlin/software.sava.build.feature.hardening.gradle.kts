@@ -4330,7 +4330,11 @@ hardening.mutation.all {
           val observationFingerprint = "# invocation ${retirementEvidence.invocationId}"
           val previousLines = if (timeoutQuietFile.isFile) timeoutQuietFile.readLines() else emptyList()
           val currentQuietFormat = previousLines.firstOrNull() == quietFormatHeader
-          if (previousLines.isNotEmpty() && !currentQuietFormat) {
+          // A reset notice says counts were dropped. A stash without member rows has
+          // none to drop (an empty audited set still writes the headers), so its resets
+          // stay silent, like the status stash's for an empty stash.
+          val previousCounts = previousLines.any { it.isNotBlank() && !it.trimStart().startsWith("#") }
+          if (previousCounts && !currentQuietFormat) {
             logger.lifecycle(
                 "$advisoryScope: timeout-retirement stash uses an older compatibility format — " +
                     "the quiet-run counter resets this run " +
@@ -4341,12 +4345,12 @@ hardening.mutation.all {
               ?.removePrefix("# inputs ")
               ?.takeIf { Regex("[0-9a-f]{64}").matches(it) }
           val sameInputs = currentQuietFormat && previousInputIdentity == currentInputIdentity
-          if (currentQuietFormat && previousInputIdentity == null) {
+          if (previousCounts && currentQuietFormat && previousInputIdentity == null) {
             logger.lifecycle(
                 "$advisoryScope: timeout-retirement format-4 stash has a missing/malformed " +
                     "input identity — the quiet-run counter resets this run " +
                     "(state-reset notice; not an advisory finding)")
-          } else if (currentQuietFormat && !sameInputs) {
+          } else if (previousCounts && currentQuietFormat && !sameInputs) {
             logger.lifecycle(
                 "$advisoryScope: timeout-retirement execution inputs changed since this suite's previous " +
                     "fresh observation (input identity prefixes " +
