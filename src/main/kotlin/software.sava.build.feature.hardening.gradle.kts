@@ -1334,7 +1334,9 @@ val pitestMutatorTrial = tasks.register("pitestMutatorTrial") {
         "  ${name.padEnd(width)}${rows.size} generated — $detected killed by existing tests, $unkilled unkilled ($perMutator)"
       }
     }
-    logger.lifecycle(
+    // The table is the trial's answer, and its exit code says nothing about what fired, so
+    // it prints at QUIET: -q must not drop the one result of a long run.
+    logger.quiet(
         "pitestMutatorTrial '$candidates': fired in $fired of ${names.size} suite(s)\n" +
             lines.joinToString("\n") +
             "\nEnable only what fires: add the mutator to those suites' 'mutators' and record the " +
@@ -5658,6 +5660,13 @@ hardening.mutation.all {
             "-PnoMutationHistory without -PmutateOnly."
     )
     doLast {
+      // Debt is read-only and answers in text, like hardeningHelp: its exit code says
+      // nothing about debt. So the listing prints at QUIET, and so does each warning the
+      // log level would drop. At lifecycle the listing vanished under -q and the run read
+      // as no debt; printed without the warnings that qualify it, it would read as
+      // finished triage.
+      fun caution(message: String) =
+          if (logger.isWarnEnabled) logger.warn(message) else logger.quiet(message)
       listOf(
           baselineFile,
           readmeFile,
@@ -5686,17 +5695,17 @@ hardening.mutation.all {
           .orEmpty()
       debtTimeoutMembership?.let { membership ->
         TimeoutAudit.malformedWarning(suiteName, debtTimeoutsFile.name, debtTimeoutMalformed)
-            ?.let { logger.warn(it) }
+            ?.let { caution(it) }
         if (debtTimeoutCauseFindings.isNotEmpty()) {
-          logger.warn(TimeoutAudit.causeFindingWarning(
+          caution(TimeoutAudit.causeFindingWarning(
               suiteName, debtTimeoutsFile.name, debtTimeoutCauseFindings))
         }
         if (debtTimeoutLineMetadataFindings.isNotEmpty()) {
-          logger.warn(TimeoutAudit.lineMetadataWarning(
+          caution(TimeoutAudit.lineMetadataWarning(
               suiteName, debtTimeoutsFile.name, debtTimeoutLineMetadataFindings))
         }
         if (debtTimeoutUndocumented.isNotEmpty()) {
-          logger.warn(TimeoutAudit.undocumentedCauseWarning(
+          caution(TimeoutAudit.undocumentedCauseWarning(
               suiteName, debtTimeoutUndocumented))
         }
       }
@@ -5732,7 +5741,7 @@ hardening.mutation.all {
         null
       }
       if (strictDebtRequested && strictDebtFailure == null) {
-        logger.lifecycle(
+        logger.quiet(
             "pitest '$suiteName' debt: -PstrictTimeoutAudit committed-file preview is clean. " +
                 "Report-dependent strict checks require a full $evidencePitestTaskPath " +
                 "-PstrictTimeoutAudit run; this Debt invocation did not run PIT.")
@@ -5776,12 +5785,12 @@ hardening.mutation.all {
                 evidenceBaselineRebaseTaskPath)
       }
       if (debtProvenance.legacyUnbound) {
-        logger.warn(
+        caution(
             "pitest '$suiteName': committed mutation record is legacy-unversioned; its PIT " +
                 "version is unknown — review a history-free $evidencePitestTaskPath " +
                 "-PnoMutationHistory observation, then run " +
                 evidenceBaselineRebaseTaskPath)
-        logger.warn(
+        caution(
             "pitest '$suiteName': committed mutation record is legacy-toolchain-unbound; " +
                 "ArcMutate/PIT tool changes cannot be distinguished from code churn — review a " +
                 "history-free $evidencePitestTaskPath -PnoMutationHistory observation, then run " +
@@ -5796,7 +5805,7 @@ hardening.mutation.all {
                   "${e.message}", e)
         }
         if (recordedToolchain.identitySha256 != effectiveToolchain.identitySha256) {
-          logger.warn(
+          caution(
               "pitest '$suiteName': committed mutation toolchain differs from the current " +
                   "PIT/ArcMutate/licence identity — population differences may be tool churn; " +
                   "review a history-free $evidencePitestTaskPath -PnoMutationHistory observation, then run " +
@@ -5805,7 +5814,7 @@ hardening.mutation.all {
       }
       val recordedPit = debtProvenance.pitVersion
       if (recordedPit != null && recordedPit != debtPitVersion.get()) {
-        logger.warn(
+        caution(
             "pitest '$suiteName': baseline record written by PIT $recordedPit, this plugin runs " +
                 "PIT ${debtPitVersion.get()} — population differences may be the tool, not the code; " +
                 "review a history-free $evidencePitestTaskPath -PnoMutationHistory observation, then run " +
@@ -5833,9 +5842,9 @@ hardening.mutation.all {
             debtClasses, debtTargets.get(), debtExcludes.get(), debtTestSourceDirs, siblingScopes
         )
         val declined = ExclusionAudit.applyDeclines(swallowed, debtDeclinedExclusions.get())
-        ExclusionAudit.warning(suiteName, declined.reported)?.let { logger.warn(it) }
-        ExclusionAudit.staleDeclineWarning(suiteName, declined.staleGlobs)?.let { logger.warn(it) }
-        ExclusionAudit.blankDeclineWarning(suiteName, declined.blankGlobs)?.let { logger.warn(it) }
+        ExclusionAudit.warning(suiteName, declined.reported)?.let { caution(it) }
+        ExclusionAudit.staleDeclineWarning(suiteName, declined.staleGlobs)?.let { caution(it) }
+        ExclusionAudit.blankDeclineWarning(suiteName, declined.blankGlobs)?.let { caution(it) }
       }
 
       fun tally(pairs: List<Pair<String, String>>): Map<String, Pair<Int, Int>> = pairs
@@ -5852,7 +5861,7 @@ hardening.mutation.all {
           if (baselineFile.isFile) baselineFile.readText() else "")
       val malformedRows = baselineDocument.malformedRows.map { it.raw }
       if (malformedRows.isNotEmpty()) {
-        logger.warn(
+        caution(
             "pitest '$suiteName': ${malformedRows.size} malformed row(s) in ${baselineFile.name} — " +
                 "expected 'class,method,mutator,STATUS [# note] [# line N]'; a malformed row matches " +
                 "no mutant, and blocks every baseline rewrite:\n" +
@@ -5861,7 +5870,7 @@ hardening.mutation.all {
       }
       val invalidLineMetadataRows = baselineDocument.invalidLineMetadataRows
       if (invalidLineMetadataRows.isNotEmpty()) {
-        logger.warn(
+        caution(
             "pitest '$suiteName': ${invalidLineMetadataRows.size} accepted row(s) in " +
                 "${baselineFile.name} carry invalid diagnostic line metadata. Their keys still " +
                 "count in this read-only tally, but ranges are not observed-line evidence and a " +
@@ -5875,7 +5884,7 @@ hardening.mutation.all {
       val wellFormedRows = baselineDocument.rows
       val unlabeledRows = wellFormedRows.count { it.note == null }
       BaselineNotes.unlabeledWarning(suiteName, unlabeledRows)?.let {
-        logger.warn(it)
+        caution(it)
       }
       val baselinePairs = wellFormedRows
           .map { it.key.split(',') }
@@ -5904,7 +5913,7 @@ hardening.mutation.all {
           Mutant.parseReport(csv.readLines(), invalidReportClosure)
         } catch (e: IllegalArgumentException) {
           invalidReport = true
-          logger.warn(
+          caution(
               "pitest '$suiteName' debt: current report is not valid completed evidence; " +
                   "falling back to the committed baseline for the tally:\n${e.message}")
           null
@@ -5935,12 +5944,12 @@ hardening.mutation.all {
             TimeoutAudit.memberPopulations(reportRows, debtTimeoutMembership.members),
             "$source. This is an unverified read-only prior-report preview; run " +
                 "$evidencePitestTaskPath -PnoMutationHistory before any timeout-cause decision",
-        )?.let { logger.lifecycle(it) }
+        )?.let { logger.quiet(it) }
       }
       val debt = tally(reportPairs ?: baselinePairs)
       val baselineDebt = tally(baselinePairs)
       if (reportPairs != null && historyAssistedDebt) {
-        logger.warn(
+        caution(
             "pitest '$suiteName' debt: the current report is history-assisted and check-only — " +
                 "run $evidencePitestTaskPath -PnoMutationHistory before any accepted-baseline or " +
                 "timeout-audit decision.")
@@ -5970,7 +5979,7 @@ hardening.mutation.all {
         }
       }
       if (debt.isEmpty()) {
-        logger.lifecycle("pitest '$suiteName' debt: none — nothing unkilled in the $source$age")
+        logger.quiet("pitest '$suiteName' debt: none — nothing unkilled in the $source$age")
         strictDebtFailure?.let { throw GradleException(it) }
         return@doLast
       }
@@ -6001,7 +6010,7 @@ hardening.mutation.all {
             "\n  baseline: ${BaselineNotes.populationSummary(wellFormedRows.map { row -> row.key })}; " +
                 "baseline labels: $it"
           } ?: ""
-      logger.lifecycle(
+      logger.quiet(
           "pitest '$suiteName' debt ($source$age) — $totalSurvived survived, $totalNoCoverage no_coverage " +
               "across ${debt.size} class(es):\n" + lines.joinToString("\n") + labelBreakdown
       )
@@ -6013,7 +6022,7 @@ hardening.mutation.all {
         readmeFile.takeIf { it.isFile }?.readText() ?: ""
       }
       if (undocumentedLabels.isNotEmpty()) {
-        logger.warn(BaselineNotes.undocumentedLabelWarning(suiteName, undocumentedLabels))
+        caution(BaselineNotes.undocumentedLabelWarning(suiteName, undocumentedLabels))
       }
       strictDebtFailure?.let { throw GradleException(it) }
     }

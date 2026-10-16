@@ -596,6 +596,13 @@ class HardeningConvergeFunctionalTest {
       zeroFire.output.contains("0 generated (no report"),
       "an empty report must not read as a missing one:\n" + zeroFire.output
     )
+    // The table is the answer, so -q keeps it.
+    val quiet = runner(*trialArgs, "-q").build().output
+    assertTrue(
+      quiet.contains("pitestMutatorTrial 'EXPERIMENTAL_ALPHA,EXPERIMENTAL_BETA': fired in 1 of 2 suite(s)") &&
+          Regex("parsing\\s+0 generated\\n").containsMatchIn(quiet),
+      quiet,
+    )
 
     val interruptedDir = File(fixtureDir, "build/reports/pitest/parsing-trial")
     interruptedDir.resolve("mutations.csv").writeText(

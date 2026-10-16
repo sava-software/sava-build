@@ -1651,4 +1651,39 @@ class HardeningRatchetFunctionalTest : HardeningRatchetFunctionalFixture() {
     assertFalse(quiet.contains("label(s) with no argument"), quiet)
     assertFalse(quiet.contains("triage state unknown"), quiet)
   }
+
+  @Test
+  fun `the debt listing and the warnings that qualify it survive -q and --warn`() {
+    // Debt's answer is the text it prints; its exit code says nothing about debt. Printed at
+    // lifecycle, the listing vanished under -q and the run read as no debt (glam-sdk-java,
+    // 2026-10-16). A listing printed without its warnings would read as finished triage,
+    // the misreading the label check exists to stop, so -q must keep both.
+    writeFixture()
+    baselineFile().parentFile.mkdirs()
+    baselineFile().writeText(
+      "com.example.Codec,encode,12,MathMutator,SURVIVED # capacity hint\n" +
+          "com.example.Codec,decode,33,MathMutator,NO_COVERAGE # untriaged\n"
+    )
+    val listing = "pitest 'encoding' debt (baseline (no full report present)) — 1 survived, 1 no_coverage " +
+        "across 1 class(es):"
+    val undocumented = "'# capacity hint' — document the family"
+
+    val quiet = runner("pitestEncodingDebt", "-q").build().output
+    assertTrue(quiet.contains(listing), quiet)
+    assertTrue(quiet.contains("baseline labels: 1 '# capacity hint', 1 '# untriaged'"), quiet)
+    assertTrue(quiet.contains(undocumented), quiet)
+
+    // --warn drops lifecycle output but keeps warnings: the listing must not depend on it.
+    val warn = runner("pitestEncodingDebt", "--warn").build().output
+    assertTrue(warn.contains(listing), warn)
+    assertTrue(warn.contains(undocumented), warn)
+
+    // Nothing unkilled is an answer too, and -q prints it rather than nothing.
+    assertTrue(baselineFile().delete())
+    val none = runner("pitestEncodingDebt", "-q").build().output
+    assertTrue(
+      none.contains("pitest 'encoding' debt: none — nothing unkilled in the baseline (no full report present)"),
+      none,
+    )
+  }
 }
