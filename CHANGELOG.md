@@ -1,5 +1,18 @@
 # Changelog
 
+## [21.6.9](https://github.com/sava-software/sava-build/compare/21.6.8...21.6.9) (2026-10-17)
+
+
+### Features
+
+* **hardening:** announce a change in a suite's mutant population, by class ([e57e371](https://github.com/sava-software/sava-build/commit/e57e3714cd573e7e547fc01cd67f5797e1cf4369))
+
+
+### Bug Fixes
+
+* **hardening:** announce a quiet-counter reset only when the stash held counts ([df45a78](https://github.com/sava-software/sava-build/commit/df45a780fea753a8f4d297f12830a7d3024fd335))
+* **hardening:** print the debt listing and the mutator trial's table under -q ([0fb1ddb](https://github.com/sava-software/sava-build/commit/0fb1ddb52afc86a73e08185b493672d145cc5df8))
+
 ## [21.6.8](https://github.com/sava-software/sava-build/compare/21.6.7...21.6.8) (2026-10-14)
 
 
