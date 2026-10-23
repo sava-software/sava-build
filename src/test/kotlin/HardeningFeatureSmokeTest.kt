@@ -23,10 +23,14 @@ class HardeningFeatureSmokeTest {
     enableTestKitConfigurationCache(fixtureDir)
   }
 
+  // The fixture sets no toolchain, so the hardening defaults follow the JVM its TestKit
+  // daemon runs on, which is this test's JVM: 21 under this build's daemon pin, 25 without it.
+  private val daemonRelease = Runtime.version().feature()
+
   private fun writeFixture(
     hardeningSettings: List<String>,
-    expectedMutationRelease: Int,
-    expectedFuzzRelease: Int
+    expectedMutationRelease: Int = daemonRelease,
+    expectedFuzzRelease: Int = daemonRelease
   ) {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
@@ -137,9 +141,9 @@ class HardeningFeatureSmokeTest {
 
   @Test
   fun `hardening feature registers pitest and fuzz tasks with default releases`() {
-    // The standalone fixture runs on this build's Java 21 TestKit daemon. Defaults
-    // follow that consumer toolchain instead of assuming Sava's Java 25.
-    writeFixture(emptyList(), expectedMutationRelease = 21, expectedFuzzRelease = 21)
+    // Defaults follow the consumer toolchain, here the TestKit daemon's JVM, instead of
+    // assuming Sava's Java 25.
+    writeFixture(emptyList())
 
     val result = GradleRunner.create()
       .withProjectDir(fixtureDir)
@@ -175,8 +179,6 @@ class HardeningFeatureSmokeTest {
       listOf(
         """mutation.register("..") { targetClasses = listOf("com.example.*"); targetTests = "com.example.*Test*" }"""
       ),
-      expectedMutationRelease = 21,
-      expectedFuzzRelease = 21,
     )
     val unsafeSuite = GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments("help", "--no-watch-fs", "--stacktrace").buildAndFail().output
@@ -186,8 +188,6 @@ class HardeningFeatureSmokeTest {
       listOf(
         """fuzz.register("escape") { targetClass = "../Escape"; seedCorpus = layout.projectDirectory.dir("corpus/escape") }"""
       ),
-      expectedMutationRelease = 21,
-      expectedFuzzRelease = 21,
     )
     val sentinel = File(fixtureDir, "build/generated-sources/fuzz-replay/java/preserve.txt").apply {
       parentFile.mkdirs()
@@ -203,7 +203,7 @@ class HardeningFeatureSmokeTest {
 
   @Test
   fun `scheduled fuzz workflows are optional and local fuzz aggregate cannot drift`() {
-    writeFixture(emptyList(), expectedMutationRelease = 21, expectedFuzzRelease = 21)
+    writeFixture(emptyList())
 
     val without = GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments("fuzzWorkflowInSync", "--no-watch-fs", "--stacktrace").build()
