@@ -735,7 +735,7 @@ class HardeningToolMutationEvidenceFunctionalTest : HardeningToolExecFixture() {
       buildTail =
         """
           if (providers.gradleProperty("editAfterRecompile").isPresent) {
-            val editAfterRecompile by tasks.registering {
+            val editAfterRecompile = tasks.register("editAfterRecompile") {
               mustRunAfter("compileForPitest")
               val codec = layout.projectDirectory.file("src/main/java/com/example/Codec.java").asFile
               doLast { codec.appendText("\n// landed after the recompile read the sources\n") }
@@ -743,7 +743,7 @@ class HardeningToolMutationEvidenceFunctionalTest : HardeningToolExecFixture() {
             tasks.named("pitestEncodingEvidenceValidate") { dependsOn(editAfterRecompile) }
           }
           if (providers.gradleProperty("tamperStampClasses").isPresent) {
-            val tamperStampClasses by tasks.registering {
+            val tamperStampClasses = tasks.register("tamperStampClasses") {
               mustRunAfter("compileForPitest")
               val stamp = layout.buildDirectory.file("mutation-recompile/sources.sha256").get().asFile
               doLast {

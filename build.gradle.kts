@@ -432,7 +432,7 @@ val actionSourceSets = listOf("releasePleaseGuard" to "release-please-guard", "f
     }
     sourceSet
   }
-val guardTest by sourceSets.creating {
+val guardTest = sourceSets.create("guardTest") {
   actionSourceSets.forEach { actionSourceSet ->
     compileClasspath += actionSourceSet.output
     runtimeClasspath += actionSourceSet.output

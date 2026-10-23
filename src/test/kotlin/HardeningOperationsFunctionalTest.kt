@@ -35,7 +35,7 @@ class HardeningOperationsFunctionalTest {
     )
     val pitestClasspathConfiguration = if (taskProducedToolClasspath) {
       """
-        val preparePitTool by tasks.registering(Sync::class) {
+        val preparePitTool = tasks.register<Sync>("preparePitTool") {
           from(sourceSets["main"].output)
           into(layout.buildDirectory.dir("fake-pit-tool"))
         }
