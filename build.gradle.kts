@@ -16,6 +16,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.Base64
 import java.util.UUID
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 private data class LocalPublicationSourceSnapshot(
   val gitState: String,
@@ -533,6 +534,14 @@ gradlePlugin {
 java {
   withJavadocJar()
   withSourcesJar()
+}
+
+// Consumers load this plugin in their own Gradle daemon, so its floor must not follow the JDK
+// this build runs on: Java 21 bytecode, compiled against the Java 21 API.
+tasks.withType<JavaCompile>().configureEach { options.release = 21 }
+kotlin.compilerOptions {
+  jvmTarget = JvmTarget.JVM_21
+  freeCompilerArgs.add("-Xjdk-release=21")
 }
 
 // Keep in sync with the signing setup in
