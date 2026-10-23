@@ -1,5 +1,31 @@
 # Changelog
 
+## [21.6.9](https://github.com/sava-software/sava-build/compare/21.6.8...21.6.9) (2026-10-23)
+
+
+### Features
+
+* **hardening:** announce a change in a suite's mutant population, by class ([e57e371](https://github.com/sava-software/sava-build/commit/e57e3714cd573e7e547fc01cd67f5797e1cf4369))
+
+
+### Bug Fixes
+
+* **hardening:** announce a quiet-counter reset only when the stash held counts ([df45a78](https://github.com/sava-software/sava-build/commit/df45a780fea753a8f4d297f12830a7d3024fd335))
+* **hardening:** print the debt listing and the mutator trial's table under -q ([0fb1ddb](https://github.com/sava-software/sava-build/commit/0fb1ddb52afc86a73e08185b493672d145cc5df8))
+
+
+### Build System
+
+* compile the plugin for Java 21 whatever JDK runs the build ([8eb809c](https://github.com/sava-software/sava-build/commit/8eb809c1e95f83369a35e0b82f34db8adcbd0af4))
+* **deps:** bump actions/create-github-app-token from 3.2.0 to 3.3.0 ([#139](https://github.com/sava-software/sava-build/issues/139)) ([9b0f5f5](https://github.com/sava-software/sava-build/commit/9b0f5f50b3b93bda44758c9cd87502a764750f3c))
+* **deps:** bump the codeql-action group across 1 directory with 2 updates ([#142](https://github.com/sava-software/sava-build/issues/142)) ([b5fb9ab](https://github.com/sava-software/sava-build/commit/b5fb9ab0c99795aadf09fc41320b8b72790b5b58))
+
+
+### Chores
+
+* **gradle:** bump Gradle wrapper to 9.8.2 ([977d46b](https://github.com/sava-software/sava-build/commit/977d46b42c8268eae1a91ab6f40cb90e1bbe23cc))
+* **gradle:** replace the Kotlin DSL property delegates Gradle 10 removes ([9b01691](https://github.com/sava-software/sava-build/commit/9b01691cc432e95b8df70a6ca4c66ed8812cdc96))
+
 ## [21.6.8](https://github.com/sava-software/sava-build/compare/21.6.7...21.6.8) (2026-10-14)
 
 
