@@ -19,6 +19,19 @@ abstract class JlinkApplicationExtension {
 
   /** Default JVM options baked into the image ('--add-options'). */
   abstract val addOptions: ListProperty<String>
+
+  /**
+   * Whether jlink links every provider of a service the linked modules use ('--bind-services').
+   * Unset, it is off: binding pulls some forty JDK modules into a plain service image (javac,
+   * jshell, jlink, jpackage, jdk.attach, jdk.jdwp.agent, java.desktop and what they require), and
+   * on a JDK without jmods it pulls jdk.jlink in, which jlink refuses to link from a run-time
+   * image. Without it a module reached only at run time, through ServiceLoader or a 'requires
+   * static', has to be named in [addModules]: jdk.localedata for non-English formatting,
+   * jdk.charsets, jdk.zipfs, jdk.crypto.cryptoki, an SLF4J provider, a JDBC driver; so do the
+   * JDK's tools and agents, jdk.jfr for flight recording, jdk.jdwp.agent for -agentlib:jdwp,
+   * jdk.attach. The image task prints what it left out and, until this property is set either
+   * way, what binding would have linked (both on a Java 21 or newer toolchain, where the report runs).
+   */
   abstract val bindServices: Property<Boolean>
 
   /** e.g. "zip-6" */

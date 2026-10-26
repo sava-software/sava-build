@@ -15,7 +15,9 @@ plugins {
 
 val jlinkApplication = extensions.create<JlinkApplicationExtension>("jlinkApplication")
 jlinkApplication.applicationName.convention(project.name)
-jlinkApplication.bindServices.convention(true)
+// No service binding unless the build asks for it; JlinkApplicationExtension.bindServices says
+// why. The property has no convention on purpose: the image task reports what binding would have
+// linked until the build sets it, either way.
 jlinkApplication.ignoreSigningInformation.convention(true)
 
 plugins.withId("application") {
