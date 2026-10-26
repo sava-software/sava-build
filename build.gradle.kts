@@ -425,7 +425,11 @@ tasks.test {
 // workflow runs them on) and runs it. This build compiles each directory on its own the same
 // way, with every lint as an error, and tests them under check from the Kotlin tests in
 // src/guardTest.
-val actionSourceSets = listOf("releasePleaseGuard" to "release-please-guard", "forkPrGuard" to "fork-pr-guard")
+val actionSourceSets = listOf(
+  "releasePleaseGuard" to "release-please-guard",
+  "forkPrGuard" to "fork-pr-guard",
+  "checkJdkTrust" to "check-jdk-trust",
+)
   .map { (name, action) ->
     val sourceSet = sourceSets.create(name) {
       java.setSrcDirs(listOf(layout.projectDirectory.dir(".github/actions/$action/src")))
@@ -458,22 +462,48 @@ val guardTestTask = tasks.register<Test>("guardTest") {
   inputs.file(layout.projectDirectory.file(".github/workflows/release-please.yml"))
     .withPropertyName("releasePleaseWorkflow")
     .withPathSensitivity(PathSensitivity.RELATIVE)
+  // TrustedChainsTest reads the certificate paths the check-jdk-trust action ships, for the same
+  // reason; only the PEM files, so an edit to the README beside them leaves the task up to date.
+  inputs.files(layout.projectDirectory.dir(".github/actions/check-jdk-trust/chains").asFileTree.matching { include("*.pem") })
+    .withPropertyName("checkJdkTrustChains")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
+  // SetupCheckedJdkPinTest reads the composite action for its oracle-actions/setup-java pin.
+  inputs.file(layout.projectDirectory.file(".github/actions/setup-checked-jdk/action.yml"))
+    .withPropertyName("setupCheckedJdkAction")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
+  // TrustedChainsTest runs check.sh, as the actions do, against trust stores it writes.
+  inputs.file(layout.projectDirectory.file(".github/actions/check-jdk-trust/check.sh"))
+    .withPropertyName("checkJdkTrustScript")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 tasks.check { dependsOn(guardTestTask) }
 
-// Local fuzz evidence replaced scheduled fuzz workflows, so its cheap parser and
-// self-test belong on the ordinary plugin check.
-val localFuzzScript = layout.projectDirectory.file("tools/local-fuzz.sh")
-val localFuzzSyntax = tasks.register<Exec>("localFuzzSyntax") {
+// The shell scripts the composite actions under .github/actions and the tools run: a syntax error
+// there would otherwise surface only on a runner. One 'bash -n' per file, since bash parses only
+// its first operand and binds the rest to $1 onwards.
+val shellSyntax = tasks.register<Exec>("shellSyntax") {
   group = "verification"
-  description = "Checks tools/local-fuzz.sh syntax."
-  inputs.file(localFuzzScript)
-  commandLine("bash", "-n", localFuzzScript.asFile.absolutePath)
+  description = "Checks the syntax of the shell scripts under .github/actions and tools."
+  val scripts = files(
+    layout.projectDirectory.dir(".github/actions").asFileTree.matching { include("**/*.sh") },
+    layout.projectDirectory.dir("tools").asFileTree.matching { include("*.sh") }
+  )
+  inputs.files(scripts).withPropertyName("scripts").withPathSensitivity(PathSensitivity.RELATIVE)
+  executable = "sh"
+  argumentProviders.add {
+    listOf("-c", "for script; do bash -n -- \"\$script\" || exit; done", "shellSyntax") +
+      scripts.files.sorted().map { it.absolutePath }
+  }
 }
+tasks.check { dependsOn(shellSyntax) }
+
+// Local fuzz evidence replaced scheduled fuzz workflows, so its self-test belongs on the
+// ordinary plugin check.
+val localFuzzScript = layout.projectDirectory.file("tools/local-fuzz.sh")
 val localFuzzSelfTest = tasks.register<Exec>("localFuzzSelfTest") {
   group = "verification"
   description = "Runs the local fuzz evidence runner's hermetic self-test."
-  dependsOn(localFuzzSyntax)
+  dependsOn(shellSyntax)
   inputs.file(localFuzzScript)
   // Direct execution also checks the executable bit and shebang, as CI did before.
   commandLine(localFuzzScript.asFile.absolutePath, "--self-test")

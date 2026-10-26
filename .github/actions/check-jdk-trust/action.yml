@@ -1,0 +1,25 @@
+name: Check JDK trust store
+description: >-
+  Fails when a JDK still trusts the eMudhra intermediate CAs whose private keys were compromised
+  (CVE-2026-91403): when one of the certificate paths under chains/ validates against the JDK's
+  default trust anchors, when a path's target is itself an anchor, or when a root those
+  intermediates chain to is.
+  chains/README.md describes the paths, what counts as a rejection, and the JDK releases that
+  pass. Run it once per installed JDK, after the step that installed it and before anything runs
+  on it; setup-checked-jdk does that around oracle-actions/setup-java.
+inputs:
+  java-home:
+    description: The JDK to check. Empty means JAVA_HOME, the JDK the last setup step made default.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    # A composite action runs without a build, so the validator is Java compiled here by the
+    # JDK under check. sava-build's Gradle check compiles the same source with every lint as an
+    # error and tests it.
+    - name: Check that the JDK rejects the compromised issuers
+      shell: bash
+      env:
+        INPUT_JAVA_HOME: ${{ inputs.java-home }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh" "$INPUT_JAVA_HOME"

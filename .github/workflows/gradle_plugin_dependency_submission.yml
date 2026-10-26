@@ -19,7 +19,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b
+      # oracle-actions/setup-java with the eMudhra trust checks around it; the action says why.
+      - uses: ./.github/actions/setup-checked-jdk
         with:
           website: ${{ vars.JDK_SRC }}
           release: ${{ vars.GRADLE_JAVA_VERSION }}

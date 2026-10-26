@@ -1,0 +1,44 @@
+name: Set up a checked JDK
+description: >-
+  oracle-actions/setup-java with the eMudhra incident (CVE-2026-91403) closed around it. On Linux
+  it first distrusts the roots the compromised intermediates chain to in the runner's OS store,
+  which the preinstalled Temurin JDKs read; then it checks the runner JDK that oracle-actions/setup-java downloads with
+  (JAVA_HOME_21_X64, or JAVA_HOME_21_arm64), installs the requested JDK, and checks that one. Both
+  checks fail closed, so a runner whose bundled JDK still trusts the compromised chains (a macOS
+  or Windows image, where the OS store is not the JDK's) stops here instead of downloading over an
+  untrusted connection. The distrust-compromised-roots and check-jdk-trust actions beside this one
+  are the same scripts, for a JDK installed some other way; check-jdk-trust/chains/README.md has
+  the facts of the incident.
+inputs:
+  website:
+    description: oracle-actions/setup-java's website input (oracle.com or jdk.java.net).
+    required: true
+  release:
+    description: oracle-actions/setup-java's release input, a feature release number.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Distrust the compromised intermediates' roots in the OS trust store
+      if: runner.os == 'Linux'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../distrust-compromised-roots/distrust.sh"
+    # The variables mirror the pinned oracle-actions/setup-java's own choice of JDK;
+    # SetupCheckedJdkPinTest in sava-build ties the two together.
+    - name: Check the runner JDK that downloads
+      shell: bash
+      run: |
+        home="${JAVA_HOME_21_X64:-}"
+        [ -d "$home" ] || home="${JAVA_HOME_21_arm64:-}"
+        if [ -z "$home" ]; then
+          echo "::error::setup-checked-jdk: neither JAVA_HOME_21_X64 nor JAVA_HOME_21_arm64 names a JDK 21 home. oracle-actions/setup-java reads the same variable and otherwise falls back to /bin/java, which this action does not check; set the variable to the JDK the download should run on."
+          exit 1
+        fi
+        bash "$GITHUB_ACTION_PATH/../check-jdk-trust/check.sh" "$home"
+    - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b # v1.5.0
+      with:
+        website: ${{ inputs.website }}
+        release: ${{ inputs.release }}
+    - name: Check the installed JDK
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../check-jdk-trust/check.sh" "$JAVA_HOME"

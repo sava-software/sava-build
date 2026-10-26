@@ -1,0 +1,18 @@
+name: Distrust compromised roots
+description: >-
+  Disables the roots the compromised eMudhra intermediate CAs (CVE-2026-91403) chain to, "emSign
+  ECC Root CA - G3" and "AAA Certificate Services", in a Linux runner's OS trust store and
+  regenerates the derived stores, as Ubuntu's fixed ca-certificates package does and a proposed
+  runner-image fix would (distrust.sh names both). The runner's preinstalled Temurin JDKs read the OS store,
+  so this also fixes the JDK that oracle-actions/setup-java downloads other JDKs with. Run it
+  before the first JDK download and follow it with check-jdk-trust on that JDK, which is what
+  proves the store clean; setup-checked-jdk does both. It needs passwordless sudo, does nothing
+  on other operating systems, and is a no-op once the image no longer carries the root.
+  check-jdk-trust/chains/README.md has the facts of the incident.
+runs:
+  using: composite
+  steps:
+    - name: Distrust the roots the compromised intermediates chain to
+      if: runner.os == 'Linux'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/distrust.sh"
