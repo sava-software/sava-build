@@ -24,7 +24,8 @@ class HardeningFeatureSmokeTest {
   }
 
   // The fixture sets no toolchain, so the hardening defaults follow the JVM its TestKit
-  // daemon runs on, which is this test's JVM: 21 under this build's daemon pin, 25 without it.
+  // daemon runs on, which is this test's JVM: the daemon JDK, which follows JAVA_HOME on CI and
+  // org.gradle.java.home locally (both Java 25 since 2026-10).
   private val daemonRelease = Runtime.version().feature()
 
   private fun writeFixture(
@@ -141,8 +142,9 @@ class HardeningFeatureSmokeTest {
 
   @Test
   fun `hardening feature registers pitest and fuzz tasks with default releases`() {
-    // Defaults follow the consumer toolchain, here the TestKit daemon's JVM, instead of
-    // assuming Sava's Java 25.
+    // Defaults follow the consumer toolchain, here the TestKit daemon's JVM. The fixture sets no
+    // toolchain, so this checks the plumbing, not that the convention beats a literal release: the
+    // daemon has been Java 25 too since the daemon pin went.
     writeFixture(emptyList())
 
     val result = GradleRunner.create()

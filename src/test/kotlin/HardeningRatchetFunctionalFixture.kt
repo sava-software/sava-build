@@ -35,8 +35,8 @@ abstract class HardeningRatchetFunctionalFixture {
     corpuslessDecline: String? = null,
     corpuslessAlsoDeclaresCorpus: Boolean = false,
     // pin the recompile's bytecode target when a test actually runs it: the fixture
-    // sets no toolchain, so the recompile runs on the daemon JDK, which this build
-    // pins to 21 via gradle/gradle-daemon-jvm.properties
+    // sets no toolchain, so the recompile runs on the daemon JDK, which follows
+    // JAVA_HOME on CI and org.gradle.java.home locally (both Java 25 since 2026-10)
     bytecodeRelease: Int? = null,
     // the exclusion-audit tests widen the 'encoding' suite and give it globs to
     // swallow with; extraSuites appends sibling registrations verbatim

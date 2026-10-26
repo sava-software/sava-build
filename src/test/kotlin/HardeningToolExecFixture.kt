@@ -82,8 +82,9 @@ $settingsTail
         }
 
         hardening {
-          // No bytecode override: the recompiles must follow this generic fixture's
-          // Java 21 TestKit daemon rather than assuming Sava's Java 25.
+          // No bytecode override: the recompiles follow this generic fixture's TestKit
+          // daemon, the JVM these tests run on (Java 25 too since the daemon pin went, so
+          // they do not tell the convention from a literal release).
           // generated replay tests need junit and the harness classes, neither of
           // which this fixture declares
           recompileExcludes = listOf("CodecFuzzSeedReplayTest.java", "HollowFuzzSeedReplayTest.java")

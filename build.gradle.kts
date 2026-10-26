@@ -401,6 +401,10 @@ tasks.test {
       // ArcMutate certificate. Its test guards the eligibility boundary and, most
       // importantly, ensures the private subscription URL is never pasted beside it.
       arcMutateLicence = layout.projectDirectory.file("arcmutate-licence.txt")
+      // PluginJavaFloorTest reads the kotlinc flag from the build script: an input, so the edit it
+      // guards against re-runs the tests by declaration, and not only through the implementation
+      // hash of this class, which a move into build-logic would take out of the script.
+      buildScript = layout.projectDirectory.file("build.gradle.kts")
       projectRoot = layout.projectDirectory
       // Re-run when the published plugin changes. Maven metadata and the local
       // provenance sidecar carry a fresh publication timestamp on every publish, so
@@ -494,6 +498,10 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   @get:InputFile
   @get:PathSensitive(PathSensitivity.NONE)
   abstract val arcMutateLicence: RegularFileProperty
+
+  @get:InputFile
+  @get:PathSensitive(PathSensitivity.NONE)
+  abstract val buildScript: RegularFileProperty
 
   @get:InputFiles
   @get:PathSensitive(PathSensitivity.RELATIVE)
