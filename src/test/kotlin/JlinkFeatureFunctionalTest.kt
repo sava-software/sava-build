@@ -28,9 +28,10 @@ class JlinkFeatureFunctionalTest {
   /**
    * The fixture, which generates a CDS archive and compresses as the consumers' jlinkApplication
    * blocks do. With [bindServices] null the build leaves the property alone, as a consumer that
-   * has not decided does; set, it writes the property. [more] are further jlinkApplication lines.
+   * has not decided does; set, it writes the property. [more] are further jlinkApplication lines,
+   * [script] is appended to the build script.
    */
-  private fun writeFixture(bindServices: Boolean? = null, more: List<String> = emptyList()) {
+  private fun writeFixture(bindServices: Boolean? = null, more: List<String> = emptyList(), script: String = "") {
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
         $savaBuildPluginManagement
@@ -64,7 +65,7 @@ class JlinkFeatureFunctionalTest {
           stripDebug = false
           vm = "server"
         }
-      """.trimIndent() + "\n"
+      """.trimIndent() + "\n" + script
     )
     val sourceDir = File(fixtureDir, "src/main/java/software/sava/test/jlink")
     sourceDir.mkdirs()
@@ -228,4 +229,26 @@ class JlinkFeatureFunctionalTest {
     )
   }
 
+  @Test
+  fun `the image follows the toolchain files a link reads as they stand`() {
+    // release names the JDK's version; cacerts and tzdb.dat are what a link from a JDK without jmods
+    // copies from the installation itself (jlink's upgrade_files_java.base.conf), so an OS trust-store
+    // update under such a JDK changes the image without touching release. The toolchain is this JVM.
+    writeFixture(
+      script = """
+        tasks.register("imageInputs") {
+          // Realised at configuration time, a local so the action captures plain strings, not the script.
+          val imageInputs = tasks.named("image").get().inputs.files.files.map { it.absolutePath }
+          doLast { imageInputs.forEach { println("image input: " + it) } }
+        }
+      """.trimIndent() + "\n"
+    )
+    val result = runBuild("imageInputs")
+    val listed = result.output.lines().filter { it.startsWith("image input: ") }
+      .map { File(it.removePrefix("image input: ")).canonicalPath }.toSet()
+    val home = File(System.getProperty("java.home"))
+    for (name in listOf("release", "lib/security/cacerts", "lib/tzdb.dat")) {
+      assertTrue(File(home, name).canonicalPath in listed, "$name of $home not among the image inputs:\n${listed.joinToString("\n")}")
+    }
+  }
 }

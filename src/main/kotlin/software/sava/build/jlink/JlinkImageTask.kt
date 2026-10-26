@@ -3,15 +3,20 @@ package software.sava.build.jlink
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.FileCollection
 import org.gradle.api.file.FileSystemOperations
+import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Classpath
 import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Nested
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.jvm.toolchain.JavaLauncher
 import org.gradle.process.ExecOperations
@@ -30,6 +35,31 @@ abstract class JlinkImageTask : DefaultTask() {
   /** Locates the JDK whose 'bin/jlink' is executed. */
   @get:Nested
   abstract val javaLauncher: Property<JavaLauncher>
+
+  /**
+   * The toolchain JDK files the image's content follows, hashed when the task runs: 'release', which
+   * names the JDK's version and so the modules a link takes from its jmods, and the two files a link
+   * from a JDK without jmods (Temurin 24 and later) copies from the installation as they stand rather
+   * than from a hashed module, 'lib/security/cacerts' and 'lib/tzdb.dat' (jlink's
+   * upgrade_files_java.base.conf). [javaLauncher]'s own fingerprint is the toolchain spec and the
+   * language version only, so without these a JDK update within a feature release, or a trust-store
+   * update under a jmod-less JDK whose cacerts the OS maintains, would leave a linked image up to
+   * date. Files rather than the launcher's vendor and runtime version: Gradle caches that metadata
+   * per installation for the daemon's life and stores it in the configuration cache entry, so after
+   * an update in place (the same path holding a new JDK) it still reports the old version. A
+   * collection rather than three files, since cacerts may be a dangling link on a JDK whose trust
+   * store the OS has not generated yet: a missing file fingerprints too, and a vanished JDK still
+   * stops the task at its jlink check.
+   */
+  @get:InputFiles
+  @get:PathSensitive(PathSensitivity.NONE)
+  val toolchainFiles: FileCollection
+    get() = objects.fileCollection().from(
+      javaLauncher.map { launcher ->
+        val home = launcher.metadata.installationPath
+        listOf(home.file("release"), home.file("lib/security/cacerts"), home.file("lib/tzdb.dat"))
+      }
+    )
 
   @get:Classpath
   abstract val modulePath: ConfigurableFileCollection
@@ -130,6 +160,9 @@ abstract class JlinkImageTask : DefaultTask() {
 
   @get:Inject
   protected abstract val fileSystemOperations: FileSystemOperations
+
+  @get:Inject
+  protected abstract val objects: ObjectFactory
 
   @TaskAction
   fun execute() {
