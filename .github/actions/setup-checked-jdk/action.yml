@@ -31,8 +31,11 @@ runs:
         RELEASE: ${{ inputs.release }}
       run: |
         [[ "$WEBSITE" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::setup-checked-jdk: website ('$WEBSITE') is empty or not a host name; the sava workflows take it from vars.JDK_SRC."; exit 1; }
-        [ -n "$RELEASE" ] || { echo "::error::setup-checked-jdk: release is empty; the sava workflows take it from vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it."; exit 1; }
-        bash "$GITHUB_ACTION_PATH/../check-jdk-trust/release-floor.sh" "$RELEASE"
+        # setup-java's release input is a feature release number or a project name, by the rule
+        # sava-build's root action spells.
+        release_re='^[A-Za-z0-9._-]+$'
+        [[ "$RELEASE" =~ $release_re ]] || { echo "::error::setup-checked-jdk: release ('$RELEASE') is empty or not a single release; the sava workflows take it from vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it."; exit 1; }
+        bash "$GITHUB_ACTION_PATH/../check-jdk-trust/release-floor.sh" "release (vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it)" "$RELEASE"
     - name: Distrust the compromised intermediates' roots in the OS trust store
       if: runner.os == 'Linux'
       shell: bash

@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 import javax.net.ssl.TrustManagerFactory;
@@ -98,7 +99,7 @@ public final class TrustedChains {
    * path is TRUSTING whatever else happened, then any inconclusive path or failure is UNDECIDED.
    */
   static int run(Path directory, Set<TrustAnchor> anchors, PrintStream out) {
-    out.printf("Java %s (%s) at %s, %d trust anchors%n",
+    out.printf(Locale.ROOT, "Java %s (%s) at %s, %d trust anchors%n",
         System.getProperty("java.runtime.version"), System.getProperty("java.vendor"),
         System.getProperty("java.home"), anchors.size());
     if (anchors.isEmpty()) {
@@ -117,7 +118,7 @@ public final class TrustedChains {
     long inconclusive = 0;
     if (verdicts != null) {
       for (Verdict verdict : verdicts) {
-        out.printf("%-12s %s: %s%n", verdict.outcome(), verdict.file().getFileName(), verdict.detail());
+        out.printf(Locale.ROOT, "%-12s %s: %s%n", verdict.outcome(), verdict.file().getFileName(), verdict.detail());
         if (verdict.outcome() == Outcome.TRUSTED) {
           trusted++;
         } else if (verdict.outcome() == Outcome.INCONCLUSIVE) {
@@ -126,14 +127,14 @@ public final class TrustedChains {
       }
     }
     for (String root : related) {
-      out.printf("BAD ROOT: %s%n", root);
+      out.printf(Locale.ROOT, "BAD ROOT: %s%n", root);
     }
     for (String root : anchorsNamed(anchors, OTHER_EMUDHRA_ROOTS)) {
-      out.printf("note: %s is a trust anchor (an eMudhra root unrelated to the compromised intermediates;"
+      out.printf(Locale.ROOT, "note: %s is a trust anchor (an eMudhra root unrelated to the compromised intermediates;"
           + " chains/README.md says why it is reported, not failed)%n", root);
     }
     if (trusted > 0 || !related.isEmpty()) {
-      out.printf("%d path(s) validate and %d related root(s) are trust anchors: this runtime still trusts a compromised issuer.%n",
+      out.printf(Locale.ROOT, "%d path(s) validate and %d related root(s) are trust anchors: this runtime still trusts a compromised issuer.%n",
           trusted, related.size());
       return TRUSTING;
     }
@@ -141,11 +142,11 @@ public final class TrustedChains {
       return UNDECIDED;
     }
     if (inconclusive > 0) {
-      out.printf("%d of %d paths failed for a reason that says nothing about the issuer; the check cannot decide.%n",
+      out.printf(Locale.ROOT, "%d of %d paths failed for a reason that says nothing about the issuer; the check cannot decide.%n",
           inconclusive, verdicts.size());
       return UNDECIDED;
     }
-    out.printf("All %d paths rejected; no related root among the trust anchors.%n", verdicts.size());
+    out.printf(Locale.ROOT, "All %d paths rejected; no related root among the trust anchors.%n", verdicts.size());
     return CLEAN;
   }
 

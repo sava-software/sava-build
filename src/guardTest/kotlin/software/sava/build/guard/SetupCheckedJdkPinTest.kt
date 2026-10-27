@@ -38,23 +38,45 @@ class SetupCheckedJdkPinTest {
       "downloader-jdk.sh no longer checks the JDK oracle-actions/setup-java v1.5.0 downloads with")
     assertEquals(1, count(action, "distrust.sh\""), "the wrapper no longer distrusts the roots in the OS store")
     assertEquals(1, count(action, "downloader-jdk.sh\""), "the wrapper no longer checks the runner JDK before the download")
-    assertEquals(1, count(action, "release-floor.sh\" \"\$RELEASE\""), "the wrapper no longer refuses a release below the floor")
+    assertEquals(1, count(action, "release-floor.sh\" \"release (vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it)\" \"\$RELEASE\""),
+      "the wrapper no longer refuses a release below the floor, naming the input it comes from")
     assertEquals(1, count(action, "check.sh\" \"\$JAVA_HOME\""), "the wrapper no longer checks the installed JDK")
     // Distrust, the runner-JDK check, the install, the installed-JDK check, in that order.
     val order = listOf("distrust.sh\"", "downloader-jdk.sh\"", pin, "check.sh\" \"\$JAVA_HOME\"").map { action.indexOf(it) }
     assertEquals(order.sorted(), order, "the wrapper must distrust and check the runner JDK before the install, and check the installed JDK after it")
-    // The website is a host name by the one rule, spelled in the wrapper and in the root action.
+    // The website is a host name and the release a single release by the one rule each, spelled
+    // in the wrapper and in the root action.
+    val root = Files.readString(Path.of("action.yml"))
     val hostName = "^[A-Za-z0-9.-]+$"
-    assertTrue(action.contains(hostName) && Files.readString(Path.of("action.yml")).contains(hostName),
+    assertTrue(action.contains(hostName) && root.contains(hostName),
       "the wrapper and the root action must check the download site against the same host-name rule")
+    val releaseRe = "release_re='^[A-Za-z0-9._-]+$'"
+    assertTrue(action.contains(releaseRe) && root.contains(releaseRe),
+      "the wrapper and the root action must check the release against the same rule")
   }
 
   @Test
-  fun `the floor refused by name is the release check-sh compiles with`() {
+  fun `the floor refused by name is the release check-sh compiles with, as the prose says`() {
+    val floor = releaseFloor()
     val check = Files.readString(Path.of(".github/actions/check-jdk-trust/check.sh"))
-    val floor = Files.readString(Path.of(".github/actions/check-jdk-trust/release-floor.sh"))
-    assertTrue(check.contains(" --release 21 "), "check.sh no longer compiles at --release 21: move release-floor.sh's floor with it")
-    assertTrue(floor.contains("\nfloor=21\n"), "release-floor.sh's floor is not the 21 check.sh compiles with")
+    assertTrue(check.contains(" --release $floor ") && check.contains("a JDK below $floor"),
+      "check.sh no longer compiles at --release $floor, release-floor.sh's floor, or no longer says so: move the two together")
+    val floorScript = Files.readString(Path.of(".github/actions/check-jdk-trust/release-floor.sh"))
+    assertTrue(floorScript.contains("--release $floor"), "release-floor.sh's own header must name the --release $floor it stands for")
+    // The prose that promises the floor moves with it: the root action's description and its two
+    // version inputs, the wrapper's step name and release description, the README.
+    val root = Files.readString(Path.of("action.yml"))
+    val wrapper = Files.readString(Path.of(".github/actions/setup-checked-jdk/action.yml"))
+    val readme = Files.readString(Path.of("README.md"))
+    assertTrue(
+      root.contains("Java $floor is the floor") &&
+        root.contains("description: \"Default Java version, $floor or later") &&
+        root.contains("description: \"Java version Gradle runs on, $floor or later"),
+      "action.yml's description and its two version inputs must name the floor $floor"
+    )
+    assertTrue(wrapper.contains("a release below $floor") && wrapper.contains("$floor or later"),
+      "setup-checked-jdk's step name and release description must name the floor $floor")
+    assertTrue(readme.contains("Java $floor is the floor"), "the README must name the floor $floor")
   }
 
   @Test
@@ -66,8 +88,9 @@ class SetupCheckedJdkPinTest {
     assertEquals(1, count(root, "distrust-compromised-roots/distrust.sh\""), "action.yml no longer distrusts the roots in the OS store")
     assertEquals(1, count(root, "setup-checked-jdk/downloader-jdk.sh\""), "action.yml no longer checks the runner JDK before the downloads")
     assertEquals(2, count(root, "check-jdk-trust/check.sh\" \"\$JAVA_HOME\""), "action.yml no longer checks both installed JDKs")
-    assertEquals(1, count(root, "release-floor.sh\" \"\$JAVA_VERSION\" \"\$GRADLE_JAVA_VERSION\""),
-      "action.yml no longer refuses a version below the floor for both JDKs")
+    assertEquals(1, count(root, "release-floor.sh\" \\\n"), "action.yml no longer refuses a version below the floor")
+    assertTrue(root.contains("in gradle/sava.properties)\" \"\$JAVA_VERSION\" \\\n") && root.contains("(vars.GRADLE_JAVA_VERSION)\" \"\$GRADLE_JAVA_VERSION\"\n"),
+      "action.yml must pass both versions to release-floor.sh, each after the label of the input it comes from")
     // git fetches the checkout over the OS store, so the distrust and the runner check come first.
     val checkout = root.indexOf("uses: actions/checkout@")
     assertTrue(checkout > 0 && root.indexOf("downloader-jdk.sh\"") < checkout && root.indexOf("distrust.sh\"") < checkout,

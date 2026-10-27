@@ -6,9 +6,11 @@
 # them; the systemProp. spelling too; a backslash continuation is not followed); or a metadata
 # file whose verify-signatures is not true (Gradle's
 # default for a missing element is false; the element is read case-insensitively, without
-# whitespace and XML comments). verify-metadata governs the metadata files (POM, module) only and
-# is not read; a -D or --dependency-verification on a command line is not seen. Run by sava-build's
-# root action after its JDK setup. Exits 0: a warning until the fleet carries the file, then an
+# whitespace and XML comments). Only that switch is read: a key under <ignored-keys> or a
+# <trusted-artifacts> entry exempts what it names from signature verification and is not seen.
+# verify-metadata governs the metadata files (POM, module) only and is not read; a -D or
+# --dependency-verification on a command line is not seen. Run by sava-build's root action after
+# its JDK setup. Exits 0: a warning until the fleet carries the file, then an
 # error. DependencyVerificationNoticeTest in sava-build runs it over fixtures.
 set -euo pipefail
 metadata=gradle/verification-metadata.xml
