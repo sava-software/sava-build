@@ -1,7 +1,6 @@
 package software.sava.build.guard
 
 import java.nio.file.Files
-import java.nio.file.Path
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -14,7 +13,7 @@ class ReleasePleaseActionPinTest {
 
   @Test
   fun `release-please-action is pinned at the commit the port was recorded from`() {
-    val workflow = Files.readString(Path.of(".github/workflows/release-please.yml"))
+    val workflow = Files.readString(guardFile(".github/workflows/release-please.yml"))
     assertTrue(workflow.contains("googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"),
       "release-please-action moved: re-record parser-corpus.json from the release-please it bundles, re-check " +
         "ConventionalCommits and ReleasePullRequests against that version, then update this pin")

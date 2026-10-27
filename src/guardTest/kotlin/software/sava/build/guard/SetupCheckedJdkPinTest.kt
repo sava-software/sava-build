@@ -1,7 +1,6 @@
 package software.sava.build.guard
 
 import java.nio.file.Files
-import java.nio.file.Path
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -28,11 +27,11 @@ class SetupCheckedJdkPinTest {
 
   @Test
   fun `oracle-actions setup-java is pinned at the commit whose downloader JDK the script checks`() {
-    val action = Files.readString(Path.of(".github/actions/setup-checked-jdk/action.yml"))
+    val action = Files.readString(guardFile(".github/actions/setup-checked-jdk/action.yml"))
     assertEquals(1, count(action, pin),
       "oracle-actions/setup-java moved: read its action.yml for the JDK it runs Download.java on, point " +
         "downloader-jdk.sh at that JDK, then update this pin")
-    val downloader = Files.readString(Path.of(".github/actions/setup-checked-jdk/downloader-jdk.sh"))
+    val downloader = Files.readString(guardFile(".github/actions/setup-checked-jdk/downloader-jdk.sh"))
     // The script's own assignments, not the prose around them, which names the variables too.
     assertTrue(downloader.contains("home=\"\${JAVA_HOME_21_X64:-}\"") && downloader.contains("home=\"\${JAVA_HOME_21_arm64:-}\""),
       "downloader-jdk.sh no longer checks the JDK oracle-actions/setup-java v1.5.0 downloads with")
@@ -46,7 +45,7 @@ class SetupCheckedJdkPinTest {
     assertEquals(order.sorted(), order, "the wrapper must distrust and check the runner JDK before the install, and check the installed JDK after it")
     // The website is a host name and the release a single release by the one rule each, spelled
     // in the wrapper and in the root action.
-    val root = Files.readString(Path.of("action.yml"))
+    val root = Files.readString(guardFile("action.yml"))
     val hostName = "^[A-Za-z0-9.-]+$"
     assertTrue(action.contains(hostName) && root.contains(hostName),
       "the wrapper and the root action must check the download site against the same host-name rule")
@@ -57,7 +56,7 @@ class SetupCheckedJdkPinTest {
 
   @Test
   fun `the self-test runs the root action from the checkout with two different versions at or above the floor`() {
-    val workflow = Files.readString(Path.of(".github/workflows/action_self_test.yml"))
+    val workflow = Files.readString(guardFile(".github/workflows/action_self_test.yml"))
     assertTrue(workflow.contains("uses: ./\n"), "action_self_test.yml must run the root action from the checkout")
     // Each version is one job-level literal, read on its own line, not from a comment quoting a
     // value, and the install takes both from there.
@@ -80,16 +79,16 @@ class SetupCheckedJdkPinTest {
   @Test
   fun `the floor refused by name is the release check-sh compiles with, as the prose says`() {
     val floor = releaseFloor()
-    val check = Files.readString(Path.of(".github/actions/check-jdk-trust/check.sh"))
+    val check = Files.readString(guardFile(".github/actions/check-jdk-trust/check.sh"))
     assertTrue(check.contains(" --release $floor ") && check.contains("a JDK below $floor"),
       "check.sh no longer compiles at --release $floor, release-floor.sh's floor, or no longer says so: move the two together")
-    val floorScript = Files.readString(Path.of(".github/actions/check-jdk-trust/release-floor.sh"))
+    val floorScript = Files.readString(guardFile(".github/actions/check-jdk-trust/release-floor.sh"))
     assertTrue(floorScript.contains("--release $floor"), "release-floor.sh's own header must name the --release $floor it stands for")
     // The prose that promises the floor moves with it: the root action's description and its two
     // version inputs, the wrapper's step name and release description, the README.
-    val root = Files.readString(Path.of("action.yml"))
-    val wrapper = Files.readString(Path.of(".github/actions/setup-checked-jdk/action.yml"))
-    val readme = Files.readString(Path.of("README.md"))
+    val root = Files.readString(guardFile("action.yml"))
+    val wrapper = Files.readString(guardFile(".github/actions/setup-checked-jdk/action.yml"))
+    val readme = Files.readString(guardFile("README.md"))
     assertTrue(
       root.contains("Java $floor is the floor") &&
         root.contains("description: \"Default Java version, $floor or later") &&
@@ -103,7 +102,7 @@ class SetupCheckedJdkPinTest {
 
   @Test
   fun `the root action installs both JDKs through the same pin with the same checks around them`() {
-    val root = Files.readString(Path.of("action.yml"))
+    val root = Files.readString(guardFile("action.yml"))
     assertEquals(2, count(root, pin),
       "action.yml installs Gradle's JDK and the build's through the pinned oracle-actions/setup-java; a bump " +
         "moves with the wrapper's pin and this test")

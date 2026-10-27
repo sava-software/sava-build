@@ -375,6 +375,74 @@ val savaTestRepoSignTask = "sign$savaTestRepoPublicationSuffix"
 val savaTestRepoPublishPrefix = "publish${savaTestRepoPublicationSuffix}To"
 val savaTestRepoPublishTask = "${savaTestRepoPublishPrefix}SavaTestRepoRepository"
 
+// tools/local-fuzz.sh: run by localFuzzSelfTest below, and read by LocalRepoNoticeFunctionalTest.
+val localFuzzScriptPath = "tools/local-fuzz.sh"
+val localFuzzScript = layout.projectDirectory.file(localFuzzScriptPath)
+
+// The repository files a test task reads, by path from the root (a file, or a directory read
+// whole), declared in one list per task: a tree over the root holding just those is an input of
+// the task, hashed by content under each path, and the list is passed to the tests, whose
+// accessor (savaBuildRootFile under src/test, guardFile under src/guardTest) refuses a read of a
+// path that is not on it, so a new read declares itself here or fails instead of leaving the task
+// up to date after an edit to the file it checks; a scan test in each source set holds every read
+// to the accessor. Sources a test asserts over are declared too: the test needs their text as an
+// input, and the classes compiled from them may not change when the text does. Gradle's default
+// excludes (.gitignore, .DS_Store, .git and the like) apply to the tree and win over the includes:
+// such a file under a declared directory is not fingerprinted here, and no test reads one.
+fun Test.declareReads(property: String, paths: List<String>) {
+  val rootDir = layout.projectDirectory.asFile
+  inputs.files(fileTree(layout.projectDirectory) { include(paths.flatMap { listOf(it, "$it/**") }) })
+    .withPropertyName(property)
+    .withPathSensitivity(PathSensitivity.RELATIVE)
+  jvmArgumentProviders.add(objects.newInstance<DeclaredReads>().apply {
+    this.name = property
+    this.paths = paths
+    this.root = layout.projectDirectory
+  })
+  // A declared path that does not exist fails here by name, where the tree would leave it out and
+  // the first test to open it would fail in its own way.
+  doFirst {
+    for (path in paths) {
+      check(File(rootDir, path).exists()) { "$path, declared among the files the tests read ($property in build.gradle.kts), does not exist" }
+    }
+  }
+}
+
+// :test, through savaBuildRootFile.
+//  HARDENING.md: AgentsTemplateSyncFunctionalTest (the agent instructions template section) and
+//    HardeningDocumentationBoundaryTest, which reads README.md and HARDENING_CASEBOOK.md with it.
+//  arcmutate-licence.txt: ArcMutateLicenceTest; the repository intentionally carries the public,
+//    package-scoped OSS certificate, and the test ensures no private subscription URL sits beside it.
+//  build.gradle.kts: PluginJavaFloorTest, the kotlinc -Xjdk-release flag, by declaration and not
+//    only through the implementation hash of the argument provider below.
+//  tools/local-fuzz.sh: LocalRepoNoticeFunctionalTest, the resolution notice's needle.
+//  The hardening script plugin: HardeningTypedTaskArchitectureTest, its wiring as spelled.
+//  src/test/kotlin: TestKitRunnerArgumentsTest and RootFileReadsTest, over the test sources.
+val rootFilesReadByTests = listOf(
+  "HARDENING.md",
+  "README.md",
+  "HARDENING_CASEBOOK.md",
+  "arcmutate-licence.txt",
+  "build.gradle.kts",
+  localFuzzScriptPath,
+  "src/main/kotlin/software.sava.build.feature.hardening.gradle.kts",
+  "src/test/kotlin"
+)
+
+// guardTest, through guardFile: the actions whole, docs included, whose programs and scripts the
+// tests compile and run (TrustedChainsTest, DependencyVerificationNoticeTest, SetupCheckedJdkPinTest,
+// ReleaseFloor); the root action and the two workflows whose pins and versions they hold
+// (SetupCheckedJdkPinTest, ReleasePleaseActionPinTest); the README, whose floor sentence the pin
+// test holds with the actions' prose; and the guard test sources (GuardFileReadsTest).
+val guardFilesReadByTests = listOf(
+  ".github/actions",
+  "action.yml",
+  ".github/workflows/release-please.yml",
+  ".github/workflows/action_self_test.yml",
+  "README.md",
+  "src/guardTest/kotlin"
+)
+
 tasks.test {
   useJUnitPlatform()
   // Each concurrent fixture build needs a TestKit daemon. Keep a conservative
@@ -391,21 +459,9 @@ tasks.test {
   // cache key to this checkout's location and make ':test' unshareable across machines.
   jvmArgumentProviders.add(
     objects.newInstance<SavaBuildTestArguments>().apply {
-      // Read by AgentsTemplateSyncFunctionalTest via the 'savaBuild.root' property below;
-      // no fixture consumes the checkout as an included build anymore.
-      hardeningDoc = layout.projectDirectory.file("HARDENING.md")
-      // HardeningDocumentationBoundaryTest reads the release/source-of-truth boundary
-      // from the root README through the same root path.
-      projectReadme = layout.projectDirectory.file("README.md")
-      // The repository intentionally carries the public, package-scoped OSS
-      // ArcMutate certificate. Its test guards the eligibility boundary and, most
-      // importantly, ensures the private subscription URL is never pasted beside it.
-      arcMutateLicence = layout.projectDirectory.file("arcmutate-licence.txt")
-      // PluginJavaFloorTest reads the kotlinc flag from the build script: an input, so the edit it
-      // guards against re-runs the tests by declaration, and not only through the implementation
-      // hash of this class, which a move into build-logic would take out of the script.
-      buildScript = layout.projectDirectory.file("build.gradle.kts")
-      projectRoot = layout.projectDirectory
+      // The repository files the tests read through the root are declared by declareReads
+      // below, which passes the root too; no fixture consumes the checkout as an included
+      // build anymore.
       // Re-run when the published plugin changes. Maven metadata and the local
       // provenance sidecar carry a fresh publication timestamp on every publish, so
       // neither belongs in the test/cache identity; the JAR bytes already bind the
@@ -417,6 +473,7 @@ tasks.test {
       testRepoVersion = savaTestRepoVersion
     }
   )
+  declareReads("savaBuild.rootFiles", rootFilesReadByTests)
 }
 
 // The composite actions under .github/actions carry Java programs: a composite action runs
@@ -457,42 +514,7 @@ val guardTestTask = tasks.register<Test>("guardTest") {
   useJUnitPlatform()
   testClassesDirs = guardTest.output.classesDirs
   classpath = guardTest.runtimeClasspath
-  // SetupCheckedJdkPinTest reads the self-test workflow for the two versions it passes the root action.
-  inputs.file(layout.projectDirectory.file(".github/workflows/action_self_test.yml"))
-    .withPropertyName("actionSelfTestWorkflow")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
-  // ReleasePleaseActionPinTest reads the workflow for the pinned release-please-action: an
-  // input, so a moved pin re-runs the task rather than finding it up to date or in the cache.
-  inputs.file(layout.projectDirectory.file(".github/workflows/release-please.yml"))
-    .withPropertyName("releasePleaseWorkflow")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
-  // TrustedChainsTest reads the certificate paths the check-jdk-trust action ships, for the same
-  // reason; only the PEM files, so an edit to the README beside them leaves the task up to date.
-  inputs.files(layout.projectDirectory.dir(".github/actions/check-jdk-trust/chains").asFileTree.matching { include("*.pem") })
-    .withPropertyName("checkJdkTrustChains")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
-  // SetupCheckedJdkPinTest reads the composite action for its oracle-actions/setup-java pin, and
-  // the root action, which installs through the same pin from its own checkout.
-  inputs.file(layout.projectDirectory.file(".github/actions/setup-checked-jdk/action.yml"))
-    .withPropertyName("setupCheckedJdkAction")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
-  inputs.file(layout.projectDirectory.file("action.yml"))
-    .withPropertyName("rootAction")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
-  inputs.file(layout.projectDirectory.file(".github/actions/setup-checked-jdk/downloader-jdk.sh"))
-    .withPropertyName("downloaderJdkScript")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
-  inputs.file(layout.projectDirectory.file(".github/actions/check-jdk-trust/release-floor.sh"))
-    .withPropertyName("releaseFloorScript")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
-  // DependencyVerificationNoticeTest runs notice.sh, release-floor.sh and downloader-jdk.sh over fixtures.
-  inputs.file(layout.projectDirectory.file(".github/actions/dependency-verification/notice.sh"))
-    .withPropertyName("dependencyVerificationNotice")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
-  // TrustedChainsTest runs check.sh, as the actions do, against trust stores it writes.
-  inputs.file(layout.projectDirectory.file(".github/actions/check-jdk-trust/check.sh"))
-    .withPropertyName("checkJdkTrustScript")
-    .withPathSensitivity(PathSensitivity.RELATIVE)
+  declareReads("savaBuild.guardFiles", guardFilesReadByTests)
 }
 tasks.check { dependsOn(guardTestTask) }
 
@@ -517,7 +539,6 @@ tasks.check { dependsOn(shellSyntax) }
 
 // Local fuzz evidence replaced scheduled fuzz workflows, so its self-test belongs on the
 // ordinary plugin check.
-val localFuzzScript = layout.projectDirectory.file("tools/local-fuzz.sh")
 val localFuzzSelfTest = tasks.register<Exec>("localFuzzSelfTest") {
   group = "verification"
   description = "Runs the local fuzz evidence runner's hermetic self-test."
@@ -531,25 +552,10 @@ tasks.named("check") {
 }
 
 // Passes the fixture paths to the test JVM as '-D' arguments while declaring them with
-// path sensitivity that ignores where this checkout lives: HARDENING.md is hashed by
-// content alone, and the test repo by its Maven layout relative to the repo root.
+// path sensitivity that ignores where this checkout lives: the test repo is hashed by its
+// Maven layout relative to the repo root (the repository files the tests read, and the root
+// itself, come from declareReads, with the task).
 abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
-
-  @get:InputFile
-  @get:PathSensitive(PathSensitivity.NONE)
-  abstract val hardeningDoc: RegularFileProperty
-
-  @get:InputFile
-  @get:PathSensitive(PathSensitivity.NONE)
-  abstract val projectReadme: RegularFileProperty
-
-  @get:InputFile
-  @get:PathSensitive(PathSensitivity.NONE)
-  abstract val arcMutateLicence: RegularFileProperty
-
-  @get:InputFile
-  @get:PathSensitive(PathSensitivity.NONE)
-  abstract val buildScript: RegularFileProperty
 
   @get:InputFiles
   @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -559,15 +565,30 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   abstract val testRepoVersion: Property<String>
 
   @get:Internal
-  abstract val projectRoot: DirectoryProperty
-
-  @get:Internal
   abstract val testRepoDir: DirectoryProperty
 
   override fun asArguments(): Iterable<String> = listOf(
-    "-DsavaBuild.root=${projectRoot.get().asFile.absolutePath}",
     "-DsavaBuild.testRepo=${testRepoDir.get().asFile.absolutePath}",
     "-DsavaBuild.testRepo.version=${testRepoVersion.get()}"
+  )
+}
+
+// The paths a test task declares it reads, under their property, and the root the tests resolve
+// them against, the latter an internal so the task's cache key does not pin this checkout's location.
+abstract class DeclaredReads : CommandLineArgumentProvider {
+
+  @get:Input
+  abstract val name: Property<String>
+
+  @get:Input
+  abstract val paths: ListProperty<String>
+
+  @get:Internal
+  abstract val root: DirectoryProperty
+
+  override fun asArguments(): Iterable<String> = listOf(
+    "-D${name.get()}=${paths.get().joinToString(",")}",
+    "-DsavaBuild.root=${root.get().asFile.absolutePath}"
   )
 }
 

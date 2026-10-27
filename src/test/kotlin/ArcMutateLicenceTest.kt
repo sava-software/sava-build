@@ -2,14 +2,13 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.io.File
 import java.util.Properties
 
 class ArcMutateLicenceTest {
 
   @Test
   fun `committed OSS certificate stays scoped and contains no private download URL`() {
-    val certificate = File(savaBuildTestProperty("savaBuild.root"), "arcmutate-licence.txt")
+    val certificate = savaBuildRootFile("arcmutate-licence.txt")
     assertTrue(certificate.isFile, "the repository-root ArcMutate certificate must be committed")
 
     val text = certificate.readText()

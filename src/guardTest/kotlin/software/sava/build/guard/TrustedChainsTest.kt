@@ -31,7 +31,7 @@ class TrustedChainsTest {
   lateinit var directory: Path
 
   /** The paths the action ships: served by the eMudhra test hosts or the intermediates themselves. */
-  private val incidentPaths = Path.of(".github/actions/check-jdk-trust/chains")
+  private val incidentPaths = guardFile(".github/actions/check-jdk-trust/chains")
 
   private val certificates = CertificateFactory.getInstance("X.509")
 
@@ -280,7 +280,7 @@ class TrustedChainsTest {
     // Under Gradle the test JVM is the toolchain, a JDK; an IDE's own runtime or a JRE daemon
     // skips the script runs below rather than failing them on check.sh's "no JDK" exit.
     assumeTrue(File(home, "bin/javac").canExecute(), "the test JVM is not a JDK")
-    val script = File(".github/actions/check-jdk-trust/check.sh").absoluteFile
+    val script = guardFile(".github/actions/check-jdk-trust/check.sh").toFile().absoluteFile
     // [javaHome] is the JAVA_HOME check.sh falls back to for an empty argument; null unsets it.
     fun check(home: File, store: File? = null, javaHome: File? = null): Run {
       val builder = ProcessBuilder("bash", script.path, home.path).directory(directory.toFile()).redirectErrorStream(true)

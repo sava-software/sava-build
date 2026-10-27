@@ -1,7 +1,6 @@
 package software.sava.build.guard
 
 import java.io.File
-import java.nio.file.Path
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -21,7 +20,7 @@ class DependencyVerificationNoticeTest {
   @TempDir
   lateinit var project: File
 
-  private val actions = Path.of(".github/actions").toAbsolutePath()
+  private val actions = guardFile(".github/actions").toAbsolutePath()
 
   private class Run(val code: Int, val out: String)
 

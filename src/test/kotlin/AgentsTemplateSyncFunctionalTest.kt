@@ -31,7 +31,7 @@ class AgentsTemplateSyncFunctionalTest {
   // the '>' blockquote lines of the template section are baked, trailing whitespace
   // stripped.
   private val expectedTemplate: String = run {
-    val lines = File(savaBuildTestProperty("savaBuild.root"), "HARDENING.md").readLines()
+    val lines = savaBuildRootFile("HARDENING.md").readLines()
     val start = lines.indexOfFirst { it.trim() == "## Agent instructions template" }
     check(start >= 0) { "HARDENING.md has no '## Agent instructions template' section" }
     lines.drop(start + 1)

@@ -1,14 +1,10 @@
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.io.File
 
 class HardeningTypedTaskArchitectureTest {
 
-  private val script = File(
-    savaBuildTestProperty("savaBuild.root"),
-    "src/main/kotlin/software.sava.build.feature.hardening.gradle.kts",
-  ).readText()
+  private val script = savaBuildRootFile("src/main/kotlin/software.sava.build.feature.hardening.gradle.kts").readText()
 
   @Test
   fun `evidence revalidation follows the normal PIT task launcher`() {

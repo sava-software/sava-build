@@ -84,17 +84,6 @@ class LocalRepoNoticeFunctionalTest {
     return copy
   }
 
-  private fun git(checkout: File, vararg arguments: String): ByteArray {
-    val process = ProcessBuilder(listOf("git") + arguments)
-      .directory(checkout)
-      .redirectErrorStream(true)
-      .apply { environment()["NO_DNA"] = "1" }
-      .start()
-    val output = process.inputStream.readBytes()
-    assertEquals(0, process.waitFor(), output.toString(Charsets.UTF_8))
-    return output
-  }
-
   @Test
   fun `notice survives configuration cache reuse`() {
     val privateRepo = copiedLocalRepo()
@@ -150,18 +139,15 @@ class LocalRepoNoticeFunctionalTest {
     val repo = File(localRepo)
     val artifact = pluginArtifact(repo)
     val sidecar = publicationProvenance(repo)
-    val checkout = File(savaBuildTestProperty("savaBuild.root"))
+    val checkout = savaBuildCheckout()
 
     assertTrue(sidecar.isFile, "local test publication has no provenance sidecar: $sidecar")
     val provenance = SavaBuildLocalPublicationProvenance.read(sidecar)
-    val revision = git(checkout, "rev-parse", "HEAD", "HEAD^{tree}")
+    val revision = checkout.git("rev-parse", "HEAD", "HEAD^{tree}")
       .toString(Charsets.UTF_8)
       .trim()
       .lines()
-    val status = git(
-      checkout,
-      "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none",
-    )
+    val status = checkout.git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
 
     assertEquals(PitestEvidence.sha256(artifact), provenance.jarSha256)
     assertEquals(revision[0], provenance.gitCommit)
@@ -444,7 +430,7 @@ class LocalRepoNoticeFunctionalTest {
     // plugin while still producing a green build. Couple the runner's fixed needle
     // to both sides of the notice so a wording change cannot reject healthy local
     // resolutions or accept a published one.
-    val script = File(savaBuildTestProperty("savaBuild.root"), "tools/local-fuzz.sh").readText()
+    val script = savaBuildRootFile("tools/local-fuzz.sh").readText()
     val needle = Regex("(?m)^resolution_notice=\"([^\"]+)\"").find(script)?.groupValues?.get(1)
       ?: error("resolution_notice line not found in tools/local-fuzz.sh")
 

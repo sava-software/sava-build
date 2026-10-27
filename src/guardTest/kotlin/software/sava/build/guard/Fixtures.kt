@@ -285,3 +285,23 @@ fun released(config: Map<String, Any?> = emptyMap(), version: String = "25.12.1"
   r.configure(version)
   return r
 }
+
+/**
+ * A repository file, or a directory read whole, that a guard test reads, by its path from the
+ * checkout, resolved under the root the guardTest task passes with the paths it declares in
+ * 'savaBuild.guardFiles' as inputs (guardFilesReadByTests in build.gradle.kts), so an edit under
+ * one re-runs the tests and the file read is the file declared, whatever the working directory. A
+ * path that is neither declared nor under a declared directory is refused here rather than read,
+ * since the task would stay up to date after the very edit such a read checks for.
+ * GuardFileReadsTest holds every read to this function.
+ */
+fun guardFile(path: String): Path {
+  fun property(name: String): String = System.getProperty(name)
+    ?: error("System property '$name' is not set; run the tests through Gradle (./gradlew guardTest).")
+  val declared = property("savaBuild.guardFiles").split(',')
+  require(declared.any { it == path || path.startsWith("$it/") }) {
+    "$path is not among the files build.gradle.kts declares the guard tests read (guardFilesReadByTests, " +
+      "declared: $declared): add it there, or guardTest stays up to date when it changes"
+  }
+  return Path.of(property("savaBuild.root"), path)
+}

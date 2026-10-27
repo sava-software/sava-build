@@ -51,7 +51,7 @@ class PluginJavaFloorTest {
     // The JVM target caps the bytecode and '--release 21' what javac sees; only this flag keeps
     // kotlinc from compiling a call into a newer JDK's API (Stream.gather, Process.waitFor(Duration))
     // into Java 21 bytecode that fails at run time on a Java 21 daemon.
-    val build = File(savaBuildTestProperty("savaBuild.root"), "build.gradle.kts").readText()
+    val build = savaBuildRootFile("build.gradle.kts").readText()
     // On a line that is not a '//' comment, wherever on it: a one-line block spells it too.
     val live = Regex("""^(?!\s*//).*\bfreeCompilerArgs\.add\("-Xjdk-release=21"\)""", RegexOption.MULTILINE)
     assertTrue(live.containsMatchIn(build), "build.gradle.kts no longer passes -Xjdk-release=21 to kotlinc")

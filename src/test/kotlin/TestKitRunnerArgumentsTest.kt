@@ -20,7 +20,7 @@ import java.io.File
  */
 class TestKitRunnerArgumentsTest {
 
-  private val testSources = File(savaBuildTestProperty("savaBuild.root"), "src/test/kotlin")
+  private val testSources = savaBuildRootFile("src/test/kotlin")
 
   private fun sources(): List<File> = testSources.walkTopDown()
       .filter { it.isFile && it.extension == "kt" && it.name != "TestKitRunnerArgumentsTest.kt" }

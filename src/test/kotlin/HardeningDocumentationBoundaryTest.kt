@@ -1,13 +1,11 @@
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.io.File
 
 class HardeningDocumentationBoundaryTest {
 
-  private val projectRoot = File(savaBuildTestProperty("savaBuild.root"))
-  private val readme = projectRoot.resolve("README.md").readText()
-  private val hardening = projectRoot.resolve("HARDENING.md").readText()
+  private val readme = savaBuildRootFile("README.md").readText()
+  private val hardening = savaBuildRootFile("HARDENING.md").readText()
 
   @Test
   fun `selective prune is whole-key capacity retirement without weaker evidence or retagging`() {
@@ -154,7 +152,7 @@ class HardeningDocumentationBoundaryTest {
           template.contains("`# line` tags are review metadata that belong to their row"),
       "the agent template must carry the gate rule:\n$template",
     )
-    val casebook = projectRoot.resolve("HARDENING_CASEBOOK.md").readText()
+    val casebook = savaBuildRootFile("HARDENING_CASEBOOK.md").readText()
     assertTrue(casebook.contains("## The gate that ran on every amend"), "the cited casebook entry must exist")
   }
 
