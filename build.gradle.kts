@@ -413,8 +413,6 @@ fun Test.declareReads(property: String, paths: List<String>) {
 //    HardeningDocumentationBoundaryTest, which reads README.md and HARDENING_CASEBOOK.md with it.
 //  arcmutate-licence.txt: ArcMutateLicenceTest; the repository intentionally carries the public,
 //    package-scoped OSS certificate, and the test ensures no private subscription URL sits beside it.
-//  build.gradle.kts: PluginJavaFloorTest, the kotlinc -Xjdk-release flag, by declaration and not
-//    only through the implementation hash of the argument provider below.
 //  tools/local-fuzz.sh: LocalRepoNoticeFunctionalTest, the resolution notice's needle.
 //  The hardening script plugin: HardeningTypedTaskArchitectureTest, its wiring as spelled.
 //  src/test/kotlin: TestKitRunnerArgumentsTest and RootFileReadsTest, over the test sources.
@@ -423,7 +421,6 @@ val rootFilesReadByTests = listOf(
   "README.md",
   "HARDENING_CASEBOOK.md",
   "arcmutate-licence.txt",
-  "build.gradle.kts",
   localFuzzScriptPath,
   "src/main/kotlin/software.sava.build.feature.hardening.gradle.kts",
   "src/test/kotlin"
@@ -471,6 +468,18 @@ tasks.test {
       })
       testRepoDir = savaTestRepoDir
       testRepoVersion = savaTestRepoVersion
+      // The Java 21 floor as the compile tasks hold it, for PluginJavaFloorTest: javac's release
+      // and kotlinc's JVM target and free arguments, read from the tasks' options rather than from
+      // this script's text, so a rewording here re-runs nothing and a rewiring of the floor
+      // (another release, the flag added some other way or dropped) changes an input.
+      // A floor wired some other way (a toolchain, no jvmTarget) leaves these unset; -1 and an
+      // empty string pass through so the floor test fails by name, not the task before it runs.
+      javaRelease = tasks.compileJava.flatMap { it.options.release }.orElse(-1)
+      kotlinJvmTarget = tasks.compileKotlin.flatMap { it.compilerOptions.jvmTarget }.map { it.target }.orElse("")
+      // Only the -Xjdk-release entries, which is all the test reads: a free argument carrying a
+      // path would otherwise pin the cache key to this checkout, which the comment above forbids.
+      kotlinJdkReleaseArgs = tasks.compileKotlin.flatMap { it.compilerOptions.freeCompilerArgs }
+        .map { args -> args.filter { it.startsWith("-Xjdk-release=") } }
     }
   )
   declareReads("savaBuild.rootFiles", rootFilesReadByTests)
@@ -567,9 +576,22 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   @get:Internal
   abstract val testRepoDir: DirectoryProperty
 
+  @get:Input
+  abstract val javaRelease: Property<Int>
+
+  @get:Input
+  abstract val kotlinJvmTarget: Property<String>
+
+  @get:Input
+  abstract val kotlinJdkReleaseArgs: ListProperty<String>
+
   override fun asArguments(): Iterable<String> = listOf(
     "-DsavaBuild.testRepo=${testRepoDir.get().asFile.absolutePath}",
-    "-DsavaBuild.testRepo.version=${testRepoVersion.get()}"
+    "-DsavaBuild.testRepo.version=${testRepoVersion.get()}",
+    "-DsavaBuild.javaRelease=${javaRelease.get()}",
+    "-DsavaBuild.kotlinJvmTarget=${kotlinJvmTarget.get()}",
+    // Tab-separated: a compiler argument holds no tab.
+    "-DsavaBuild.kotlinJdkReleaseArgs=${kotlinJdkReleaseArgs.get().joinToString("\t")}"
   )
 }
 

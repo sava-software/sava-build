@@ -6,18 +6,17 @@ import java.io.File
 import java.util.zip.ZipFile
 
 /**
- * The plugin's Java 21 floor, on the jar this build publishes for its own tests. Consumers load
- * the plugin in their own Gradle daemon, so every class must be Java 21 bytecode, compiled against
- * the Java 21 API, and the module metadata must say so, whatever JDK built it. Only three lines of
- * build.gradle.kts hold the floor since the daemon pin went (gradle/gradle-daemon-jvm.properties,
- * which made a 21 javac enforce it by construction): javac's '--release 21', the Kotlin JVM target
- * and kotlinc's '-Xjdk-release=21'. The first two show in the jar; the kotlinc flag only in the
- * script, so its test is a tripwire on the line itself: deleting it or commenting it out with '//'
- * fails the test, where the rest of the check would stay green and publish a Java 25 plugin under
- * a 21.x version. A line kept but made ineffective (inside a block comment, under a block that no
- * longer applies to the main compilation, ahead of a later '-Xjdk-release' that overrides it)
- * passes: the flag's effect has no witness short of compiling a call into a newer API, and such an
- * edit is deliberate, not a slip.
+ * The plugin's Java 21 floor, on the jar this build publishes for its own tests and on the compile
+ * tasks that built it. Consumers load the plugin in their own Gradle daemon, so every class must be
+ * Java 21 bytecode, compiled against the Java 21 API, and the module metadata must say so, whatever
+ * JDK built it. Three settings hold the floor since the daemon pin went
+ * (gradle/gradle-daemon-jvm.properties, which made a 21 javac enforce it by construction): javac's
+ * release, the Kotlin JVM target and kotlinc's '-Xjdk-release'. The bytecode major shows the first
+ * two in the jar; the API floors do not show in bytecode at all (a call into a newer JDK's API,
+ * Stream.gather or Process.waitFor(Duration), compiles into Java 21 bytecode that fails at run time
+ * on a Java 21 daemon), so they are read from the compile tasks' options, which the build passes to
+ * this test as inputs: whatever adds, moves or drops the flag changes what the tasks hold, where a
+ * regex over the script's text saw only one spelling of it.
  */
 class PluginJavaFloorTest {
 
@@ -47,14 +46,16 @@ class PluginJavaFloorTest {
   }
 
   @Test
-  fun `the Kotlin compiler is held to the Java 21 API`() {
-    // The JVM target caps the bytecode and '--release 21' what javac sees; only this flag keeps
-    // kotlinc from compiling a call into a newer JDK's API (Stream.gather, Process.waitFor(Duration))
-    // into Java 21 bytecode that fails at run time on a Java 21 daemon.
-    val build = savaBuildRootFile("build.gradle.kts").readText()
-    // On a line that is not a '//' comment, wherever on it: a one-line block spells it too.
-    val live = Regex("""^(?!\s*//).*\bfreeCompilerArgs\.add\("-Xjdk-release=21"\)""", RegexOption.MULTILINE)
-    assertTrue(live.containsMatchIn(build), "build.gradle.kts no longer passes -Xjdk-release=21 to kotlinc")
+  fun `javac compiles against the Java 21 API`() {
+    assertEquals("21", savaBuildTestProperty("savaBuild.javaRelease"), "compileJava's options.release")
+  }
+
+  @Test
+  fun `the Kotlin compiler is held to the Java 21 bytecode and API`() {
+    assertEquals("21", savaBuildTestProperty("savaBuild.kotlinJvmTarget"), "compileKotlin's jvmTarget")
+    // Exactly one -Xjdk-release, and it is 21: a second one later in the list would override it.
+    val releases = savaBuildTestProperty("savaBuild.kotlinJdkReleaseArgs").split('\t').filter { it.isNotEmpty() }
+    assertEquals(listOf("-Xjdk-release=21"), releases, "compileKotlin's -Xjdk-release flags")
   }
 
   @Test
