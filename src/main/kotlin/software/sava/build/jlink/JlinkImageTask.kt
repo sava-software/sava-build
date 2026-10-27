@@ -47,9 +47,12 @@ abstract class JlinkImageTask : DefaultTask() {
    * date. Files rather than the launcher's vendor and runtime version: Gradle caches that metadata
    * per installation for the daemon's life and stores it in the configuration cache entry, so after
    * an update in place (the same path holding a new JDK) it still reports the old version. A
-   * collection rather than three files, since cacerts may be a dangling link on a JDK whose trust
-   * store the OS has not generated yet: a missing file fingerprints too, and a vanished JDK still
-   * stops the task at its jlink check.
+   * collection rather than three files: cacerts may be a dangling link on a JDK whose trust store
+   * the OS has not generated, which a single-file input rejects as missing and a collection leaves
+   * out of its fingerprint (the file appearing or vanishing still changes it), and a vanished JDK
+   * still stops the task at its jlink check. On a JDK with jmods the two files are redundant with
+   * 'release', since a link there takes them from java.base.jmod; they are hashed on every JDK
+   * rather than probing for jmods.
    */
   @get:InputFiles
   @get:PathSensitive(PathSensitivity.NONE)
@@ -354,29 +357,47 @@ abstract class JlinkImageTask : DefaultTask() {
       logger.warn("Could not work out what service binding would add to ${imageDirectory.name}: ${it.getOrNull(1)}")
     }
     val bindable = records.filter { it[0] == "bindable" }
-    if (bindable.isNotEmpty()) {
-      // Application providers first, then the JDK's; the modules those require are only counted.
-      val providers = bindable.filter { it[3] == "provider" }
-        .sortedBy { it[2] != "module-path" }
-        .map { (_, name, origin) -> if (origin == "module-path") "$name (module path)" else name }
-      val required = bindable.size - providers.size
-      // Binding links jdk.jlink, through java.base's ToolProvider service, and jlink cannot link
-      // that from a JDK without jmods: there, true is no way out of the notice, unless a limit keeps
-      // jdk.jlink out of binding's reach.
-      val jdkJlinkBindable = bindable.any { it[1] == "jdk.jlink" }
-      val ending = if (!jdkJlinkBindable || File(javaHome, "jmods").isDirectory) {
-        "Name the ones the application needs in jlinkApplication.addModules; setting " +
-          "jlinkApplication.bindServices (false once they are named, or true) ends this notice."
-      } else {
-        "Name the ones the application needs in jlinkApplication.addModules (not jdk.jlink: this toolchain " +
-          "has no jmods, so jlink cannot link it, and bindServices = true would); setting " +
-          "jlinkApplication.bindServices = false once they are named ends this notice."
-      }
-      logger.lifecycle(
-        "Service binding (bindServices = true) would have linked ${bindable.size} more module(s) into " +
-          "${imageDirectory.name}: ${providers.joinToString(", ")}" +
-          (if (required > 0) ", and $required module(s) they require" else "") + ". " + ending
-      )
+    // What binding reaches that jlink cannot link, by name and reason: a provider that is an
+    // automatic module or requires one, which jlink refuses, or jdk.jlink on a toolchain without
+    // jmods, which cannot link it. Any of them makes bindServices = true a failing link rather than
+    // a way out of this notice, whether or not binding would also add modules jlink can link.
+    val refused = records.filter { it[0] == "refused" }.map { (_, name, kind) ->
+      "$name (" + when (kind) {
+        "automatic" -> "an automatic module, which jlink refuses"
+        "unlinkable" -> "it requires an automatic module, which jlink refuses"
+        "no-jmods" -> "this toolchain has no jmods, so jlink cannot link it"
+        else -> kind
+      } + ")"
     }
+    if (bindable.isEmpty() && refused.isEmpty()) return
+    if (bindable.isEmpty()) {
+      logger.lifecycle(
+        "Service binding (bindServices = true) would link nothing more into ${imageDirectory.name} that jlink " +
+          "can link, and would fail: binding reaches ${refused.joinToString(" and ")}. " +
+          "Setting jlinkApplication.bindServices = false ends this notice."
+      )
+      return
+    }
+    // Application providers first, then the JDK's; the modules those require are only counted.
+    val providers = bindable.filter { it[3] == "provider" }
+      .sortedBy { it[2] != "module-path" }
+      .map { (_, name, origin) -> if (origin == "module-path") "$name (module path)" else name }
+    val required = bindable.size - providers.size
+    val ending = if (refused.isEmpty()) {
+      "Name the ones the application needs in jlinkApplication.addModules; setting " +
+        "jlinkApplication.bindServices (false once they are named, or true) ends this notice."
+    } else {
+      // Not the refused ones: a module jlink cannot link fails the link named in addModules as it
+      // does bound, so the way out is naming the others and setting bindServices = false.
+      val pronoun = if (refused.size == 1) "it" else "them"
+      "Name the ones the application needs in jlinkApplication.addModules, not ${refused.joinToString(" or ")}: " +
+        "jlink cannot link $pronoun named there either, and binding reaches $pronoun, so bindServices = true " +
+        "would fail. Setting jlinkApplication.bindServices = false once they are named ends this notice."
+    }
+    logger.lifecycle(
+      "Service binding (bindServices = true) would have linked ${bindable.size} more module(s) into " +
+        "${imageDirectory.name}: ${providers.joinToString(", ")}" +
+        (if (required > 0) ", and $required module(s) they require" else "") + ". " + ending
+    )
   }
 }

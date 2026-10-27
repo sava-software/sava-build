@@ -26,19 +26,36 @@ class JlinkFeatureFunctionalTest {
   }
 
   /**
+   * The provider on the module path: an explicit module; a jar without module-info, an automatic
+   * module named after it, providing the service through META-INF/services as such jars do; or an
+   * explicit module that requires such a jar ('auto', named by its manifest), which jlink cannot
+   * link either.
+   */
+  private enum class Extra { EXPLICIT, AUTOMATIC, UNLINKABLE }
+
+  /**
    * The fixture, which generates a CDS archive and compresses as the consumers' jlinkApplication
    * blocks do. With [bindServices] null the build leaves the property alone, as a consumer that
    * has not decided does; set, it writes the property. [more] are further jlinkApplication lines,
-   * [script] is appended to the build script.
+   * [script] is appended to the build script, [extra] is the shape of the provider.
    */
-  private fun writeFixture(bindServices: Boolean? = null, more: List<String> = emptyList(), script: String = "") {
+  private fun writeFixture(
+    bindServices: Boolean? = null,
+    more: List<String> = emptyList(),
+    script: String = "",
+    extra: Extra = Extra.EXPLICIT
+  ) {
+    // A fresh provider each time: a test that writes the fixture twice must not inherit the other
+    // shape's module-info or META-INF/services, or the auto project, from the first.
+    File(fixtureDir, "extra").deleteRecursively()
+    File(fixtureDir, "auto").deleteRecursively()
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
         $savaBuildPluginManagement
 
         rootProject.name = "jlink-smoke"
         include("extra")
-      """.trimIndent() + "\n"
+      """.trimIndent() + (if (extra == Extra.UNLINKABLE) "\ninclude(\"auto\")" else "") + "\n"
     )
     val chosen = (if (bindServices == null) emptyList() else listOf("bindServices = $bindServices")) + more
     val decided = chosen.joinToString("") { "$it\n          " }
@@ -84,14 +101,33 @@ class JlinkFeatureFunctionalTest {
     )
     val extraDir = File(fixtureDir, "extra/src/main/java/software/sava/test/extra")
     extraDir.mkdirs()
-    File(fixtureDir, "extra/build.gradle.kts").writeText("plugins { id(\"java\") }\n")
-    File(fixtureDir, "extra/src/main/java/module-info.java").writeText(
-      """
-        module software.sava.test.extra {
-          provides java.util.spi.ToolProvider with software.sava.test.extra.Extra;
-        }
-      """.trimIndent() + "\n"
+    File(fixtureDir, "extra/build.gradle.kts").writeText(
+      "plugins { id(\"java\") }\n" +
+        (if (extra == Extra.UNLINKABLE) "dependencies { implementation(project(\":auto\")) }\n" else "")
     )
+    if (extra == Extra.AUTOMATIC) {
+      val services = File(fixtureDir, "extra/src/main/resources/META-INF/services")
+      services.mkdirs()
+      File(services, "java.util.spi.ToolProvider").writeText("software.sava.test.extra.Extra\n")
+    } else {
+      File(fixtureDir, "extra/src/main/java/module-info.java").writeText(
+        """
+          module software.sava.test.extra {
+            ${if (extra == Extra.UNLINKABLE) "requires auto;" else ""}
+            provides java.util.spi.ToolProvider with software.sava.test.extra.Extra;
+          }
+        """.trimIndent() + "\n"
+      )
+    }
+    if (extra == Extra.UNLINKABLE) {
+      // Named by its manifest, so Gradle puts it on the provider's module path for the compile.
+      val autoDir = File(fixtureDir, "auto/src/main/java/software/sava/test/auto")
+      autoDir.mkdirs()
+      File(fixtureDir, "auto/build.gradle.kts").writeText(
+        "plugins { id(\"java\") }\ntasks.jar { manifest { attributes(\"Automatic-Module-Name\" to \"auto\") } }\n"
+      )
+      File(autoDir, "Auto.java").writeText("package software.sava.test.auto;\n\npublic final class Auto {}\n")
+    }
     File(extraDir, "Extra.java").writeText(
       """
         package software.sava.test.extra;
@@ -114,10 +150,13 @@ class JlinkFeatureFunctionalTest {
     )
   }
 
-  private fun runBuild(vararg arguments: String): BuildResult = GradleRunner.create()
+  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
     .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
-    .build()
+
+  private fun runBuild(vararg arguments: String): BuildResult = runner(*arguments).build()
+
+  private fun runBuildAndFail(vararg arguments: String): BuildResult = runner(*arguments).buildAndFail()
 
   private val imageDir get() = File(fixtureDir, "build/images/jlink-smoke")
 
@@ -140,6 +179,34 @@ class JlinkFeatureFunctionalTest {
       "No linked module requires them at link time"
 
   private val bindingNotice = "Service binding (bindServices = true) would have linked "
+
+  /** Whether this JVM, the fixture's toolchain, can link jdk.jlink, which binding reaches. */
+  private val toolchainHasJmods get() = File(System.getProperty("java.home"), "jmods").isDirectory
+
+  private val noJmods = "jdk.jlink (this toolchain has no jmods, so jlink cannot link it)"
+
+  private val automaticExtra = "extra (an automatic module, which jlink refuses)"
+
+  /** The ending that offers false or true, with nothing refused. */
+  private val openEnding =
+    "Name the ones the application needs in jlinkApplication.addModules; " +
+      "setting jlinkApplication.bindServices (false once they are named, or true) ends this notice."
+
+  /**
+   * The ending that withholds true, in full: the refused modules with their reasons, in the
+   * report's order, named as the ones not to add, with the [pronoun] the caller expects for that
+   * many ("it" or "them"), spelled here rather than worked out as the task does.
+   */
+  private fun assertRefusedEnding(binding: String, pronoun: String, vararg refused: String) {
+    assertTrue(
+      binding.endsWith(
+        "Name the ones the application needs in jlinkApplication.addModules, not ${refused.joinToString(" or ")}: " +
+          "jlink cannot link $pronoun named there either, and binding reaches $pronoun, so bindServices = true would fail. " +
+          "Setting jlinkApplication.bindServices = false once they are named ends this notice."
+      ),
+      binding
+    )
+  }
 
   @Test
   fun `image task links a runnable image with the expected layout`() {
@@ -169,20 +236,14 @@ class JlinkFeatureFunctionalTest {
     assertTrue(binding.contains("jdk.localedata"), binding)
     assertTrue(binding.contains(", and ") && binding.contains(" module(s) they require. "), binding)
     // The way out named depends on whether this JVM, the toolchain, could link jdk.jlink at all.
-    val ending = if (File(System.getProperty("java.home"), "jmods").isDirectory) {
-      "setting jlinkApplication.bindServices (false once they are named, or true) ends this notice."
-    } else {
-      "(not jdk.jlink: this toolchain has no jmods, so jlink cannot link it, and bindServices = true would); " +
-        "setting jlinkApplication.bindServices = false once they are named ends this notice."
-    }
-    assertTrue(binding.endsWith(ending), binding)
+    if (toolchainHasJmods) assertTrue(binding.endsWith(openEnding), binding) else assertRefusedEnding(binding, "it", noJmods)
   }
 
   @Test
   fun `bindServices links the providers and reports nothing left out`() {
     // Binding pulls jdk.jlink in through java.base's ToolProvider service, which jlink can link
     // only from a JDK that ships jmods (Temurin 24 and later do not).
-    assumeTrue(File(System.getProperty("java.home"), "jmods").isDirectory, "the daemon JDK has no jmods")
+    assumeTrue(toolchainHasJmods, "the daemon JDK has no jmods")
     writeFixture(bindServices = true)
     val result = runBuild("imageRun", "imageModules")
     assertImageLayout(result)
@@ -193,6 +254,77 @@ class JlinkFeatureFunctionalTest {
     // Silence because the report ran and found nothing, not because it failed to run: a report JVM
     // that did not start or exited non-zero is a warning on a build that still succeeds.
     assertFalse(result.output.contains("Could not report the modules left out"), result.output)
+  }
+
+  @Test
+  fun `an automatic provider on the module path takes true out of the binding notice`() {
+    // Binding reaches the jar's provider first, and jlink refuses every automatic module in the
+    // graph it binds, so bindServices = true is a failing link rather than a way out: the notice
+    // says so and names the module, whatever this toolchain's jmods.
+    writeFixture(extra = Extra.AUTOMATIC)
+    val result = runBuild("imageRun", "imageModules")
+    assertImageLayout(result)
+    assertFalse(linkedModules().contains("extra"), linkedModules().toString())
+    assertTrue(
+      result.output.contains("jlink left 1 module-path module(s) out of jlink-smoke: extra (automatic module, which jlink cannot link). "),
+      result.output
+    )
+    val binding = result.output.lines().single { it.startsWith(bindingNotice) }
+    // The JDK's own providers are still predicted; the refused jar is not among them.
+    assertTrue(binding.contains("jdk.localedata") && !binding.contains("extra (module path)"), binding)
+    if (toolchainHasJmods) assertRefusedEnding(binding, "it", automaticExtra) else assertRefusedEnding(binding, "them", automaticExtra, noJmods)
+  }
+
+  @Test
+  fun `an explicit provider requiring an automatic module is refused too`() {
+    // The provider is an explicit module whose requires reach an automatic jar, so jlink refuses the
+    // jar as soon as binding resolves the provider: true is withheld for it by name, with that reason.
+    writeFixture(extra = Extra.UNLINKABLE)
+    val result = runBuild("imageRun", "imageModules")
+    assertImageLayout(result)
+    assertTrue(
+      result.output.contains(
+        "jlink left 2 module-path module(s) out of jlink-smoke: auto (automatic module, which jlink cannot link), " +
+          "software.sava.test.extra (requires an automatic module, so jlink cannot link it). "
+      ),
+      result.output
+    )
+    val binding = result.output.lines().single { it.startsWith(bindingNotice) }
+    val unlinkableExtra = "software.sava.test.extra (it requires an automatic module, which jlink refuses)"
+    if (toolchainHasJmods) assertRefusedEnding(binding, "it", unlinkableExtra) else assertRefusedEnding(binding, "them", noJmods, unlinkableExtra)
+  }
+
+  @Test
+  fun `a refused provider is reported when binding would add nothing jlink can link`() {
+    // Within a limit that keeps the JDK's providers out of reach, binding adds nothing linkable and
+    // still reaches the automatic jar: the notice has nothing to list and says the link would fail,
+    // so a build that has named every provider and kept bindServices unset is told too.
+    assumeTrue(Runtime.version().feature() >= 24, "jlink below 24 cannot limit modules without the JDK's jmods on the module path")
+    writeFixture(more = listOf("limitModules = listOf(\"java.base\", \"extra\")"), extra = Extra.AUTOMATIC)
+    val result = runBuild("imageRun", "imageModules")
+    assertImageLayout(result)
+    assertEquals(setOf("java.base", "java.logging", "software.sava.test.jlink"), linkedModules())
+    assertFalse(result.output.contains(bindingNotice), result.output)
+    assertTrue(
+      result.output.contains(
+        "Service binding (bindServices = true) would link nothing more into jlink-smoke that jlink can link, and " +
+          "would fail: binding reaches extra (an automatic module, which jlink refuses). " +
+          "Setting jlinkApplication.bindServices = false ends this notice."
+      ),
+      result.output
+    )
+  }
+
+  @Test
+  fun `bindServices = true fails the link on an automatic provider, as the notice says`() {
+    // The claim the notice makes, checked against jlink itself; the same jmods need as the bound run.
+    assumeTrue(toolchainHasJmods, "the daemon JDK has no jmods")
+    writeFixture(bindServices = true, extra = Extra.AUTOMATIC)
+    val automatic = runBuildAndFail("image")
+    assertTrue(automatic.output.contains("automatic module cannot be used with jlink: extra"), automatic.output)
+    writeFixture(bindServices = true, extra = Extra.UNLINKABLE)
+    val unlinkable = runBuildAndFail("image")
+    assertTrue(unlinkable.output.contains("automatic module cannot be used with jlink: auto"), unlinkable.output)
   }
 
   @Test
@@ -221,12 +353,7 @@ class JlinkFeatureFunctionalTest {
     // Within the limit, binding reaches the provider on the module path and none of the JDK's,
     // jdk.jlink among them, so the way out named does not depend on the toolchain having jmods.
     val binding = result.output.lines().single { it.startsWith(bindingNotice) }
-    assertEquals(
-      "${bindingNotice}1 more module(s) into jlink-smoke: software.sava.test.extra (module path). " +
-        "Name the ones the application needs in jlinkApplication.addModules; setting " +
-        "jlinkApplication.bindServices (false once they are named, or true) ends this notice.",
-      binding
-    )
+    assertEquals("${bindingNotice}1 more module(s) into jlink-smoke: software.sava.test.extra (module path). $openEnding", binding)
   }
 
   @Test

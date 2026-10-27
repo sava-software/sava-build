@@ -44,10 +44,15 @@ import java.util.zip.ZipFile;
  * <pre>
  *   left-out  name  explicit|automatic|unlinkable  provider|other     a module-path module not in the image
  *   bindable  name  system|module-path             provider|required  what service binding would have added
+ *   refused   name  automatic|unlinkable|no-jmods                     a module binding reaches that jlink cannot link
  *   error     message                                                 the binding analysis could not run
  * </pre>
  * An unlinkable module is an explicit one whose mandatory requires reach an automatic module,
- * which jlink refuses to link.
+ * which jlink refuses to link. A refused record says that {@code --bind-services} itself would
+ * fail: jlink binds over everything it observes and then refuses the automatic modules among the
+ * result, so a provider of a used service that is automatic, or requires an automatic module,
+ * fails the link once it is reached; and binding reaches jdk.jlink through java.base's
+ * ToolProvider service, which a JDK without jmods (Temurin 24 and later) cannot link.
  * No output when the image has no release file (the release-info plugin was disabled). Exit 2 on
  * misuse and 1, with the cause on stderr, when the report itself fails; everything else is
  * reported on stdout and exits 0.
@@ -177,12 +182,19 @@ public final class LinkReport {
       lines.add("bindable\t" + name + '\t' + (onModulePath.containsKey(name) ? "module-path" : "system")
           + '\t' + (binding.providers().contains(name) ? "provider" : "required"));
     }
+    for (Map.Entry<String, String> refused : binding.refused().entrySet()) {
+      lines.add("refused\t" + refused.getKey() + '\t' + refused.getValue());
+    }
     return lines;
   }
 
-  /** What service binding would add to the linked modules, and which of those are the providers. */
-  record Binding(Set<String> added, Set<String> providers) {
-    static final Binding NONE = new Binding(Set.of(), Set.of());
+  /**
+   * What service binding would add to the linked modules, which of those are the providers, and
+   * the modules it would reach that jlink cannot link, by name and reason (the report's refused
+   * kinds), which make {@code --bind-services} fail.
+   */
+  record Binding(Set<String> added, Set<String> providers, Map<String, String> refused) {
+    static final Binding NONE = new Binding(Set.of(), Set.of(), Map.of());
   }
 
   /**
@@ -214,7 +226,27 @@ public final class LinkReport {
         providers.add(name);
       }
     }
-    return new Binding(added, providers);
+    // jlink's own --bind-services binds over everything it observes, the unlinkable modules too, and
+    // refuses the automatic modules among the result (binding one resolves every automatic module
+    // with it, and an explicit module whose requires reach one brings it along). So an unlinkable
+    // provider of a service the bound graph uses fails the link as soon as binding reaches it; the
+    // ones reached first, through the services this graph uses, are enough to say so.
+    Map<String, String> refused = new TreeMap<>();
+    for (String name : unlinkable) {
+      observable.find(name).ifPresent(reference -> {
+        ModuleDescriptor descriptor = reference.descriptor();
+        if (descriptor.provides().stream().anyMatch(provides -> used.contains(provides.service()))) {
+          refused.put(name, descriptor.isAutomatic() ? "automatic" : "unlinkable");
+        }
+      });
+    }
+    // Binding links jdk.jlink through java.base's ToolProvider service, which a JDK without jmods
+    // cannot link: this JVM's, as the system modules read above are this JVM's, which the task
+    // makes the JDK that ran jlink.
+    if (added.contains("jdk.jlink") && !Files.isDirectory(Path.of(System.getProperty("java.home"), "jmods"))) {
+      refused.put("jdk.jlink", "no-jmods");
+    }
+    return new Binding(added, providers, refused);
   }
 
   /**

@@ -30,7 +30,10 @@ abstract class JlinkApplicationExtension {
    * jdk.charsets, jdk.zipfs, jdk.crypto.cryptoki, an SLF4J provider, a JDBC driver; so do the
    * JDK's tools and agents, jdk.jfr for flight recording, jdk.jdwp.agent for -agentlib:jdwp,
    * jdk.attach. The image task prints what it left out and, until this property is set either
-   * way, what binding would have linked (both on a Java 21 or newer toolchain, where the report runs).
+   * way, what binding would have linked, withholding true where binding would reach a module jlink
+   * cannot link: an automatic module providing a used service, or one requiring it, which jlink
+   * refuses, or jdk.jlink on a JDK without jmods (both on a Java 21 or newer toolchain, where the
+   * report runs).
    */
   abstract val bindServices: Property<Boolean>
 
