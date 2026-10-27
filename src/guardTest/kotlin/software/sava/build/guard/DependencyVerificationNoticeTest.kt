@@ -4,16 +4,14 @@ import java.io.File
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.Assumptions.assumeFalse
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 /**
- * The three scripts sava-build's root action and the setup-checked-jdk action run around the JDK
+ * Two of the scripts sava-build's root action and the setup-checked-jdk action run around the JDK
  * installs, exercised as the actions run them: notice.sh over fixture projects (the file, the
- * property in its spellings, the element in its spellings), release-floor.sh over versions, and
- * downloader-jdk.sh over the two variables, handing a stub home to check.sh.
+ * property in its spellings, the element in its spellings) and downloader-jdk.sh over the two
+ * variables, handing a stub home to check.sh. The shape and floor scripts have InputShapeTest.
  */
 class DependencyVerificationNoticeTest {
 
@@ -24,20 +22,8 @@ class DependencyVerificationNoticeTest {
 
   private class Run(val code: Int, val out: String)
 
-  @BeforeEach
-  fun bashOnly() {
-    assumeFalse(System.getProperty("os.name").startsWith("Windows"), "the actions run bash")
-  }
-
-  private fun run(script: String, vararg args: String, env: Map<String, String?> = emptyMap()): Run {
-    val builder = ProcessBuilder(listOf("bash", actions.resolve(script).toString()) + args)
-      .directory(project)
-      .redirectErrorStream(true)
-    env.forEach { (k, v) -> if (v == null) builder.environment().remove(k) else builder.environment()[k] = v }
-    val process = builder.start()
-    val out = process.inputStream.readAllBytes().toString(Charsets.UTF_8)
-    return Run(process.waitFor(), out)
-  }
+  private fun run(script: String, vararg args: String, env: Map<String, String?> = emptyMap()): Run =
+    bash(actions.resolve(script), args.toList(), project, env)
 
   private fun metadata(text: String) {
     File(project, "gradle").mkdirs()
@@ -87,43 +73,6 @@ class DependencyVerificationNoticeTest {
       properties(on)
       assertEquals("", notice().out, on)
     }
-  }
-
-  @Test
-  fun `release-floor refuses a leading number below the floor and leaves the rest to setup-java`() {
-    // The floor as the script spells it, so a move of the floor moves this test with it.
-    val script = "check-jdk-trust/release-floor.sh"
-    val floor = releaseFloor()
-    val below = floor - 1
-    val above = floor + 4
-    // Pairs of a label and a version; an empty label names no input.
-    for (refused in listOf(listOf("", "$below"), listOf("", "${below}u"), listOf("", "$below.0.2"), listOf("", "$above", "", "$below-ea"), listOf("", "${floor - 4}"))) {
-      val run = run(script, *refused.toTypedArray())
-      assertEquals(1, run.code, "$refused -> ${run.out}")
-      assertTrue(run.out.contains("::error::Java version '") && run.out.contains("is below $floor"), run.out)
-      assertEquals(1, run.out.lines().count { it.startsWith("::error::") }, run.out)
-      assertFalse(run.out.contains("it comes from"), run.out)
-    }
-    for (accepted in listOf(listOf("", "$floor"), listOf("", "$above", "", "$above"), listOf("", "loom"), listOf("", ""), emptyList())) {
-      val run = run(script, *accepted.toTypedArray())
-      assertEquals(0, run.code, "$accepted -> ${run.out}")
-      assertEquals("", run.out)
-    }
-    // The one error line names the input a version comes from when the caller labels it; a label
-    // may hold '=' or anything else, since nothing is parsed out of it.
-    val named = run(script, "build", "$above", "gradle-java-version (vars.GRADLE_JAVA_VERSION)", "$below")
-    assertEquals(1, named.code, named.out)
-    assertEquals(
-      "::error::Java version '$below' is below $floor, the floor of the trust check compiled with the installed JDK (check-jdk-trust); it comes from gradle-java-version (vars.GRADLE_JAVA_VERSION).\n",
-      named.out
-    )
-    val equalsInLabel = run(script, "javaVersion (gradle/sava.properties: javaVersion=NN)", "$below")
-    assertEquals(1, equalsInLabel.code, equalsInLabel.out)
-    assertTrue(equalsInLabel.out.endsWith("; it comes from javaVersion (gradle/sava.properties: javaVersion=NN).\n"), equalsInLabel.out)
-    // An odd argument count is a caller's mistake, refused as such.
-    val odd = run(script, "$floor")
-    assertEquals(2, odd.code, odd.out)
-    assertTrue(odd.out.contains("pairs of a label and a version"), odd.out)
   }
 
   @Test

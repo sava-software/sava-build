@@ -37,21 +37,22 @@ class SetupCheckedJdkPinTest {
       "downloader-jdk.sh no longer checks the JDK oracle-actions/setup-java v1.5.0 downloads with")
     assertEquals(1, count(action, "distrust.sh\""), "the wrapper no longer distrusts the roots in the OS store")
     assertEquals(1, count(action, "downloader-jdk.sh\""), "the wrapper no longer checks the runner JDK before the download")
-    assertEquals(1, count(action, "release-floor.sh\" \"release (vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it)\" \"\$RELEASE\""),
-      "the wrapper no longer refuses a release below the floor, naming the input it comes from")
+    assertEquals(1, count(action, "input-shape.sh\" --all \\\n"), "the wrapper no longer refuses a malformed site or release, or one below the floor, by name")
+    assertTrue(action.contains("(vars.JDK_SRC)\" \"\$WEBSITE\" \\\n") && action.contains("as the step names it)\" \"\$RELEASE\"\n"),
+      "the wrapper must pass its website and release to input-shape.sh, each after the label of the input it comes from")
     assertEquals(1, count(action, "check.sh\" \"\$JAVA_HOME\""), "the wrapper no longer checks the installed JDK")
-    // Distrust, the runner-JDK check, the install, the installed-JDK check, in that order.
-    val order = listOf("distrust.sh\"", "downloader-jdk.sh\"", pin, "check.sh\" \"\$JAVA_HOME\"").map { action.indexOf(it) }
+    // The shape check, distrust, the runner-JDK check, the install, the installed-JDK check, in that order.
+    val order = listOf("input-shape.sh\"", "distrust.sh\"", "downloader-jdk.sh\"", pin, "check.sh\" \"\$JAVA_HOME\"").map { action.indexOf(it) }
     assertEquals(order.sorted(), order, "the wrapper must distrust and check the runner JDK before the install, and check the installed JDK after it")
-    // The website is a host name and the release a single release by the one rule each, spelled
-    // in the wrapper and in the root action.
+    // The site is a host name and the release a single release by one rule each, spelled once, in
+    // input-shape.sh, which the wrapper and the root action both call and neither restates.
     val root = Files.readString(guardFile("action.yml"))
-    val hostName = "^[A-Za-z0-9.-]+$"
-    assertTrue(action.contains(hostName) && root.contains(hostName),
-      "the wrapper and the root action must check the download site against the same host-name rule")
-    val releaseRe = "release_re='^[A-Za-z0-9._-]+$'"
-    assertTrue(action.contains(releaseRe) && root.contains(releaseRe),
-      "the wrapper and the root action must check the release against the same rule")
+    val shape = Files.readString(guardFile(".github/actions/check-jdk-trust/input-shape.sh"))
+    assertTrue(shape.contains("site_re='^[A-Za-z0-9.-]+$'") && shape.contains("release_re='^[A-Za-z0-9._-]+$'"),
+      "input-shape.sh must spell the host-name and single-release rules")
+    for ((name, text) in listOf("the wrapper" to action, "the root action" to root)) {
+      assertTrue(!text.contains("[A-Za-z0-9.-]+") && !text.contains("[A-Za-z0-9._-]+"), "$name must not restate input-shape.sh's rules")
+    }
   }
 
   @Test
@@ -109,9 +110,18 @@ class SetupCheckedJdkPinTest {
     assertEquals(1, count(root, "distrust-compromised-roots/distrust.sh\""), "action.yml no longer distrusts the roots in the OS store")
     assertEquals(1, count(root, "setup-checked-jdk/downloader-jdk.sh\""), "action.yml no longer checks the runner JDK before the downloads")
     assertEquals(2, count(root, "check-jdk-trust/check.sh\" \"\$JAVA_HOME\""), "action.yml no longer checks both installed JDKs")
-    assertEquals(1, count(root, "release-floor.sh\" \\\n"), "action.yml no longer refuses a version below the floor")
-    assertTrue(root.contains("in gradle/sava.properties)\" \"\$JAVA_VERSION\" \\\n") && root.contains("(vars.GRADLE_JAVA_VERSION)\" \"\$GRADLE_JAVA_VERSION\"\n"),
-      "action.yml must pass both versions to release-floor.sh, each after the label of the input it comes from")
+    // Twice: by shape before anything runs, for the inputs that are present (--present), and after
+    // the checkout for what the version step worked out, which may have come from a fork's
+    // gradle/sava.properties, every value required then (--all).
+    assertEquals(1, count(root, "input-shape.sh\" --present \\\n"), "action.yml no longer refuses a malformed input before the pre-checkout steps")
+    assertEquals(1, count(root, "input-shape.sh\" --all \\\n"), "action.yml no longer refuses a malformed or empty value after the version step")
+    val shapeStep = root.indexOf("- name: Refuse a malformed input")
+    assertTrue(shapeStep > 0 && shapeStep < root.indexOf("distrust.sh\""), "the inputs must be refused by shape before the pre-checkout steps")
+    assertEquals(2, count(root, "(vars.JDK_SRC)\" \"\$JDK_SRC\" \\\n"), "both calls must pass the site after its label")
+    assertEquals(2, count(root, "(vars.GRADLE_JAVA_VERSION)\" \"\$GRADLE_JAVA_VERSION\"\n"), "both calls must pass the Gradle version after its label")
+    // The build version only once it is worked out: a tag or branch may supersede the input.
+    assertTrue(!root.contains("\$DEFAULT_JAVA_VERSION\" \\\n") && root.contains("in gradle/sava.properties)\" \"\$JAVA_VERSION\" \\\n"),
+      "the version step, not the shape step, must pass the build version after its label")
     // git fetches the checkout over the OS store, so the distrust and the runner check come first.
     val checkout = root.indexOf("uses: actions/checkout@")
     assertTrue(checkout > 0 && root.indexOf("downloader-jdk.sh\"") < checkout && root.indexOf("distrust.sh\"") < checkout,

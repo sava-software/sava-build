@@ -427,10 +427,10 @@ val rootFilesReadByTests = listOf(
 )
 
 // guardTest, through guardFile: the actions whole, docs included, whose programs and scripts the
-// tests compile and run (TrustedChainsTest, DependencyVerificationNoticeTest, SetupCheckedJdkPinTest,
-// ReleaseFloor); the root action and the two workflows whose pins and versions they hold
-// (SetupCheckedJdkPinTest, ReleasePleaseActionPinTest); the README, whose floor sentence the pin
-// test holds with the actions' prose; and the guard test sources (GuardFileReadsTest).
+// tests compile and run (TrustedChainsTest, DependencyVerificationNoticeTest, InputShapeTest,
+// SetupCheckedJdkPinTest, ReleaseFloor); the root action and the two workflows whose pins and
+// versions they hold (SetupCheckedJdkPinTest, ReleasePleaseActionPinTest); the README, whose floor
+// sentence the pin test holds with the actions' prose; and the guard test sources (GuardFileReadsTest).
 val guardFilesReadByTests = listOf(
   ".github/actions",
   "action.yml",

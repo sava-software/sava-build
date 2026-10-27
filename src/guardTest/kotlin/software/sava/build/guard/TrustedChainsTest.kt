@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -275,7 +274,6 @@ class TrustedChainsTest {
     // the test writes: its exit plumbing (pipefail, the status read under the closing verdict line it
     // re-spells) is what could fail open, and no reading of the script sees that. A related root
     // alone is trusting whatever the JDK's blocklist says of the paths.
-    assumeFalse(System.getProperty("os.name").startsWith("Windows"), "check.sh runs under bash")
     val home = File(System.getProperty("java.home"))
     // Under Gradle the test JVM is the toolchain, a JDK; an IDE's own runtime or a JRE daemon
     // skips the script runs below rather than failing them on check.sh's "no JDK" exit.
@@ -283,20 +281,14 @@ class TrustedChainsTest {
     val script = guardFile(".github/actions/check-jdk-trust/check.sh").toFile().absoluteFile
     // [javaHome] is the JAVA_HOME check.sh falls back to for an empty argument; null unsets it.
     fun check(home: File, store: File? = null, javaHome: File? = null): Run {
-      val builder = ProcessBuilder("bash", script.path, home.path).directory(directory.toFile()).redirectErrorStream(true)
-      builder.environment()["RUNNER_TEMP"] = directory.toString()
-      // The launcher reads all three, so a shell that points one of them at its own trust store
-      // (a corporate TLS proxy's) would put that store before the test's.
-      for (name in listOf("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")) builder.environment().remove(name)
-      if (javaHome == null) builder.environment().remove("JAVA_HOME") else builder.environment()["JAVA_HOME"] = javaHome.path
+      // bash() scrubs the launcher's three variables; the store case sets one back below.
+      val env = mutableMapOf<String, String?>("RUNNER_TEMP" to directory.toString(), "JAVA_HOME" to javaHome?.path)
       if (store != null) {
         // Read by javac too, which only says so; the quotes survive the launcher's whitespace split.
-        builder.environment()["JAVA_TOOL_OPTIONS"] =
+        env["JAVA_TOOL_OPTIONS"] =
           "-Djavax.net.ssl.trustStore=\"$store\" -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit"
       }
-      val process = builder.start()
-      val out = process.inputStream.use { it.readBytes().toString(StandardCharsets.UTF_8) }
-      return Run(process.waitFor(), out)
+      return bash(script.toPath(), listOf(home.path), directory.toFile(), env)
     }
     val trusting = check(home, trustStore("trusting.p12", aaa))
     assertEquals(1, trusting.code, trusting.out)

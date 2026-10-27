@@ -4,8 +4,8 @@
 # there after its download, with a message that names no input. Arguments: pairs of a label and
 # a version, the label naming the input the version comes from for the one error line (empty
 # for none); two arguments each, so no value is parsed for a separator. A version that does not
-# start with a number (an early-access project name) is left to setup-java. Run by the
-# setup-checked-jdk action and by sava-build's root action.
+# start with a number (an early-access project name) is left to setup-java. Run by
+# input-shape.sh, which every caller runs.
 set -euo pipefail
 floor=21
 if [ $(( $# % 2 )) -ne 0 ]; then

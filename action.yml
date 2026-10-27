@@ -74,6 +74,21 @@ runs:
     # are distrusted there first, then the runner JDK that oracle-actions/setup-java downloads with
     # is checked, once for both installs; each installed JDK is checked below. SetupCheckedJdkPinTest
     # ties the pins and the scripts here to the wrapper's.
+    # The inputs by shape, before anything runs (input-shape.sh says what shape): a value that
+    # is present is refused here by name; an empty one is left to the version step after the
+    # checkout, which fills it from gradle/sava.properties for a pull request from a fork and
+    # checks the result with the same script. default-java-version is left to that step
+    # entirely: a tag's major or a java-NN branch name supersedes it, so the input is not what
+    # the run uses, and a floor on it would refuse a run that never installs it.
+    - name: Refuse a malformed input
+      shell: bash
+      env:
+        GRADLE_JAVA_VERSION: ${{ inputs.gradle-java-version }}
+        JDK_SRC: ${{ inputs.jdk-src }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/.github/actions/check-jdk-trust/input-shape.sh" --present \
+          "jdk-src (vars.JDK_SRC)" "$JDK_SRC" \
+          "gradle-java-version (vars.GRADLE_JAVA_VERSION)" "$GRADLE_JAVA_VERSION"
     - name: Distrust the compromised intermediates' roots in the OS trust store
       if: runner.os == 'Linux'
       shell: bash
@@ -181,16 +196,12 @@ runs:
           echo "::notice::vars.JDK_SRC does not reach pull requests from forks: downloading JDKs from $JDK_SRC."
         fi
 
-        # Fail here by name, not later in setup-java ("Could not find website for").
-        # setup-java's release input is a feature release number or a project name.
-        release_re='^[A-Za-z0-9._-]+$'
-        [[ "$JAVA_VERSION" =~ $release_re ]] || { echo "::error::Java version '$JAVA_VERSION' is empty or not a single release: check default-java-version (vars.JAVA_VERSION; javaVersion in gradle/sava.properties for a pull request from a fork), or a java-NN branch name holding more than one number."; exit 1; }
-        [[ "$GRADLE_JAVA_VERSION" =~ $release_re ]] || { echo "::error::gradle-java-version (vars.GRADLE_JAVA_VERSION) is empty or not a single release."; exit 1; }
-        [[ "$JDK_SRC" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::jdk-src (vars.JDK_SRC) is empty or not a host name."; exit 1; }
-        # The trust check compiles with the installed JDK at --release 21: a version below it is
-        # refused here by name, with the input it comes from.
-        bash "$GITHUB_ACTION_PATH/.github/actions/check-jdk-trust/release-floor.sh" \
-          "default-java-version (vars.JAVA_VERSION, a java-NN branch name, or javaVersion in gradle/sava.properties)" "$JAVA_VERSION" \
+        # Fail here by name, not later in setup-java ("Could not find website for"): the values
+        # as worked out above, every one now required, by the one script the step before the
+        # checkout ran on what was present, floor included.
+        bash "$GITHUB_ACTION_PATH/.github/actions/check-jdk-trust/input-shape.sh" --all \
+          "jdk-src (vars.JDK_SRC)" "$JDK_SRC" \
+          "default-java-version (vars.JAVA_VERSION, a java-NN branch name holding one number, or javaVersion in gradle/sava.properties)" "$JAVA_VERSION" \
           "gradle-java-version (vars.GRADLE_JAVA_VERSION)" "$GRADLE_JAVA_VERSION"
 
         {
@@ -240,7 +251,8 @@ runs:
 
     # Consumers have no Gradle dependency verification yet (sava-build does): a warning on every run,
     # here in the setup every consumer workflow shares, until the fleet carries
-    # gradle/verification-metadata.xml, then an error; notice.sh says what it reads.
+    # gradle/verification-metadata.xml, then an error; notice.sh says what it reads, with the JDK
+    # installed above, and fails the step when that JDK cannot run its properties reader.
     - name: Dependency verification metadata
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/.github/actions/dependency-verification/notice.sh"

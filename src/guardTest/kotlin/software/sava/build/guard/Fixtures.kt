@@ -3,6 +3,7 @@ package software.sava.build.guard
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.PrintStream
 import java.net.InetSocketAddress
 import java.net.URLDecoder
@@ -11,6 +12,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeFalse
 
 /** A marker for a setting the fixture must leave out, so release-please's own default applies. */
 object Unset
@@ -40,6 +42,25 @@ fun toJson(value: Any?): String = when (value) {
 }
 
 data class Run(val code: Int, val out: String)
+
+/**
+ * Runs a bash script with [args], stderr folded into stdout, from [dir] (the test JVM's working
+ * directory by default) under [env], where a null value unsets the variable: the one runner of
+ * the action scripts under test, and the one place that skips them where there is no bash.
+ */
+fun bash(script: Path, args: List<String> = emptyList(), dir: File? = null, env: Map<String, String?> = emptyMap()): Run {
+  assumeFalse(System.getProperty("os.name").startsWith("Windows"), "the actions run bash")
+  val builder = ProcessBuilder(listOf("bash", script.toString()) + args).redirectErrorStream(true)
+  if (dir != null) builder.directory(dir)
+  // The launcher reads all three and announces each ("Picked up ..."), so one a shell sets, to
+  // point java at its own trust store (a corporate TLS proxy's) or for anything else, would reach
+  // every script that runs java and land in its output; [env] sets one back on purpose.
+  for (name in listOf("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")) builder.environment().remove(name)
+  env.forEach { (name, value) -> if (value == null) builder.environment().remove(name) else builder.environment()[name] = value }
+  val process = builder.start()
+  val out = process.inputStream.use { it.readAllBytes().toString(Charsets.UTF_8) }
+  return Run(process.waitFor(), out)
+}
 
 fun assertMatch(out: String, pattern: String) =
   assertTrue(Regex(pattern).containsMatchIn(out), "expected /$pattern/ in:\n$out")

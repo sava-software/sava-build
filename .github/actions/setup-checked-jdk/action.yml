@@ -22,20 +22,17 @@ runs:
   using: composite
   steps:
     # By name, before the JDK downloads: check.sh compiles with the installed JDK at --release 21,
-    # a composite's required inputs are not enforced at run time, and the website is a host name,
-    # as sava-build's root action checks it.
+    # a composite's required inputs are not enforced at run time, and the site and the release
+    # have the shape input-shape.sh spells, the one sava-build's root action holds its inputs to.
     - name: Refuse an empty or malformed input or a release below 21
       shell: bash
       env:
         WEBSITE: ${{ inputs.website }}
         RELEASE: ${{ inputs.release }}
       run: |
-        [[ "$WEBSITE" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::setup-checked-jdk: website ('$WEBSITE') is empty or not a host name; the sava workflows take it from vars.JDK_SRC."; exit 1; }
-        # setup-java's release input is a feature release number or a project name, by the rule
-        # sava-build's root action spells.
-        release_re='^[A-Za-z0-9._-]+$'
-        [[ "$RELEASE" =~ $release_re ]] || { echo "::error::setup-checked-jdk: release ('$RELEASE') is empty or not a single release; the sava workflows take it from vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it."; exit 1; }
-        bash "$GITHUB_ACTION_PATH/../check-jdk-trust/release-floor.sh" "release (vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it)" "$RELEASE"
+        bash "$GITHUB_ACTION_PATH/../check-jdk-trust/input-shape.sh" --all \
+          "setup-checked-jdk's website (vars.JDK_SRC)" "$WEBSITE" \
+          "setup-checked-jdk's release (vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it)" "$RELEASE"
     - name: Distrust the compromised intermediates' roots in the OS trust store
       if: runner.os == 'Linux'
       shell: bash
