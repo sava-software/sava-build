@@ -14,27 +14,34 @@ inputs:
     description: oracle-actions/setup-java's website input (oracle.com or jdk.java.net).
     required: true
   release:
-    description: oracle-actions/setup-java's release input, a feature release number.
+    description: >-
+      oracle-actions/setup-java's release input, a feature release number, 21 or later: check.sh compiles
+      the trust check with the installed JDK at --release 21.
     required: true
 runs:
   using: composite
   steps:
+    # By name, before the JDK downloads: check.sh compiles with the installed JDK at --release 21,
+    # a composite's required inputs are not enforced at run time, and the website is a host name,
+    # as sava-build's root action checks it.
+    - name: Refuse an empty or malformed input or a release below 21
+      shell: bash
+      env:
+        WEBSITE: ${{ inputs.website }}
+        RELEASE: ${{ inputs.release }}
+      run: |
+        [[ "$WEBSITE" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::setup-checked-jdk: website ('$WEBSITE') is empty or not a host name; the sava workflows take it from vars.JDK_SRC."; exit 1; }
+        [ -n "$RELEASE" ] || { echo "::error::setup-checked-jdk: release is empty; the sava workflows take it from vars.JAVA_VERSION or vars.GRADLE_JAVA_VERSION, as the step names it."; exit 1; }
+        bash "$GITHUB_ACTION_PATH/../check-jdk-trust/release-floor.sh" "$RELEASE"
     - name: Distrust the compromised intermediates' roots in the OS trust store
       if: runner.os == 'Linux'
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/../distrust-compromised-roots/distrust.sh"
-    # The variables mirror the pinned oracle-actions/setup-java's own choice of JDK;
+    # downloader-jdk.sh mirrors the pinned oracle-actions/setup-java's own choice of JDK;
     # SetupCheckedJdkPinTest in sava-build ties the two together.
     - name: Check the runner JDK that downloads
       shell: bash
-      run: |
-        home="${JAVA_HOME_21_X64:-}"
-        [ -d "$home" ] || home="${JAVA_HOME_21_arm64:-}"
-        if [ -z "$home" ]; then
-          echo "::error::setup-checked-jdk: neither JAVA_HOME_21_X64 nor JAVA_HOME_21_arm64 names a JDK 21 home. oracle-actions/setup-java reads the same variable and otherwise falls back to /bin/java, which this action does not check; set the variable to the JDK the download should run on."
-          exit 1
-        fi
-        bash "$GITHUB_ACTION_PATH/../check-jdk-trust/check.sh" "$home"
+      run: bash "$GITHUB_ACTION_PATH/downloader-jdk.sh"
     - uses: oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b # v1.5.0
       with:
         website: ${{ inputs.website }}

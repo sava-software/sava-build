@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Compiles and runs TrustedChains on a JDK against the paths under chains/, and turns its exit
 # status into a workflow annotation. Argument: the JDK's home (empty means JAVA_HOME). Shared by
-# the check-jdk-trust and setup-checked-jdk actions, which run it from their own directories.
+# the check-jdk-trust and setup-checked-jdk actions and sava-build's root action, which run it
+# from their own directories, once per JDK they check: the compile is part of the verdict (a JDK
+# below 21 or a broken one is undecided), and the JDKs a job checks are different installations.
 # Exits 0 for a clean JDK, 1 for one that still trusts a compromised issuer, 2 when undecided.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -347,6 +347,22 @@ request from a fork receives no configuration variables, so there it falls back 
 `javaVersion` in `gradle/sava.properties` (which a repository taking outside pull requests must
 set) for both JDKs and to `oracle.com` as the download site.
 
+It closes the eMudhra incident (CVE-2026-91403) around the JDKs. Before the checkout, on a
+Linux runner, it distrusts the compromised intermediates' roots in the OS trust store git
+fetches over, and it checks the runner JDK that `oracle-actions/setup-java` downloads with
+(`JAVA_HOME_21_X64` or `JAVA_HOME_21_arm64`; a runner without one, or whose JDK still trusts
+the chains, as a macOS image does until its Temurin 21 is patched, fails here; a Windows runner
+is unverified).
+After each install it checks the installed JDK. Java 21 is the floor of the versions it
+installs, since that check compiles with the installed JDK. Its
+last step warns when the repository has no `gradle/verification-metadata.xml`, or one that does
+not verify both checksums and signatures (see [Verifying sava artifacts](#verifying-sava-artifacts)).
+The reusable `release-please.yml` installs through `.github/actions/setup-checked-jdk@main`,
+which follows this repository's `main` whatever ref a caller names for the workflow, and now
+needs `JAVA_VERSION` and `JDK_SRC` set (an empty value is refused by name). Out of reach of all
+this: the runner fetches the actions themselves at job setup, before any step and so over the
+unfixed store, and Node-based actions such as `setup-gradle` use Node's bundled store.
+
 Reusable workflows (all use the composite action and the repository variables
 `JAVA_VERSION`, `JDK_SRC`, and `GRADLE_JAVA_VERSION`):
 
@@ -435,11 +451,13 @@ plugins like sava-build itself) can run — and it is configured by a file Gradl
 directly, on purpose outside the reach of plugins. To adopt it in a consumer repository:
 
 ```bash
-./gradlew --write-verification-metadata pgp,sha256 build
+./gradlew --write-verification-metadata pgp,sha256 --export-keys build
 ```
 
-then review the generated `gradle/verification-metadata.xml` and trust the sava key for
-sava artifacts, e.g.:
+then review the generated `gradle/verification-metadata.xml`, commit it with the exported
+keyring under `gradle/`, disable key servers in it (`<key-servers enabled="false"/>` under
+`<configuration>`, as this repository's file does; Gradle otherwise still asks a key server
+for any key the keyring lacks), and trust the sava key for sava artifacts, e.g.:
 
 ```xml
 <trusted-key id="01870AD9C9DFBB1F3502D06FB89447F3AD5E2ABF" group="^software[.]sava($|([.].*))" regex="true"/>
@@ -449,7 +467,11 @@ The build classpath of a consumer repository resolves roughly the same third-par
 plugins as sava-build itself, so this repository's
 [gradle/verification-metadata.xml](gradle/verification-metadata.xml) `<trusted-keys>`
 section is a reviewed starting point for those entries. Keep the generated sha256 entries
-for unsigned artifacts, and regenerate with the same command after dependency bumps.
+for unsigned artifacts, and regenerate with the same command after dependency bumps. A bump
+whose signer the keyring lacks needs a key server for that one regeneration (enable the
+element for the run, or add the key to the keyring by hand): without one Gradle records
+checksums for the artifact and its key under `<ignored-keys>`, and the signature is never
+checked again.
 
 ## Developing sava-build
 
@@ -587,7 +609,7 @@ When changing dependencies, regenerate the
 [verification metadata](gradle/verification-metadata.xml):
 
 ```shell
-./gradlew --write-verification-metadata pgp,sha256 check generatePrecompiledScriptPluginAccessors
+./gradlew --write-verification-metadata pgp,sha256 --export-keys check generatePrecompiledScriptPluginAccessors
 ```
 
 The root build constrains Kotlin's isolated Bouncy Castle publishing-helper dependencies

@@ -467,9 +467,23 @@ val guardTestTask = tasks.register<Test>("guardTest") {
   inputs.files(layout.projectDirectory.dir(".github/actions/check-jdk-trust/chains").asFileTree.matching { include("*.pem") })
     .withPropertyName("checkJdkTrustChains")
     .withPathSensitivity(PathSensitivity.RELATIVE)
-  // SetupCheckedJdkPinTest reads the composite action for its oracle-actions/setup-java pin.
+  // SetupCheckedJdkPinTest reads the composite action for its oracle-actions/setup-java pin, and
+  // the root action, which installs through the same pin from its own checkout.
   inputs.file(layout.projectDirectory.file(".github/actions/setup-checked-jdk/action.yml"))
     .withPropertyName("setupCheckedJdkAction")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.file(layout.projectDirectory.file("action.yml"))
+    .withPropertyName("rootAction")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.file(layout.projectDirectory.file(".github/actions/setup-checked-jdk/downloader-jdk.sh"))
+    .withPropertyName("downloaderJdkScript")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.file(layout.projectDirectory.file(".github/actions/check-jdk-trust/release-floor.sh"))
+    .withPropertyName("releaseFloorScript")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
+  // DependencyVerificationNoticeTest runs notice.sh, release-floor.sh and downloader-jdk.sh over fixtures.
+  inputs.file(layout.projectDirectory.file(".github/actions/dependency-verification/notice.sh"))
+    .withPropertyName("dependencyVerificationNotice")
     .withPathSensitivity(PathSensitivity.RELATIVE)
   // TrustedChainsTest runs check.sh, as the actions do, against trust stores it writes.
   inputs.file(layout.projectDirectory.file(".github/actions/check-jdk-trust/check.sh"))
