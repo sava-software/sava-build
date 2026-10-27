@@ -428,14 +428,19 @@ val rootFilesReadByTests = listOf(
 
 // guardTest, through guardFile: the actions whole, docs included, whose programs and scripts the
 // tests compile and run (TrustedChainsTest, DependencyVerificationNoticeTest, InputShapeTest,
-// SetupCheckedJdkPinTest, ReleaseFloor); the root action and the two workflows whose pins and
-// versions they hold (SetupCheckedJdkPinTest, ReleasePleaseActionPinTest); the README, whose floor
-// sentence the pin test holds with the actions' prose; and the guard test sources (GuardFileReadsTest).
+// SetupCheckedJdkPinTest, ReleaseFloor); the root action and the workflows whose pins, versions,
+// steps and callers they hold (SetupCheckedJdkPinTest, ReleasePleaseActionPinTest,
+// JlinkWithoutJmodsWorkflowTest); the README, whose floor sentence the pin test holds with the
+// actions' prose; and the guard test sources (GuardFileReadsTest).
 val guardFilesReadByTests = listOf(
   ".github/actions",
   "action.yml",
   ".github/workflows/release-please.yml",
   ".github/workflows/action_self_test.yml",
+  ".github/workflows/gradle_plugin_jlink_without_jmods.yml",
+  ".github/workflows/gradle_plugin_build.yml",
+  ".github/workflows/gradle_plugin_check_pr.yml",
+  ".github/workflows/gradle_plugin_release_check.yml",
   "README.md",
   "src/guardTest/kotlin"
 )

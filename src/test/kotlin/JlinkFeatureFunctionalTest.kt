@@ -180,8 +180,21 @@ class JlinkFeatureFunctionalTest {
 
   private val bindingNotice = "Service binding (bindServices = true) would have linked "
 
-  /** Whether this JVM, the fixture's toolchain, can link jdk.jlink, which binding reaches. */
-  private val toolchainHasJmods get() = File(System.getProperty("java.home"), "jmods").isDirectory
+  /**
+   * Whether this JVM, the fixture's toolchain, can link jdk.jlink, which binding reaches. The job
+   * that runs these tests on a JDK without jmods sets SAVA_BUILD_EXPECT_NO_JMODS and is held to its
+   * premise here, on the JVM the tests run in and not only on the shell's JAVA_HOME: a toolchain
+   * pinned later in build.gradle.kts would hand :test another JDK and leave that job green over
+   * the jmods branches.
+   */
+  private val toolchainHasJmods: Boolean
+    get() {
+      val hasJmods = File(System.getProperty("java.home"), "jmods").isDirectory
+      if (System.getenv("SAVA_BUILD_EXPECT_NO_JMODS") != null) {
+        assertFalse(hasJmods, "SAVA_BUILD_EXPECT_NO_JMODS is set, but the test JVM at ${System.getProperty("java.home")} ships jmods")
+      }
+      return hasJmods
+    }
 
   private val noJmods = "jdk.jlink (this toolchain has no jmods, so jlink cannot link it)"
 

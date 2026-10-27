@@ -249,7 +249,7 @@ project must request its plugin by an explicit version, as in the hardening-only
 | `software.sava.build.base.version` | Sets the project version from `-Pversion`. |
 | `software.sava.build.feature.compile` | Java toolchain from `javaVersion` / `javaVendor`. |
 | `software.sava.build.feature.test` | JUnit test logging and strict test-dependency analysis. |
-| `software.sava.build.check.attestations` | `verifySavaAttestations` task: verifies the GitHub build-provenance attestations of resolved sava dependencies (sha256 lookup in the org attestation store, cosign verification against the reusable publish workflow's identity), plus their sources/javadoc jars and the sava-build plugin jar in use (attested by `gradle_plugin_publish.yml`). Missing attestations warn until `savaAttestations.requireAttestations = true`; failed verifications always fail. Configure via `savaAttestations {}`; needs a `cosign` executable or a Docker image passed as `-PsavaCosignImage=...`. Applied by `java-module`; not part of `check` (requires network). |
+| `software.sava.build.check.attestations` | `verifySavaAttestations` task: verifies the GitHub build-provenance attestations of resolved sava dependencies (sha256 lookup in the org attestation store, cosign verification against the identity of the reusable publish workflow that released them, `publish.yml` or `publish-gh.yml`), plus their sources/javadoc jars and the sava-build plugin jar in use (attested by `gradle_plugin_publish.yml`). Missing attestations warn until `savaAttestations.requireAttestations = true`; failed verifications always fail. Configure via `savaAttestations {}`; needs a `cosign` executable or a Docker image passed as `-PsavaCosignImage=...`. Applied by `java-module`; not part of `check` (requires network). |
 | `software.sava.build.feature.javadoc` | Lenient javadoc (`Xdoclint:none`, HTML5). |
 | `software.sava.build.check.dependencies` | Per-project [dependency analysis](https://github.com/autonomousapps/dependency-analysis-gradle-plugin) (`projectHealth`) and module-directive scope checks wired into `check`; the `software.sava.build` settings entry point supplies the root `buildHealth` aggregate. |
 
@@ -364,6 +364,10 @@ this: the runner fetches the actions themselves at job setup, before any step an
 unfixed store, and Node-based actions such as `setup-gradle` use Node's bundled store.
 `action_self_test.yml` runs the action from this repository with two different JDK versions on
 every change to the action files and weekly, the path a run whose two versions agree skips.
+Every check of the plugin, on a push to `main`, on a pull request and on a release tag, runs a
+second job on a Temurin JDK, which ships no jmods, for the jlink tests alone
+(`gradle_plugin_jlink_without_jmods.yml`): the paths the image task takes on such a toolchain,
+where jlink cannot link jdk.jlink, never run on the Oracle JDK the rest of the check uses.
 
 Reusable workflows (all use the composite action and the repository variables
 `JAVA_VERSION`, `JDK_SRC`, and `GRADLE_JAVA_VERSION`):

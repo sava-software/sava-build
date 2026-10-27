@@ -43,3 +43,8 @@ jobs:
       # the Java programs the composite actions under .github/actions run.
       - name: Gradle Check
         run: ./gradlew --stacktrace check
+
+  # The jlink tests on a JDK without jmods, as every check of the plugin runs them; the
+  # workflow says why.
+  jlink-without-jmods:
+    uses: ./.github/workflows/gradle_plugin_jlink_without_jmods.yml

@@ -70,3 +70,8 @@ jobs:
         env:
           ORG_GRADLE_PROJECT_savaGithubPackagesUsername: ${{ github.actor }}
           ORG_GRADLE_PROJECT_savaGithubPackagesPassword: ${{ secrets.READ_SAVA_PACKAGES }}
+
+  # The jlink tests on a JDK without jmods, as every check of the plugin runs them; the
+  # workflow says why. No secret reaches it.
+  jlink-without-jmods:
+    uses: ./.github/workflows/gradle_plugin_jlink_without_jmods.yml

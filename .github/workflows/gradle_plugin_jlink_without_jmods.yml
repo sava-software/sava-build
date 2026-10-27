@@ -1,0 +1,69 @@
+name: jlink tests without jmods
+
+permissions:
+  contents: read
+
+# The jlink functional tests on a JDK without jmods (Temurin 24 and later, JEP 493), where jlink
+# cannot link jdk.jlink and the image task's notice withholds bindServices = true for it: branches
+# the Oracle JDK the rest of the plugin's checks install, which ships jmods, never takes. Called
+# as a job by every check of the plugin, the push to main, the pull request and the release.
+# No step distrusts the roots in the OS store: the checkout fetches over that store before any
+# step of this job could, and nothing after it uses the store (setup-java and the cache are
+# Node, with its bundled store, as the root action's description says of Node-based actions;
+# check.sh and Gradle use the JDK's own, which check.sh verifies).
+on:
+  workflow_call:
+
+jobs:
+  jlink-without-jmods:
+    runs-on: ubuntu-latest
+    env:
+      # The cache's path rules, one copy for the restore and the save below: files only, since tar
+      # would take excluded children with a listed parent; keys, locks and task outputs stay out.
+      TESTKIT_CACHE_PATHS: |
+        build/tmp/test/work/.gradle-test-kit/caches/**/*
+        !build/tmp/test/work/.gradle-test-kit/caches/**/
+        !build/tmp/test/work/.gradle-test-kit/caches/**/*.lock
+        !build/tmp/test/work/.gradle-test-kit/caches/**/cc-keystore/**
+        !build/tmp/test/work/.gradle-test-kit/caches/**/build-cache-*/**
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+      # By name, before the download, as every other install here: actions/setup-java's own
+      # message names no input. No site: setup-java chooses its own, so the site label is empty.
+      - name: Refuse an empty or malformed version or one below the floor
+        env:
+          GRADLE_JAVA_VERSION: ${{ vars.GRADLE_JAVA_VERSION }}
+        run: bash .github/actions/check-jdk-trust/input-shape.sh --all "" "" "gradle-java-version (vars.GRADLE_JAVA_VERSION)" "$GRADLE_JAVA_VERSION"
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ vars.GRADLE_JAVA_VERSION }}
+      - name: Check the installed JDK
+        run: bash .github/actions/check-jdk-trust/check.sh "$JAVA_HOME"
+      - name: The JDK ships no jmods, as this job assumes
+        run: '[ ! -d "$JAVA_HOME/jmods" ] || { echo "::error::$JAVA_HOME ships jmods; this job exists for a JDK without them."; exit 1; }'
+      # TestKit has a separate Gradle home under the test worker directory; the same rules as the
+      # check job's cache, under a key of its own, since the fixtures run on another JDK. Restored
+      # on every run, saved from main only, as the check jobs do: a pull request's or a tag's entry
+      # is scoped to it and would only crowd the quota.
+      - name: Restore TestKit caches
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TESTKIT_CACHE_PATHS }}
+          key: testkit-v1-${{ runner.os }}-${{ runner.arch }}-temurin${{ vars.GRADLE_JAVA_VERSION }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}
+          restore-keys: |
+            testkit-v1-${{ runner.os }}-${{ runner.arch }}-temurin${{ vars.GRADLE_JAVA_VERSION }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}-
+      # The test JVM holds the job's premise too, through the variable JlinkFeatureFunctionalTest
+      # reads: the step above sees JAVA_HOME, the tests whatever JDK Gradle hands :test.
+      - name: jlink tests
+        env:
+          SAVA_BUILD_EXPECT_NO_JMODS: '1'
+        run: ./gradlew --stacktrace test --tests JlinkFeatureFunctionalTest
+      - name: Save TestKit caches
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TESTKIT_CACHE_PATHS }}
+          key: testkit-v1-${{ runner.os }}-${{ runner.arch }}-temurin${{ vars.GRADLE_JAVA_VERSION }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}
