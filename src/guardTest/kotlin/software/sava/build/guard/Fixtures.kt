@@ -43,6 +43,9 @@ fun toJson(value: Any?): String = when (value) {
 
 data class Run(val code: Int, val out: String)
 
+/** How many times [needle] occurs in [text]. */
+fun count(text: String, needle: String): Int = text.split(needle).size - 1
+
 /**
  * Runs a bash script with [args], stderr folded into stdout, from [dir] (the test JVM's working
  * directory by default) under [env], where a null value unsets the variable: the one runner of

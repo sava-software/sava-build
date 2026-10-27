@@ -7,10 +7,15 @@ permissions:
 # cannot link jdk.jlink and the image task's notice withholds bindServices = true for it: branches
 # the Oracle JDK the rest of the plugin's checks install, which ships jmods, never takes. Called
 # as a job by every check of the plugin, the push to main, the pull request and the release.
-# No step distrusts the roots in the OS store: the checkout fetches over that store before any
-# step of this job could, and nothing after it uses the store (setup-java and the cache are
-# Node, with its bundled store, as the root action's description says of Node-based actions;
-# check.sh and Gradle use the JDK's own, which check.sh verifies).
+# The install asks for the latest Temurin at the version (check-latest), a downloaded tarball
+# with its own cacerts and no jmods (JEP 493); without that, setup-java takes the runner image's
+# Temurin from the tool cache, an apt package whose cacerts are the OS store's (run 40562681998:
+# 25.0.4.1 from the tool cache, 121 anchors, refused by check.sh). The OS store's roots are
+# distrusted before the install all the same, by the distrust-compromised-roots action, as the
+# root action does before its own, for the day the tool cache holds the latest; check.sh
+# verifies whichever JDK was installed, and the step after it holds the JDK to shipping no
+# jmods. The checkout fetches over the OS store before any step of this job could run;
+# setup-java and the cache are Node, with its bundled store.
 on:
   workflow_call:
 
@@ -36,10 +41,13 @@ jobs:
         env:
           GRADLE_JAVA_VERSION: ${{ vars.GRADLE_JAVA_VERSION }}
         run: bash .github/actions/check-jdk-trust/input-shape.sh --all "" "" "gradle-java-version (vars.GRADLE_JAVA_VERSION)" "$GRADLE_JAVA_VERSION"
+      - name: Distrust the compromised intermediates' roots in the OS trust store
+        uses: ./.github/actions/distrust-compromised-roots
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: ${{ vars.GRADLE_JAVA_VERSION }}
+          check-latest: true
       - name: Check the installed JDK
         run: bash .github/actions/check-jdk-trust/check.sh "$JAVA_HOME"
       - name: The JDK ships no jmods, as this job assumes

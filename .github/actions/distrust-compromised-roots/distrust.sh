@@ -3,9 +3,10 @@
 # "AAA Certificate Services", in a Debian-family OS trust store and regenerates the derived stores,
 # the way Ubuntu's ca-certificates 20260816ubuntu0.24.04.1 does (AAA had already left Mozilla's
 # bundle in 20260601~24.04.1) and actions/runner-images#15053 proposes for the hosted image. Shared
-# by the distrust-compromised-roots and setup-checked-jdk actions. Exits 0 without changing anything
-# where there is no passwordless sudo or no OS bundle; a check of the JDK that downloads
-# (check-jdk-trust) is what proves the store clean.
+# by the distrust-compromised-roots action (the jmods-less workflow uses it), setup-checked-jdk and
+# sava-build's root action. Exits 0 without changing anything where there is no passwordless sudo
+# or no OS bundle; a check of the JDK that downloads (check-jdk-trust) is what proves the store
+# clean.
 set -euo pipefail
 root_cns=("emSign ECC Root CA - G3" "AAA Certificate Services")
 conf=/etc/ca-certificates.conf

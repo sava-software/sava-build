@@ -23,8 +23,6 @@ class SetupCheckedJdkPinTest {
 
   private val pin = "oracle-actions/setup-java@fff43251af9936a0e6a4d5d0946e14f1680e9b6b"
 
-  private fun count(text: String, needle: String) = text.split(needle).size - 1
-
   @Test
   fun `oracle-actions setup-java is pinned at the commit whose downloader JDK the script checks`() {
     val action = Files.readString(guardFile(".github/actions/setup-checked-jdk/action.yml"))

@@ -8,10 +8,13 @@ import org.junit.jupiter.api.Test
 /**
  * The reusable job that runs the jlink functional tests on a JDK without jmods, held to the
  * checkout and Gradle setup pins the root action uses, to a SHA pin on actions/setup-java, its one
- * install, to one actions/cache pin for its restore and save, to saving from main only, to
- * refusing a bad version by name through input-shape.sh before that install downloads, since the
- * action's own message names no input, and to telling the test JVM to hold the premise; and its
- * three callers, every check of the plugin, to calling it.
+ * install, asked for the latest Temurin at the version, to one actions/cache pin for its restore
+ * and save, to saving from main only, to refusing a bad version by name through input-shape.sh
+ * before that install downloads, since the action's own message names no input, to distrusting
+ * the OS store's roots before it through the distrust-compromised-roots action, since setup-java
+ * may still hand it the runner image's Temurin, whose cacerts are the OS store's, to checking the
+ * installed JDK and holding it to shipping no jmods before the tests, and to telling the test JVM
+ * to hold that premise; and its three callers, every check of the plugin, to calling it.
  */
 class JlinkWithoutJmodsWorkflowTest {
 
@@ -41,11 +44,28 @@ class JlinkWithoutJmodsWorkflowTest {
   }
 
   @Test
-  fun `the version is refused by name through input-shape-sh before the download`() {
-    val refuse = workflow.indexOf("input-shape.sh --all \"\" \"\" \"gradle-java-version (vars.GRADLE_JAVA_VERSION)\" \"\$GRADLE_JAVA_VERSION\"")
-    val install = workflow.indexOf("uses: actions/setup-java@")
-    assertTrue(refuse >= 0, "the job must run input-shape.sh --all, with an empty site label, over the Gradle version")
-    assertTrue(install > refuse, "the refusal must come before the actions/setup-java install")
+  fun `the steps run once each and in order`() {
+    // As the pin test holds the wrapper's steps: a malformed version is refused before sudo touches
+    // the OS store; the store is distrusted before the install, which may take the runner image's
+    // Temurin, whose cacerts are the OS store's; the installed JDK is checked, then held to shipping
+    // no jmods, before the tests run on it.
+    val steps = listOf(
+      "input-shape.sh --all \"\" \"\" \"gradle-java-version (vars.GRADLE_JAVA_VERSION)\" \"\$GRADLE_JAVA_VERSION\"",
+      "uses: ./.github/actions/distrust-compromised-roots\n",
+      "uses: actions/setup-java@",
+      "run: bash .github/actions/check-jdk-trust/check.sh \"\$JAVA_HOME\"\n",
+      "[ ! -d \"\$JAVA_HOME/jmods\" ]",
+      "run: ./gradlew --stacktrace test --tests JlinkFeatureFunctionalTest\n"
+    )
+    for (step in steps) assertEquals(1, count(workflow, step), "the job must hold this step once: $step")
+    val order = steps.map { workflow.indexOf(it) }
+    assertEquals(order.sorted(), order, "the job's steps must run in this order: " + steps.joinToString(" | "))
+  }
+
+  @Test
+  fun `the install asks for the latest Temurin at the version`() {
+    assertTrue(workflow.contains("          check-latest: true\n"),
+      "the install must ask for the latest Temurin (check-latest): the tool cache's apt package reads the OS store and is not held to shipping no jmods")
   }
 
   @Test
