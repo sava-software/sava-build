@@ -20,10 +20,11 @@ plugins {
 val savaAttestations = extensions.create<SavaAttestationsExtension>("savaAttestations")
 savaAttestations.organization.convention("sava-software")
 savaAttestations.groups.convention(setOf("software.sava"))
-// Sava libraries are published and attested by the reusable publish workflow; for jobs
-// of a reusable workflow the certificate identity references the called workflow.
+// Sava libraries are published and attested by one of the two reusable publish workflows,
+// publish.yml (Maven Central and GitHub Packages) or publish-gh.yml (GitHub Packages only);
+// for jobs of a reusable workflow the certificate identity references the called workflow.
 savaAttestations.certificateIdentityRegexp.convention(
-  "^https://github\\.com/sava-software/sava-build/\\.github/workflows/publish\\.yml@refs/"
+  "^https://github\\.com/sava-software/sava-build/\\.github/workflows/publish(-gh)?\\.yml@refs/"
 )
 // Warn-only until all published sava releases carry attestations; flip to true once the
 // migration is complete so missing attestations fail the build.

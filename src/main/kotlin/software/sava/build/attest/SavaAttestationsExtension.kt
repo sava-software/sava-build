@@ -15,8 +15,9 @@ abstract class SavaAttestationsExtension {
   abstract val groups: SetProperty<String>
 
   /**
-   * Regexp the signing certificate's identity must match. Defaults to the reusable
-   * 'publish.yml' workflow of sava-build, which publishes (and attests) every sava
+   * Regexp the signing certificate's identity must match. Defaults to the two reusable
+   * publish workflows of sava-build, 'publish.yml' (Maven Central and GitHub Packages) and
+   * 'publish-gh.yml' (GitHub Packages only), one of which publishes (and attests) every sava
    * library release.
    */
   abstract val certificateIdentityRegexp: Property<String>

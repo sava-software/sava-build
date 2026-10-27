@@ -25,6 +25,9 @@ class AttestationsFunctionalTest {
     enableTestKitConfigurationCache(fixtureDir)
   }
 
+  /** The arguments the stub cosign was called with, one per line, across every call. */
+  private val cosignArgs get() = File(fixtureDir, "cosign-args.txt")
+
   private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
     .withProjectDir(fixtureDir)
     .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
@@ -44,8 +47,11 @@ class AttestationsFunctionalTest {
         </project>
       """.trimIndent() + "\n"
     )
+    // The stub records each call it gets as one line, the arguments tab-separated (a path holds
+    // no tab), for the tests that read what the task tells cosign; the task keeps cosign's own
+    // output to itself.
     val cosignStub = File(fixtureDir, "cosign-stub.sh")
-    cosignStub.writeText("#!/bin/sh\necho \"stub-cosign: $@\"\nexit 0\n")
+    cosignStub.writeText("#!/bin/sh\nprintf '%s\\t' \"$@\" >> \"${cosignArgs.absolutePath}\"\nprintf '\\n' >> \"${cosignArgs.absolutePath}\"\necho \"stub-cosign: $@\"\nexit 0\n")
     cosignStub.setExecutable(true)
 
     File(fixtureDir, "settings.gradle.kts").writeText(
@@ -111,6 +117,24 @@ class AttestationsFunctionalTest {
       val (path, authorization) = attestationRequest.get().split("|")
       assertTrue(path.startsWith("/orgs/sava-software/attestations/sha256:"), path)
       assertTrue(authorization == "Bearer test-token", authorization)
+      // The identity cosign is told to require for the library, as the stub recorded that call (the
+      // plugin jar, verified first when verifyBuildPlugin is on, has an identity of its own): a
+      // library's attestation is signed by whichever of the two reusable publish workflows released
+      // it, and by nothing else.
+      val calls = (cosignArgs.takeIf { it.exists() }?.readLines() ?: emptyList()).map { it.split('\t') }
+      val args = calls.firstOrNull { call -> call.any { it.endsWith("fake-lib-1.0.0.jar") } } ?: emptyList()
+      val flag = args.indexOf("--certificate-identity-regexp")
+      assertTrue(flag >= 0 && flag + 1 < args.size, "no cosign call over fake-lib-1.0.0.jar with a --certificate-identity-regexp value: $calls")
+      val identity = args[flag + 1]
+      val signer = Regex(identity)
+      val workflows = "https://github.com/sava-software/sava-build/.github/workflows/"
+      for (accepted in listOf("publish.yml@refs/heads/main", "publish-gh.yml@refs/heads/main", "publish.yml@refs/tags/25.4.3")) {
+        assertTrue(signer.containsMatchIn(workflows + accepted), "$identity must accept $accepted")
+      }
+      for (refused in listOf("publish-other.yml@refs/heads/main", "build.yml@refs/heads/main", "gradle_plugin_publish.yml@refs/tags/21.7.0")) {
+        assertTrue(!signer.containsMatchIn(workflows + refused), "$identity must refuse $refused")
+      }
+      assertTrue(!signer.containsMatchIn("https://github.com/someone-else/sava-build/.github/workflows/publish.yml@refs/heads/main"), identity)
     } finally {
       server.stop(0)
     }
