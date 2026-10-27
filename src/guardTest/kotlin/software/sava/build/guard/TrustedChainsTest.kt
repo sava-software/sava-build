@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.io.PrintStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -276,12 +277,18 @@ class TrustedChainsTest {
     // alone is trusting whatever the JDK's blocklist says of the paths.
     assumeFalse(System.getProperty("os.name").startsWith("Windows"), "check.sh runs under bash")
     val home = File(System.getProperty("java.home"))
+    // Under Gradle the test JVM is the toolchain, a JDK; an IDE's own runtime or a JRE daemon
+    // skips the script runs below rather than failing them on check.sh's "no JDK" exit.
     assumeTrue(File(home, "bin/javac").canExecute(), "the test JVM is not a JDK")
     val script = File(".github/actions/check-jdk-trust/check.sh").absoluteFile
-    fun check(home: File, store: File? = null): Run {
+    // [javaHome] is the JAVA_HOME check.sh falls back to for an empty argument; null unsets it.
+    fun check(home: File, store: File? = null, javaHome: File? = null): Run {
       val builder = ProcessBuilder("bash", script.path, home.path).directory(directory.toFile()).redirectErrorStream(true)
       builder.environment()["RUNNER_TEMP"] = directory.toString()
-      builder.environment().remove("JAVA_TOOL_OPTIONS")
+      // The launcher reads all three, so a shell that points one of them at its own trust store
+      // (a corporate TLS proxy's) would put that store before the test's.
+      for (name in listOf("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")) builder.environment().remove(name)
+      if (javaHome == null) builder.environment().remove("JAVA_HOME") else builder.environment()["JAVA_HOME"] = javaHome.path
       if (store != null) {
         // Read by javac too, which only says so; the quotes survive the launcher's whitespace split.
         builder.environment()["JAVA_TOOL_OPTIONS"] =
@@ -298,11 +305,29 @@ class TrustedChainsTest {
     val clean = check(home, trustStore("clean.p12", syntheticRoot.trustedCert))
     assertEquals(0, clean.code, clean.out)
     assertTrue(clean.out.contains("All 28 paths rejected; no related root among the trust anchors."), clean.out)
-    // HotSpot itself exits 3 on -XX:+ExitOnOutOfMemoryError: a 3 without the verdict line is undecided.
+    assertFalse(clean.out.contains("this runtime still trusts a compromised issuer"), clean.out)
+    // An empty argument falls back to JAVA_HOME, and without one there is no JDK to check.
+    val fallback = check(File(""), trustStore("fallback.p12", aaa), javaHome = home)
+    assertEquals(1, fallback.code, fallback.out)
+    assertTrue(fallback.out.contains("::error::The JDK at $home still trusts a compromised eMudhra intermediate CA"), fallback.out)
+    val none = check(File(""))
+    assertEquals(2, none.code, none.out)
+    assertTrue(none.out.contains("::error::check-jdk-trust: no JDK at ''"), none.out)
+    // HotSpot itself exits 3 on -XX:+ExitOnOutOfMemoryError, so a 3 is the trusting verdict only
+    // under its closing line: a java that prints the clean one and exits 3 is undecided.
     val stub = directory.resolve("stub-jdk").toFile()
     File(stub, "bin").mkdirs()
     File(stub, "bin/javac").also { it.writeText("#!/bin/sh\nexit 0\n") }.setExecutable(true)
-    File(stub, "bin/java").also { it.writeText("#!/bin/sh\necho 'Terminating due to java.lang.OutOfMemoryError'\nexit 3\n") }.setExecutable(true)
+    File(stub, "bin/java").also { it.writeText("#!/bin/sh\necho 'All 28 paths rejected; no related root among the trust anchors.'\nexit 3\n") }.setExecutable(true)
+    // Whether the temporary directory allows execution at all (a noexec mount): probed by running
+    // the stub, since the permission bit says nothing about the mount on every OS.
+    val runnable = try {
+      ProcessBuilder(File(stub, "bin/java").path).redirectErrorStream(true).start()
+        .let { it.inputStream.readAllBytes(); it.waitFor() == 3 }
+    } catch (e: IOException) {
+      false
+    }
+    assumeTrue(runnable, "the temporary directory does not allow execution (noexec)")
     val undecided = check(stub)
     assertEquals(2, undecided.code, undecided.out)
     assertTrue(undecided.out.contains("::error::check-jdk-trust could not decide about the JDK at $stub (exit 3)"), undecided.out)
