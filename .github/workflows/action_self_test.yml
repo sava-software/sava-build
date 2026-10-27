@@ -1,0 +1,67 @@
+name: Root Action Self-Test
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - action.yml
+      - .github/actions/**
+      - .github/workflows/action_self_test.yml
+  # Weekly as well: the build JDK below is a feature release that oracle.com stops serving at
+  # the next one (java/27/latest goes at 28 GA, as java/21/latest went on 2026-10-23), and the
+  # current LTS alone outlives it there, so two different versions always include one that rots.
+  # The repository variables give one version, not two (JAVA_VERSION and GRADLE_JAVA_VERSION are
+  # both the LTS), so the build version is the literal below: when it goes, bump it to the
+  # current feature release. A download failure here is that, found on its own rather than on
+  # the next unrelated action edit.
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: action-self-test-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  # The root action with two versions, so the Gradle JDK's install, its check and the
+  # org.gradle.java.home write run under their condition: every consumer whose javaVersion is
+  # GRADLE_JAVA_VERSION skips them, and this repository's own workflows install one JDK through
+  # the wrapper. The checks themselves fail the job; the step after asserts what they ran on.
+  two-jdks:
+    # On main only: the root action takes the Java version from a java-NN branch name before its
+    # input, which on such a branch would collapse the two versions into one.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Each version once, read by the install and by the assertions, and by SetupCheckedJdkPinTest.
+    env:
+      BUILD_JDK: '27'
+      GRADLE_JDK: '25'
+    steps:
+      # A local action needs the checkout first; the action then checks out again, as it does
+      # for a consumer, after its distrust and runner-JDK steps.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: setup
+        uses: ./
+        with:
+          default-java-version: ${{ env.BUILD_JDK }}
+          jdk-src: ${{ vars.JDK_SRC }}
+          gradle-java-version: ${{ env.GRADLE_JDK }}
+          # No Gradle runs here, so no cache to restore or save.
+          cache-disabled: 'true'
+      - name: The build JDK is in JAVA_HOME and Gradle's, another version, in gradle.properties
+        shell: bash
+        env:
+          JAVA_VERSION: ${{ steps.setup.outputs.java-version }}
+        run: |
+          feature() { sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$1/release"; }
+          [ "$JAVA_VERSION" = "$BUILD_JDK" ] || { echo "::error::The java-version output is '$JAVA_VERSION', not the $BUILD_JDK passed in."; exit 1; }
+          [ "$(feature "$JAVA_HOME")" = "$BUILD_JDK" ] || { echo "::error::JAVA_HOME ($JAVA_HOME) is not a JDK $BUILD_JDK."; exit 1; }
+          gradle_home=$(sed -n 's/^org\.gradle\.java\.home=//p' gradle.properties | tail -n 1)
+          [ -n "$gradle_home" ] || { echo "::error::gradle.properties names no org.gradle.java.home: the Gradle JDK's steps did not run."; exit 1; }
+          [ "$(feature "$gradle_home")" = "$GRADLE_JDK" ] || { echo "::error::org.gradle.java.home ($gradle_home) is not a JDK $GRADLE_JDK."; exit 1; }
+          [ "$gradle_home" != "$JAVA_HOME" ] || { echo "::error::Gradle's JDK is the build's."; exit 1; }
+          echo "Build JDK $BUILD_JDK at $JAVA_HOME, Gradle JDK $GRADLE_JDK at $gradle_home: both installed and checked."

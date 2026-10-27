@@ -56,6 +56,28 @@ class SetupCheckedJdkPinTest {
   }
 
   @Test
+  fun `the self-test runs the root action from the checkout with two different versions at or above the floor`() {
+    val workflow = Files.readString(Path.of(".github/workflows/action_self_test.yml"))
+    assertTrue(workflow.contains("uses: ./\n"), "action_self_test.yml must run the root action from the checkout")
+    // Each version is one job-level literal, read on its own line, not from a comment quoting a
+    // value, and the install takes both from there.
+    fun version(name: String) = Regex("^\\s+$name: '(\\d+)'$", RegexOption.MULTILINE).find(workflow)?.groupValues?.get(1)?.toInt()
+      ?: error("action_self_test.yml sets no numeric $name")
+    val build = version("BUILD_JDK")
+    val gradle = version("GRADLE_JDK")
+    assertTrue(workflow.contains("default-java-version: \${{ env.BUILD_JDK }}") && workflow.contains("gradle-java-version: \${{ env.GRADLE_JDK }}"),
+      "action_self_test.yml must pass BUILD_JDK and GRADLE_JDK to the root action")
+    // The compile floor, read from release-floor.sh as the test above does; whether the download
+    // site still serves a version is the workflow's own run to tell, which is why it also runs on
+    // a schedule.
+    val floor = releaseFloor()
+    assertTrue(build >= floor && gradle >= floor && build != gradle,
+      "the self-test must install two different versions at or above the floor $floor, not $build and $gradle")
+    assertTrue(workflow.contains("\n  schedule:\n"),
+      "action_self_test.yml must also run on a schedule: a version the download site stops serving fails it")
+  }
+
+  @Test
   fun `the floor refused by name is the release check-sh compiles with, as the prose says`() {
     val floor = releaseFloor()
     val check = Files.readString(Path.of(".github/actions/check-jdk-trust/check.sh"))

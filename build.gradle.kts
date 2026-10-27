@@ -457,6 +457,10 @@ val guardTestTask = tasks.register<Test>("guardTest") {
   useJUnitPlatform()
   testClassesDirs = guardTest.output.classesDirs
   classpath = guardTest.runtimeClasspath
+  // SetupCheckedJdkPinTest reads the self-test workflow for the two versions it passes the root action.
+  inputs.file(layout.projectDirectory.file(".github/workflows/action_self_test.yml"))
+    .withPropertyName("actionSelfTestWorkflow")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
   // ReleasePleaseActionPinTest reads the workflow for the pinned release-please-action: an
   // input, so a moved pin re-runs the task rather than finding it up to date or in the cache.
   inputs.file(layout.projectDirectory.file(".github/workflows/release-please.yml"))

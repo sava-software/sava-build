@@ -362,6 +362,8 @@ which follows this repository's `main` whatever ref a caller names for the workf
 needs `JAVA_VERSION` and `JDK_SRC` set (an empty value is refused by name). Out of reach of all
 this: the runner fetches the actions themselves at job setup, before any step and so over the
 unfixed store, and Node-based actions such as `setup-gradle` use Node's bundled store.
+`action_self_test.yml` runs the action from this repository with two different JDK versions on
+every change to the action files and weekly, the path a run whose two versions agree skips.
 
 Reusable workflows (all use the composite action and the repository variables
 `JAVA_VERSION`, `JDK_SRC`, and `GRADLE_JAVA_VERSION`):
