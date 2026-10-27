@@ -1,5 +1,39 @@
 # Changelog
 
+## [21.7.0](https://github.com/sava-software/sava-build/compare/21.6.9...21.7.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **jlink:** images no longer hold service providers that no linked module requires. Set jlinkApplication.bindServices = true to restore the old behaviour, or name the providers the application loads at run time in jlinkApplication.addModules: jdk.localedata for non-English formatting, jdk.charsets, jdk.zipfs, jdk.crypto.cryptoki, an SLF4J provider, a driver declared 'requires static'; and the JDK tools and agents it needs, jdk.jfr, jdk.jdwp.agent for -agentlib:jdwp, jdk.attach. The image task prints what it left out and, until bindServices is set, what binding would have linked; the imageModules task shows what an image holds.
+
+### Features
+
+* **jlink:** link images without service binding by default ([1d451eb](https://github.com/sava-software/sava-build/commit/1d451eb1e17df1ced15a9ea8e983e1a70cf44cf2))
+
+
+### Bug Fixes
+
+* **jlink:** relink the image when the toolchain JDK changes within a release ([ad39f4d](https://github.com/sava-software/sava-build/commit/ad39f4d13ae5a6657e28f3623f14b55a0952a5eb))
+* **jlink:** withhold bindServices = true where binding reaches a module jlink cannot link ([27b9143](https://github.com/sava-software/sava-build/commit/27b914381bdb5b7e7d7bf716e0def8abe176eb57))
+
+
+### Build System
+
+* declare the files the tests read, as one list per task the tests hold to ([00bb793](https://github.com/sava-software/sava-build/commit/00bb793429c33eb220deeb825422b3040fed26a5))
+* **deps:** bump docker/login-action ([#144](https://github.com/sava-software/sava-build/issues/144)) ([6a63b45](https://github.com/sava-software/sava-build/commit/6a63b45d8dbaeac94052679d63a752a8caff6ee8))
+* **deps:** bump the codeql-action group across 1 directory with 2 updates ([#145](https://github.com/sava-software/sava-build/issues/145)) ([fb0e81a](https://github.com/sava-software/sava-build/commit/fb0e81abcacba1e71a0f02116e8896c6c8fd6da3))
+* let the Gradle daemon follow the JDK the build installs ([ce62fa7](https://github.com/sava-software/sava-build/commit/ce62fa7e0c8ce097d5d376227670ac07a28dd89b))
+* pin the Gradle 9.8.2 distribution checksum ([3e46003](https://github.com/sava-software/sava-build/commit/3e46003c0bb22c0b6138cbd24dbbd788933ca33e))
+
+
+### CI
+
+* check the release in setup-checked-jdk by the root action's rule ([3510705](https://github.com/sava-software/sava-build/commit/3510705b4317d3e9a9638842d072a8117ff49efd))
+* distrust the compromised emSign root and check the JDKs the workflows install ([626981e](https://github.com/sava-software/sava-build/commit/626981e1f750feaf71e163128bcfc3656add03df))
+* install the consumers' JDKs through setup-checked-jdk ([f60551e](https://github.com/sava-software/sava-build/commit/f60551edfab93402edabcd2c831af60693aeeb50))
+* self-test the root action's two-JDK install ([d49d871](https://github.com/sava-software/sava-build/commit/d49d871a00d9bc556b3d2b9fe1d7f4888c412aec))
+
 ## [21.6.9](https://github.com/sava-software/sava-build/compare/21.6.8...21.6.9) (2026-10-23)
 
 
