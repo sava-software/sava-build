@@ -20,8 +20,6 @@ class DependencyVerificationNoticeTest {
 
   private val actions = guardFile(".github/actions").toAbsolutePath()
 
-  private class Run(val code: Int, val out: String)
-
   private fun run(script: String, vararg args: String, env: Map<String, String?> = emptyMap()): Run =
     bash(actions.resolve(script), args.toList(), project, env)
 
@@ -32,7 +30,8 @@ class DependencyVerificationNoticeTest {
 
   private fun properties(text: String) = File(project, "gradle.properties").writeText(text)
 
-  private fun notice(): Run = run("dependency-verification/notice.sh")
+  /** notice.sh reads gradle.properties through the JDK it is given: this test JVM's. */
+  private fun notice(): Run = run("dependency-verification/notice.sh", env = mapOf("JAVA_HOME" to System.getProperty("java.home")))
 
   private val signaturesOn = "<configuration><verify-metadata>true</verify-metadata><verify-signatures>true</verify-signatures></configuration>\n"
 
@@ -73,6 +72,23 @@ class DependencyVerificationNoticeTest {
       properties(on)
       assertEquals("", notice().out, on)
     }
+    // Continuations, escapes and comments as java.util.Properties reads them, which does the reading.
+    properties("org.gradle.dependency.verification=\\\n    off\n")
+    assertTrue(notice().out.contains("sets verification off or lenient"), "a continued value is read")
+    properties("org.gradle.dependency.verification=\\\n    strict\n")
+    assertEquals("", notice().out, "a continued strict value is read")
+    properties("org.gradle.dependency.\\\n    verification=off\n")
+    assertTrue(notice().out.contains("sets verification off or lenient"), "a continued key is read")
+    properties("org.gradle.dependency.verification=\\\r\n    off\r\n")
+    assertTrue(notice().out.contains("sets verification off or lenient"), "a CRLF continuation is read")
+    properties("# verification off for now \\\norg.gradle.dependency.verification=off\n")
+    assertTrue(notice().out.contains("sets verification off or lenient"), "a comment line does not continue")
+    properties("foo=bar\\\\\norg.gradle.dependency.verification=off\n")
+    assertTrue(notice().out.contains("sets verification off or lenient"), "an escaped backslash does not continue")
+    properties("org.gradle.dependency.verification=off\\")
+    assertTrue(notice().out.contains("sets verification off or lenient"), "a trailing backslash at the end of the file is dropped")
+    properties("org.gradle.dependency.verification=\\u006Fff\n")
+    assertTrue(notice().out.contains("sets verification off or lenient"), "a unicode escape is read")
   }
 
   @Test

@@ -494,6 +494,7 @@ tasks.test {
 val actionSourceSets = listOf(
   "releasePleaseGuard" to "release-please-guard",
   "forkPrGuard" to "fork-pr-guard",
+  "dependencyVerification" to "dependency-verification",
   "checkJdkTrust" to "check-jdk-trust",
 )
   .map { (name, action) ->
