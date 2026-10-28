@@ -1,5 +1,20 @@
 # Changelog
 
+## [21.7.1](https://github.com/sava-software/sava-build/compare/21.7.0...21.7.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **attestations:** accept the GitHub Packages publish workflow as a library's signer ([c71efb8](https://github.com/sava-software/sava-build/commit/c71efb8625efb10c6c622d037a4efc973bf53533))
+
+
+### CI
+
+* distrust the OS store before the jmods-less job's install, which asks for the latest ([cf87ae5](https://github.com/sava-software/sava-build/commit/cf87ae59f8514501e1dc5f725449ea20e35d1fbe))
+* read gradle.properties in notice.sh as java.util.Properties does ([c1d377a](https://github.com/sava-software/sava-build/commit/c1d377a1ad0336c961dd8e7011a5eb96cfdccd2e))
+* refuse a malformed input before the root action's pre-checkout steps ([15f8b81](https://github.com/sava-software/sava-build/commit/15f8b815ede4c28c3ed8718e5f7f4941e640d917))
+* run the jlink tests on a JDK without jmods in every check of the plugin ([8b8375b](https://github.com/sava-software/sava-build/commit/8b8375bcbc15cbe88316f85c3a733d546e5d3d2f))
+
 ## [21.7.0](https://github.com/sava-software/sava-build/compare/21.6.9...21.7.0) (2026-10-27)
 
 
