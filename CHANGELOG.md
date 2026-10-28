@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.7.2](https://github.com/sava-software/sava-build/compare/21.7.1...21.7.2) (2026-10-28)
+
+
+### CI
+
+* update Gradle actions to v6.4.1 ([b206909](https://github.com/sava-software/sava-build/commit/b206909e84755fa72126347934d5aea3c401dc98))
+
 ## [21.7.1](https://github.com/sava-software/sava-build/compare/21.7.0...21.7.1) (2026-10-27)
 
 
