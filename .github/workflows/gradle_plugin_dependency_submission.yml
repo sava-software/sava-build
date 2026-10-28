@@ -46,7 +46,7 @@ jobs:
           })
           EOF
       - name: Generate and upload dependency graph
-        uses: gradle/actions/dependency-submission@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c
         env:
           GITHUB_DEPENDENCY_GRAPH_JOB_CORRELATOR: sava-build-main-dependencies
         with:
@@ -110,7 +110,7 @@ jobs:
       # For a push event the action downloads artifacts from this workflow run only.
       # This job has no checkout, JDK setup, Gradle invocation, or repository scripts.
       - name: Download and submit dependency graph
-        uses: gradle/actions/dependency-submission@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c
         env:
           DEPENDENCY_GRAPH_DOWNLOAD_ARTIFACT_NAME: sava-build-main-dependencies.json
         with:

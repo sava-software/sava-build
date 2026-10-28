@@ -121,7 +121,7 @@ runs:
           echo "::error::Tag '$REF_NAME' is not the version the tagged commit's $MANIFEST names ($named): release-please tags a release pull request's merge commit with the version that pull request wrote there."
           exit 1
         fi
-    - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+    - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c
       with:
         cache-disabled: ${{ inputs.cache-disabled }}
 

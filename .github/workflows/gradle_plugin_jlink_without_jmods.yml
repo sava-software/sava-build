@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c
       # By name, before the download, as every other install here: actions/setup-java's own
       # message names no input. No site: setup-java chooses its own, so the site label is empty.
       - name: Refuse an empty or malformed version or one below the floor
