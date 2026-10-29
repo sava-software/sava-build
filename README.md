@@ -457,10 +457,14 @@ plugins like sava-build itself) can run — and it is configured by a file Gradl
 directly, on purpose outside the reach of plugins. To adopt it in a consumer repository:
 
 ```bash
-./gradlew --write-verification-metadata pgp,sha256 --export-keys build
+./gradlew --write-verification-metadata pgp,sha256 --export-keys build resolveVerificationTools
 ```
 
-then review the generated `gradle/verification-metadata.xml`, commit it with the exported
+`resolveVerificationTools`, registered by the [hardening feature](#project-plugins), resolves the
+PIT, ArcMutate and Jazzer artifacts that only the mutation and fuzz tasks resolve, so the
+regeneration, and a later `./gradlew check resolveVerificationTools`, cover them without a
+campaign; without it a consumer first meets an unverified tool artifact at its pre-push
+mutation gate or a fuzz run. Then review the generated `gradle/verification-metadata.xml`, commit it with the exported
 keyring under `gradle/`, disable key servers in it (`<key-servers enabled="false"/>` under
 `<configuration>`, as this repository's file does; Gradle otherwise still asks a key server
 for any key the keyring lacks), and trust the sava key for sava artifacts, e.g.:

@@ -181,6 +181,35 @@ val jazzer = configurations.create("jazzer") {
   }
 }
 
+// Only the mutation and fuzz tasks resolve those two configurations, so a build that
+// verifies its dependencies first meets an unverified PIT, ArcMutate or Jazzer artifact at
+// its mutation gate or a fuzz run, after 'check' and a verification-metadata regeneration
+// passed. This task resolves them without running either, for that regeneration and its
+// validation (README: Verifying sava artifacts). It reads this project's own configurations
+// through resolved-artifact providers, so it is configuration-cache safe and safe under
+// --parallel, and it fails when either resolves to nothing: the tools are default
+// dependencies, so an emptied configuration would leave them unverified without a word.
+tasks.register("resolveVerificationTools") {
+  group = "verification"
+  description = "Resolves this project's PIT, ArcMutate and Jazzer artifacts without running them."
+  val tools = listOf("pitest" to pitest, "jazzer" to jazzer)
+    .map { (name, configuration) -> name to configuration.incoming.artifacts.resolvedArtifacts }
+  val projectPath = project.path
+  doLast {
+    tools.forEach { (name, artifacts) ->
+      val resolved = artifacts.get()
+      if (resolved.isEmpty()) {
+        throw GradleException("$projectPath resolved no artifacts for its '$name' configuration; the hardening tools are its default dependencies.")
+      }
+      // graph resolution alone would not fetch a file verification refuses
+      resolved.filterNot { it.file.isFile }.forEach {
+        throw GradleException("$projectPath resolved '$name' to a missing file: ${it.id.componentIdentifier.displayName}")
+      }
+      logger.lifecycle("Resolved $name: ${resolved.size} artifacts")
+    }
+  }
+}
+
 val mutationClassesDir = layout.buildDirectory.dir("mutation-classes")
 // One walk of the class tree for everything that fingerprints it: the evidence, the
 // recompile's stamp and the PIT run's check. A raw directory walk and a Gradle file
