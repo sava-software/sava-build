@@ -488,16 +488,37 @@ previously published jar — so chain the two rather than remembering the first:
 
 ```shell
 (cd <sava-build> && ./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository) \
-  && ./gradlew check -PsavaBuildLocalRepo=<sava-build>/build/sava-test-repo
+  && ./gradlew check -PsavaBuildLocalRepo=<sava-build>/build/sava-test-repo --dependency-verification lenient
 ```
 
-Run from the consumer's directory. A republished `0.0.0-test` is picked up immediately
-(`file:` repositories are re-read on each resolution), so the chained form makes the
-stale case unreachable instead of merely detectable. In a composite (a `jmh/` that
-`includeBuild`s its root), prefer an absolute property value: a relative one is
-resolved against each build's own settings dir, so the builds would read two
-different repos — and the notice reports the dir the build that registered it
-resolved, which need not be the one that served the plugins.
+Run from the consumer's directory. The `0.0.0-test` publication is unsigned, so a consumer
+that enforces [dependency verification](#verifying-sava-artifacts) refuses it under the
+strict default; `--dependency-verification lenient` reports it instead of failing. Pass the
+flag on every command that carries the property, and on no other; with the property in
+`~/.gradle/gradle.properties`, that is every command until it is removed. A republished
+`0.0.0-test` is picked up immediately (`file:` repositories are re-read on each resolution),
+so the chained form makes the stale case unreachable instead of merely detectable. In a
+composite (a `jmh/` that `includeBuild`s its root), prefer an absolute property value: a
+relative one is resolved against each build's own settings dir, so the builds would read two
+different repos — and the notice reports the dir the build that registered it resolved,
+which need not be the one that served the plugins.
+
+Lenient mode demotes every refusal to a report, so read the "Dependency verification failed"
+report of each run: anything refused other than `0.0.0-test` is a refusal to settle before
+pushing, as `tools/local-fuzz.sh` does for every consumer run, failing the consumer on it
+and naming the refused modules. A refusal of a third-party artifact that only the unreleased
+plugin pulls in means the consumer's policy lags the plugin's dependencies: trust that
+artifact or key in the consumer first. A run that reuses a configuration-cache entry reports
+nothing, at execution time too, since Gradle reuses the stored resolution. The chained
+command above configures afresh, because the publication's provenance sidecar changes with
+every publish and invalidates the entry (Gradle attributes the change to the property); a
+`check` repeated without the publish, the second half of the chain alone, replays it and
+prints nothing, so pass `--no-configuration-cache` to such a run, as the script's discovery
+run does. The script also fails a consumer that verifies its dependencies yet reports no
+refusal of `0.0.0-test`, in either of its runs. Never set
+`org.gradle.dependency.verification` in a user-wide `gradle.properties`, and never commit
+trust for `0.0.0-test` to a consumer's policy: a policy that trusts unsigned local output is
+no longer a record of reviewed trust.
 
 Do not republish the static `0.0.0-test` coordinate while a consumer build is running.
 The plugin freezes both the loaded code SHA-256 and the configured local-repository JAR
@@ -559,7 +580,9 @@ pluginManagement {
   // and every id below then resolves to the 0.0.0-test module regardless of the
   // version the plugins block requests — which the plugin announces at the end of
   // each build, so this block stays silent. The useModule call also bypasses plugin
-  // markers, which the test repo does not contain.
+  // markers, which the test repo does not contain. Pass '--dependency-verification
+  // lenient' with the property, on every command: the test repo's artifacts are
+  // unsigned, so a strict verification policy refuses them.
   val savaBuildLocalRepo = providers.gradleProperty("savaBuildLocalRepo")
     .orNull?.takeIf { it.isNotBlank() }
   if (savaBuildLocalRepo != null) {
@@ -579,7 +602,8 @@ pluginManagement {
 }
 ```
 
-When done, drop the property; the unset path is the normal published resolution.
+When done, drop the property and the flag; the unset path is the normal published
+resolution.
 
 Verify changes with:
 
@@ -646,7 +670,8 @@ optional diagnostic, not a tag or publication prerequisite.
 Consumers validate an unreleased plugin through the committed `-PsavaBuildLocalRepo`
 support in their settings: publish with
 `./gradlew publishSavaBuildTestPublicationToSavaTestRepoRepository`, point the property at
-`build/sava-test-repo`, and confirm the build's own notice names the expected
+`build/sava-test-repo` (with `--dependency-verification lenient` in a consumer that verifies
+dependencies; see Developing sava-build), and confirm the build's own notice names the expected
 source snapshot at publication, tree state, and application-time SHA-256. Consumer project receipts
 (`.pitest-history/pitest-certification.tsv`) and a successful `:hardeningCertifyAll`
 Gradle-root manifest (`.pitest-history/pitest-certification-all.tsv`) remain machine-local

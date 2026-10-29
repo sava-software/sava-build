@@ -249,7 +249,7 @@ runs:
         printf "\norg.gradle.java.installations.paths=%s" "$JAVA_HOME" >> gradle.properties
         java --version
 
-    # Consumers have no Gradle dependency verification yet (sava-build does): a warning on every run,
+    # Not every consumer has Gradle dependency verification yet: a warning on every run that lacks it,
     # here in the setup every consumer workflow shares, until the fleet carries
     # gradle/verification-metadata.xml, then an error; notice.sh says what it reads, with the JDK
     # installed above, and fails the step when that JDK cannot run its properties reader.

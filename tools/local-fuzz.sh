@@ -12,12 +12,18 @@ export LC_ALL=C
 sava_build_dir=$(cd "$(dirname "$0")/.." && pwd -P)
 manifest="$sava_build_dir/tools/fleet-manifest.txt"
 local_repo="$sava_build_dir/build/sava-test-repo"
-published_plugin_jar="$local_repo/software/sava/sava-build/0.0.0-test/sava-build-0.0.0-test.jar"
-retained_plugin_jar_file="plugin-0.0.0-test.jar"
+test_publication_group=software.sava
+test_publication_name=sava-build
+test_publication_version=0.0.0-test
+test_publication_coordinate="$test_publication_group:$test_publication_name:$test_publication_version"
+published_plugin_jar="$local_repo/${test_publication_group//.//}/$test_publication_name/$test_publication_version/$test_publication_name-$test_publication_version.jar"
+retained_plugin_jar_file="plugin-$test_publication_version.jar"
 canonical_receipt="$sava_build_dir/build/hardening/local-fuzz-receipt.json"
 ordinary_receipt="$sava_build_dir/build/hardening/local-fuzz-latest.json"
 plugin_expected_slug="sava-software/sava-build"
-resolution_notice="resolved every 'software.sava.build*' plugin to 0.0.0-test"
+# The notice the plugin prints for a local-repo build; LocalRepoNoticeFunctionalTest reads this
+# line and the version line, and couples the needle to both sides of the notice.
+resolution_notice="resolved every 'software.sava.build*' plugin to $test_publication_version"
 
 usage() {
   cat <<'EOF'
@@ -70,13 +76,104 @@ read_execution_plan_row() {
   IFS=$'\037' read -r -u 3 "$@"
 }
 
+# Every consumer run resolves this checkout's 0.0.0-test publication, which is unsigned, so a
+# consumer that enforces dependency verification refuses it. Lenient mode reports those
+# artifacts instead of failing; it belongs to this local-repo flow and to nothing else, so
+# unexpected_verification_failures turns any other refusal it reported into a failed run.
+# A leading --without-configuration-cache turns the cache off for the run (the discovery run,
+# which must configure to report refusals), with Gradle's own flag, since the consumers enable
+# the cache in gradle.properties; release and parallel mode otherwise turn it on.
 run_consumer_gradle() {
+  local -a flags=(--dependency-verification lenient)
+  if [ "$1" = --without-configuration-cache ]; then
+    flags=(--no-configuration-cache "${flags[@]}")
+    shift
+  elif $release_mode || [ "${parallel_targets:-1}" -gt 1 ]; then
+    flags=(--configuration-cache "${flags[@]}")
+  fi
   local gradle_executable=$1
   shift
-  if $release_mode || [ "${parallel_targets:-1}" -gt 1 ]; then
-    "$gradle_executable" --configuration-cache "$@"
-  else
-    "$gradle_executable" "$@"
+  "$gradle_executable" "${flags[@]}" "$@"
+}
+
+# Gradle's refusal report in a consumer's output: the lines from "Dependency verification
+# failed for ..." to the blank line that ends it, in either console form. After "for" Gradle
+# names what was being accessed: a configuration when one resolves, a variant when a task reads
+# a resolved artifact's file, so only the fixed prefix is matched. The scan below stays inside
+# the report, where a fuzz target's or a plugin's own output in the matched shape cannot reach;
+# a stray NUL byte in the log is dropped first so no tool takes it for binary.
+verification_report_lines() {
+  tr -d '\000' < "$1" \
+    | awk '/^Dependency verification failed for / { report = 1 }
+           report && /^[[:space:]]*$/ { report = 0 }
+           report { print }'
+}
+
+# Every module the report names, the local publication's included, one per line. Gradle's
+# default renderer writes "(group:name:version) from repository", once per artifact and
+# repository however many problems the artifact had; the verbose one
+# (org.gradle.dependency.verification.console=verbose) writes "... in repository" for one
+# problem and, for several, "(group:name:version) multiple problems reported:" with the
+# problems on their own lines below, which name the repository but not the artifact. The
+# coordinates may hold spaces and parentheses (Gradle resolves '1.0 (x)' as an exact version),
+# so the match takes a parenthesized run with one level of nesting, or one without spaces, up
+# to the keyword. A key's user ID or a module's file name can carry text in this shape too, so
+# the list may hold a coordinate no artifact failed under, which fails a run closed; what it
+# never does is miss one, and narrowing the match would let such text hide a real failure.
+refused_modules() {
+  { verification_report_lines "$1" \
+      | grep -oE '\((([^()]|\([^()]*\))+|[^ ]+)\) ((from|in) repository |multiple problems reported:)' || true; } \
+    | sed -E 's/^\((.*)\) ((from|in) repository |multiple problems reported:)$/\1/' \
+    | sort -u
+}
+
+# The modules a refused-module list holds other than this checkout's publication; prints
+# nothing when there is none. Both take the list refused_modules printed, as a string, so one
+# scan of a log serves every verdict, and so grep never ends a pipe early: under pipefail a
+# grep -q that stops reading would turn the match into a failure.
+unexpected_verification_failures() {
+  grep -vxF "$test_publication_coordinate" <<< "$1" || true
+}
+
+# Whether the list names this checkout's publication, which every consumer that verifies its
+# dependencies refuses: a verifying consumer's run without it showed no verification at all,
+# since Gradle's renderer changed or the run reused a configuration-cache entry, which reports
+# nothing, execution-time resolutions included. Text Gradle quotes from a key's user ID could
+# put the coordinate in the list without the refusal, but only inside a printed report, which
+# is itself the verification the gate asks for.
+local_publication_refused() {
+  grep -qxF "$test_publication_coordinate" <<< "$1"
+}
+
+# The policy file alone makes Gradle verify, strict by default: verify-metadata and
+# verify-signatures only widen what is checked, and a jar the file does not list is refused for
+# its missing checksum with both off, unless a rule exempts it, which a consumer never commits
+# (the README's local-repo recipe), so a verifying consumer's run without the refusal is a run
+# that did not verify.
+consumer_verifies_dependencies() {
+  [ -f "$1/gradle/verification-metadata.xml" ]
+}
+
+# The verdict both consumer runs share, printed, or nothing when the run passes. A refusal of
+# anything but this checkout's publication comes first, named with its modules on stderr and in
+# the run's evidence log ($5): it is a fact of the log whatever else happened, and the log keeps
+# the run's own failure beside it. Then that failure ($4, or empty), then a missing resolution
+# notice, which a build that ended abnormally never prints, then a verifying consumer whose
+# report lacks its own refusal.
+verification_verdict() {
+  local slug=$1 repo=$2 log=$3 own_failure=$4 evidence_log=$5 refused unexpected
+  refused=$(refused_modules "$log")
+  unexpected=$(unexpected_verification_failures "$refused")
+  if [ -n "$unexpected" ]; then
+    echo "local-fuzz: $slug — dependency verification refused: $(tr '\n' ' ' <<< "$unexpected")" \
+      | tee -a "$evidence_log" >&2
+    echo verification_failed
+  elif [ -n "$own_failure" ]; then
+    echo "$own_failure"
+  elif ! grep -qF "$resolution_notice" "$log"; then
+    echo resolution_missing
+  elif consumer_verifies_dependencies "$repo" && ! local_publication_refused "$refused"; then
+    echo verification_unreported
   fi
 }
 
@@ -1107,7 +1204,7 @@ self_test() {
   local fixture aggregate records targets projects slugs basenames count
   local path_fixture pointer_file target_receipt stale_file legacy_stale_file
   local running_entry discovered plan_probe stdin_probe symlink_file campaign_probe
-  local consumer_args_probe consumer_args_output
+  local consumer_args_probe consumer_args_output verification_output odd_case odd_line odd_expected verifying_consumer verdict
   local target_hash long_name key plugin_hash repo_key empty_path_key empty_path_sha
   local plan_rows _stolen probe_slug probe_repo probe_sha probe_origin probe_receipt_fingerprint
   local plugin_checkout consumer_checkout unavailable_checkout manifest_fixture bundle_fixture
@@ -1149,24 +1246,202 @@ self_test() {
     'for argument in "$@"; do printf "<%s>\n" "$argument"; done' > "$consumer_args_probe"
   chmod +x "$consumer_args_probe"
   consumer_args_output=$(run_consumer_gradle "$consumer_args_probe" --console=plain "space argument")
-  if [ "$consumer_args_output" != $'<--console=plain>\n<space argument>' ]; then
+  if [ "$consumer_args_output" != $'<--dependency-verification>\n<lenient>\n<--console=plain>\n<space argument>' ]; then
     echo "local-fuzz self-test: ordinary consumer arguments were: $consumer_args_output" >&2
     return 1
   fi
   parallel_targets=2
   consumer_args_output=$(run_consumer_gradle "$consumer_args_probe" --console=plain "space argument")
-  if [ "$consumer_args_output" != $'<--configuration-cache>\n<--console=plain>\n<space argument>' ]; then
+  if [ "$consumer_args_output" != $'<--configuration-cache>\n<--dependency-verification>\n<lenient>\n<--console=plain>\n<space argument>' ]; then
     echo "local-fuzz self-test: parallel ordinary consumer arguments were: $consumer_args_output" >&2
     return 1
   fi
   parallel_targets=1
   release_mode=true
   consumer_args_output=$(run_consumer_gradle "$consumer_args_probe" --console=plain "space argument")
-  if [ "$consumer_args_output" != $'<--configuration-cache>\n<--console=plain>\n<space argument>' ]; then
+  if [ "$consumer_args_output" != $'<--configuration-cache>\n<--dependency-verification>\n<lenient>\n<--console=plain>\n<space argument>' ]; then
     echo "local-fuzz self-test: release consumer arguments were: $consumer_args_output" >&2
     return 1
   fi
+  consumer_args_output=$(run_consumer_gradle --without-configuration-cache "$consumer_args_probe" --console=plain "space argument")
+  if [ "$consumer_args_output" != $'<--no-configuration-cache>\n<--dependency-verification>\n<lenient>\n<--console=plain>\n<space argument>' ]; then
+    echo "local-fuzz self-test: release discovery arguments were: $consumer_args_output" >&2
+    return 1
+  fi
   release_mode=false
+  verification_output="$path_fixture/verification-output"
+  printf '%s\n' \
+    "Dependency verification failed for configuration 'detachedConfiguration1'" \
+    '2 artifacts failed verification:' \
+    '  - sava-build-0.0.0-test.jar (software.sava:sava-build:0.0.0-test) from repository maven' \
+    '  - sava-build-0.0.0-test.module (software.sava:sava-build:0.0.0-test) from repository maven' \
+    > "$verification_output"
+  if [ -n "$(unexpected_verification_failures "$(refused_modules "$verification_output")")" ]; then
+    echo "local-fuzz self-test: the local test publication counted as an unexpected verification failure" >&2
+    return 1
+  fi
+  printf '%s\n' \
+    'One artifact failed verification: bcprov-jdk18on-1.86.jar (org.bouncycastle:bcprov-jdk18on:1.86) from repository MavenRepo' \
+    >> "$verification_output"
+  if [ "$(unexpected_verification_failures "$(refused_modules "$verification_output")")" != 'org.bouncycastle:bcprov-jdk18on:1.86' ]; then
+    echo "local-fuzz self-test: a third-party verification failure under lenient mode was not reported" >&2
+    return 1
+  fi
+  printf '%s\n' \
+    "Dependency verification failed for configuration ':probe':" \
+    "  - On artifact sava-build-0.0.0-test.jar (software.sava:sava-build:0.0.0-test) in repository 'maven': checksum is missing from verification metadata." \
+    "  - On artifact okio-3.15.0.module (com.squareup.okio:okio:3.15.0) in repository 'MavenRepo': artifact was signed with key '1D217F8475EEE9F19AB8DD6B793FD5751A0F0780' but it wasn't found in any key server so it couldn't be verified" \
+    > "$verification_output"
+  if [ "$(unexpected_verification_failures "$(refused_modules "$verification_output")")" != 'com.squareup.okio:okio:3.15.0' ]; then
+    echo "local-fuzz self-test: a verification failure in Gradle's verbose console form was not reported" >&2
+    return 1
+  fi
+  printf '%s\n' \
+    "Dependency verification failed for configuration ':probe':" \
+    '  - On artifact sava-build-0.0.0-test.jar (software.sava:sava-build:0.0.0-test) multiple problems reported:' \
+    "      - in repository 'maven': checksum is missing from verification metadata." \
+    "      - in repository 'maven': artifact was signed with key '1D217F8475EEE9F19AB8DD6B793FD5751A0F0780' but it wasn't found in any key server so it couldn't be verified" \
+    '  - On artifact untrusted-1.0.jar (org.example:untrusted:1.0) multiple problems reported:' \
+    "      - in repository 'maven': expected a 'sha256' checksum of '0000' but was '41dd'" \
+    "      - in repository 'maven': expected a 'sha512' checksum of '0000' but was '1db5'" \
+    '' \
+    'This can indicate that a dependency has been compromised. Please carefully verify the checksums.' \
+    '' \
+    'These files failed verification:' \
+    '  - GRADLE_USER_HOME/../../../tmp/review-fixture/repo/org/example/untrusted/1.0/untrusted-1.0.jar' \
+    > "$verification_output"
+  if [ "$(unexpected_verification_failures "$(refused_modules "$verification_output")")" != 'org.example:untrusted:1.0' ]; then
+    echo "local-fuzz self-test: an artifact with several problems in Gradle's verbose console form was not reported" >&2
+    return 1
+  fi
+  # Coordinates may hold parentheses and spaces: Gradle resolves '1.0(x)' and '1.0 (x)' as exact
+  # versions and prints them in every form, each line here as Gradle 9.8.2 printed it, with the
+  # coordinate it must yield before a tab.
+  for odd_case in \
+      $'org.example:untrusted:1.0(x)\tOne artifact failed verification: untrusted-1.0(x).jar (org.example:untrusted:1.0(x)) from repository maven' \
+      $'org.example:untrusted:1.0(x)\t  - On artifact untrusted-1.0(x).jar (org.example:untrusted:1.0(x)) in repository \'maven\': checksum is missing from verification metadata.' \
+      $'org.example:untrusted:1.0(x)\t  - On artifact untrusted-1.0(x).jar (org.example:untrusted:1.0(x)) multiple problems reported:' \
+      $'org.example:untrusted:1.0 x\tOne artifact failed verification: untrusted-1.0 x.jar (org.example:untrusted:1.0 x) from repository maven' \
+      $'org.example:untrusted:1.0 (x)\tOne artifact failed verification: untrusted-1.0 (x).jar (org.example:untrusted:1.0 (x)) from repository maven' \
+      $'org.example:untrusted:1.0)\tOne artifact failed verification: untrusted-1.0).jar (org.example:untrusted:1.0)) from repository maven'; do
+    odd_expected=${odd_case%%$'\t'*}
+    odd_line=${odd_case#*$'\t'}
+    printf '%s\n' "Dependency verification failed for configuration 'detachedConfiguration1'" "$odd_line" \
+      '  - sava-build-0.0.0-test.jar (software.sava:sava-build:0.0.0-test) from repository maven' \
+      > "$verification_output"
+    if [ "$(unexpected_verification_failures "$(refused_modules "$verification_output")")" != "$odd_expected" ]; then
+      echo "local-fuzz self-test: a failure on a coordinate holding a parenthesis or a space was not reported: $odd_line" >&2
+      return 1
+    fi
+  done
+  # A key's user ID or a module's file name quoted in the line can hold text in the matched
+  # shape: the real coordinate is still reported, and narrowing the match to drop the planted
+  # text would drop real failures with it.
+  printf '%s\n' \
+    "Dependency verification failed for configuration ':probe':" \
+    "  - On artifact untrusted-1.0.jar (org.example:untrusted:1.0) in repository 'maven': Artifact was signed with key 'DB7BBE5902E62A7EF144697E1DC2B689DCAE205C' (Mallory <m@example.org> (software.sava:sava-build:0.0.0-test) in repository ) and passed verification but the key isn't in your trusted keys list." \
+    'One artifact failed verification: odd(1).jar (org.example:oddfile:1.0) from repository maven' \
+    > "$verification_output"
+  if [ "$(unexpected_verification_failures "$(refused_modules "$verification_output")")" != $'org.example:oddfile:1.0\norg.example:untrusted:1.0' ]; then
+    echo "local-fuzz self-test: a verification failure was hidden by text Gradle quotes from a key's user ID or a module's file name" >&2
+    return 1
+  fi
+  # Only Gradle's report is scanned: a fuzz target's or a plugin's own line in the matched shape,
+  # outside the report or after the blank line that ends it, is not a refusal.
+  printf '%s\n' \
+    'Build ran with a plugin (local) from repository foo' \
+    "Dependency verification failed for configuration ':probe'" \
+    'One artifact failed verification: untrusted-1.0.jar (org.example:untrusted:1.0) from repository maven' \
+    '' \
+    'A fuzz target printed (org.example:noise:1.0) from repository maven' \
+    > "$verification_output"
+  if [ "$(unexpected_verification_failures "$(refused_modules "$verification_output")")" != 'org.example:untrusted:1.0' ]; then
+    echo "local-fuzz self-test: a line outside Gradle's report counted as a refusal, or one inside it did not" >&2
+    return 1
+  fi
+  # A report printed when a task reads a resolved artifact's file is headed by the variant's
+  # name, not a configuration's.
+  printf '%s\n' \
+    'Dependency verification failed for runtime' \
+    'One artifact failed verification: untrusted-1.0.jar (org.example:untrusted:1.0) from repository maven' \
+    > "$verification_output"
+  if [ "$(unexpected_verification_failures "$(refused_modules "$verification_output")")" != 'org.example:untrusted:1.0' ]; then
+    echo "local-fuzz self-test: a report headed by something other than a configuration was not scanned" >&2
+    return 1
+  fi
+  # A consumer that verifies its dependencies refuses the local publication on every run that
+  # configures; a run of such a consumer without that refusal in its report showed no
+  # verification, and the discovery gate fails it rather than pass it.
+  if local_publication_refused "$(refused_modules "$verification_output")"; then
+    echo "local-fuzz self-test: the local publication counted as refused by a report that did not name it" >&2
+    return 1
+  fi
+  printf '%s\n' \
+    "Dependency verification failed for configuration 'detachedConfiguration1'" \
+    'One artifact failed verification: sava-build-0.0.0-test.jar (software.sava:sava-build:0.0.0-test) from repository maven' \
+    >> "$verification_output"
+  if ! local_publication_refused "$(refused_modules "$verification_output")"; then
+    echo "local-fuzz self-test: the local publication's refusal was not seen in a report naming it" >&2
+    return 1
+  fi
+  verifying_consumer="$path_fixture/verifying-consumer"
+  mkdir -p "$verifying_consumer/gradle"
+  if consumer_verifies_dependencies "$verifying_consumer"; then
+    echo "local-fuzz self-test: a consumer without gradle/verification-metadata.xml counted as verifying" >&2
+    return 1
+  fi
+  : > "$verifying_consumer/gradle/verification-metadata.xml"
+  if ! consumer_verifies_dependencies "$verifying_consumer"; then
+    echo "local-fuzz self-test: a consumer with gradle/verification-metadata.xml did not count as verifying" >&2
+    return 1
+  fi
+  # The shared verdict, in its order: a refusal, the run's own failure, the missing notice, the
+  # verifying consumer's missing local refusal, and a pass.
+  printf '%s\n' \
+    "Dependency verification failed for configuration ':probe'" \
+    'One artifact failed verification: untrusted-1.0.jar (org.example:untrusted:1.0) from repository maven' \
+    '' "$resolution_notice" > "$verification_output"
+  verdict=$(verification_verdict probe "$verifying_consumer" "$verification_output" fuzz_failed "$path_fixture/evidence.log" 2>/dev/null)
+  if [ "$verdict" != verification_failed ]; then
+    echo "local-fuzz self-test: a refusal did not take precedence over the run's own failure (verdict: $verdict)" >&2
+    return 1
+  fi
+  if ! grep -qF 'dependency verification refused: org.example:untrusted:1.0' "$path_fixture/evidence.log"; then
+    echo "local-fuzz self-test: the refused modules were not written to the evidence log" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolution_notice" > "$verification_output"
+  verdict=$(verification_verdict probe "$verifying_consumer" "$verification_output" fuzz_failed "$path_fixture/evidence.log")
+  if [ "$verdict" != fuzz_failed ]; then
+    echo "local-fuzz self-test: the run's own failure was not the verdict of a clean log (verdict: $verdict)" >&2
+    return 1
+  fi
+  : > "$verification_output"
+  verdict=$(verification_verdict probe "$verifying_consumer" "$verification_output" "" "$path_fixture/evidence.log")
+  if [ "$verdict" != resolution_missing ]; then
+    echo "local-fuzz self-test: a log without the resolution notice was not resolution_missing (verdict: $verdict)" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolution_notice" > "$verification_output"
+  verdict=$(verification_verdict probe "$verifying_consumer" "$verification_output" "" "$path_fixture/evidence.log")
+  if [ "$verdict" != verification_unreported ]; then
+    echo "local-fuzz self-test: a verifying consumer without its local refusal was not verification_unreported (verdict: $verdict)" >&2
+    return 1
+  fi
+  verdict=$(verification_verdict probe "$path_fixture" "$verification_output" "" "$path_fixture/evidence.log")
+  if [ -n "$verdict" ]; then
+    echo "local-fuzz self-test: a non-verifying consumer's clean run did not pass (verdict: $verdict)" >&2
+    return 1
+  fi
+  printf '%s\n' \
+    "Dependency verification failed for configuration 'detachedConfiguration1'" \
+    "One artifact failed verification: sava-build-0.0.0-test.jar ($test_publication_coordinate) from repository maven" \
+    '' "$resolution_notice" > "$verification_output"
+  verdict=$(verification_verdict probe "$verifying_consumer" "$verification_output" "" "$path_fixture/evidence.log")
+  if [ -n "$verdict" ]; then
+    echo "local-fuzz self-test: a verifying consumer's run with its local refusal did not pass (verdict: $verdict)" >&2
+    return 1
+  fi
   fixture="$path_fixture/fixture"
   aggregate="$path_fixture/aggregate"
   records="$path_fixture/records"
@@ -2183,31 +2458,36 @@ while read_execution_plan_row slug repo pre_sha pre_origin pre_receipt_fingerpri
   fi
 
   if [ "$repo_result" = passed ]; then
-    if ! (cd "$repo" && run_consumer_gradle ./gradlew --console=plain \
+    # Without the configuration cache: lenient mode stores an entry from a refused resolution,
+    # which a rerun would reuse with no report at all, so this run always configures and must
+    # show a verifying consumer's refusal of the local publication. Whatever the verdict, the
+    # receipt row keeps the targets discovery found.
+    discovery_failure=""
+    if ! (cd "$repo" && run_consumer_gradle --without-configuration-cache ./gradlew --console=plain \
         -PsavaBuildLocalRepo="$local_repo" tasks --all) \
         3<&- > "$out_file" 2>&1; then
-      repo_result=task_discovery_failed
+      discovery_failure=task_discovery_failed
+    fi
+    fuzz_projects=$(registered_fuzz_projects "$out_file")
+    targets=$(registered_fuzz_tasks "$out_file")
+    aggregate_present=false
+    if [ -n "$fuzz_projects" ]; then aggregate_present=true; fi
+    verdict=$(verification_verdict "$slug" "$repo" "$out_file" "$discovery_failure" "$log_path")
+    if [ -n "$verdict" ]; then
+      repo_result=$verdict
+    elif $release_mode && ! $aggregate_present; then
+      repo_result=fuzz_all_missing
+    elif $release_mode && [ -z "$targets" ]; then
+      repo_result=no_registered_targets
+    elif $aggregate_present; then
+      tasks=fuzzAll
+      task_mode=aggregate
+    elif [ -n "$targets" ]; then
+      tasks=$targets
+      task_mode=discovered_fallback
     else
-      fuzz_projects=$(registered_fuzz_projects "$out_file")
-      targets=$(registered_fuzz_tasks "$out_file")
-      aggregate_present=false
-      if [ -n "$fuzz_projects" ]; then aggregate_present=true; fi
-      if ! grep -qF "$resolution_notice" "$out_file"; then
-        repo_result=resolution_missing
-      elif $release_mode && ! $aggregate_present; then
-        repo_result=fuzz_all_missing
-      elif $release_mode && [ -z "$targets" ]; then
-        repo_result=no_registered_targets
-      elif $aggregate_present; then
-        tasks=fuzzAll
-        task_mode=aggregate
-      elif [ -n "$targets" ]; then
-        tasks=$targets
-        task_mode=discovered_fallback
-      else
-        tasks=help
-        task_mode=no_targets
-      fi
+      tasks=help
+      task_mode=no_targets
     fi
     cat "$out_file" >> "$log_path"
   fi
@@ -2216,12 +2496,17 @@ while read_execution_plan_row slug repo pre_sha pre_origin pre_receipt_fingerpri
     echo "local-fuzz: $slug@$repo_sha — $task_mode; ${targets:-no registered targets}"
     task_args=()
     while IFS= read -r task; do [ -n "$task" ] && task_args+=("$task"); done <<< "$tasks"
+    # The campaign keeps the configuration cache. It follows this run's publish, whose
+    # provenance sidecar invalidates the consumer's entry, so it configures and resolves afresh;
+    # a reused entry would report nothing, execution-time resolutions included, so a verifying
+    # consumer must show the local refusal here too.
+    campaign_failure=""
     if ! run_consumer_fuzz_campaign "$repo" "$out_file" \
         "$pre_receipt_fingerprint" "${task_args[@]}"; then
-      repo_result=fuzz_failed
-    elif ! grep -qF "$resolution_notice" "$out_file"; then
-      repo_result=resolution_missing
+      campaign_failure=fuzz_failed
     fi
+    verdict=$(verification_verdict "$slug" "$repo" "$out_file" "$campaign_failure" "$log_path")
+    if [ -n "$verdict" ]; then repo_result=$verdict; fi
     cat "$out_file" >> "$log_path"
   fi
 

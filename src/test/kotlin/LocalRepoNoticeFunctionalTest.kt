@@ -431,8 +431,12 @@ class LocalRepoNoticeFunctionalTest {
     // to both sides of the notice so a wording change cannot reject healthy local
     // resolutions or accept a published one.
     val script = savaBuildRootFile("tools/local-fuzz.sh").readText()
-    val needle = Regex("(?m)^resolution_notice=\"([^\"]+)\"").find(script)?.groupValues?.get(1)
-      ?: error("resolution_notice line not found in tools/local-fuzz.sh")
+    val version = Regex("(?m)^test_publication_version=(\\S+)$").find(script)?.groupValues?.get(1)
+      ?: error("test_publication_version line not found in tools/local-fuzz.sh")
+    val needle = (
+      Regex("(?m)^resolution_notice=\"([^\"]+)\"").find(script)?.groupValues?.get(1)
+        ?: error("resolution_notice line not found in tools/local-fuzz.sh")
+      ).replace("\$test_publication_version", version)
 
     writeFixture()
     val resolving = runBuild("help", "-PsavaBuildLocalRepo=$localRepo")
