@@ -564,6 +564,21 @@ val shellSyntax = tasks.register<Exec>("shellSyntax") {
 }
 tasks.check { dependsOn(shellSyntax) }
 
+// The Java under tools runs by hand (VerificationControls after a wrapper bump, with java
+// --source 25); nothing else would compile it, so a JDK API change or a typo would surface at
+// the bump. The build's own JVM compiles it: the fleet builds on 25.
+val compileTools = tasks.register<JavaCompile>("compileTools") {
+  group = "verification"
+  description = "Compiles the Java programs under tools, which run by hand with java --source."
+  source(layout.projectDirectory.dir("tools").asFileTree.matching { include("*.java") })
+  classpath = files()
+  destinationDirectory.set(layout.buildDirectory.dir("tools/classes"))
+  options.release.set(25)
+  // a 25 compiler among the installed JDKs, whichever JVM runs the build: the fleet builds on 25
+  javaCompiler.set(javaToolchains.compilerFor { languageVersion.set(JavaLanguageVersion.of(25)) })
+}
+tasks.check { dependsOn(compileTools) }
+
 // Local fuzz evidence replaced scheduled fuzz workflows, so its self-test belongs on the
 // ordinary plugin check.
 val localFuzzSelfTest = tasks.register<Exec>("localFuzzSelfTest") {
@@ -654,8 +669,9 @@ java {
 }
 
 // Consumers load this plugin in their own Gradle daemon, so its floor must not follow the JDK
-// this build runs on: Java 21 bytecode, compiled against the Java 21 API.
-tasks.withType<JavaCompile>().configureEach { options.release = 21 }
+// this build runs on: Java 21 bytecode, compiled against the Java 21 API. The Java under tools
+// runs by hand on 25 and keeps compileTools' own release.
+tasks.withType<JavaCompile>().configureEach { if (name != "compileTools") options.release = 21 }
 kotlin.compilerOptions {
   jvmTarget = JvmTarget.JVM_21
   freeCompilerArgs.add("-Xjdk-release=21")
