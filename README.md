@@ -454,50 +454,173 @@ Signature checking is deliberately **not** a convention plugin: Gradle's built-i
 [dependency verification](https://docs.gradle.org/current/userguide/dependency_verification.html)
 enforces signatures at resolution time — before any resolved code (including settings
 plugins like sava-build itself) can run — and it is configured by a file Gradle reads
-directly, on purpose outside the reach of plugins. To adopt it in a consumer repository:
+directly, on purpose outside the reach of plugins. What the policy cannot cover: the wrapper
+distribution, which `distributionSha256Sum` in `gradle/wrapper/gradle-wrapper.properties`
+pins separately, JDK downloads, GitHub Actions and shell downloads. A verified artifact is
+the publisher's, not necessarily free of vulnerabilities: keep patching dependencies.
+
+### The policy and what it trusts
+
+A repository's policy is `gradle/verification-metadata.xml`, with the public keys it names
+in `gradle/verification-keyring.keys`, both under the root `gradle/`. Gradle reads only the
+invoking build's `gradle/` directory, so a standalone build in the repository, a directory
+with a settings script of its own such as sava's `jmh/` and `soak/`, holds symlinks to the
+two files; an included build is covered by the build that includes it. A Docker image build
+copies the two files together, and a deny-by-default `.gitignore` needs allow-rules for them,
+or git drops the policy without a word.
+
+The policy trusts, and nothing else:
+
+- **Publisher keys**, each for the group or module it signs and for no version, so a release
+  signed by the same key passes without an edit. Confirm a fingerprint from the publisher
+  (its KEYS file, README or site), never from a key server alone; many of these keys also
+  appear in gradle/gradle's own policy. The sava key is trusted for `software.sava` and its
+  subgroups:
+
+  ```xml
+  <trusted-key id="01870AD9C9DFBB1F3502D06FB89447F3AD5E2ABF" group="^software[.]sava($|([.].*))" regex="true"/>
+  ```
+
+- **Keys listed in `gradle/verification/version-scoped-keys.txt`**, one key per line with
+  the reason, trusted only at the exact versions in the policy: the PIT and ArcMutate
+  signers, whose publisher identity no publisher-published fingerprint, GitHub-registered key
+  or verified key-server identity authenticates, and expired, DSA-1024 and retired release
+  managers' keys that signed old releases in the graph and must not vouch for new ones. A
+  tool bump moves the version after the release is checked; a new release under any other
+  listed key is a reason to stop and find out why an old key signed it. Every repository
+  with a policy has the file, comments alone when no key is version-scoped.
+- **SHA-256 checksums** for artifacts that are not signed, such as the jmh plugin, the
+  `org.gradle.kotlin.kotlin-dsl` plugin marker the wrapper embeds (its pin moves with a
+  wrapper bump) and the antlr libraries PIT depends on, each reviewed before it is pinned.
+- Key servers are off (`<key-servers enabled="false"/>`), so keys come only from the
+  committed keyring; `verify-metadata` and `verify-signatures` are true and `keyring-format`
+  armored; there are no ignored keys and no `trusted-artifacts` exemptions.
+
+Start a repository from the keys this repository and sava trust, never from a bulk copy of a
+policy, since every graph differs: ArcMutate appears only where `arcmutate-licence.txt`
+exists, and a cold cache fetches BOM and parent POMs a warm one has.
+
+### Adopting and updating
+
+1. Run the change through every build of the repository; CI runs only the root one:
+
+   ```bash
+   ./gradlew --no-configuration-cache check resolveVerificationTools
+   ```
+
+   Without the configuration cache: a reused entry resolves nothing, and so verifies nothing.
+   `resolveVerificationTools`, registered by the [hardening feature](#project-plugins) in
+   each hardened project, resolves the PIT, ArcMutate and Jazzer artifacts that only the
+   mutation and fuzz tasks resolve, so `check` covers them without a campaign; without it a
+   repository first meets an unverified tool artifact at its pre-push mutation gate or a fuzz
+   run. A repository with no hardened project runs `check` alone. ArcMutate is on that
+   classpath only where `arcmutate-licence.txt` is present, so run this step on a licensed
+   machine, or the ArcMutate rule goes unexercised until a licensed `pitest<Suite>` gate
+   refuses the bump. Run a standalone build's own tasks too (`./gradlew -p jmh jmhJar`, in
+   sava).
+
+2. A "Dependency verification failed" report names each refused artifact and the reason.
+   - **A PIT or ArcMutate bump**: check the release, then change the `version` on that key's
+     rule.
+   - **A new release signed by any other key in `version-scoped-keys.txt`**: stop; do not
+     extend its version. An existing old release that a dependency change brings into the
+     graph under one of these keys can be added as another exact version once checked.
+   - **A new signing key**: confirm the fingerprint from the publisher, then add a
+     `trusted-key` scoped to the publisher's group or module, and its public key to the
+     keyring.
+   - **An unsigned artifact**: review it, then pin its SHA-256 in a `component` entry.
+
+3. Gradle can draft these entries. Run it online, on a clean tree, from the checkout root
+   (from a standalone build it replaces the keyring symlink with a copy; with `--offline`
+   Gradle 9.8.2 pinned POMs whose cached signatures it did not consult), then keep only what
+   you reviewed:
+
+   ```bash
+   ./gradlew --no-configuration-cache --write-verification-metadata pgp,sha256 --export-keys \
+     build resolveVerificationTools
+   ```
+
+   The result is a candidate, never the reviewed policy. On a tool bump it widens the
+   version-scoped key to every version, and it can narrow a publisher key to the one version
+   it saw, as a rule with a version or as a per-artifact `<pgp>` entry; it writes an
+   `<ignored-keys>` fallback, with checksums, for a key it cannot find, after which that
+   signature is never checked; it never removes a stale entry; and it may consult a key
+   server while writing, so authenticate any key it adds. `--export-keys` writes only the
+   keys the resulting metadata references, so an export after a prune drops the pruned
+   entries' keys. The committed files should be Gradle's own output for the graph, so that a
+   regeneration with no dependency change is a no-op and any diff is a change to review.
+
+4. A warm cache can hide parent-POM metadata that a cold one fetches. Validate a new parent
+   or BOM once with an empty `GRADLE_USER_HOME`: copy only the `org.gradle.java.*` lines of
+   your `gradle.properties`, and pass package credentials as `ORG_GRADLE_PROJECT_*`
+   environment variables. Offline use needs an online run first; cached signature files
+   alone do not prove an offline run can resolve them.
+
+5. Sync IntelliJ as well, with download sources on. It resolves artifacts through the same
+   policy that no command-line build does: the Gradle sources zip, which Gradle Inc.'s
+   publishing key (`EA96F38569C044AAEF7FCF732887F479B0B9771A`, signing subkey
+   `51FBF517CE6D6B80`) covers under a `gradle:gradle` rule, Groovy's sources and module
+   under the `org.apache.groovy` key, and unsigned plugin sources jars, pinned with their
+   plugin. A refusal shows in the sync output; the IDE reloads only after a build-script
+   change that is not a comment, and failures land in
+   `~/.gradle/daemon/<version>/daemon-<pid>.out.log`.
+
+### The guard
+
+Once a repository has a policy, the settings plugin guards it: `verificationPolicy`,
+registered on the root project with every project's `check` and `qualityGate` depending on
+it, fails when the policy breaks the rules above. Each of the four settings must be one
+active `<configuration>` element written exactly; there are no ignored keys,
+`trusted-artifacts` exemptions, per-artifact `<pgp>` entries, `md5` or `sha1` pins, or
+`component` pins of `0.0.0-test`, which a regeneration run with `-PsavaBuildLocalRepo`
+writes; every `trusted-key` rule names a group, trusts no file, and uses no regex but the
+one Gradle writes for a group of at least two segments and its subgroups; a key listed in
+`version-scoped-keys.txt` is trusted only at exact versions and an unlisted key never at a
+version; a listed key no rule uses is a stale line; no committed `gradle.properties`, in the
+root or in a standalone build, relaxes the mode; and a standalone build, a direct child
+directory with a settings script of its own, included by the root or not, holds the two
+files as symlinks to the root's, since a build invoked directly reads only its own
+`gradle/`; a child holding a `.git` entry is another checkout, not a build of this one. A
+standalone build that applies the settings plugin itself gets a guard of its own, which
+follows its policy link into its parent directory's build and runs the rules there; a link
+anywhere else, a dangling one, or a linker that guard would never discover is refused. The
+task reads the checkout as it is, the committed files and the direct child directories'
+settings scripts, so a scratch project inside the root is seen too unless it is a clone with
+a `.git` of its own; a mode passed on the command line or set in `~/.gradle` is beyond it,
+as is the configuration cache, which Gradle reuses across `--dependency-verification`
+changes. CI warns, through sava-build's root action, when a repository has no policy or a
+committed `gradle.properties` relaxes the mode; it becomes an error once the fleet carries
+policies. A repository whose existing policy breaks the rules fails `check` on adoption:
+bring the policy into line first, starting from the fleet's keys.
+
+### Unpublished sava-build
+
+The `0.0.0-test` artifacts that `-PsavaBuildLocalRepo` resolves are unsigned local build
+output, so a strict policy refuses them at settings-plugin resolution. Pass
+`--dependency-verification lenient` with the property, for that flow only; it reports the
+refusals instead of failing, and `tools/local-fuzz.sh` passes it for every consumer run and
+fails the run if anything else is refused. Never add trust for `0.0.0-test` to a policy, and
+never put `org.gradle.dependency.verification` in a committed or a user-wide
+`gradle.properties`: the first `verificationPolicy` refuses, the second relaxes every build
+on the machine where no guard can see it. See [Local adoption and releasing](#local-adoption-and-releasing).
+
+### Engine controls
+
+`tools/VerificationControls.java` exercises Gradle's verification engine itself, with
+disposable keys, artifacts and a loopback repository: checksum and signature refusals,
+untrusted and missing keys, key scoping, artifact-level pins, policy ownership in composite
+builds, and refusal before settings code runs. Re-run it after a Gradle wrapper bump, from
+any checkout, with a JDK 25 or newer, GnuPG and that checkout's wrapper distribution
+installed:
 
 ```bash
-./gradlew --write-verification-metadata pgp,sha256 --export-keys build resolveVerificationTools
+java --source 25 tools/VerificationControls.java --checkout <checkout> --work-dir <new directory>
 ```
 
-`resolveVerificationTools`, registered by the [hardening feature](#project-plugins), resolves the
-PIT, ArcMutate and Jazzer artifacts that only the mutation and fuzz tasks resolve, so the
-regeneration, and a later `./gradlew check resolveVerificationTools`, cover them without a
-campaign; without it a consumer first meets an unverified tool artifact at its pre-push
-mutation gate or a fuzz run. Then review the generated `gradle/verification-metadata.xml`, commit it with the exported
-keyring under `gradle/`, disable key servers in it (`<key-servers enabled="false"/>` under
-`<configuration>`, as this repository's file does; Gradle otherwise still asks a key server
-for any key the keyring lacks), and trust the sava key for sava artifacts, e.g.:
-
-```xml
-<trusted-key id="01870AD9C9DFBB1F3502D06FB89447F3AD5E2ABF" group="^software[.]sava($|([.].*))" regex="true"/>
-```
-
-Once a repository has a policy, the settings plugin guards it: `verificationPolicy`, registered
-on the root project with every project's `check` and `qualityGate` depending on it, fails when
-the policy breaks the fleet's rules. Each of the four settings must be one active
-`<configuration>` element written exactly; there are no ignored keys, `trusted-artifacts`
-exemptions or per-artifact `<pgp>` entries; every `trusted-key` rule names a group, trusts no
-file, and uses no regex but the one Gradle writes for a group and its subgroups; a key listed in
-`gradle/verification/version-scoped-keys.txt` (one key per line with the reason it stays
-version-scoped, which every repository with a policy supplies, comments alone when no key is)
-is trusted only at exact versions and an unlisted key never at a version; a listed key no rule
-uses is a stale line; no committed `gradle.properties`, in the root or in a standalone build,
-relaxes the mode; and a standalone build, a direct child directory with a settings script of
-its own that the root build does not include, holds `gradle/verification-metadata.xml` and the
-keyring as symlinks to the root's, since Gradle reads only the invoking build's `gradle/`. The
-task reads committed files only: a mode passed on the command line or set in `~/.gradle` is
-beyond it.
-
-The build classpath of a consumer repository resolves roughly the same third-party
-plugins as sava-build itself, so this repository's
-[gradle/verification-metadata.xml](gradle/verification-metadata.xml) `<trusted-keys>`
-section is a reviewed starting point for those entries. Keep the generated sha256 entries
-for unsigned artifacts, and regenerate with the same command after dependency bumps. A bump
-whose signer the keyring lacks needs a key server for that one regeneration (enable the
-element for the run, or add the key to the keyring by hand): without one Gradle records
-checksums for the artifact and its key under `<ignored-keys>`, and the signature is never
-checked again.
+It uses private Gradle and GnuPG homes (the GnuPG home under `/tmp`, where an agent socket
+path fits the limit), passes child processes an allow-listed environment, reads no
+credentials, writes no shared cache, and takes about a minute. It tests the engine, not a
+repository's policy; `verificationPolicy` and the builds above do that.
 
 ## Developing sava-build
 
@@ -659,20 +782,26 @@ When changing dependencies, regenerate the
 [verification metadata](gradle/verification-metadata.xml):
 
 ```shell
-./gradlew --write-verification-metadata pgp,sha256 --export-keys check generatePrecompiledScriptPluginAccessors
+./gradlew --no-configuration-cache --write-verification-metadata pgp,sha256 --export-keys \
+  check generatePrecompiledScriptPluginAccessors
 ```
 
-The result is a candidate, never the policy: review it against the trust rules of
-[Verifying sava artifacts](#verifying-sava-artifacts) before committing. What a regeneration
-cannot know about this repository's policy, which it strips of comments on every write:
+The result is a candidate, never the policy: review it against
+[Verifying sava artifacts](#verifying-sava-artifacts), whose rules this repository's own
+policy keeps (`VerificationPolicySelfTest` runs them against it, since the build cannot apply
+the plugin it compiles to itself), and validate it as [Adopting and
+updating](#adopting-and-updating) step 1 says, without the configuration cache: a reused entry
+resolves nothing, and so verifies nothing. What a regeneration cannot know about this policy,
+which it strips of comments on every write:
 
 - The committed files are byte-identical to Gradle's output for the current graph, so a
   regeneration with no dependency change is a no-op; a diff is a change to review. Run it
   online: with `--offline`, Gradle 9.8.2 wrote SHA-256 pins for POMs whose cached signatures
   it did not consult. Regeneration never prunes a stale entry, and `--export-keys` writes
-  only the keys the resulting metadata references, so an export after a prune drops the
-  pruned entries' keys; prune by hand against a from-scratch regeneration, and confirm the
-  keyring's key set afterwards.
+  every key Gradle met while verifying, referenced by a rule or not (a key in the keyring
+  grants nothing; the trust is the metadata's), so an export after a prune drops the keys
+  only the pruned entries used; prune by hand against a from-scratch regeneration, and
+  confirm the keyring's key set afterwards.
 - The unsigned `org.gradle.kotlin.kotlin-dsl` plugin marker is pinned by SHA-256 at the
   version the wrapper embeds (9.7.1 took 6.7.3, 9.8.x takes 6.7.6): a wrapper bump moves it,
   failing with "Dependency verification failed ... kotlin-dsl.gradle.plugin-<v>.pom", so
