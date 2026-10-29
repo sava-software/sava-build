@@ -423,7 +423,14 @@ val rootFilesReadByTests = listOf(
   "arcmutate-licence.txt",
   localFuzzScriptPath,
   "src/main/kotlin/software.sava.build.feature.hardening.gradle.kts",
-  "src/test/kotlin"
+  "src/test/kotlin",
+  // this repository's own dependency verification policy, which VerificationPolicySelfTest
+  // holds to the rules and VerificationPolicyFunctionalTest drives a fixture with
+  "gradle/verification-metadata.xml",
+  "gradle/verification-keyring.keys",
+  "gradle/verification/version-scoped-keys.txt",
+  // whose mode rule reads the committed properties
+  "gradle.properties",
 )
 
 // guardTest, through guardFile: the actions whole, docs included, whose programs and scripts the
@@ -488,6 +495,11 @@ tasks.test {
     }
   )
   declareReads("savaBuild.rootFiles", rootFilesReadByTests)
+  // VerificationPolicySelfTest discovers this checkout's standalone builds from its child
+  // directories' settings scripts, so their set is an input: a new one re-runs the test.
+  inputs.files(fileTree(layout.projectDirectory) { include("*/settings.gradle", "*/settings.gradle.kts") })
+    .withPropertyName("savaBuild.childSettingsScripts")
+    .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 // The composite actions under .github/actions carry Java programs: a composite action runs

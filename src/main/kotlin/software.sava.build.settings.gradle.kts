@@ -13,7 +13,11 @@ gradle.beforeProject(org.gradle.api.Action<org.gradle.api.Project> {
     pluginManager.apply(
       software.sava.build.hardening.HardeningCertificationRootPlugin::class.java
     )
+    // The dependency verification policy guard, once per build on the root, with every
+    // project's check and qualityGate depending on it (README: Verifying sava artifacts).
+    pluginManager.apply(software.sava.build.verification.VerificationPolicyRootPlugin::class.java)
   }
+  pluginManager.apply(software.sava.build.verification.VerificationPolicyCheckPlugin::class.java)
 })
 
 // Announces a build running plugins from a local sava-build checkout instead of a

@@ -473,6 +473,22 @@ for any key the keyring lacks), and trust the sava key for sava artifacts, e.g.:
 <trusted-key id="01870AD9C9DFBB1F3502D06FB89447F3AD5E2ABF" group="^software[.]sava($|([.].*))" regex="true"/>
 ```
 
+Once a repository has a policy, the settings plugin guards it: `verificationPolicy`, registered
+on the root project with every project's `check` and `qualityGate` depending on it, fails when
+the policy breaks the fleet's rules. Each of the four settings must be one active
+`<configuration>` element written exactly; there are no ignored keys, `trusted-artifacts`
+exemptions or per-artifact `<pgp>` entries; every `trusted-key` rule names a group, trusts no
+file, and uses no regex but the one Gradle writes for a group and its subgroups; a key listed in
+`gradle/verification/version-scoped-keys.txt` (one key per line with the reason it stays
+version-scoped, which every repository with a policy supplies, comments alone when no key is)
+is trusted only at exact versions and an unlisted key never at a version; a listed key no rule
+uses is a stale line; no committed `gradle.properties`, in the root or in a standalone build,
+relaxes the mode; and a standalone build, a direct child directory with a settings script of
+its own that the root build does not include, holds `gradle/verification-metadata.xml` and the
+keyring as symlinks to the root's, since Gradle reads only the invoking build's `gradle/`. The
+task reads committed files only: a mode passed on the command line or set in `~/.gradle` is
+beyond it.
+
 The build classpath of a consumer repository resolves roughly the same third-party
 plugins as sava-build itself, so this repository's
 [gradle/verification-metadata.xml](gradle/verification-metadata.xml) `<trusted-keys>`
