@@ -642,6 +642,38 @@ When changing dependencies, regenerate the
 ./gradlew --write-verification-metadata pgp,sha256 --export-keys check generatePrecompiledScriptPluginAccessors
 ```
 
+The result is a candidate, never the policy: review it against the trust rules of
+[Verifying sava artifacts](#verifying-sava-artifacts) before committing. What a regeneration
+cannot know about this repository's policy, which it strips of comments on every write:
+
+- The committed files are byte-identical to Gradle's output for the current graph, so a
+  regeneration with no dependency change is a no-op; a diff is a change to review. Run it
+  online: with `--offline`, Gradle 9.8.2 wrote SHA-256 pins for POMs whose cached signatures
+  it did not consult. Regeneration never prunes a stale entry, and `--export-keys` writes
+  only the keys the resulting metadata references, so an export after a prune drops the
+  pruned entries' keys; prune by hand against a from-scratch regeneration, and confirm the
+  keyring's key set afterwards.
+- The unsigned `org.gradle.kotlin.kotlin-dsl` plugin marker is pinned by SHA-256 at the
+  version the wrapper embeds (9.7.1 took 6.7.3, 9.8.x takes 6.7.6): a wrapper bump moves it,
+  failing with "Dependency verification failed ... kotlin-dsl.gradle.plugin-<v>.pom", so
+  replace that pin in the commit that bumps `distributionSha256Sum`.
+- `org.gradle:github-dependency-graph-gradle-plugin` is resolved only by the
+  dependency-submission workflow's init script, which no command-line regeneration sees:
+  keep its `trusted-key` rule and its key in the keyring, and validate a change with the
+  strict dependency-graph generation that workflow runs as well as with `check`.
+- `org.jetbrains.kotlinx` is trusted group-wide on purpose: `kotlin-gradle-plugin` floats to
+  new patch releases, and a cold cache fetches BOM and parent POMs that a warm-cache
+  regeneration narrows away. Publisher keys are version-free for the same reason, so a
+  `dependency-analysis-gradle-plugin` bump that moves `caffeine` or `jspecify` needs no edit.
+- The keys in [gradle/verification/version-scoped-keys.txt](gradle/verification/version-scoped-keys.txt)
+  are trusted only at the exact versions in the policy, each for the reason the file gives:
+  expired keys, DSA-1024 keys and retired release managers' keys that signed old releases in
+  the graph and must not vouch for new ones. A regeneration that widens one of them, or that
+  narrows a publisher key to the one version it saw, is a change to refuse.
+- IntelliJ's sync, with download sources on, resolves artifacts no command-line build does:
+  the Gradle sources zip, which Gradle Inc.'s publishing key covers, Groovy's sources under
+  its group key, and the jmh plugin's unsigned sources jar, pinned with the plugin.
+
 The root build constrains Kotlin's isolated Bouncy Castle publishing-helper dependencies
 to at least 1.86, addressing [the name-constraints bypass](https://github.com/advisories/GHSA-9pwp-9qqc-pr26)
 and [the lazy ASN.1 depth-limit bypass](https://github.com/advisories/GHSA-qp49-qgx5-5m26).
