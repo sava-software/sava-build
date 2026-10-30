@@ -291,9 +291,9 @@ class HardeningRatchetPruneFunctionalTest : HardeningRatchetFunctionalFixture() 
 
     val output = rawBaselinePruneRunner().build().output
     assertTrue(
-        output.contains("prune pairs kept siblings by fallback for 1 key(s)") &&
-            output.contains("paired by nearest recorded line, ties in file order") &&
-            output.contains("The fallback-paired rows at 1 of these key(s) carry different family labels") &&
+        output.contains("prune chose among kept siblings at 1 key(s)") &&
+            output.contains("paired by least total squared line distance over the key") &&
+            output.contains("The rows the pairing chose among at 1 of these key(s) carry different family labels") &&
             output.contains("  $key"),
         output,
     )

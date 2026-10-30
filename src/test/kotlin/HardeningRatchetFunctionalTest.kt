@@ -207,12 +207,12 @@ class HardeningRatchetFunctionalTest : HardeningRatchetFunctionalFixture() {
     ), "")
 
     val output = baselineRetagRunner().build().output
-    assertTrue(output.contains("ambiguous same-key sibling fallback for 1 key(s)") &&
-        output.contains("paired by nearest recorded line, ties in file order") &&
+    assertTrue(output.contains("retag chose among siblings at 1 key(s)") &&
+        output.contains("paired by least total squared line distance over the key") &&
         output.contains("this does not establish physical mutant identity") &&
         output.contains("Review the README pointers and resulting line tags"), output)
     assertTrue(output.contains(
-        "The fallback-paired rows at 1 of these key(s) carry different family labels"), output)
+        "The rows the pairing chose among at 1 of these key(s) carry different family labels"), output)
     assertTrue(output.substringAfterLast("hardening: ")
         .contains("1 ambiguous retag sibling key(s), 1 with differing labels"), output)
     assertEquals("$key # first argument # line 10\n$key # second argument # line 50\n",

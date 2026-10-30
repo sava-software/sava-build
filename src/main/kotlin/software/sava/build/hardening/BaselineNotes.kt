@@ -345,13 +345,13 @@ internal object BaselineNotes {
   }
 
   /**
-   * The clause a writer appends when fallback-paired siblings carry different family
-   * labels: the one case where the pairing changes what a row claims, so the rows at
-   * these keys need a reader's eye before the rewrite is committed.
+   * The clause a writer appends when the siblings a pairing chose among carry different
+   * family labels: the one case where the pairing changes what a row claims, so the rows
+   * at these keys need a reader's eye before the rewrite is committed.
    */
   fun differingLabelFallbackDetail(keys: List<String>): String =
       if (keys.isEmpty()) "" else
-        "\n  The fallback-paired rows at ${keys.size} of these key(s) carry different family " +
+        "\n  The rows the pairing chose among at ${keys.size} of these key(s) carry different family " +
             "labels, so a label may now sit on another construct's line; re-read each row's " +
             "README argument against its line before committing:\n" +
             keys.joinToString("\n") { "  $it" }

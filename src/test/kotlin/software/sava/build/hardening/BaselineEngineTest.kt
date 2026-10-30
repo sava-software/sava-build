@@ -54,21 +54,53 @@ class BaselineEngineTest {
     return search(0, 0)
   }
 
-  /** The file-order exact matcher that the augmenting-path allocator superseded. */
-  private fun greedyExactAffinity(
+  /**
+   * The least cost of any pairing of exactly `min(rows, copies)` pairs, by exhaustive search:
+   * the oracle for the joint pairing, on the engine's own cost and penalties.
+   */
+  private fun leastPairingCost(rows: List<BaselineNotes.Row>, observedLines: List<String>): Long {
+    val copies = observedLines.map { it.toIntOrNull() }
+    val liveLines = copies.filterNotNullTo(HashSet())
+    val pairs = minOf(rows.size, copies.size)
+    var best = Long.MAX_VALUE
+    val used = BooleanArray(copies.size)
+    fun search(row: Int, taken: Int, soFar: Long) {
+      if (row == rows.size) {
+        if (taken == pairs) best = minOf(best, soFar)
+        return
+      }
+      for (c in copies.indices) {
+        if (used[c]) continue
+        used[c] = true
+        search(row + 1, taken + 1, soFar + BaselineEngine.pairingCost(rows[row], copies[c]))
+        used[c] = false
+      }
+      search(row + 1, taken, soFar + BaselineEngine.unpairedPenalty(rows[row], liveLines))
+    }
+    search(0, 0, 0L)
+    return best
+  }
+
+  /** The cost of the pairing a rewrite shows: its written lines for the rows it kept, the penalty for each row it dropped. */
+  private fun writtenPairingCost(
     rows: List<BaselineNotes.Row>,
     observedLines: List<String>,
-  ): Int {
-    val usedRows = HashSet<Int>()
-    return observedLines.map { it.toIntOrNull() }
-        .sortedWith(nullsLast(naturalOrder()))
-        .count { line ->
-          if (line == null) return@count false
-          val match = rows.indices.firstOrNull {
-            it !in usedRows && line in rows[it].recordedLines
-          }
-          match != null && usedRows.add(match)
-        }
+    written: List<String>,
+    sourceByNote: Map<String?, BaselineNotes.Row>,
+  ): Long {
+    val liveLines = observedLines.mapNotNullTo(HashSet()) { it.toIntOrNull() }
+    val kept = HashMap<BaselineNotes.Row, Int?>()
+    written.forEach { rendered ->
+      val output = BaselineNotes.parse(rendered)
+      val source = sourceByNote[output.note] ?: return@forEach
+      kept[source] = output.recordedLines.singleOrNull()
+    }
+    val consumed = kept.values.filterNotNull().groupingBy { it }.eachCount()
+    val available = liveLines.associateWith { line -> observedLines.count { it == line.toString() } }
+    consumed.forEach { (line, count) -> assertTrue(count <= (available[line] ?: 0), "line $line written more often than observed") }
+    return rows.sumOf { row ->
+      if (row in kept) BaselineEngine.pairingCost(row, kept[row]) else BaselineEngine.unpairedPenalty(row, liveLines)
+    }
   }
 
   private fun exactAffinityInWrittenRows(
@@ -225,32 +257,34 @@ class BaselineEngineTest {
   }
 
   @Test
-  fun `assignment reaches maximum exact affinity over wider random graphs`() {
+  fun `assignment reaches the least pairing cost over wider random graphs`() {
     val key = "com.example.Codec,encode,MathMutator,SURVIVED"
-    var displacementCases = 0
-    var fallbackSelectionCases = 0
+    var overrideCases = 0
+    var scarcityCases = 0
     repeat(1000) { seed ->
       val rnd = Random(seed)
-      val rows = List(rnd.nextInt(0, 7)) { rowIndex ->
+      val rows = List(rnd.nextInt(0, 6)) { rowIndex ->
         val tags = buildSet {
           val target = rnd.nextInt(0, 4)
           while (size < target) add(rnd.nextInt(1, 8))
         }.sorted()
         BaselineNotes.Row(key, "# oracle row $rowIndex", tags)
       }
-      val observed = List(rnd.nextInt(0, 8)) {
+      val observed = List(rnd.nextInt(0, 7)) {
         if (rnd.nextInt(9) == 0) "?" else rnd.nextInt(1, 8).toString()
       }
-      val expected = maximumExactAffinity(rows, observed)
-      if (expected > greedyExactAffinity(rows, observed)) displacementCases++
       val sourceByNote = rows.associateBy { it.note }
+      val least = leastPairingCost(rows, observed)
 
       val update = updateRewrite(rows, mapOf(key to observed))
       assertEquals(
-        expected,
-        exactAffinityInWrittenRows(update.written, sourceByNote),
-        "seed $seed: update did not reach the true maximum exact affinity",
+        least,
+        writtenPairingCost(rows, observed, update.written, sourceByNote),
+        "seed $seed: update did not reach the least pairing cost",
       )
+      // An exact match is evidence, not identity: the seeded population must hold keys
+      // where the least-cost pairing passes one over, which the exact-first rule never did.
+      if (exactAffinityInWrittenRows(update.written, sourceByNote) < maximumExactAffinity(rows, observed)) overrideCases++
       val permuted = observed.shuffled(Random(seed + 10_000))
       assertEquals(
         update.written,
@@ -258,75 +292,42 @@ class BaselineEngineTest {
         "seed $seed: report order changed a deterministic assignment",
       )
 
-      // Recover the exact-match rows from update's observable note-to-line
-      // assignments, then independently check the documented fallback: among rows
-      // left by a maximum exact match, every live anchor is retained before any
-      // bare/stale row, and the fallback fills exactly the slots the exact match
-      // left. Which row inside a group takes which slot is the nearest-recorded-line
-      // rule, pinned by the dedicated tests rather than re-derived here. A tag-counter
-      // subtraction is not a valid oracle because one production row can carry
-      // several historical tags.
-      val assignments = update.written.mapNotNull { rendered ->
-        val output = BaselineNotes.parse(rendered)
-        val rowIndex = output.note
-            ?.removePrefix("# oracle row ")
-            ?.toIntOrNull()
-            ?: return@mapNotNull null
-        rowIndex to output.recordedLines.singleOrNull()
-      }
-      val exactRows = assignments.mapNotNullTo(HashSet()) { (rowIndex, line) ->
-        rowIndex.takeIf { line != null && line in rows[rowIndex].recordedLines }
-      }
+      // When copies are scarce, every row naming a live line is kept before any stale or
+      // bare row is: the penalties order the classes above any distance.
       val liveLines = observed.mapNotNullTo(HashSet()) { it.toIntOrNull() }
-      val unmatchedRows = rows.indices.filter { it !in exactRows }
-      val fallbackSlots = minOf(rows.size, observed.size) - expected
-      val liveRows = unmatchedRows.filter { rowIndex -> rows[rowIndex].recordedLines.any { it in liveLines } }
-      val fileOrderFallbackRows = unmatchedRows.take(fallbackSlots).toSet()
+      val liveRows = rows.indices.filter { rowIndex -> rows[rowIndex].recordedLines.any { it in liveLines } }
       val updateMatchedRows = rows.indices.filterTo(HashSet()) { it !in update.droppedIdx }
-      val fallbackRows = updateMatchedRows - exactRows
-      if (fallbackRows != fileOrderFallbackRows) fallbackSelectionCases++
-      assertEquals(
-        fallbackSlots, fallbackRows.size,
-        "seed $seed: update fallback did not fill exactly the slots the exact match left",
-      )
+      assertEquals(minOf(rows.size, observed.size), updateMatchedRows.size, "seed $seed: one copy per kept row")
       assertTrue(
-        fallbackRows.all { it in unmatchedRows },
-        "seed $seed: update fallback paired a row the exact match had consumed",
+        liveRows.all { it in updateMatchedRows } || updateMatchedRows.all { it in liveRows },
+        "seed $seed: update did not keep live anchors before bare/stale rows",
       )
-      assertTrue(
-        liveRows.all { it in fallbackRows } || fallbackRows.all { it in liveRows },
-        "seed $seed: update fallback did not retain live anchors before bare/stale rows",
-      )
-      val expectedMatchedRows = updateMatchedRows
+      if (rows.size > observed.size && liveRows.isNotEmpty() && liveRows.size < rows.size) scarcityCases++
 
       val plan = BaselineEngine.keepPlan(rows, mapOf(key to observed), emptyMap(), emptyMap())
       val planMatchedRows = rows.indices.filterTo(HashSet()) {
         plan[it] == BaselineEngine.Disposition.MATCHED
       }
-      assertEquals(
-        expectedMatchedRows,
-        planMatchedRows,
-        "seed $seed: keep fallback did not retain live anchors before bare/stale rows",
-      )
+      assertEquals(updateMatchedRows, planMatchedRows, "seed $seed: keep plan and update kept different rows")
 
       // A green prune has at most one accepted row per current copy; in that
       // shape its note-to-line assignment must reach the same optimum as update.
       if (observed.size <= rows.size) {
         val prune = BaselineEngine.pruneRewrite(rows, plan, mapOf(key to observed))
         assertEquals(
-          expected,
-          exactAffinityInWrittenRows(prune.written, sourceByNote),
-          "seed $seed: prune and update disagreed on maximum exact affinity",
+          least,
+          writtenPairingCost(rows, observed, prune.written, sourceByNote),
+          "seed $seed: prune and update disagreed on the least pairing cost",
         )
       }
     }
     assertTrue(
-      displacementCases > 0,
-      "seeded population never exercised a graph where augmenting displacement beats greedy matching",
+      overrideCases > 0,
+      "seeded population never exercised a key where the least-cost pairing passes an exact match over",
     )
     assertTrue(
-      fallbackSelectionCases > 0,
-      "seeded population never distinguished live-priority fallback from raw file order",
+      scarcityCases > 0,
+      "seeded population never distinguished live-anchor priority from raw cost",
     )
   }
 
@@ -519,6 +520,194 @@ class BaselineEngineTest {
       retag.written,
     )
     assertEquals(listOf(key), retag.ambiguousFallbackKeys)
+  }
+
+  @Test
+  fun `an exact line match competes with the rest of its key and loses to a uniform shift`() {
+    // sava 2026-10-29: 69 lines inserted above onWholeMessage moved every row by +69, and the
+    // old anchor of the saturated-add row equalled the request-id row's new line. Exact matches
+    // first paired that coincidence and rotated the two labels; the least-cost pairing of the
+    // whole key keeps each label on its construct, and still names the key for a reader.
+    val key = "software.sava.rpc.json.http.ws.SolanaJsonRpcWebsocket,onWholeMessage,ConditionalsBoundaryMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# positive request-id domain", listOf(2100)),
+      BaselineNotes.Row(key, "# saturated-add equality", listOf(2169)),
+      BaselineNotes.Row(key, "# strict wire ordinal", listOf(2252)),
+      BaselineNotes.Row(key, "# strict wire ordinal", listOf(2368)),
+    )
+    val observed = mapOf(key to listOf("2169", "2238", "2321", "2437"))
+    val retag = BaselineEngine.retagRewrite(accepted, observed)
+    assertEquals(
+      listOf(
+        "$key # positive request-id domain # line 2169",
+        "$key # saturated-add equality # line 2238",
+        "$key # strict wire ordinal # line 2321",
+        "$key # strict wire ordinal # line 2437",
+      ),
+      retag.written,
+    )
+    assertEquals(4, retag.refreshedLineTags)
+    assertEquals(listOf(key), retag.ambiguousFallbackKeys)
+    assertEquals(listOf(key), retag.differingLabelFallbackKeys)
+    assertEquals(List(4) { BaselineEngine.Disposition.MATCHED }, BaselineEngine.keepPlan(accepted, observed, emptyMap(), emptyMap()))
+
+    // the EQUAL_ELSE key beside it paired right only because its coincidence missed by one line
+    val neighbour = "software.sava.rpc.json.http.ws.SolanaJsonRpcWebsocket,onWholeMessage,RemoveConditionalMutator_EQUAL_ELSE,SURVIVED"
+    val four = listOf(2190, 2191, 2392, 2460).mapIndexed { i, line -> BaselineNotes.Row(neighbour, "# construct $i", listOf(line)) }
+    val byOne = BaselineEngine.retagRewrite(four, mapOf(neighbour to listOf("2258", "2259", "2460", "2528")))
+    assertEquals(listOf(2258, 2259, 2460, 2528), byOne.written.map { BaselineNotes.parse(it).recordedLines.single() })
+
+    // a two-row key in the same shape rotated with no notice at all: one row was left for the
+    // fallback, which counted as unambiguous
+    val two = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val pair = listOf(
+      BaselineNotes.Row(two, "# first construct", listOf(100)),
+      BaselineNotes.Row(two, "# second construct", listOf(169)),
+    )
+    val shifted = BaselineEngine.retagRewrite(pair, mapOf(two to listOf("169", "238")))
+    assertEquals(listOf("$two # first construct # line 169", "$two # second construct # line 238"), shifted.written)
+    assertEquals(listOf(two), shifted.ambiguousFallbackKeys)
+    assertEquals(listOf(two), shifted.differingLabelFallbackKeys)
+  }
+
+  @Test
+  fun `a dead sibling beside a shifted key is named when its class realised the shift`() {
+    // the ws shape with one sibling killed: 169 and 238 are old anchors and shifted lines both,
+    // so the exact matches cost nothing and the request-id row, whose mutant survives, is the
+    // one left behind. Alone, the key cannot tell the two stories apart, and evenly spaced
+    // siblings show the same shape after any one death, so its exact matches stand unnamed...
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# first construct", listOf(100)),
+      BaselineNotes.Row(key, "# second construct", listOf(169)),
+      BaselineNotes.Row(key, "# third construct", listOf(238)),
+    )
+    val observed = mapOf(key to listOf("169", "238"))
+    val stood = listOf("$key # first construct # line 100", "$key # second construct # line 169", "$key # third construct # line 238")
+    val alone = BaselineEngine.retagRewrite(accepted, observed)
+    assertEquals(stood, alone.written)
+    assertEquals(emptyList<String>(), alone.ambiguousFallbackKeys)
+    // ...until a key of its class shows the shift, paired whole: then the key is named, and
+    // every row at it is a candidate for the label conflict
+    val other = "com.example.Codec,decode,MathMutator,SURVIVED"
+    val moved = listOf(BaselineNotes.Row(other, "# a", listOf(500)), BaselineNotes.Row(other, "# b", listOf(600)))
+    val lines = observed + (other to listOf("569", "669"))
+    val named = BaselineEngine.retagRewrite(accepted + moved, lines)
+    assertEquals(stood + listOf("$other # a # line 569", "$other # b # line 669"), named.written)
+    assertEquals(listOf(key, other), named.ambiguousFallbackKeys)
+    assertEquals(listOf(key, other), named.differingLabelFallbackKeys)
+    val plan = BaselineEngine.keepPlan(accepted + moved, lines, emptyMap(), emptyMap())
+    assertEquals(
+      listOf(BaselineEngine.Disposition.DROP) + List(4) { BaselineEngine.Disposition.MATCHED },
+      plan,
+    )
+    val prune = BaselineEngine.pruneRewrite(accepted + moved, plan, lines)
+    assertEquals(listOf(key, other), prune.ambiguousFallbackKeys)
+    assertEquals(listOf(key, other), prune.differingLabelFallbackKeys)
+    // a shift another file realised says nothing about this one; a nested class is the same file
+    val elsewhere = "com.example.Other,decode,MathMutator,SURVIVED"
+    val otherClass = BaselineEngine.retagRewrite(
+      accepted + moved.map { it.copy(key = elsewhere) },
+      observed + (elsewhere to listOf("569", "669")),
+    )
+    assertEquals(listOf(elsewhere), otherClass.ambiguousFallbackKeys)
+    val nested = "com.example.Codec\$Handler,decode,MathMutator,SURVIVED"
+    val sameFile = BaselineEngine.retagRewrite(
+      accepted + moved.map { it.copy(key = nested) },
+      observed + (nested to listOf("569", "669")),
+    )
+    assertEquals(listOf(key, nested), sameFile.ambiguousFallbackKeys)
+    // one copy paired to whatever was nearest is no shift: two must show it
+    val stray = "com.example.Codec,parse,MathMutator,SURVIVED"
+    val oneCopy = BaselineEngine.retagRewrite(
+      accepted + listOf(BaselineNotes.Row(stray, "# lone", listOf(500))),
+      observed + (stray to listOf("569")),
+    )
+    assertEquals(emptyList<String>(), oneCopy.ambiguousFallbackKeys)
+    // equal labels at the named key: nothing there to re-read
+    val sameLabel = accepted.map { it.copy(note = "# one family") }
+    val same = BaselineEngine.retagRewrite(sameLabel + moved, lines)
+    assertEquals(listOf(key, other), same.ambiguousFallbackKeys)
+    assertEquals(listOf(other), same.differingLabelFallbackKeys)
+    // evenly spaced siblings after one death, nothing moved in the class: not named
+    val spaced = listOf(
+      BaselineNotes.Row(key, "# one", listOf(10)),
+      BaselineNotes.Row(key, "# two", listOf(20)),
+      BaselineNotes.Row(key, "# three", listOf(30)),
+    )
+    assertEquals(emptyList<String>(), BaselineEngine.retagRewrite(spaced, mapOf(key to listOf("10", "20"))).ambiguousFallbackKeys)
+  }
+
+  @Test
+  fun `an exact line match wins when the rest of its key agrees`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    val accepted = listOf(
+      BaselineNotes.Row(key, "# stayed", listOf(10)),
+      BaselineNotes.Row(key, "# moved", listOf(20)),
+      BaselineNotes.Row(key, "# moved too", listOf(30)),
+    )
+    // one sibling did not move while the others did: its exact line costs nothing, and the
+    // others follow their own lines
+    val retag = BaselineEngine.retagRewrite(accepted, mapOf(key to listOf("10", "25", "35")))
+    assertEquals(listOf("$key # stayed # line 10", "$key # moved # line 25", "$key # moved too # line 35"), retag.written)
+    assertEquals(listOf(key), retag.ambiguousFallbackKeys)
+    // one that moved alone, by less than the gap to its neighbours, follows its own line, and a
+    // single row decided by distance is no ambiguity
+    val alone = BaselineEngine.retagRewrite(accepted, mapOf(key to listOf("10", "23", "30")))
+    assertEquals(listOf("$key # stayed # line 10", "$key # moved # line 23", "$key # moved too # line 30"), alone.written)
+    assertEquals(emptyList<String>(), alone.ambiguousFallbackKeys)
+  }
+
+  @Test
+  fun `beyond sixteen copies the older rule applies and the key is named`() {
+    val key = "com.example.Codec,encode,MathMutator,SURVIVED"
+    fun rows(n: Int) = List(n) { BaselineNotes.Row(key, "# construct $it", listOf(100 * (it + 1))) }
+    fun shifted(n: Int) = List(n) { (100 * (it + 2)).toString() }
+    // sixteen rows moved by one shift, every old anchor but the first on another row's new
+    // line: the least-cost pairing moves every row
+    val joint = BaselineEngine.retagRewrite(rows(16), mapOf(key to shifted(16)))
+    assertEquals(16, joint.refreshedLineTags)
+    assertEquals(shifted(16).map(String::toInt), joint.written.map { BaselineNotes.parse(it).recordedLines.single() })
+    // the copies set the limit, not the rows: seventeen rows with sixteen copies, moved by a
+    // shift that lands on no anchor and the first row's mutant killed, still pair by least cost
+    // (the older rule's file order would hand the first row the first copy)
+    val sixteenCopies = BaselineEngine.retagRewrite(rows(17), mapOf(key to List(16) { (100 * (it + 2) + 50).toString() }))
+    assertEquals("$key # construct 0 # line 100", sixteenCopies.written[0])
+    assertEquals("$key # construct 16 # line 1750", sixteenCopies.written[16])
+    assertEquals(16, sixteenCopies.refreshedLineTags)
+    // seventeen copies: exact matches first, the first row alone takes the leftover copy, and
+    // the key is named whatever it did
+    val legacy = BaselineEngine.retagRewrite(rows(17), mapOf(key to shifted(17)))
+    assertEquals(1, legacy.refreshedLineTags)
+    assertEquals(listOf(1800) + (2..17).map { 100 * it }, legacy.written.map { BaselineNotes.parse(it).recordedLines.single() })
+    assertEquals(listOf(key), legacy.ambiguousFallbackKeys)
+    assertEquals(listOf(key), legacy.differingLabelFallbackKeys)
+    // the exact phase there is a maximum matching: a row carrying two anchors yields the one
+    // its narrower sibling needs, by displacement, which a file-order matcher would not
+    val wide = listOf(
+      BaselineNotes.Row(key, "# wide", listOf(100, 200)),
+      BaselineNotes.Row(key, "# narrow", listOf(100)),
+    ) + List(15) { BaselineNotes.Row(key, "# filler $it", listOf(300 + 100 * it)) }
+    val displaced = BaselineEngine.retagRewrite(wide, mapOf(key to (listOf("100", "200") + List(15) { (300 + 100 * it).toString() })))
+    assertEquals("$key # wide # line 200", displaced.written[0])
+    assertEquals("$key # narrow # line 100", displaced.written[1])
+    assertEquals(1, displaced.refreshedLineTags)
+    assertEquals(listOf(key), displaced.ambiguousFallbackKeys)
+  }
+
+  @Test
+  fun `the pairing cost classes stay apart at the joint limit`() {
+    val limit = BaselineEngine.JOINT_PAIRING_LIMIT.toLong()
+    val cap = BaselineEngine.SQUARED_DISTANCE_CAP
+    val bare = BaselineEngine.BARE_ROW_COST
+    val live = BaselineEngine.LIVE_ROW_UNPAIRED
+    assertTrue(limit * cap < bare)
+    assertTrue(limit * (bare + cap) < live)
+    assertTrue(limit * live < Long.MAX_VALUE / 2)
+    // the cap is the one approximation: a distance past it costs as much as the cap
+    val row = BaselineNotes.Row("k", null, listOf(1))
+    assertEquals(cap, BaselineEngine.pairingCost(row, 1 + (1 shl 21)))
+    assertEquals(4L, BaselineEngine.pairingCost(row, 3))
   }
 
   @Test

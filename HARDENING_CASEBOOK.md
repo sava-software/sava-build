@@ -956,8 +956,8 @@ argument made before the flip had to be re-made.
 
 Line-less keys later removed line shifts from baseline identity entirely. The
 current updater carries a written note across a `SURVIVED`/`NO_COVERAGE` status
-transition, marks that carry for re-reading, and uses maximum line affinity when
-several siblings flip together. The transition remains visible without silently
+transition, marks that carry for re-reading, and uses the same least-cost line pairing
+when several siblings flip together. The transition remains visible without silently
 discarding the only acceptance argument the row carried.
 
 The pairing carries the note carry's ambiguity and carries it worse. The key
@@ -1242,8 +1242,8 @@ Two fixes travelled together: the cross-status keep now requires an
 *unmatched* counterpart — an unkilled mutant at the coordinate whose
 different status no row of its own key accounts for, consumed one per kept
 row, which is the verify's newly-covered pairing rather than an
-approximation of it — and which sibling is dropped follows line affinity
-before file order — a row whose `# line` tag names no live line is preferred
+approximation of it — and which sibling is dropped follows the least-cost line
+pairing before file order — a row whose `# line` tag names no live line is preferred
 as the absent sibling — so a noted live-anchored row is not dropped for its
 bare sibling. Duplicate same-line siblings remain intrinsically ambiguous.
 The unmatched requirement was the second dig at the same
@@ -2040,8 +2040,37 @@ key and paired the leftover rows in file order once their recorded lines no long
 matched, so two labels sat on other constructs' lines until 26b90db put them back.
 
 Rules: *a mention under a History or Retired heading does not document a label*; *the
-fallback pairs siblings by nearest recorded line, and Retag and Prune name the keys it
-decided and those whose rows carry different labels*.
+pairing is by least total squared line distance, and Retag and Prune name the keys it
+decided among rows and those whose rows carry different labels*.
+
+## The coincidence the exact match kept
+
+On 2026-10-29 a sava feature commit inserted 69 lines above `onWholeMessage`, so every ws
+baseline row below it moved by exactly +69. `pitestWsBaselineRetag` paired the
+`ConditionalsBoundaryMutator` key's four rows in the two phases the engine then had: exact
+line matches first, the rest by least squared distance. The old line of `# saturated-add
+equality`, 2169, equalled the new line of `# positive request-id domain` (2100 + 69), so
+the exact phase consumed it, and the fallback could only put the request-id row on 2238,
+the saturated add. The uniform pairing costs 4 x 69^2 = 19,044 and the one written 28,566,
+so the engine's own objective preferred the right answer; the pre-pass never let it weigh
+in. The notice named the key, since the fallback-paired rows carried different labels, and
+the two rows were relabelled by hand (sava 48dd43c9), the third hand relabel on that
+method's keys. The engine would not have warned at all for a two-row key in the same
+shape: after the exact match one row remained for the fallback, which counted as
+unambiguous.
+
+Since 21.8.0 one pairing decides the whole key, the least total squared distance with an
+exact match competing with the rest (HARDENING.md's update paragraph has the rule), so this
+key pairs right and is still named for a reader, and the two-row shape is named too. With
+one sibling killed as well, the exact matches win at no cost: a dead sibling and a moved
+key explain the same lines, which metadata cannot tell apart, so such a key is named instead
+of paired blind when its file realised that shift elsewhere in the run, as every ws key below
+the insertion did. A key whose tags the two-phase rule had paired
+differently pairs anew on its next retag; a tag already on its live line costs nothing
+either way.
+
+Rules: *an exact line match is evidence, not identity, and competes with the rest of its
+key*; *a pairing rule's objective applies to every row it pairs, or a pre-pass defeats it*.
 
 ## The registry that was a journal
 

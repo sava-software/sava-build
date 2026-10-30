@@ -941,21 +941,27 @@ SURVIVED)` and the summary counts the carries — the acceptance argument
 travels, but flagged for re-reading, because a reason written for an
 unreached mutant is not automatically a reason once its behaviour is
 observable *(casebook: the status-blind prune)*. Multiple flipped siblings use the
-same maximum line-affinity assignment as same-status siblings before falling back to
-the nearest recorded line, so uniquely anchored notes do not cross during the carry.
-Within one key, accepted rows are assigned to the run's mutants by **maximum line
-affinity** first, then, among rows naming a live line before stale or bare rows, by the
-nearest recorded line (least total squared distance, file order on ties; exhaustive while
-neither the rows a fallback group holds nor the copies still unpaired exceed eight, file
-order against line order beyond that), so
-siblings that moved together keep their order and one that moved alone, by less than
-the gap to its neighbours, follows its own line. A unique `# line` anchor
-attributes a row; repeated or overlapping anchors provide deterministic allocation,
-not proof of sibling identity, which is why Retag and Prune name every key the fallback
-decided (a key whose rows repeat an anchor included, since line affinity itself chose
-there, and for Prune a dropped row that shares its anchor with a kept one, which lost to
-it in file order) and, separately, those whose rows carry different family labels:
-re-read each
+same least-cost pairing as same-status siblings, so uniquely anchored notes do not cross
+during the carry. Within one key, accepted rows are assigned to the run's mutants by the
+**least total squared line distance** over the whole key: a copy at a row's recorded line
+costs nothing, so an exact match wins whenever the rest of the key agrees and loses when
+the key moved by one shift and an old anchor merely coincides with another sibling's new
+line; when copies are scarce an exact match still wins at no cost, since a dead sibling
+and a moved key explain the same lines, and such a key is named for the reader when a
+shift its file realised elsewhere, at two copies or more, explains its live lines as
+well; rows naming a live line are kept before stale or bare rows when copies are scarce,
+and among those the pairing costs decide; ties keep file order; beyond sixteen copies at
+a key the older rule applies, exact matches first and the rest by nearest recorded line,
+file order against line order beyond eight, and such a key is named whatever it did
+*(casebook: the coincidence the exact match kept)*. So siblings that moved together keep
+their order and one that moved alone, by less than the gap to its neighbours, follows its
+own line. A unique `# line` anchor attributes a row; repeated or overlapping anchors
+provide deterministic allocation, not proof of sibling identity, which is why Retag and
+Prune name every key the pairing decided among rows (a key whose rows repeat an anchor
+included, since file order chose there, a key that lost a sibling whose live lines a
+shift its file realised elsewhere explains as well, every key beyond sixteen copies, and
+for Prune a dropped row that shares its anchor with a kept one, which lost to it in file
+order) and, separately, those whose rows carry different family labels: re-read each
 such row's argument against its new line before committing *(casebook: the killed
 family's label that stayed on a live row)*. Every note
 that leaves a row is named loudly in the dropped listing (`note carried` / `note
@@ -1054,16 +1060,16 @@ authority for another writer or certification. Run one suite's workflow at a tim
 gate-load preview runs every suite, but only the named one applies the selection.
 
 Without a selector, Prune also refreshes the `# line` tag of each retained row matched at its own
-key, using line affinity before the nearest-line fallback; unmatched rows kept for
+key, by the same least-cost pairing as Update; unmatched rows kept for
 `TIMED_OUT`, a pending flip, or flip insurance retain their prior tags because
 that run did not observe them at their own key. Before Prune refreshes any drifted
 tag it prints the exact pre-write signal. Use `BaselineRetag` when metadata is the
 only intended change, even if Prune's candidate preview is empty; run Prune only
 when its deletion decision was independently reviewed. "Matching" is the
 verify's own multiset comparison: a key holding more rows than the run's unkilled mutants
-has excess to drop, and which sibling goes is decided by line affinity first
-(a row whose `# line` tag names no live line is preferred as the absent sibling),
-nearest recorded line and then file order after — so a noted live-anchored row is not
+has excess to drop, and which sibling goes is decided by the same least-cost pairing
+(a row whose `# line` tag names no live line is preferred as the absent sibling, the least
+total squared distance among the rest, then file order) — so a noted live-anchored row is not
 dropped for its bare sibling,
 while duplicate same-line siblings remain inherently ambiguous,
 and, for the same report population, the candidate preview and Prune classifier

@@ -5029,11 +5029,12 @@ hardening.mutation.all {
         val pruneRewrite = BaselineEngine.pruneRewrite(acceptedRows, keepPlan, currentLines)
         if (pruneRewrite.ambiguousFallbackKeys.isNotEmpty()) {
           logger.warn(
-              "pitest baseline '$suiteName': prune pairs kept siblings by fallback for " +
-                  "${pruneRewrite.ambiguousFallbackKeys.size} key(s). After exact line matches, remaining " +
-                  "kept rows are paired by nearest recorded line, ties in file order (file order " +
-                  "against line order once a fallback group's rows or the copies still unpaired " +
-                  "exceed eight), and a dropped row that " +
+              "pitest baseline '$suiteName': prune chose among kept siblings at " +
+                  "${pruneRewrite.ambiguousFallbackKeys.size} key(s). Kept rows are paired by least total " +
+                  "squared line distance over the key, an exact line match costing nothing but competing " +
+                  "with the rest, ties in file order (beyond sixteen copies at a key, exact matches " +
+                  "first and the rest by nearest recorded line, file order against line order beyond " +
+                  "eight, and the key is named), and a dropped row that " +
                   "shares its recorded line with a kept one lost to it in file order; this does not " +
                   "establish physical mutant identity. Review the README pointers and resulting line tags:\n" +
                   pruneRewrite.ambiguousFallbackKeys.joinToString("\n") { "  $it" } +
@@ -5122,11 +5123,12 @@ hardening.mutation.all {
         val rewrite = BaselineEngine.retagRewrite(acceptedRows, currentLines)
         if (rewrite.ambiguousFallbackKeys.isNotEmpty()) {
           logger.warn(
-              "pitest baseline '$suiteName': retag plans ambiguous same-key sibling fallback for " +
-                  "${rewrite.ambiguousFallbackKeys.size} key(s). After exact line matches, remaining " +
-                  "rows are paired by nearest recorded line, ties in file order (file order against " +
-                  "line order once a fallback group's rows or the copies still unpaired exceed eight); " +
-                  "this does not " +
+              "pitest baseline '$suiteName': retag chose among siblings at " +
+                  "${rewrite.ambiguousFallbackKeys.size} key(s). Rows are paired by least total squared " +
+                  "line distance over the key, an exact line match costing nothing but competing with " +
+                  "the rest, ties in file order (beyond sixteen copies at a key, exact matches first " +
+                  "and the rest by nearest recorded line, file order against line order beyond eight, " +
+                  "and the key is named); this does not " +
                   "establish physical mutant identity. Review the README pointers and resulting line tags:\n" +
                   rewrite.ambiguousFallbackKeys.joinToString("\n") { "  $it" } +
                   BaselineNotes.differingLabelFallbackDetail(rewrite.differingLabelFallbackKeys))
@@ -5221,9 +5223,9 @@ hardening.mutation.all {
         // shift-pairing, bare-row-pairing and pairing-outlier machinery that used to
         // police that carry is gone with the churn it policed.
         //
-        // Within a key, accepted rows are assigned to this run's mutants by maximum
-        // LINE AFFINITY first, then by nearest recorded line (least squared distance),
-        // file order on ties. A unique anchor attributes a row;
+        // Within a key, accepted rows are assigned to this run's mutants by the least
+        // total squared line distance over the key, an exact line match costing nothing
+        // but competing with the rest, file order on ties. A unique anchor attributes a row;
         // repeated/overlapping anchors are only a deterministic allocation. Without
         // line evidence the assignment is arbitrary, which is the documented same-key
         // blind spot, not a bug to police.
@@ -5315,8 +5317,8 @@ hardening.mutation.all {
         // mode-flip evidence should normally use pitestModeCompareUnion so the
         // observed statuses are written into the insurance note. The report-driven
         // BaselineUpdate remains a separately reviewed complete rewrite.
-        // the merge — per-key max counts, existing rows verbatim after maximum
-        // exact-line affinity and the live-anchor/nearest-line fallback, added copies
+        // the merge — per-key max counts, existing rows verbatim after the least-cost
+        // sibling pairing, added copies
         // seeded '# untriaged' with the genuinely unclaimed lines — lives in
         // BaselineEngine.unionMerge
         val merge = BaselineEngine.unionMerge(acceptedRows, current, currentLines)
