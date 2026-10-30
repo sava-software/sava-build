@@ -2,6 +2,7 @@ import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -13,9 +14,10 @@ import java.nio.file.Path
  * The dependency verification policy guard: the settings plugin registers verificationPolicy
  * on the root and makes every check depend on it. This repository's own policy, Gradle's own
  * regeneration output, passes it; every rule has a case that fails it, each written as a
- * regeneration or a hand edit could write it; and a repository without a policy is left to the
- * CI notice. Every run passes --dependency-verification lenient, since the fixture resolves the
- * unsigned test publication of this plugin, which the fixture's own policy refuses.
+ * regeneration or a hand edit could write it; a repository with no policy and nothing of one is
+ * left to the CI notice, and one with a keyring, a list or the declaration but no policy file
+ * is a deleted policy. Every run passes --dependency-verification lenient, since the fixture
+ * resolves the unsigned test publication of this plugin, which the fixture's own policy refuses.
  */
 class VerificationPolicyFunctionalTest {
 
@@ -28,6 +30,8 @@ class VerificationPolicyFunctionalTest {
 
   private fun writeFixture(includedBuilds: List<String> = emptyList()) {
     enableTestKitConfigurationCache(fixtureDir)
+    // the policy's declaration, which the adoption recipe commits beside the three files
+    File(fixtureDir, "gradle.properties").appendText("org.gradle.dependency.verification=strict\n")
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
         $savaBuildPluginManagement
@@ -105,6 +109,10 @@ class VerificationPolicyFunctionalTest {
     writePluginBuild(child, linkDepth = 2)
     val inChild = runnerIn(child)
     assertEquals(TaskOutcome.SUCCESS, inChild.build().task(":verificationPolicy")?.outcome)
+    // the parent's problems are reported as the parent's: its gradle.properties holds the declaration
+    enableTestKitConfigurationCache(fixtureDir)
+    assertProblem(inChild.buildAndFail(), "in the parent build at ../: gradle.properties does not set org.gradle.dependency.verification=strict")
+    File(fixtureDir, "gradle.properties").appendText("org.gradle.dependency.verification=strict\n")
     // a link to anything but the parent's policy is a policy in disguise
     val link = File(child, "gradle/verification-metadata.xml").toPath()
     val other = File(fixtureDir, "other")
@@ -154,13 +162,77 @@ class VerificationPolicyFunctionalTest {
     .withArguments("verificationPolicy", "--dependency-verification", "lenient", "--no-watch-fs")
 
   @Test
-  fun `a repository without a policy is left to the notice`() {
+  fun `a repository with no policy and nothing of one is left to the notice`() {
     writeFixture()
     metadata.delete()
     keyring.delete()
     versionScopedKeys.delete()
+    enableTestKitConfigurationCache(fixtureDir) // gradle.properties without the declaration
     val result = run("verificationPolicy")
     assertEquals(TaskOutcome.SUCCESS, result.task(":verificationPolicy")?.outcome, result.output)
+    // a standalone build's own strict line is no declaration: the root's gradle.properties holds it
+    File(fixtureDir, "jmh").mkdirs()
+    File(fixtureDir, "jmh/settings.gradle.kts").writeText("rootProject.name = \"jmh\"\n")
+    File(fixtureDir, "jmh/gradle.properties").writeText("org.gradle.dependency.verification=strict\n")
+    assertEquals(TaskOutcome.SUCCESS, run("verificationPolicy").task(":verificationPolicy")?.outcome)
+  }
+
+  @Test
+  fun `a keyring, a list or the declaration without the policy file is a deleted policy, not an unadopted repository`() {
+    // the file alone gone: deleted, or kept out of the commit by a deny-by-default .gitignore
+    writeFixture()
+    metadata.delete()
+    val remnants = fails("verificationPolicy")
+    assertProblem(remnants, "gradle/verification-metadata.xml is missing while gradle/verification-keyring.keys is present")
+    assertProblem(remnants, "gradle/verification-metadata.xml is missing while gradle/verification/version-scoped-keys.txt is present")
+    assertProblem(remnants, "gradle.properties sets org.gradle.dependency.verification=strict, the declaration of a policy, but gradle/verification-metadata.xml is missing")
+    // the declaration outlives all three files, in either spelling Gradle reads
+    writeFixture()
+    metadata.delete()
+    keyring.delete()
+    versionScopedKeys.delete()
+    assertProblem(fails("verificationPolicy"), "gradle.properties sets org.gradle.dependency.verification=strict, the declaration of a policy")
+    File(fixtureDir, "gradle.properties").writeText("org.gradle.configuration-cache=true\nsystemProp.org.gradle.dependency.verification = Strict\n")
+    assertProblem(fails("verificationPolicy"), "gradle.properties sets systemProp.org.gradle.dependency.verification=Strict, the declaration of a policy")
+    // a relaxing mode is a committed verification setting too, refused with or without a policy
+    File(fixtureDir, "gradle.properties").writeText("org.gradle.configuration-cache=true\norg.gradle.dependency.verification=off\n")
+    assertProblem(fails("verificationPolicy"), "gradle.properties sets org.gradle.dependency.verification=off, a committed verification setting with no policy")
+    // a standalone build's links outlive the policy too, dangling
+    writeFixture()
+    writeStandaloneBuild("jmh", symlinks = true)
+    metadata.delete()
+    keyring.delete()
+    versionScopedKeys.delete()
+    enableTestKitConfigurationCache(fixtureDir)
+    val links = fails("verificationPolicy")
+    assertProblem(links, "gradle/verification-metadata.xml is missing while jmh/gradle/verification-metadata.xml is a link left behind")
+    assertProblem(links, "gradle/verification-metadata.xml is missing while jmh/gradle/verification-keyring.keys is a link left behind")
+    // copies in a standalone build are left behind too, and a value Gradle refuses has no policy to go with
+    writeFixture()
+    writeStandaloneBuild("soak", symlinks = false)
+    metadata.delete()
+    keyring.delete()
+    versionScopedKeys.delete()
+    enableTestKitConfigurationCache(fixtureDir)
+    File(fixtureDir, "soak/gradle.properties").writeText("org.gradle.dependency.verification=stric\n")
+    val copies = fails("verificationPolicy")
+    assertProblem(copies, "gradle/verification-metadata.xml is missing while soak/gradle/verification-metadata.xml is present")
+    assertProblem(copies, "soak/gradle.properties sets org.gradle.dependency.verification=stric, which is not a mode Gradle accepts")
+  }
+
+  @Test
+  fun `a policy needs its declaration in the root gradle properties file`() {
+    writeFixture()
+    enableTestKitConfigurationCache(fixtureDir) // gradle.properties without the declaration
+    assertProblem(fails("verificationPolicy"), "gradle.properties does not set org.gradle.dependency.verification=strict, the policy's declaration")
+    // a standalone build's own line does not declare the root's policy
+    writeStandaloneBuild("jmh", symlinks = true)
+    File(fixtureDir, "jmh/gradle.properties").writeText("org.gradle.dependency.verification=strict\n")
+    assertProblem(fails("verificationPolicy"), "gradle.properties does not set org.gradle.dependency.verification=strict")
+    // either spelling declares it
+    File(fixtureDir, "gradle.properties").writeText("org.gradle.configuration-cache=true\nsystemProp.org.gradle.dependency.verification = Strict\n")
+    val declared = run("verificationPolicy")
+    assertEquals(TaskOutcome.SUCCESS, declared.task(":verificationPolicy")?.outcome, declared.output)
   }
 
   @Test
@@ -288,6 +360,14 @@ class VerificationPolicyFunctionalTest {
     writeStandaloneBuild("soak", symlinks = true)
     File(fixtureDir, "soak/gradle.properties").writeText("org.gradle.dependency.verification=off\n")
     assertProblem(fails("verificationPolicy"), "soak/gradle.properties sets org.gradle.dependency.verification=off")
+    // a root value other than strict is the relaxed mode, not a missing declaration as well
+    File(fixtureDir, "gradle.properties").writeText("org.gradle.configuration-cache=true\norg.gradle.dependency.verification=lenient\n")
+    val lenient = fails("verificationPolicy")
+    assertProblem(lenient, "gradle.properties sets org.gradle.dependency.verification=lenient; verification stays strict")
+    assertFalse(lenient.output.contains("does not set org.gradle.dependency.verification=strict"), lenient.output)
+    // a value Gradle refuses, where Gradle does not read it (in the root's it stops the build before the guard)
+    File(fixtureDir, "soak/gradle.properties").writeText("org.gradle.dependency.verification=stric\n")
+    assertProblem(fails("verificationPolicy"), "soak/gradle.properties sets org.gradle.dependency.verification=stric, which is not a mode Gradle accepts")
   }
 
   @Test

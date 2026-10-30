@@ -18,6 +18,16 @@ object VerificationPolicyRules {
   const val KEYRING = "gradle/verification-keyring.keys"
   const val VERSION_SCOPED_KEYS = "gradle/verification/version-scoped-keys.txt"
   const val README = "sava-build's README, Verifying sava artifacts,"
+  private val MODE_PROPERTIES = listOf("org.gradle.dependency.verification", "systemProp.org.gradle.dependency.verification")
+  /** Gradle refuses any other value when the build starts, before this guard runs. */
+  private val MODES = setOf("strict", "lenient", "off")
+
+  /** A verification mode a committed gradle.properties sets: [file] in [build], "." for the root. */
+  private data class ModeSetting(val build: String, val file: File, val key: String, val value: String) {
+    private val mode = value.trim().lowercase()
+    val strict = mode == "strict"
+    val accepted = mode in MODES
+  }
 
   /**
    * The standalone builds of a checkout: direct child directories with a settings script of
@@ -35,10 +45,13 @@ object VerificationPolicyRules {
       .sorted()
 
   /**
-   * The problems with the policy under [root], none for a policy that keeps the rules, none for
-   * a repository without one, which the CI notice warns about, and none for a symlinked one,
-   * which is a standalone build's view of its parent's policy. [standaloneBuilds] are the
-   * builds [standaloneBuilds] discovered, relative to the root.
+   * The problems with the policy under [root]: none for a policy that keeps the rules, its
+   * declaration in the root gradle.properties included, none for a repository with no policy and
+   * nothing of one, which the CI notice warns about, and none for a symlinked one, which is a
+   * standalone build's view of its parent's policy. A keyring, a version-scoped list or the
+   * declaration without the policy file is a policy deleted or never committed, not a repository
+   * yet to adopt one, and a problem. [standaloneBuilds] are the builds [standaloneBuilds]
+   * discovered, relative to the root.
    */
   fun problems(root: File, standaloneBuilds: List<String>): List<String> {
     val metadata = root.resolve(METADATA)
@@ -64,13 +77,48 @@ object VerificationPolicyRules {
       if (thisRoot.fileName.toString() !in siblings) {
         return listOf("$METADATA links to the parent directory's policy, but that build's guard never checks this one back: a standalone build is a direct child with a settings script and no .git entry of its own.")
       }
-      return problems(enclosing, siblings)
-    }
-    if (!metadata.isFile) {
-      return emptyList()
+      // Named as the parent's problems: this build's own gradle.properties declares nothing,
+      // and a path in a message is relative to the parent.
+      return problems(enclosing, siblings).map { "in the parent build at ../: $it" }
     }
     val keyring = root.resolve(KEYRING)
     val versionScopedKeys = root.resolve(VERSION_SCOPED_KEYS)
+    val builds = listOf(".") + standaloneBuilds
+    // The mode each committed gradle.properties sets, in either spelling Gradle reads. Strict in
+    // the root's is the policy's declaration: Gradle's default while the file is present and
+    // nothing without it, so the line changes nothing for Gradle and tells this guard a policy
+    // belongs here. Any other value, in any build's, relaxes that build.
+    val modes = builds.flatMap { build ->
+      val file = root.resolve(build).resolve("gradle.properties").normalize()
+      val properties = Properties().apply { if (file.isFile) file.reader().use { load(it) } }
+      MODE_PROPERTIES.mapNotNull { key -> properties.getProperty(key)?.let { ModeSetting(build, file, key, it) } }
+    }
+    fun setting(it: ModeSetting) = "${it.file.relativeTo(root)} sets ${it.key}=${it.value}"
+    val invalid = modes.filterNot { it.accepted }.map {
+      "${setting(it)}, which is not a mode Gradle accepts (strict, lenient or off); the committed value is strict."
+    }
+    val relaxed = modes.filter { it.accepted && !it.strict }
+    if (!metadata.isFile) {
+      // No policy. With no keyring, no list, no standalone build's link and no declaration either,
+      // the repository has not adopted one and the CI notice warns. Any of them without the file
+      // is a policy deleted or never committed: a keyring or a link verifies nothing on its own,
+      // and without the file Gradle verifies nothing whatever mode gradle.properties sets.
+      val remnants = listOf(keyring, versionScopedKeys).filter { it.isFile } +
+        standaloneBuilds.flatMap { build -> listOf(metadata, keyring).map { root.resolve(build).resolve("gradle").resolve(it.name) } }
+          .filter { Files.isSymbolicLink(it.toPath()) || it.exists() }
+      return remnants.map {
+        val left = if (Files.isSymbolicLink(it.toPath())) "is a link left behind" else "is present"
+        "$METADATA is missing while ${it.relativeTo(root)} $left: a policy was deleted or never committed " +
+          "(a deny-by-default .gitignore needs allow-rules for all three files and the gradle/verification/ directory). " +
+          "Restore it, or remove what is left of it."
+      } + modes.filter { it.build == "." && it.strict }.map {
+        "${setting(it)}, the declaration of a policy, but $METADATA is missing, so Gradle verifies nothing: " +
+          "restore the policy, or remove the property when the repository stops verifying."
+      } + relaxed.map {
+        "${setting(it)}, a committed verification setting with no policy to apply it to: remove the line, or adopt a policy; " +
+          "a committed gradle.properties never relaxes the mode."
+      } + invalid
+    }
     val problems = mutableListOf<String>()
     listOf(keyring, versionScopedKeys).filterNot { it.isFile }.forEach {
       problems += "${it.relativeTo(root)} is missing; $README describes the files the policy needs" +
@@ -180,16 +228,17 @@ object VerificationPolicyRules {
       problems += "$VERSION_SCOPED_KEYS lists $it, which no trusted-key uses any more: remove the line."
     }
 
-    val builds = listOf(".") + standaloneBuilds
-    builds.map { root.resolve(it).resolve("gradle.properties").normalize() }.filter { it.isFile }.forEach { file ->
-      val properties = Properties().apply { file.reader().use { load(it) } }
-      listOf("org.gradle.dependency.verification", "systemProp.org.gradle.dependency.verification")
-        .filter { properties.getProperty(it) != null && properties.getProperty(it).trim().lowercase() != "strict" }
-        .forEach {
-          problems += "${file.relativeTo(root)} sets $it=${properties.getProperty(it)}; verification stays strict for every committed build. " +
-            "Only a -PsavaBuildLocalRepo run passes --dependency-verification lenient, on its own command line."
-        }
+    // The declaration; a root value that is not strict is reported as such below.
+    if (modes.none { it.build == "." }) {
+      problems += "gradle.properties does not set org.gradle.dependency.verification=strict, the policy's declaration: add the line, " +
+        "which changes nothing for Gradle (strict is its default while $METADATA is present, and it verifies nothing without it) " +
+        "and makes this guard fail check should the file go missing."
     }
+    problems += relaxed.map {
+      "${setting(it)}; verification stays strict for every committed build. " +
+        "Only a -PsavaBuildLocalRepo run passes --dependency-verification lenient, on its own command line."
+    }
+    problems += invalid
 
     standaloneBuilds.forEach { build ->
       listOf(metadata, keyring).forEach { shared ->

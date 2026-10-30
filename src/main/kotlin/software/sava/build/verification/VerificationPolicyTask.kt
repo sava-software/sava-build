@@ -18,8 +18,9 @@ import org.gradle.api.tasks.UntrackedTask
  * XML comments. This task checks the policy's invariants, [VerificationPolicyRules], so none
  * of that can land unseen. It reads the checkout as it is, the committed files and the direct
  * child directories' settings scripts: a verification mode passed on the command line or set
- * in `~/.gradle` is beyond its reach, and a repository without a policy is left to the CI
- * notice.
+ * in `~/.gradle` is beyond its reach. A repository with no policy, and no keyring, list or
+ * declaration (strict in the root `gradle.properties`) of one, is left to the CI notice; any
+ * of those without the file is a policy deleted or never committed, and fails.
  */
 @UntrackedTask(because = "Checks committed policy files and produces nothing")
 abstract class VerificationPolicyTask : DefaultTask() {

@@ -462,12 +462,18 @@ the publisher's, not necessarily free of vulnerabilities: keep patching dependen
 ### The policy and what it trusts
 
 A repository's policy is `gradle/verification-metadata.xml`, with the public keys it names
-in `gradle/verification-keyring.keys`, both under the root `gradle/`. Gradle reads only the
-invoking build's `gradle/` directory, so a standalone build in the repository, a directory
-with a settings script of its own such as sava's `jmh/` and `soak/`, holds symlinks to the
-two files; an included build is covered by the build that includes it. A Docker image build
-copies the two files together, and a deny-by-default `.gitignore` needs allow-rules for them,
-or git drops the policy without a word.
+in `gradle/verification-keyring.keys` and the version-scoped list below, all under the root
+`gradle/`, and `org.gradle.dependency.verification=strict` in the root `gradle.properties`:
+strict is Gradle's default while the file is present and does nothing without it, so the
+line changes nothing for Gradle and declares the policy to [the guard](#the-guard), which
+then fails `check` should the file go missing. Gradle reads only the invoking build's
+`gradle/` directory, so a standalone build in the repository, a directory with a settings
+script of its own such as sava's `jmh/` and `soak/`, holds symlinks to the metadata and the
+keyring; an included build is covered by the build that includes it. A Docker image build
+copies the policy files together, and a deny-by-default `.gitignore` needs allow-rules for
+all three and the `gradle/verification/` directory, or git drops the policy without a word:
+CI then warns, and the guard fails `check` through the declaration and through any of the
+files that survived.
 
 The policy trusts, and nothing else:
 
@@ -501,6 +507,10 @@ policy, since every graph differs: ArcMutate appears only where `arcmutate-licen
 exists, and a cold cache fetches BOM and parent POMs a warm one has.
 
 ### Adopting and updating
+
+A new policy is the three files and the declaration, committed together, with allow-rules
+in a deny-by-default `.gitignore`; start it from the fleet's keys as above. For a new
+policy and for every change to one:
 
 1. Run the change through every build of the repository; CI runs only the root one:
 
@@ -567,30 +577,37 @@ exists, and a cold cache fetches BOM and parent POMs a warm one has.
 
 ### The guard
 
-Once a repository has a policy, the settings plugin guards it: `verificationPolicy`,
-registered on the root project with every project's `check` and `qualityGate` depending on
-it, fails when the policy breaks the rules above. Each of the four settings must be one
+The settings plugin guards the policy: `verificationPolicy`, registered on the root project
+with every project's `check` and `qualityGate` depending on it, fails when the policy breaks
+the rules above. Each of the four settings must be one
 active `<configuration>` element written exactly; there are no ignored keys,
 `trusted-artifacts` exemptions, per-artifact `<pgp>` entries, `md5` or `sha1` pins, or
 `component` pins of `0.0.0-test`, which a regeneration run with `-PsavaBuildLocalRepo`
 writes; every `trusted-key` rule names a group, trusts no file, and uses no regex but the
 one Gradle writes for a group of at least two segments and its subgroups; a key listed in
 `version-scoped-keys.txt` is trusted only at exact versions and an unlisted key never at a
-version; a listed key no rule uses is a stale line; no committed `gradle.properties`, in the
-root or in a standalone build, relaxes the mode; and a standalone build, a direct child
+version; a listed key no rule uses is a stale line; the root `gradle.properties` carries the
+declaration, which a standalone build's own line never stands in for, and no committed
+`gradle.properties`, in the root or in a standalone build, relaxes the mode, with or without
+a policy; a keyring, a version-scoped list, a standalone
+build's links or the declaration without the policy file is a policy deleted or never
+committed and fails, while a repository with no policy and none of those is left to the CI
+notice; and a standalone build, a direct child
 directory with a settings script of its own, included by the root or not, holds the two
 files as symlinks to the root's, since a build invoked directly reads only its own
 `gradle/`; a child holding a `.git` entry is another checkout, not a build of this one. A
 standalone build that applies the settings plugin itself gets a guard of its own, which
-follows its policy link into its parent directory's build and runs the rules there; a link
-anywhere else, a dangling one, or a linker that guard would never discover is refused. The
+follows its policy link into its parent directory's build, runs the rules there and reports
+them as the parent's; a link anywhere else, a dangling one, or a linker that guard would
+never discover is refused. The
 task reads the checkout as it is, the committed files and the direct child directories'
 settings scripts, so a scratch project inside the root is seen too unless it is a clone with
 a `.git` of its own; a mode passed on the command line or set in `~/.gradle` is beyond it,
 as is the configuration cache, which Gradle reuses across `--dependency-verification`
 changes. CI warns, through sava-build's root action, when a repository has no policy or a
-committed `gradle.properties` relaxes the mode; it becomes an error once the fleet carries
-policies. A repository whose existing policy breaks the rules fails `check` on adoption:
+committed `gradle.properties` relaxes the mode, on any plugin version; the no-policy warning
+becomes an error once the fleet carries policies. A repository whose existing policy breaks
+the rules fails `check` on adoption:
 bring the policy into line first, starting from the fleet's keys.
 
 ### Unpublished sava-build
@@ -600,9 +617,10 @@ output, so a strict policy refuses them at settings-plugin resolution. Pass
 `--dependency-verification lenient` with the property, for that flow only; it reports the
 refusals instead of failing, and `tools/local-fuzz.sh` passes it for every consumer run and
 fails the run if anything else is refused. Never add trust for `0.0.0-test` to a policy, and
-never put `org.gradle.dependency.verification` in a committed or a user-wide
+never relax `org.gradle.dependency.verification` in a committed or a user-wide
 `gradle.properties`: the first `verificationPolicy` refuses, the second relaxes every build
-on the machine where no guard can see it. See [Local adoption and releasing](#local-adoption-and-releasing).
+on the machine where no guard can see it; the committed value is `strict`, the policy's
+declaration. See [Local adoption and releasing](#local-adoption-and-releasing).
 
 ### Engine controls
 
