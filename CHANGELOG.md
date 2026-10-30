@@ -1,5 +1,37 @@
 # Changelog
 
+## [21.8.0](https://github.com/sava-software/sava-build/compare/21.7.2...21.8.0) (2026-10-30)
+
+
+### Features
+
+* catch a deleted or uncommitted dependency verification policy ([d80d78f](https://github.com/sava-software/sava-build/commit/d80d78f47d445083d7ab0a292b97fe45981daa19))
+* guard every repository's dependency verification policy from the settings plugin ([b0dd123](https://github.com/sava-software/sava-build/commit/b0dd123d34c1d9d040f36b0f97966500cb72b4a4))
+* **hardening:** resolve the PIT, ArcMutate and Jazzer artifacts without a campaign ([344c316](https://github.com/sava-software/sava-build/commit/344c3161875febc1f0f46efe2fda2f2a7ff2d67d))
+
+
+### Bug Fixes
+
+* **hardening:** pair baseline siblings by one least-cost objective, exact matches included ([aa5dc42](https://github.com/sava-software/sava-build/commit/aa5dc42a01b28003ff9980857c3aa3ce6e6bbdd4))
+* **hardening:** run local-repo consumer builds with lenient dependency verification ([a7a53c8](https://github.com/sava-software/sava-build/commit/a7a53c850c706737baedb077088e416594bcde40))
+
+
+### Build System
+
+* declare the template digest input relocatable and move the repository into settings ([bc1c419](https://github.com/sava-software/sava-build/commit/bc1c419cfeace7959f68f9348b58ee830f3fb0ea))
+* keep the dependency verification engine controls in tools ([2b302cb](https://github.com/sava-software/sava-build/commit/2b302cb214af96af5ab0148db65ea9ae405d8f50))
+* trust Gradle's publishing key and align the verification policy with the fleet's rules ([3df327d](https://github.com/sava-software/sava-build/commit/3df327d735a330784581c4babc8c5706dc51f4d4))
+
+
+### CI
+
+* name a verification refusal in the fork pull request's offline hint ([113b8f4](https://github.com/sava-software/sava-build/commit/113b8f45fdcdb213295b0880546716d00738f2c4))
+
+
+### Documentation
+
+* rewrite Verifying sava artifacts around the reviewed policy ([57838d4](https://github.com/sava-software/sava-build/commit/57838d48e9227c12310495cc9b1ae0db80d5a11c))
+
 ## [21.7.2](https://github.com/sava-software/sava-build/compare/21.7.1...21.7.2) (2026-10-28)
 
 
