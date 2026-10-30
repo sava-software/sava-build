@@ -319,7 +319,7 @@ kotlin.sourceSets["main"].kotlin.srcDir(generateHardeningToolDefaults)
 val generateHardeningTemplateDigest = tasks.register("generateHardeningTemplateDigest") {
   description = "Generates HardeningTemplateDigest.kt from the agent-instructions template in HARDENING.md"
   val docFile = layout.projectDirectory.file("HARDENING.md").asFile
-  inputs.file(docFile)
+  inputs.file(docFile).withPropertyName("template").withPathSensitivity(PathSensitivity.NONE)
   val outputDir = layout.buildDirectory.dir("generated/sources/hardening-template-digest/kotlin")
   outputs.dir(outputDir)
   doLast {
@@ -647,10 +647,6 @@ abstract class DeclaredReads : CommandLineArgumentProvider {
   )
 }
 
-repositories {
-  gradlePluginPortal()
-}
-
 gradlePlugin {
   plugins {
     // Named after the plugin id so the marker publication/task names match the
@@ -794,6 +790,7 @@ tasks.named<PublishToMavenRepository>(savaTestRepoPublishTask) {
 // (this build produces the convention plugins, so it cannot apply them to itself). ---
 
 val cleanSavaCentralStaging = tasks.register<Delete>("cleanSavaCentralStaging") {
+  description = "Deletes the Maven Central staging directory before a publication into it."
   delete(centralStagingDir)
 }
 tasks.withType<PublishToMavenRepository>().configureEach {
