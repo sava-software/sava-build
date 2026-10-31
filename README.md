@@ -513,7 +513,10 @@ copy of a policy, since every graph differs: ArcMutate appears only where
 Trim per rule, not per key: a key the graph meets keeps only the scopes the graph resolves
 (a write run from an empty `<trusted-keys/>` with the fleet's keyring names them), a key the
 graph never meets leaves with its keyring block and any list line, and the proof that nothing
-was lost is a write run over the trimmed files that changes nothing.
+was lost is a write run over the trimmed files that changes nothing. A write run names
+nothing that only the IDE sync or a workflow's init script resolves (the Gradle sources zip
+under `gradle:gradle`, Groovy's sources, the dependency-graph plugin), so those rules keep
+their scopes and keys through a trim, and step 5 is what checks them.
 
 ### Adopting and updating
 
@@ -573,9 +576,11 @@ policy and for every change to one:
    signature is never checked; it never removes a stale entry; and it may consult a key
    server while writing, so authenticate any key it adds. `--export-keys` writes every key
    Gradle met during the run together with every key already in the keyring file, so an
-   export never drops a key: after a prune, delete the pruned entries' blocks by hand (a
-   rule's id may be a subkey's fingerprint, so match a block by its primary or subkey
-   fingerprint), then write once more, which leaves the trimmed file unchanged. The
+   export never drops a key: after a prune, delete by hand only the blocks that no remaining
+   rule or `<pgp>` entry names (a key that keeps any scope keeps its block; a rule's id may
+   be a subkey's fingerprint, so match a block by its primary or subkey fingerprint, whose
+   last sixteen hex digits are the `pub` and `sub` labels in the file), then write once
+   more, which leaves the trimmed file unchanged. The
    committed files should be Gradle's own output for the graph, so that a regeneration with
    no dependency change is a no-op and any diff is a change to review.
 
@@ -840,8 +845,9 @@ which it strips of comments on every write:
   every key Gradle met while verifying, referenced by a rule or not, together with every key
   already in the keyring (a key in the keyring grants nothing; the trust is the metadata's),
   so an export after a prune keeps the pruned entries' keys; prune by hand against a
-  from-scratch regeneration, delete the blocks no rule names, and confirm the keyring's key
-  set afterwards.
+  from-scratch regeneration, delete the blocks no remaining rule names by its primary or
+  subkey fingerprint (the file labels blocks with the last sixteen hex digits), and confirm
+  the keyring's key set afterwards.
 - The unsigned `org.gradle.kotlin.kotlin-dsl` plugin marker is pinned by SHA-256 at the
   version the wrapper embeds (9.7.1 took 6.7.3, 9.8.x takes 6.7.6): a wrapper bump moves it,
   failing with "Dependency verification failed ... kotlin-dsl.gradle.plugin-<v>.pom", so

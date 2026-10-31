@@ -60,6 +60,8 @@ class GcpKmsExclusionsFunctionalTest {
         dependencies {
           implementation("com.google.cloud:google-cloud-kms:2.102.0")
           testImplementation("com.google.api:gax:2.87.0")
+          testImplementation("com.google.api:gax-grpc:2.87.0:testlib")
+          testImplementation("io.grpc:grpc-xds:1.83.0")
           implementation("org.junit.jupiter:junit-jupiter-api:6.1.3")
         }
 
@@ -105,11 +107,18 @@ class GcpKmsExclusionsFunctionalTest {
     val lines = result.output.lines()
     val kms = lines.single { it.startsWith("implementation com.google.cloud:google-cloud-kms ") }
     val gax = lines.single { it.startsWith("testImplementation com.google.api:gax ") }
+    val testlib = lines.single { it.startsWith("testImplementation com.google.api:gax-grpc ") }
+    val xds = lines.single { it.startsWith("testImplementation io.grpc:grpc-xds ") }
     val junit = lines.single { it.startsWith("implementation org.junit.jupiter:junit-jupiter-api ") }
     listOf(kms, gax).forEach { line ->
       assertTrue(line.contains(" excludes ${excluded.size}: "), line)
       excluded.forEach { assertTrue(line.contains(" $it"), "$it missing from: $line") }
     }
+    // a classifier dependency (gax-grpc's test library) keeps the in-process channel it uses
+    assertTrue(testlib.contains(" excludes ${excluded.size - 1}: "), testlib)
+    assertFalse(testlib.contains(" io.grpc:grpc-inprocess"), testlib)
+    // the DirectPath opt-in: grpc-xds declared directly loses only the dev.cel jars and threeten-extra
+    assertTrue(xds.contains(" excludes 4: dev.cel:common dev.cel:protobuf dev.cel:runtime org.threeten:threeten-extra"), xds)
     assertTrue(junit.contains(" excludes 0: "), junit)
 
     val pom = File(fixtureDir, "build/publications/maven/pom-default.xml").readText()
