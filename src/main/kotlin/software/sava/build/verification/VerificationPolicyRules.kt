@@ -236,7 +236,8 @@ object VerificationPolicyRules {
     }
     problems += relaxed.map {
       "${setting(it)}; verification stays strict for every committed build. " +
-        "Only a -PsavaBuildLocalRepo run passes --dependency-verification lenient, on its own command line."
+        "Only a -PsavaBuildLocalRepo run, or one that includes a sibling repository the policy refuses, " +
+        "passes --dependency-verification lenient, on its own command line."
     }
     problems += invalid
 

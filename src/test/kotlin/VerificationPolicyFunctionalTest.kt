@@ -101,6 +101,19 @@ class VerificationPolicyFunctionalTest {
   }
 
   @Test
+  fun `the jlink image task depends on the guard too, so a Dockerfile's image-only run checks the policy`() {
+    writeFixture()
+    File(fixtureDir, "build.gradle.kts").appendText("tasks.register(\"image\")\n")
+    val plan = run("image", "--dry-run")
+    val guard = plan.output.indexOf(":verificationPolicy SKIPPED")
+    val image = plan.output.indexOf(":image SKIPPED")
+    assertTrue(guard >= 0 && image > guard, plan.output)
+    // and a task of any other name is left alone
+    File(fixtureDir, "build.gradle.kts").appendText("tasks.register(\"imageless\")\n")
+    assertFalse(run("imageless", "--dry-run").output.contains(":verificationPolicy"), "imageless must not depend on the guard")
+  }
+
+  @Test
   fun `a standalone build's own guard follows its policy link into its parent's build and refuses any other link`() {
     writeFixture()
     // a standalone build that applies the settings plugin itself: its policy and keyring are

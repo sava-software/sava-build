@@ -38,14 +38,17 @@ class VerificationPolicyRootPlugin : Plugin<Project> {
 }
 
 /**
- * Makes a project's `check` and `qualityGate` depend on the root's [VerificationPolicyTask],
- * so the policy is guarded wherever CI runs `check`, as sava's docs-in-sync rule is. The two
- * are matched by name, so no other task is realized to ask for its name.
+ * Makes a project's `check`, `qualityGate` and `image` depend on the root's
+ * [VerificationPolicyTask], so the policy is guarded wherever CI runs `check`, as sava's
+ * docs-in-sync rule is, and wherever a Dockerfile runs the jlink `image` task alone, where a
+ * build context that lost the policy files would otherwise build an unverified image with no
+ * word while CI stays green. The three are matched by name, so no other task is realized to
+ * ask for its name.
  */
 class VerificationPolicyCheckPlugin : Plugin<Project> {
 
   override fun apply(project: Project) {
-    project.tasks.named { it == "check" || it == "qualityGate" }.configureEach {
+    project.tasks.named { it == "check" || it == "qualityGate" || it == "image" }.configureEach {
       dependsOn(":${VerificationPolicyTask.TASK_NAME}")
     }
   }
