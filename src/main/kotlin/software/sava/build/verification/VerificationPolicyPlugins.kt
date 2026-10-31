@@ -4,7 +4,7 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 
 /**
- * Registers [VerificationPolicyTask] on the root project, once per build; the settings plugin
+ * Registers [VerificationPolicyTask] and [VerificationKeyStatusTask] on the root project, once per build; the settings plugin
  * applies it there and [VerificationPolicyCheckPlugin] everywhere. The root is the one project
  * every build has, and the policy is repository-wide, so the task needs no `base` plugin on the
  * root and nothing a module could apply twice.
@@ -21,6 +21,18 @@ class VerificationPolicyRootPlugin : Plugin<Project> {
       // Gradle reads the policy from the settings directory, the root project's unless the
       // settings script relocates it.
       rootDirectory.set(project.layout.settingsDirectory)
+    }
+    // Network-bound and outside check: the release checklist and a policy edit run it by name.
+    project.tasks.register(VerificationKeyStatusTask.TASK_NAME, VerificationKeyStatusTask::class.java) {
+      group = "verification"
+      description = "Asks the key servers whether a key the dependency verification policy trusts was revoked or has expired."
+      rootDirectory.set(project.layout.settingsDirectory)
+      servers.set(
+        project.providers.gradleProperty("savaBuildKeyServers")
+          .map { it.split(',').map(String::trim).filter(String::isNotEmpty) }
+          .orElse(KeyStatus.DEFAULT_SERVERS)
+      )
+      receipt.set(project.layout.buildDirectory.file("reports/verification/key-status.tsv"))
     }
   }
 }

@@ -57,7 +57,7 @@ owes — not habit in either direction:
 |---|---|---|
 | While working | the module's `test` (or `--tests` for the touched classes) | The change works. |
 | Once, when the work is complete and reviewed, before it is pushed | each `pitest<Suite>` whose mutated code the unpushed range can reach, including through changed tests; `./gradlew qualityGate` from the Gradle root when those suites are unclear | No new unkilled mutants anywhere the range lives. |
-| Before a release | `hardeningCertify` on every module; an explicit local `fuzzAll -PmaxFuzzTime=<seconds> -PmaxParallelFuzzTargets=<count>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
+| Before a release | `hardeningCertify` on every module; `verificationKeyStatus` from the root where a dependency verification policy is committed; an explicit local `fuzzAll -PmaxFuzzTime=<seconds> -PmaxParallelFuzzTargets=<count>` campaign when fuzz targets exist; JMH A/B vs the previous release where the project has a benchmarked performance contract | Every mutation result was freshly observed and provenance-bound; no key the policy trusts for every version has been revoked (README, Key status); nothing regressed anywhere; configured fuzz boundaries did not crash; applicable performance contracts did not regress. |
 
 A release command without provenance is not durable evidence. Record the repository
 commit and clean-tree state, exact selectors and options, exit result, retained-log

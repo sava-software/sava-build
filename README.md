@@ -560,7 +560,8 @@ policy and for every change to one:
      the same group gets the same rule and a note in the list's header; a key with neither
      gets a rule at the exact version and a line in the list. A revoked or superseded key
      (gradle.org/keys lists Gradle Inc.'s) is a key that must not vouch, whatever its rule said
-     before: exact versions and a list line.
+     before: exact versions and a list line. Gradle sees no revocation; `verificationKeyStatus`
+     (Key status, below) is how one is learned.
    - **An unsigned artifact**: review it, then pin its SHA-256 in a `component` entry.
 
 3. Gradle can draft these entries. Run it online, on a clean tree, from the checkout root
@@ -639,6 +640,34 @@ committed `gradle.properties` relaxes the mode, on any plugin version; the no-po
 becomes an error once the fleet carries policies. A repository whose existing policy breaks
 the rules fails `check` on adoption:
 bring the policy into line first, starting from the fleet's keys.
+
+### Key status
+
+Gradle verifies a signature against the committed keyring and nothing else: a key its
+publisher has revoked, or has let expire, goes on vouching for every release its rule covers,
+and the keyring Gradle's export writes cannot even hold a revocation certificate.
+`verificationKeyStatus`, registered on the root project beside the guard and outside `check`
+because it asks the network, fetches every key the policy trusts (each `trusted-key` id and
+each per-artifact `pgp` value) from keys.openpgp.org and keyserver.ubuntu.com, reads the
+revocation and the expiry from the copies they hold, and writes
+`build/reports/verification/key-status.tsv`, one dated line per key. A revoked key still
+trusted without a version fails the task, and so does a key whose status a server left
+undecided, by a timeout, a refusal or an answer that is not a key: a question not answered is
+not a pass, and the run is repeated when the servers answer. An expired key, a revoked key already at exact
+versions, a key no server holds, an expired or revoked signing subkey of a current key, and a
+key whose expiry no server copy tells warn: publishers do sign with expired keys and Gradle
+accepts those signatures, a revoked key at exact versions is step 2's answer already given, a
+key no server holds was authenticated from the publisher's own file, and keys.openpgp.org
+serves a key without its user ids, and so without the self-signature that carries its expiry,
+until the holder verifies an address (the other server's copy then speaks). Run it on the
+release checklist beside `hardeningCertify` (HARDENING.md), and after a policy edit beside
+step 1's check; a revocation with a soft reason (superseded, retired) is answered by step 2,
+the releases signed before the date at exact versions, the key among the list's keys that must
+not vouch, and a rule for the publisher's new key once confirmed, while a hard one (key
+compromised, or no reason given) means its signatures prove nothing: the key leaves the policy
+and what it signed is pinned by checksum after review. `-PsavaBuildKeyServers=<url>,<url>` replaces the two
+servers, for a mirror or a test. The task exists because Gradle Inc.'s publishing key, revoked
+on 2026-08-08, was found trusted version-free in every fleet policy on 2026-10-31.
 
 ### Unpublished sava-build
 
