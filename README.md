@@ -507,8 +507,8 @@ The policy trusts, and nothing else:
   committed keyring; `verify-metadata` and `verify-signatures` are true and `keyring-format`
   armored; there are no ignored keys and no `trusted-artifacts` exemptions.
 
-Start a repository from the keys this repository, sava and ravina trust, never from a bulk
-copy of a policy, since every graph differs: ArcMutate appears only where
+Start a repository from the keys this repository and the adopted consumers trust (sava, ravina,
+idl-clients, idl-src-gen), never from a bulk copy of a policy, since every graph differs: ArcMutate appears only where
 `arcmutate-licence.txt` exists, and a cold cache fetches BOM and parent POMs a warm one has.
 Trim per rule, not per key: a key the graph meets keeps only the scopes the graph resolves
 (a write run from an empty `<trusted-keys/>` with the fleet's keyring names them), a key the
