@@ -469,7 +469,11 @@ line changes nothing for Gradle and declares the policy to [the guard](#the-guar
 then fails `check` should the file go missing. Gradle reads only the invoking build's
 `gradle/` directory, so a standalone build in the repository, a directory with a settings
 script of its own such as sava's `jmh/` and `soak/`, holds symlinks to the metadata and the
-keyring; an included build is covered by the build that includes it. A Docker image build
+keyring; an included build is covered by the build that includes it: an `includeBuild` of a
+sibling repository is verified under this policy too, its own build logic included, and gets
+no trust of its own, since CI never resolves that graph, and a refusal there (sava's nested
+`gradle/plugins` build, for one, whose artifacts no other policy has met) is answered with
+`--dependency-verification lenient` on that run, never with a rule. A Docker image build
 copies the policy files together, and a deny-by-default `.gitignore` needs allow-rules for
 all three and the `gradle/verification/` directory, or git drops the policy without a word:
 CI then warns, and the guard fails `check` through the declaration and through any of the
