@@ -479,22 +479,26 @@ The policy trusts, and nothing else:
 
 - **Publisher keys**, each for the group or module it signs and for no version, so a release
   signed by the same key passes without an edit. Confirm a fingerprint from the publisher
-  (its KEYS file, README or site), never from a key server alone; many of these keys also
-  appear in gradle/gradle's own policy. The sava key is trusted for `software.sava` and its
-  subgroups:
+  (its KEYS file, README or site, or the key registered on the GitHub account of one of its
+  maintainers), never from a key server alone. A key whose publisher publishes no fingerprint
+  stays version-free only where gradle/gradle's own policy trusts it for the same group, and
+  the header of the list below names it as trusted on that, a note the guard does not read;
+  with neither source the key goes on the list. The sava key is trusted for `software.sava`
+  and its subgroups:
 
   ```xml
   <trusted-key id="01870AD9C9DFBB1F3502D06FB89447F3AD5E2ABF" group="^software[.]sava($|([.].*))" regex="true"/>
   ```
 
 - **Keys listed in `gradle/verification/version-scoped-keys.txt`**, one key per line with
-  the reason, trusted only at the exact versions in the policy: the PIT and ArcMutate
-  signers, whose publisher identity no publisher-published fingerprint, GitHub-registered key
-  or verified key-server identity authenticates, and expired, DSA-1024 and retired release
-  managers' keys that signed old releases in the graph and must not vouch for new ones. A
-  tool bump moves the version after the release is checked; a new release under any other
-  listed key is a reason to stop and find out why an old key signed it. Every repository
-  with a policy has the file, comments alone when no key is version-scoped.
+  the reason, trusted only at the exact versions in the policy: keys listed as
+  unauthenticated, the PIT and ArcMutate signers and any library signer that neither source
+  above authenticates, and keys listed as expired, DSA-1024 or a retired release manager's,
+  which signed old releases in the graph and must not vouch for new ones. A bump under a key
+  listed as unauthenticated moves the version after the release is checked, unless its line
+  gives a reason to stop; a new release under a key that must not vouch is a reason to stop
+  and find out why an old key signed it. Every repository with a policy has the file,
+  comments alone when no key is version-scoped.
 - **SHA-256 checksums** for artifacts that are not signed, such as the jmh plugin, the
   `org.gradle.kotlin.kotlin-dsl` plugin marker the wrapper embeds (its pin moves with a
   wrapper bump) and the antlr libraries PIT depends on, each reviewed before it is pinned.
@@ -502,9 +506,9 @@ The policy trusts, and nothing else:
   committed keyring; `verify-metadata` and `verify-signatures` are true and `keyring-format`
   armored; there are no ignored keys and no `trusted-artifacts` exemptions.
 
-Start a repository from the keys this repository and sava trust, never from a bulk copy of a
-policy, since every graph differs: ArcMutate appears only where `arcmutate-licence.txt`
-exists, and a cold cache fetches BOM and parent POMs a warm one has.
+Start a repository from the keys this repository, sava and ravina trust, never from a bulk
+copy of a policy, since every graph differs: ArcMutate appears only where
+`arcmutate-licence.txt` exists, and a cold cache fetches BOM and parent POMs a warm one has.
 
 ### Adopting and updating
 
@@ -530,14 +534,19 @@ policy and for every change to one:
    sava).
 
 2. A "Dependency verification failed" report names each refused artifact and the reason.
-   - **A PIT or ArcMutate bump**: check the release, then change the `version` on that key's
-     rule.
-   - **A new release signed by any other key in `version-scoped-keys.txt`**: stop; do not
-     extend its version. An existing old release that a dependency change brings into the
-     graph under one of these keys can be added as another exact version once checked.
+   - **A bump under a key listed as unauthenticated** (the PIT and ArcMutate signers, a
+     library signer with no publisher source): check the release, then change the `version`
+     on that key's rule, unless its line gives a reason to stop. Finding the publisher source
+     later widens the rule to the group or module the key signs and takes the key off the
+     list, in one edit, unless the key is also one that must not vouch.
+   - **A new release signed by a key that must not vouch**: stop; do not extend its
+     version. An existing old release that a dependency change brings into the graph under
+     one of these keys can be added as another exact version once checked.
    - **A new signing key**: confirm the fingerprint from the publisher, then add a
      `trusted-key` scoped to the publisher's group or module, and its public key to the
-     keyring.
+     keyring. With no publisher source, a key that gradle/gradle's own policy trusts for the
+     same group gets the same rule and a note in the list's header; a key with neither gets
+     a rule at the exact version and a line in the list.
    - **An unsigned artifact**: review it, then pin its SHA-256 in a `component` entry.
 
 3. Gradle can draft these entries. Run it online, on a clean tree, from the checkout root
@@ -836,7 +845,8 @@ which it strips of comments on every write:
   are trusted only at the exact versions in the policy, each for the reason the file gives:
   expired keys, DSA-1024 keys and retired release managers' keys that signed old releases in
   the graph and must not vouch for new ones. A regeneration that widens one of them, or that
-  narrows a publisher key to the one version it saw, is a change to refuse.
+  narrows a publisher key to the one version it saw, is a change to refuse. The file's header
+  names the gson key, trusted for its group on gradle/gradle's corroboration alone.
 - IntelliJ's sync, with download sources on, resolves artifacts no command-line build does:
   the Gradle sources zip, which Gradle Inc.'s publishing key covers, Groovy's sources under
   its group key, and the jmh plugin's unsigned sources jar, pinned with the plugin.

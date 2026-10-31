@@ -2,6 +2,11 @@
 # The verificationPolicy check (part of check) fails when a rule for one of these keys has
 # no version, and when a key that is not listed here has one. One key per line:
 # <fingerprint> <why it stays version-scoped>
+#
+# Not listed, by decision: Eamonn McManus's key (C7BE5BCC9FEC15518CFDA882B0F3710FA64900E7),
+# which signs gson, is trusted for its group with no version on the corroboration of
+# gradle/gradle's own policy alone, since no publisher-published fingerprint or
+# GitHub-registered key authenticates it.
 
 # Keys that signed old releases in the graph and must not vouch for new ones: their
 # owners release with other keys now, so a new version under them is a reason to stop.
