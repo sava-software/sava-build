@@ -60,8 +60,9 @@ val kmsUnusedRuntimeDependencies = listOf(
 )
 
 // grpc-xds bundles its own relocated copy of CEL and never loads the three dev.cel jars its
-// POM declares, which are not modules and split a package between them. A module that opts
-// into DirectPath by declaring grpc-xds directly (below) gets them off that edge here, so no
+// POM declares, which are not modules and split a package between them. A module that wants
+// DirectPath (attemptDirectPath on GCE, below) and so declares grpc-xds directly gets them off
+// that edge here, so no
 // module patch is needed for them; a graph that reaches dev.cel another way patches the
 // three jars itself (they merge into dev.cel:common).
 val xdsUnusedRuntimeDependencies = listOf(
