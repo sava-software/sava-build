@@ -609,8 +609,10 @@ policy and for every change to one:
 ### The guard
 
 The settings plugin guards the policy: `verificationPolicy`, registered on the root project
-with every project's `check` and `qualityGate` depending on it, fails when the policy breaks
-the rules above. Each of the four settings must be one
+with every project's `check`, `qualityGate` and jlink `image` task depending on it (the last
+so that a Dockerfile's image-only run checks the policy too, since a build context that lost
+the policy files would otherwise build an unverified image with no word while CI stays
+green), fails when the policy breaks the rules above. Each of the four settings must be one
 active `<configuration>` element written exactly; there are no ignored keys,
 `trusted-artifacts` exemptions, per-artifact `<pgp>` entries, `md5` or `sha1` pins, or
 `component` pins of `0.0.0-test`, which a regeneration run with `-PsavaBuildLocalRepo`
@@ -673,7 +675,8 @@ on 2026-08-08, was found trusted version-free in every fleet policy on 2026-10-3
 
 The `0.0.0-test` artifacts that `-PsavaBuildLocalRepo` resolves are unsigned local build
 output, so a strict policy refuses them at settings-plugin resolution. Pass
-`--dependency-verification lenient` with the property, for that flow only; it reports the
+`--dependency-verification lenient` with the property, for that flow and for a run that
+includes a sibling repository the policy refuses (above), and for nothing else; it reports the
 refusals instead of failing, and `tools/local-fuzz.sh` passes it for every consumer run and
 fails the run if anything else is refused. Never add trust for `0.0.0-test` to a policy, and
 never relax `org.gradle.dependency.verification` in a committed or a user-wide
@@ -714,7 +717,8 @@ previously published jar — so chain the two rather than remembering the first:
 Run from the consumer's directory. The `0.0.0-test` publication is unsigned, so a consumer
 that enforces [dependency verification](#verifying-sava-artifacts) refuses it under the
 strict default; `--dependency-verification lenient` reports it instead of failing. Pass the
-flag on every command that carries the property, and on no other; with the property in
+flag on every command that carries the property, and otherwise only on a run that includes a
+sibling repository the policy refuses; with the property in
 `~/.gradle/gradle.properties`, that is every command until it is removed. A republished
 `0.0.0-test` is picked up immediately (`file:` repositories are re-read on each resolution),
 so the chained form makes the stale case unreachable instead of merely detectable. In a
