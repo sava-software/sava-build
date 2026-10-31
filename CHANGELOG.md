@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.8.1](https://github.com/sava-software/sava-build/compare/21.8.0...21.8.1) (2026-10-31)
+
+
+### Documentation
+
+* state the bump rule for unauthenticated library signers and corroborated keys ([07ff6f1](https://github.com/sava-software/sava-build/commit/07ff6f1d91d4f073112da7ec31f867f091a0dc4e))
+
 ## [21.8.0](https://github.com/sava-software/sava-build/compare/21.7.2...21.8.0) (2026-10-30)
 
 
