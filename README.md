@@ -564,10 +564,13 @@ policy and for every change to one:
    it saw, as a rule with a version or as a per-artifact `<pgp>` entry; it writes an
    `<ignored-keys>` fallback, with checksums, for a key it cannot find, after which that
    signature is never checked; it never removes a stale entry; and it may consult a key
-   server while writing, so authenticate any key it adds. `--export-keys` writes only the
-   keys the resulting metadata references, so an export after a prune drops the pruned
-   entries' keys. The committed files should be Gradle's own output for the graph, so that a
-   regeneration with no dependency change is a no-op and any diff is a change to review.
+   server while writing, so authenticate any key it adds. `--export-keys` writes every key
+   Gradle met during the run together with every key already in the keyring file, so an
+   export never drops a key: after a prune, delete the pruned entries' blocks by hand (a
+   rule's id may be a subkey's fingerprint, so match a block by its primary or subkey
+   fingerprint), then write once more, which leaves the trimmed file unchanged. The
+   committed files should be Gradle's own output for the graph, so that a regeneration with
+   no dependency change is a no-op and any diff is a change to review.
 
 4. A warm cache can hide parent-POM metadata that a cold one fetches. Validate a new parent
    or BOM once with an empty `GRADLE_USER_HOME`: copy only the `org.gradle.java.*` lines of
@@ -825,10 +828,11 @@ which it strips of comments on every write:
   regeneration with no dependency change is a no-op; a diff is a change to review. Run it
   online: with `--offline`, Gradle 9.8.2 wrote SHA-256 pins for POMs whose cached signatures
   it did not consult. Regeneration never prunes a stale entry, and `--export-keys` writes
-  every key Gradle met while verifying, referenced by a rule or not (a key in the keyring
-  grants nothing; the trust is the metadata's), so an export after a prune drops the keys
-  only the pruned entries used; prune by hand against a from-scratch regeneration, and
-  confirm the keyring's key set afterwards.
+  every key Gradle met while verifying, referenced by a rule or not, together with every key
+  already in the keyring (a key in the keyring grants nothing; the trust is the metadata's),
+  so an export after a prune keeps the pruned entries' keys; prune by hand against a
+  from-scratch regeneration, delete the blocks no rule names, and confirm the keyring's key
+  set afterwards.
 - The unsigned `org.gradle.kotlin.kotlin-dsl` plugin marker is pinned by SHA-256 at the
   version the wrapper embeds (9.7.1 took 6.7.3, 9.8.x takes 6.7.6): a wrapper bump moves it,
   failing with "Dependency verification failed ... kotlin-dsl.gradle.plugin-<v>.pom", so
