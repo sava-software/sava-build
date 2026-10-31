@@ -509,6 +509,10 @@ The policy trusts, and nothing else:
 Start a repository from the keys this repository, sava and ravina trust, never from a bulk
 copy of a policy, since every graph differs: ArcMutate appears only where
 `arcmutate-licence.txt` exists, and a cold cache fetches BOM and parent POMs a warm one has.
+Trim per rule, not per key: a key the graph meets keeps only the scopes the graph resolves
+(a write run from an empty `<trusted-keys/>` with the fleet's keyring names them), a key the
+graph never meets leaves with its keyring block and any list line, and the proof that nothing
+was lost is a write run over the trimmed files that changes nothing.
 
 ### Adopting and updating
 
@@ -576,7 +580,9 @@ policy and for every change to one:
    or BOM once with an empty `GRADLE_USER_HOME`: copy only the `org.gradle.java.*` lines of
    your `gradle.properties`, and pass package credentials as `ORG_GRADLE_PROJECT_*`
    environment variables. Offline use needs an online run first; cached signature files
-   alone do not prove an offline run can resolve them.
+   alone do not prove an offline run can resolve them. A cold run resolves and verifies every
+   class path but re-executes no task whose outputs are present, since task history lives in
+   the project's own `.gradle` directory: it proves resolution, not a test run.
 
 5. Sync IntelliJ as well, with download sources on. It resolves artifacts through the same
    policy that no command-line build does: the Gradle sources zip, which Gradle Inc.'s
