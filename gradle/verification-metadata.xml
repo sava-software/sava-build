@@ -9,7 +9,10 @@
          <trusted-key id="019082BC00E0324E2AEF4CF00D3B328562A119A7" group="org.openjdk.jmh"/>
          <trusted-key id="0CDE80149711EB46DFF17AE421A24B3F8B0F594A" group="org.apache" name="apache" version="16"/>
          <trusted-key id="10F3C7A02ECA55E502BADCF3991EFB94DB91127D" group="org.ow2" name="ow2"/>
-         <trusted-key id="1BD97A6A154E7810EE0BC832E2F38302C8075E3D" group="^org[.]gradle($|([.].*))" regex="true"/>
+         <trusted-key id="1BD97A6A154E7810EE0BC832E2F38302C8075E3D">
+            <trusting group="org.gradle.kotlin" name="gradle-kotlin-dsl-plugins" version="6.7.6"/>
+            <trusting group="org.gradle.toolchains" name="foojay-resolver" version="1.0.0"/>
+         </trusted-key>
          <trusted-key id="1D217F8475EEE9F19AB8DD6B793FD5751A0F0780" group="com.squareup.okio"/>
          <trusted-key id="2E3A1AFFE42B5F53AF19F780BCF4173966770193" group="org.jetbrains" name="annotations" version="13.0"/>
          <trusted-key id="34441E504A937F43EB0DAEF96A65176A0FB1CD0B" group="org.apache.groovy"/>

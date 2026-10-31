@@ -481,8 +481,9 @@ The policy trusts, and nothing else:
   signed by the same key passes without an edit. Confirm a fingerprint from the publisher
   (its KEYS file, README or site, or the key registered on the GitHub account of one of its
   maintainers), never from a key server alone. A key whose publisher publishes no fingerprint
-  stays version-free only where gradle/gradle's own policy trusts it for the same group, and
-  the header of the list below names it as trusted on that, a note the guard does not read;
+  stays version-free only where gradle/gradle's own policy trusts it within the same group (for the
+  group, or for a module of it), and the header of the list below names it as trusted on that,
+  a note the guard does not read;
   with neither source the key goes on the list. The sava key is trusted for `software.sava`
   and its subgroups:
 
@@ -548,9 +549,11 @@ policy and for every change to one:
      one of these keys can be added as another exact version once checked.
    - **A new signing key**: confirm the fingerprint from the publisher, then add a
      `trusted-key` scoped to the publisher's group or module, and its public key to the
-     keyring. With no publisher source, a key that gradle/gradle's own policy trusts for the
-     same group gets the same rule and a note in the list's header; a key with neither gets
-     a rule at the exact version and a line in the list.
+     keyring. With no publisher source, a key that gradle/gradle's own policy trusts within
+     the same group gets the same rule and a note in the list's header; a key with neither
+     gets a rule at the exact version and a line in the list. A revoked or superseded key
+     (gradle.org/keys lists Gradle Inc.'s) is a key that must not vouch, whatever its rule said
+     before: exact versions and a list line.
    - **An unsigned artifact**: review it, then pin its SHA-256 in a `component` entry.
 
 3. Gradle can draft these entries. Run it online, on a clean tree, from the checkout root
@@ -856,7 +859,8 @@ which it strips of comments on every write:
   expired keys, DSA-1024 keys and retired release managers' keys that signed old releases in
   the graph and must not vouch for new ones. A regeneration that widens one of them, or that
   narrows a publisher key to the one version it saw, is a change to refuse. The file's header
-  names the gson key, trusted for its group on gradle/gradle's corroboration alone.
+  names the keys trusted on gradle/gradle's corroboration alone: gson, jmh, javaparser and
+  kotlinx, after the fleet's per-key source audit of 2026-10-31.
 - IntelliJ's sync, with download sources on, resolves artifacts no command-line build does:
   the Gradle sources zip, which Gradle Inc.'s publishing key covers, Groovy's sources under
   its group key, and the jmh plugin's unsigned sources jar, pinned with the plugin.
