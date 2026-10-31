@@ -1,5 +1,30 @@
 # Changelog
 
+## [21.8.1](https://github.com/sava-software/sava-build/compare/21.8.0...21.8.1) (2026-10-31)
+
+
+### Features
+
+* **gcp-kms:** exclude the runtime dependencies the KMS client never uses ([8280714](https://github.com/sava-software/sava-build/commit/8280714c147b2488eb0bc95f8aedf3a75bd035f2))
+
+
+### Bug Fixes
+
+* **gcp-kms:** keep the DirectPath opt-in buildable and correct the reasoning the review refuted ([f83f84b](https://github.com/sava-software/sava-build/commit/f83f84b65d04cedf363e7d6f1235fb4810ec71f5))
+
+
+### Build System
+
+* version-scope Gradle Inc.'s revoked publishing key and record the fleet's key audit ([0c72b14](https://github.com/sava-software/sava-build/commit/0c72b146d0b58c5de2354feedea280f79e1f3632))
+
+
+### Documentation
+
+* name every adopted consumer as a starting set for a new policy, released as a patch ([27443a4](https://github.com/sava-software/sava-build/commit/27443a4593415dc4ac5796241cea44e7c1128e1a))
+* say that the key export keeps every key already in the keyring ([c55bcd2](https://github.com/sava-software/sava-build/commit/c55bcd242112128e1f7f46c1e18c329e09323b67))
+* say what a cold verification run proves, and that a policy is trimmed per rule ([2738331](https://github.com/sava-software/sava-build/commit/27383310ef6d50322af7bf0f15f46e6455f0c7a7))
+* state the bump rule for unauthenticated library signers and corroborated keys ([07ff6f1](https://github.com/sava-software/sava-build/commit/07ff6f1d91d4f073112da7ec31f867f091a0dc4e))
+
 ## [21.8.0](https://github.com/sava-software/sava-build/compare/21.7.2...21.8.0) (2026-10-30)
 
 
