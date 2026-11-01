@@ -33,7 +33,7 @@ class GcpKmsExclusionsFunctionalTest {
     "com.google.android:annotations", "com.google.code.findbugs:jsr305", "javax.annotation:javax.annotation-api",
   )
 
-  private fun writeFixture() {
+  private fun writeFixture(moduleRequires: Boolean = false) {
     enableTestKitConfigurationCache(fixtureDir)
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
@@ -50,6 +50,7 @@ class GcpKmsExclusionsFunctionalTest {
           `java-library`
           `maven-publish`
           id("software.sava.build.modules.gcp-kms")
+          ${if (moduleRequires) "id(\"org.gradlex.java-module-dependencies\") version \"1.13.2\"" else ""}
         }
 
         group = "software.sava"
@@ -64,6 +65,8 @@ class GcpKmsExclusionsFunctionalTest {
           testImplementation("io.grpc:grpc-xds:1.83.0")
           implementation("org.junit.jupiter:junit-jupiter-api:6.1.3")
         }
+
+        ${if (moduleRequires) "testModuleInfo { requires(\"com.google.auth.oauth2\"); requires(\"com.google.auth\") }" else ""}
 
         publishing {
           publications {
@@ -153,6 +156,20 @@ class GcpKmsExclusionsFunctionalTest {
     val junitExcludes = runtimeElements.indexOf("\"excludes\": [", junitStart)
     val junitEnd = runtimeElements.indexOf("\"module\": \"", junitStart + 1).let { if (it < 0) runtimeElements.length else it }
     assertFalse(junitExcludes in junitStart until junitEnd, "junit-jupiter-api carries excludes:\n$runtimeElements")
+  }
+
+  @Test
+  fun `a test module's requires of the Google auth modules becomes a dependency that carries the excludes`() {
+    writeFixture(moduleRequires = true)
+    val result = run("printExcludes")
+    val lines = result.output.lines()
+    val oauth = lines.single { it.startsWith("testImplementation com.google.auth:google-auth-library-oauth2-http ") }
+    val credentials = lines.single { it.startsWith("testImplementation com.google.auth:google-auth-library-credentials ") }
+    listOf(oauth, credentials).forEach { line ->
+      assertTrue(line.contains(" excludes ${excluded.size}: "), line)
+      excluded.forEach { assertTrue(line.contains(" $it"), "$it missing from: $line") }
+    }
+    assertFalse(result.output.contains("missing in"), "java-module-dependencies must not warn of an unmapped name:\n${result.output}")
   }
 
   @Test

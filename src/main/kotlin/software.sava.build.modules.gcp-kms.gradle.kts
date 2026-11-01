@@ -104,6 +104,20 @@ val kmsClientFamily = setOf(
 
 // Applied from a plugins block, before anything resolves: a dependency in a configuration
 // whose graph was already resolved cannot take an exclude, and Gradle says so.
+// The two Google auth jars are automatic modules in their own right (Automatic-Module-Name in
+// their manifests: com.google.auth.oauth2 and com.google.auth), so they need no patch below, but
+// java-module-dependencies knows no coordinates for those names, its built-in list lacking them,
+// and for a `requires` it cannot map it adds no dependency and only warns, so a test module that
+// required them compiled against a transitive arrival and then failed its directives check
+// (ravina, 2026-10-31). With the names mapped, the requires becomes the dependency it should be,
+// which, being in the family, carries the excludes like the rest.
+plugins.withId("org.gradlex.java-module-dependencies") {
+  extensions.configure<org.gradlex.javamodule.dependencies.JavaModuleDependenciesExtension> {
+    moduleNameToGA.put("com.google.auth.oauth2", "com.google.auth:google-auth-library-oauth2-http")
+    moduleNameToGA.put("com.google.auth", "com.google.auth:google-auth-library-credentials")
+  }
+}
+
 configurations.configureEach {
   dependencies.withType<ModuleDependency>().configureEach {
     if ("$group:$name" in kmsClientFamily) {
