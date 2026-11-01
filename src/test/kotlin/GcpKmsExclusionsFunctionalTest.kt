@@ -95,6 +95,60 @@ class GcpKmsExclusionsFunctionalTest {
     )
   }
 
+  /**
+   * A named module requiring the client through java-module-dependencies, with the versions from a
+   * platform of the build's own: the convention's patches give the client's family their module
+   * names and the plugin the coordinates behind them, so the module path resolves and compiles.
+   */
+  private fun writeModulePathFixture() {
+    enableTestKitConfigurationCache(fixtureDir)
+    File(fixtureDir, "settings.gradle.kts").writeText(
+      """
+        $savaBuildPluginManagement
+
+        rootProject.name = "gcp-kms-module-path"
+        include("platform")
+      """.trimIndent() + "\n"
+    )
+    File(fixtureDir, "platform").mkdirs()
+    File(fixtureDir, "platform/build.gradle.kts").writeText(
+      """
+        plugins { `java-platform` }
+        dependencies { constraints { api("com.google.cloud:google-cloud-kms:2.102.0") } }
+      """.trimIndent() + "\n"
+    )
+    File(fixtureDir, "build.gradle.kts").writeText(
+      """
+        import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+
+        plugins {
+          `java-library`
+          id("software.sava.build.modules.gcp-kms")
+          id("org.gradlex.java-module-dependencies") version "1.13.2"
+        }
+
+        repositories { mavenCentral() }
+
+        dependencies { implementation(platform(project(":platform"))) }
+
+        tasks.register("printCompileModulePath") {
+          val artifacts = configurations.compileClasspath.get().incoming.artifacts.resolvedArtifacts
+          doLast {
+            val names = artifacts.get().map { (it.id.componentIdentifier as ModuleComponentIdentifier).moduleIdentifier.toString() }.sorted()
+            println("resolved compileClasspath: " + names.joinToString(" "))
+          }
+        }
+      """.trimIndent() + "\n"
+    )
+    val sources = File(fixtureDir, "src/main/java/fixture")
+    sources.mkdirs()
+    // java-module-dependencies holds the module name to the project's, under an optional prefix
+    File(fixtureDir, "src/main/java/module-info.java").writeText("module fixture.gcp.kms.module.path {\n  requires google.cloud.kms;\n}\n")
+    File(sources, "Uses.java").writeText(
+      "package fixture;\n\npublic final class Uses {\n  public static final String KEY = com.google.cloud.kms.v1.CryptoKeyName.of(\"p\", \"l\", \"r\", \"k\").toString();\n}\n"
+    )
+  }
+
   private fun run(vararg arguments: String) = GradleRunner.create()
     .withProjectDir(fixtureDir)
     .withArguments(*arguments, "--no-watch-fs")
@@ -173,6 +227,22 @@ class GcpKmsExclusionsFunctionalTest {
   }
 
   @Test
+  fun `a named module requiring the client compiles on the module path the convention patches`() {
+    writeModulePathFixture()
+    val result = run("compileJava", "printCompileModulePath", "--no-configuration-cache")
+    assertEquals(TaskOutcome.SUCCESS, result.task(":compileJava")?.outcome, result.output)
+    assertFalse(result.output.contains("missing in"), "java-module-dependencies must map google.cloud.kms through the convention's patch:\n${result.output}")
+    val resolved = result.output.lines().single { it.startsWith("resolved compileClasspath: ") }
+      .removePrefix("resolved compileClasspath: ").split(" ").toSet()
+    listOf("com.google.cloud:google-cloud-kms", "com.google.api:gax", "com.google.api:gax-grpc")
+      .forEach { assertTrue(it in resolved, "$it missing from $resolved") }
+    // the proto jars the convention merges into the client's and gax-grpc's modules arrive inside them, not as artifacts of their own
+    listOf("com.google.api.grpc:proto-google-cloud-kms-v1", "com.google.api.grpc:proto-google-common-protos")
+      .forEach { assertFalse(it in resolved, "$it resolved as an artifact of its own despite the merge: $resolved") }
+    excluded.forEach { assertFalse(it in resolved, "$it resolved despite the exclusion: $resolved") }
+  }
+
+  @Test
   fun `the resolved runtime graph holds the client and none of the excluded jars`() {
     writeFixture()
     // The graph is what this test holds, so the task runs without the configuration cache,
@@ -184,5 +254,46 @@ class GcpKmsExclusionsFunctionalTest {
     listOf("com.google.cloud:google-cloud-kms", "com.google.api:gax-grpc", "io.grpc:grpc-netty-shaded", "org.threeten:threetenbp")
       .forEach { assertTrue(it in resolved, "$it missing from $resolved") }
     excluded.forEach { assertFalse(it in resolved, "$it resolved despite the exclusion: $resolved") }
+    // The whole set, as the fixture's pinned versions resolve it: a jar arriving or leaving is a change to review.
+    val expected = setOf(
+      "com.google.api.grpc:proto-google-iam-v1",
+      "com.google.api:api-common",
+      "com.google.api:gax",
+      "com.google.api:gax-grpc",
+      "com.google.api:gax-httpjson",
+      "com.google.auth:google-auth-library-credentials",
+      "com.google.auth:google-auth-library-oauth2-http",
+      "com.google.auto.value:auto-value-annotations",
+      "com.google.cloud:google-cloud-kms",
+      "com.google.code.gson:gson",
+      "com.google.errorprone:error_prone_annotations",
+      "com.google.guava:failureaccess",
+      "com.google.guava:guava",
+      "com.google.guava:listenablefuture",
+      "com.google.http-client:google-http-client",
+      "com.google.http-client:google-http-client-gson",
+      "com.google.j2objc:j2objc-annotations",
+      "com.google.protobuf:protobuf-java",
+      "com.google.protobuf:protobuf-java-util",
+      "io.grpc:grpc-api",
+      "io.grpc:grpc-auth",
+      "io.grpc:grpc-context",
+      "io.grpc:grpc-core",
+      "io.grpc:grpc-netty-shaded",
+      "io.grpc:grpc-protobuf",
+      "io.grpc:grpc-protobuf-lite",
+      "io.grpc:grpc-stub",
+      "io.grpc:grpc-util",
+      "io.opencensus:opencensus-api",
+      "io.opencensus:opencensus-contrib-http-util",
+      "io.perfmark:perfmark-api",
+      "org.codehaus.mojo:animal-sniffer-annotations",
+      "org.jspecify:jspecify",
+      "org.junit.jupiter:junit-jupiter-api",
+      "org.junit.platform:junit-platform-commons",
+      "org.opentest4j:opentest4j",
+      "org.threeten:threetenbp",
+    )
+    assertEquals(expected, resolved, "arrived: ${resolved - expected}; left: ${expected - resolved}")
   }
 }
