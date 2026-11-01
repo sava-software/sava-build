@@ -483,8 +483,11 @@ The policy trusts, and nothing else:
 
 - **Publisher keys**, each for the group or module it signs and for no version, so a release
   signed by the same key passes without an edit. Confirm a fingerprint from the publisher
-  (its KEYS file, README or site, or the key registered on the GitHub account of one of its
-  maintainers), never from a key server alone. A key whose publisher publishes no fingerprint
+  (its KEYS file, README or site, the key registered on the GitHub account of one of its
+  maintainers, or its own committed verification policy naming the key: GradleX's internal
+  build conventions trust `66D7CBFF956830FE9F5A723AFE6C7D77A1CE15A6` as "signed by the GradleX
+  organisation (us)", the source of the `org.gradlex` rule), never from a key server alone. A
+  key whose publisher publishes no fingerprint
   stays version-free only where gradle/gradle's own policy trusts it within the same group (for the
   group, or for a module of it), and the header of the list below names it as trusted on that,
   a note the guard does not read;
