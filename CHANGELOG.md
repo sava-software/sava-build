@@ -1,5 +1,26 @@
 # Changelog
 
+## [21.8.2](https://github.com/sava-software/sava-build/compare/21.8.1...21.8.2) (2026-11-01)
+
+
+### Features
+
+* **gcp-kms:** map the Google auth module names, so a requires of them becomes a dependency ([3e4cd96](https://github.com/sava-software/sava-build/commit/3e4cd96d7c8bf878c7159f61c7f4743ff7b4492c))
+* **verification:** ask the key servers whether a trusted key was revoked or has expired ([298b0a2](https://github.com/sava-software/sava-build/commit/298b0a29fdd62a0036c45bc5a17928fb4d9c19c1))
+* **verification:** say what a corroboration proves, and warn when gradle/gradle withdraws it ([9bde3d2](https://github.com/sava-software/sava-build/commit/9bde3d23966173743fbb37e3b2692151ebd6d2ff))
+
+
+### Bug Fixes
+
+* **verification:** guard the jlink image task too, and name the included sibling in the guard's refusal ([79d3db8](https://github.com/sava-software/sava-build/commit/79d3db84a68497eabff6c8672bec625f8bc8937c))
+
+
+### Documentation
+
+* **gcp-kms:** declaring grpc-xds does not opt into DirectPath by itself ([45c51ee](https://github.com/sava-software/sava-build/commit/45c51ee2746f5f906af5d8d98791fb2371f0d22c))
+* say how an included sibling runs under the policy, and name every list category and guard rule ([2b27627](https://github.com/sava-software/sava-build/commit/2b276271ccbe54ec87266d3c9f6daf2ea78f8eaf))
+* the lenient flag's two uses, and the image task among the guarded ones ([f958748](https://github.com/sava-software/sava-build/commit/f9587481df285231ba128a20c8b86d990134e916))
+
 ## [21.8.1](https://github.com/sava-software/sava-build/compare/21.8.0...21.8.1) (2026-10-31)
 
 
