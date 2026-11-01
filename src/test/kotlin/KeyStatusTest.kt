@@ -232,7 +232,52 @@ class KeyStatusTest {
     val f = KeyStatus.classify(KeyStatus.TrustedKey(current.fingerprint, true, listOf("group=\"x\"")), listOf("https://a" to current), emptyList(), now)
     val lines = KeyStatus.receipt(listOf(f), now).lines().filter { it.isNotEmpty() }
     assertEquals(2, lines.size)
-    assertEquals("checked\tfingerprint\tstate\tversion_free\tholder\texpires\trevoked\treason\tservers\tsubkeys", lines[0])
-    assertEquals(listOf("2026-10-31T18:00:00Z", current.fingerprint, "CURRENT", "true", "Current Fixture <current@fixture.invalid>", "", "", "", "https://a", ""), lines[1].split("\t"))
+    assertEquals("checked\tfingerprint\tstate\tversion_free\tholder\texpires\trevoked\treason\tservers\tsubkeys\tcorroboration", lines[0])
+    assertEquals(listOf("2026-10-31T18:00:00Z", current.fingerprint, "CURRENT", "true", "Current Fixture <current@fixture.invalid>", "", "", "", "https://a", "", ""), lines[1].split("\t"))
+    val noted = KeyStatus.receipt(listOf(f), now, mapOf(current.fingerprint to "vouched by gradle/gradle for x")).lines()[1].split("\t")
+    assertEquals("vouched by gradle/gradle for x", noted.last())
+  }
+
+  @Test
+  fun `the list's by-decision note names this repository's corroboration-only keys, and no listed key`() {
+    val noted = KeyStatus.corroborationKeys(savaBuildRootFile(VerificationPolicyRules.VERSION_SCOPED_KEYS))
+    assertEquals(setOf("C7BE5BCC9FEC15518CFDA882B0F3710FA64900E7", "019082BC00E0324E2AEF4CF00D3B328562A119A7", "6DE9B8077FBB2F8A019F4904BD17A565509DEE20", "E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB"), noted)
+    val listed = savaBuildRootFile(VerificationPolicyRules.VERSION_SCOPED_KEYS).readLines().filter { it.isNotBlank() && !it.startsWith("#") }.map { it.substringBefore(' ').uppercase() }
+    assertTrue(listed.none { it in noted }, "a listed key is at exact versions, not corroborated")
+    val keys = KeyStatus.trustedKeys(savaBuildRootFile(VerificationPolicyRules.METADATA)).associateBy { it.id }
+    assertTrue(noted.all { keys.getValue(it).versionFree }, "every noted key is trusted without a version")
+    assertEquals(emptySet<String>(), KeyStatus.corroborationKeys(java.io.File("/nonexistent/version-scoped-keys.txt")))
+  }
+
+  @Test
+  fun `gradle's corroboration vouches for the key's owner within the groups it names, literal or regex, whatever module it names`() {
+    val upstream = KeyStatus.upstreamScopes(
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<verification-metadata xmlns=\"https://schema.gradle.org/dependency-verification\"><configuration><trusted-keys>\n" +
+        "<trusted-key id=\"" + "a".repeat(40) + "\" group=\"com.github.javaparser\" name=\"javaparser-core\"/>\n" +
+        "<trusted-key id=\"" + "b".repeat(40) + "\">\n<trusting group=\"com.google.code.gson\" name=\"gson\"/>\n<trusting group=\"^com[.]google[.]auto($|([.].*))\" regex=\"true\"/>\n<trusting group=\"org.old\" version=\"1.0\"/>\n</trusted-key>\n" +
+        "<trusted-key id=\"" + "c".repeat(40) + "\" group=\"^com[.]google($|([.].*))\" regex=\"true\"/>\n" +
+        "</trusted-keys></configuration></verification-metadata>\n"
+    )
+    assertEquals(setOf("A".repeat(40), "B".repeat(40), "C".repeat(40)), upstream.keys)
+    assertEquals(listOf("com.google.code.gson:gson", "regex ^com[.]google[.]auto($|([.].*))"), upstream.getValue("B".repeat(40)).map { it.toString() }, "a version-scoped scope corroborates nothing")
+    fun key(id: String, vararg scopes: String) = KeyStatus.TrustedKey(id.uppercase(), scopes.none { "version=" in it }, scopes.toList())
+    // the group gradle/gradle names, on a module of theirs: the parent POM and the whole group are the same owner's
+    assertEquals(KeyStatus.Corroboration.VOUCHED, KeyStatus.corroboration(key("a".repeat(40), "group=\"com.github.javaparser\""), upstream).first)
+    // a regex of theirs covers our literal, and a regex of ours is read by the group it starts with
+    assertEquals(KeyStatus.Corroboration.VOUCHED, KeyStatus.corroboration(key("b".repeat(40), "group=\"com.google.code.gson\"", "group=\"com.google.auto.value\""), upstream).first)
+    assertEquals(KeyStatus.Corroboration.VOUCHED, KeyStatus.corroboration(key("c".repeat(40), "group=\"com.google.auth\"", "group=\"^com[.]google[.]api($|([.].*))\" regex=\"true\""), upstream).first)
+    assertEquals("com.google.api", KeyStatus.groupOf("group=\"^com[.]google[.]api($|([.].*))\" regex=\"true\""))
+    assertEquals("com.google.api", KeyStatus.groupOf("group=\"^com[.]google[.]api($|([.].*))\" regex=\"TRUE\""), "the attribute reads as Gradle reads it, whatever its case")
+    assertEquals("^literal", KeyStatus.groupOf("group=\"^literal\" regex=\"false\""))
+    // a group they do not name is not vouched for, and the message says where they do
+    val other = KeyStatus.corroboration(key("a".repeat(40), "group=\"com.github.javaparser\"", "group=\"org.elsewhere\""), upstream)
+    assertEquals(KeyStatus.Corroboration.OTHER_GROUPS, other.first)
+    assertEquals("gradle/gradle vouches for it in com.github.javaparser:javaparser-core, not in org.elsewhere", other.second)
+    // our exact-version scopes are not the corroboration's concern
+    assertEquals(KeyStatus.Corroboration.VOUCHED, KeyStatus.corroboration(key("a".repeat(40), "group=\"com.github.javaparser\"", "group=\"org.elsewhere\" version=\"1.0\""), upstream).first)
+    // a key they no longer carry
+    val absent = KeyStatus.corroboration(key("d".repeat(40), "group=\"x\""), upstream)
+    assertEquals(KeyStatus.Corroboration.ABSENT, absent.first)
+    assertEquals("no longer in gradle/gradle's policy", absent.second)
   }
 }

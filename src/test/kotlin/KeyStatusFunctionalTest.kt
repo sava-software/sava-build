@@ -28,6 +28,8 @@ class KeyStatusFunctionalTest {
 
   private lateinit var server: HttpServer
   private val requests = mutableListOf<String>()
+  /** What the server answers at /upstream.xml, gradle/gradle's policy for the corroboration check; 404 when null. */
+  private var upstreamXml: String? = null
 
   private val keys: Map<String, String> = KeyStatusFunctionalTest::class.java.getResource("/verification/keys/INDEX.txt")!!.readText()
     .lines().filter { it.isNotBlank() }.associate { line ->
@@ -64,7 +66,35 @@ class KeyStatusFunctionalTest {
       }
       exchange.close()
     }
+    server.createContext("/upstream.xml") { exchange ->
+      requests += "upstream"
+      val body = upstreamXml
+      if (body == null) {
+        exchange.sendResponseHeaders(404, -1)
+      } else {
+        val bytes = body.toByteArray()
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
+      }
+      exchange.close()
+    }
     server.start()
+  }
+
+  private fun upstream(vararg rules: String) =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<verification-metadata xmlns=\"https://schema.gradle.org/dependency-verification\"><configuration><trusted-keys>\n" +
+      rules.joinToString("\n") + "\n</trusted-keys></configuration></verification-metadata>\n"
+
+  /** The list file with a by-decision note naming [keys], as the fleet's lists carry it. */
+  private fun writeNote(vararg keys: String) {
+    val list = File(fixtureDir, "gradle/verification/version-scoped-keys.txt")
+    list.parentFile.mkdirs()
+    list.writeText(
+      "# Signing keys that ../verification-metadata.xml trusts only for exact versions.\n#\n" +
+        "# Not listed, by decision: keys trusted for their groups with no version on the\n" +
+        "# corroboration of gradle/gradle's own policy alone: " + keys.joinToString(", ") + ".\n\n" +
+        "# Keys that must not vouch for new releases.\n"
+    )
   }
 
   @AfterEach
@@ -186,6 +216,44 @@ class KeyStatusFunctionalTest {
     val empty = GradleRunner.create().withProjectDir(fixtureDir)
       .withArguments("verificationKeyStatus", "-PsavaBuildKeyServers=", "--dependency-verification", "lenient", "--no-watch-fs").buildAndFail()
     assertTrue(empty.output.contains("savaBuildKeyServers names no key server; leave the property unset for the two defaults"), empty.output)
+  }
+
+  @Test
+  fun `a key the list's header names as corroborated is checked against gradle's policy, and warns when that trust is gone`() {
+    writeFixture(
+      """
+              <trusted-key id="$current">
+                 <trusting group="org.example"/>
+                 <trusting group="^org[.]example[.]sub($|([.].*))" regex="true"/>
+              </trusted-key>
+              <trusted-key id="$expired" group="dev.cel" version="0.13.0"/>
+      """.trimIndent()
+    )
+    writeNote(current)
+    val source = "-PsavaBuildCorroborationSource=http://127.0.0.1:${server.address.port}/upstream.xml"
+    // vouched: gradle/gradle names the group on a module of theirs, and a regex of theirs covers the group our regex starts with
+    upstreamXml = upstream("<trusted-key id=\"$current\" group=\"org.example\" name=\"some-module\"/>", "<trusted-key id=\"$current\" group=\"^org[.]example($|([.].*))\" regex=\"true\"/>")
+    val vouched = run("verificationKeyStatus", source)
+    assertTrue(vouched.output.contains("1 key(s) the list's header names as trusted on gradle/gradle's corroboration: 1 vouched by its policy today, 0 not"), vouched.output)
+    assertFalse(vouched.output.contains("vouches for it in") || vouched.output.contains("no longer in gradle/gradle"), vouched.output)
+    assertEquals("vouched by gradle/gradle for org.example:some-module, regex ^org[.]example($|([.].*))", receiptRows().getValue(current).last())
+    assertEquals("", receiptRows().getValue(expired).last(), "a listed key is not the corroboration's concern")
+    // other groups only
+    upstreamXml = upstream("<trusted-key id=\"$current\" group=\"org.other\"/>")
+    val other = run("verificationKeyStatus", source)
+    assertTrue(other.output.contains("verificationKeyStatus: $current gradle/gradle vouches for it in org.other, not in org.example, org.example.sub; trusted for every version of group=\"org.example\", group=\"^org[.]example[.]sub($|([.].*))\" regex=\"true\""), other.output)
+    assertEquals(TaskOutcome.SUCCESS, other.task(":verificationKeyStatus")?.outcome)
+    // gone from their policy
+    upstreamXml = upstream("<trusted-key id=\"$revoked\" group=\"org.example\"/>")
+    val gone = run("verificationKeyStatus", source)
+    assertTrue(gone.output.contains("verificationKeyStatus: $current no longer in gradle/gradle's policy; trusted for every version of group=\"org.example\", group=\"^org[.]example[.]sub($|([.].*))\" regex=\"true\": find a publisher source, or move the key to exact versions and the list"), gone.output)
+    assertEquals("no longer in gradle/gradle's policy", receiptRows().getValue(current).last())
+    // the source unreachable: a warning, since the check itself only warns
+    upstreamXml = null
+    val unreachable = run("verificationKeyStatus", source)
+    assertTrue(unreachable.output.contains("verificationKeyStatus: corroboration not checked: http://127.0.0.1:${server.address.port}/upstream.xml: http://127.0.0.1:${server.address.port}/upstream.xml answered 404"), unreachable.output)
+    assertEquals(TaskOutcome.SUCCESS, unreachable.task(":verificationKeyStatus")?.outcome)
+    assertEquals(4, requests.count { it == "upstream" }, requests.toString())
   }
 
   @Test

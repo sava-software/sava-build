@@ -5,6 +5,7 @@ import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
+import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
@@ -24,7 +25,10 @@ import java.time.Instant
  * than fails, since publishers do sign with expired keys and Gradle accepts those signatures; a
  * key no server holds warns, since the policy then authenticated it from a publisher's own file.
  * A key a server left undecided, by not answering or answering with something other than a key
- * or a 404, fails the task: a question not answered is not a pass.
+ * or a 404, fails the task: a question not answered is not a pass. The keys the list's header
+ * names as trusted on gradle/gradle's corroboration alone are checked against gradle/gradle's
+ * current policy too, and warn when it no longer carries the key or names only other groups,
+ * since that trust rests on their continued judgement.
  * The receipt is `build/reports/verification/key-status.tsv`.
  */
 @UntrackedTask(because = "Queries key servers; their answer is not a function of any input")
@@ -37,6 +41,10 @@ abstract class VerificationKeyStatusTask : DefaultTask() {
   /** Key server base URLs; the Gradle property `savaBuildKeyServers` (comma-separated) overrides the two defaults, for a test or a mirror. */
   @get:Internal
   abstract val servers: ListProperty<String>
+
+  /** Where gradle/gradle's policy is read from; the Gradle property `savaBuildCorroborationSource` overrides the default, for a test or a mirror. */
+  @get:Internal
+  abstract val corroborationSource: Property<String>
 
   @get:OutputFile
   abstract val receipt: RegularFileProperty
@@ -53,7 +61,25 @@ abstract class VerificationKeyStatusTask : DefaultTask() {
     val now = Instant.now()
     val keys = KeyStatus.trustedKeys(metadata)
     val findings = KeyStatus.findings(keys, servers.get(), KeyStatus.HttpFetcher(), now)
-    receipt.get().asFile.apply { parentFile.mkdirs(); writeText(KeyStatus.receipt(findings, now)) }
+    // The keys trusted on gradle/gradle's corroboration alone, against gradle/gradle's policy as it is today.
+    val noted = KeyStatus.corroborationKeys(rootDirectory.get().asFile.resolve(VerificationPolicyRules.VERSION_SCOPED_KEYS))
+    val corroboration = mutableMapOf<String, String>()
+    val corroborationWarnings = mutableListOf<String>()
+    if (noted.isNotEmpty()) {
+      val upstream = runCatching { KeyStatus.upstreamScopes(KeyStatus.fetchText(corroborationSource.get())) }
+      upstream.onFailure { corroborationWarnings += "corroboration not checked: ${corroborationSource.get()}: ${it.message ?: it.javaClass.simpleName}" }
+      upstream.onSuccess { scopes ->
+        keys.filter { it.id in noted }.forEach { key ->
+          val (state, text) = KeyStatus.corroboration(key, scopes)
+          corroboration[key.id] = text
+          if (state != KeyStatus.Corroboration.VOUCHED) corroborationWarnings += "${key.id} $text; trusted for every version of ${key.scopes.joinToString(", ")}" +
+            (if (state == KeyStatus.Corroboration.ABSENT) ": find a publisher source, or move the key to exact versions and the list" else "")
+        }
+        val vouched = corroboration.count { it.value.startsWith("vouched") }
+        logger.lifecycle("verificationKeyStatus: ${noted.size} key(s) the list's header names as trusted on gradle/gradle's corroboration: $vouched vouched by its policy today, ${corroboration.size - vouched} not")
+      }
+    }
+    receipt.get().asFile.apply { parentFile.mkdirs(); writeText(KeyStatus.receipt(findings, now, corroboration)) }
     val failing = findings.filter { it.fails }
     val warning = findings.filter { it.warns }
     logger.lifecycle(
@@ -63,6 +89,7 @@ abstract class VerificationKeyStatusTask : DefaultTask() {
         "${findings.count { it.state == KeyStatus.State.UNDECIDED }} undecided; receipt ${receipt.get().asFile}"
     )
     warning.forEach { logger.warn("verificationKeyStatus: ${KeyStatus.describe(it)}") }
+    corroborationWarnings.forEach { logger.warn("verificationKeyStatus: $it") }
     if (failing.isNotEmpty()) {
       val revoked = failing.filter { it.state == KeyStatus.State.REVOKED }
       val undecided = failing.filter { it.state == KeyStatus.State.UNDECIDED }

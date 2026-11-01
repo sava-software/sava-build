@@ -556,9 +556,13 @@ policy and for every change to one:
      one of these keys can be added as another exact version once checked.
    - **A new signing key**: confirm the fingerprint from the publisher, then add a
      `trusted-key` scoped to the publisher's group or module, and its public key to the
-     keyring. With no publisher source, a key that gradle/gradle's own policy trusts within
-     the same group gets the same rule and a note in the list's header; a key with neither
-     gets a rule at the exact version and a line in the list. A revoked or superseded key
+     keyring. With no publisher source, a key that gradle/gradle's own policy trusts is
+     trusted here on that corroboration, with a note in the list's header: their trust
+     establishes who owns the key, so the rule covers what that owner signs within the group
+     gradle/gradle names for it, the module they name or any other, a parent POM included, and
+     nothing in a group they do not name; `verificationKeyStatus` warns once their policy no
+     longer carries the key or names only other groups. A key with neither source gets a rule
+     at the exact version and a line in the list. A revoked or superseded key
      (gradle.org/keys lists Gradle Inc.'s) is a key that must not vouch, whatever its rule said
      before: exact versions and a list line. Gradle sees no revocation; `verificationKeyStatus`
      (Key status, below) is how one is learned.
@@ -667,8 +671,12 @@ step 1's check; a revocation with a soft reason (superseded, retired) is answere
 the releases signed before the date at exact versions, the key among the list's keys that must
 not vouch, and a rule for the publisher's new key once confirmed, while a hard one (key
 compromised, or no reason given) means its signatures prove nothing: the key leaves the policy
-and what it signed is pinned by checksum after review. `-PsavaBuildKeyServers=<url>,<url>` replaces the two
-servers, for a mirror or a test. The task exists because Gradle Inc.'s publishing key, revoked
+and what it signed is pinned by checksum after review. The task also reads the keys the
+list's header names as trusted on gradle/gradle's corroboration alone, fetches gradle/gradle's
+policy as it is today, and warns when a key is no longer there or is vouched for in other
+groups only, since that trust rests on their continued judgement.
+`-PsavaBuildKeyServers=<url>,<url>` replaces the two servers, for a mirror or a test, and
+`-PsavaBuildCorroborationSource=<url>` the copy of gradle/gradle's policy. The task exists because Gradle Inc.'s publishing key, revoked
 on 2026-08-08, was found trusted version-free in every fleet policy on 2026-10-31.
 
 ### Unpublished sava-build

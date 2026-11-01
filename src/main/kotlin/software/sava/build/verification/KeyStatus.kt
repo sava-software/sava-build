@@ -56,7 +56,7 @@ object KeyStatus {
       newDocumentBuilder().parse(metadata)
     }
     fun elements(name: String) = document.getElementsByTagNameNS("*", name).let { nodes -> (0 until nodes.length).map { nodes.item(it) as Element } }
-    fun scope(element: Element) = listOf("group", "name", "version")
+    fun scope(element: Element) = listOf("group", "name", "version", "regex")
       .filter { element.hasAttribute(it) }.joinToString(" ") { "$it=\"${element.getAttribute(it)}\"" }
     val coordinates = listOf("group", "name", "version", "file", "regex")
     val keys = elements("trusted-key").map { key ->
@@ -75,6 +75,79 @@ object KeyStatus {
 
   /** Fetches a key from one server by fingerprint, primary or subkey; null when the server has no copy. */
   fun interface Fetcher { fun fetch(server: String, fingerprint: String): String? }
+
+  /** Where gradle/gradle's own policy is read from, for the corroboration check. */
+  const val GRADLE_POLICY = "https://raw.githubusercontent.com/gradle/gradle/master/gradle/verification-metadata.xml"
+
+  /**
+   * The keys the version-scoped list's header names as trusted on gradle/gradle's corroboration
+   * alone: every fingerprint in the comment block that starts "Not listed, by decision", which the
+   * fleet's lists carry in that shape (README, step 2). Empty when the file or the block is absent.
+   */
+  fun corroborationKeys(versionScopedKeys: File): Set<String> {
+    if (!versionScopedKeys.isFile) return emptySet()
+    val lines = versionScopedKeys.readLines()
+    val start = lines.indexOfFirst { it.trimStart().startsWith("#") && it.contains("Not listed, by decision") }
+    if (start < 0) return emptySet()
+    val block = lines.drop(start).takeWhile { it.trimStart().startsWith("#") }.joinToString(" ")
+    return Regex("\\b[0-9A-Fa-f]{40}\\b").findAll(block).map { it.value.uppercase() }.toSet()
+  }
+
+  /** One version-free scope of a trusted key in gradle/gradle's policy: a group, literal or regex, and perhaps a name. */
+  class UpstreamScope(val group: String, val regex: Boolean, val name: String?) {
+    /** Whether this scope lies in [group]: the literal, or a regex it matches. Names are not read: the trust is in the key's owner within the group. */
+    fun covers(group: String): Boolean = if (regex) runCatching { Regex(this.group).matches(group) }.getOrDefault(false) else this.group == group
+    override fun toString() = if (regex) "regex $group" else group + (name?.let { ":$it" } ?: "")
+  }
+
+  /** gradle/gradle's trusted keys by id, with their version-free scopes; a scope with a version corroborates nothing. */
+  fun upstreamScopes(xml: String): Map<String, List<UpstreamScope>> {
+    val document = DocumentBuilderFactory.newInstance().run {
+      isNamespaceAware = true
+      setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+      setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+      newDocumentBuilder().parse(org.xml.sax.InputSource(java.io.StringReader(xml)))
+    }
+    val keys = document.getElementsByTagNameNS("*", "trusted-key").let { nodes -> (0 until nodes.length).map { nodes.item(it) as Element } }
+    val coordinates = listOf("group", "name", "version", "file", "regex")
+    return keys.groupBy({ it.getAttribute("id").uppercase() }) { key ->
+      val trusting = key.getElementsByTagNameNS("*", "trusting").let { nodes -> (0 until nodes.length).map { nodes.item(it) as Element } }
+      val scopes = (if (trusting.isEmpty() || coordinates.any(key::hasAttribute)) listOf(key) else emptyList()) + trusting
+      scopes.filter { it.getAttribute("version").isEmpty() && it.getAttribute("group").isNotEmpty() }
+        .map { UpstreamScope(it.getAttribute("group"), it.getAttribute("regex").toBoolean(), it.getAttribute("name").ifEmpty { null }) }
+    }.mapValues { (_, lists) -> lists.flatten() }
+  }
+
+  enum class Corroboration { VOUCHED, OTHER_GROUPS, ABSENT }
+
+  /** The group a policy scope names: its literal, or the literal a regex of Gradle's shape starts with. */
+  internal fun groupOf(scope: String): String? {
+    val group = Regex("group=\"([^\"]*)\"").find(scope)?.groupValues?.get(1) ?: return null
+    val regex = Regex("regex=\"([^\"]*)\"").find(scope)?.groupValues?.get(1)?.toBoolean() ?: false
+    return if (regex) group.removePrefix("^").substringBefore("(").replace("[.]", ".") else group
+  }
+
+  /**
+   * Whether gradle/gradle still vouches for [key] where this policy trusts it: every version-free
+   * scope of ours lies in a group gradle/gradle names for the key. Their trust establishes the
+   * key's owner, so a rule of theirs on one module vouches for the group.
+   */
+  fun corroboration(key: TrustedKey, upstream: Map<String, List<UpstreamScope>>): Pair<Corroboration, String> {
+    val theirs = upstream[key.id] ?: return Corroboration.ABSENT to "no longer in gradle/gradle's policy"
+    val ours = key.scopes.filter { !it.contains("version=") }.mapNotNull(::groupOf).distinct()
+    val uncovered = ours.filter { group -> theirs.none { it.covers(group) } }
+    return if (uncovered.isEmpty()) Corroboration.VOUCHED to "vouched by gradle/gradle for ${theirs.joinToString(", ")}"
+    else Corroboration.OTHER_GROUPS to "gradle/gradle vouches for it in ${theirs.joinToString(", ")}, not in ${uncovered.joinToString(", ")}"
+  }
+
+  /** GET [url] as text; anything but 200 is an error. */
+  fun fetchText(url: String, timeout: Duration = Duration.ofSeconds(20)): String {
+    val client = HttpClient.newBuilder().connectTimeout(timeout).followRedirects(HttpClient.Redirect.NORMAL).build()
+    val request = HttpRequest.newBuilder(URI.create(url)).timeout(timeout).header("User-Agent", "sava-build verificationKeyStatus").GET().build()
+    val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+    if (response.statusCode() != 200) throw IllegalStateException("$url answered ${response.statusCode()}")
+    return response.body()
+  }
 
   /**
    * HKP's machine-readable get by fingerprint, which both servers answer, keys.openpgp.org's Hagrid
@@ -165,12 +238,13 @@ object KeyStatus {
     return Finding(key, state, holder, expiresAt, revocation?.at, notes.joinToString("; ").ifEmpty { null }, servers, subkeyNotes, unknownExpiry)
   }
 
-  /** The receipt: one tab-separated line per key, dated, for the release checklist's record. */
-  fun receipt(findings: List<Finding>, now: Instant): String = buildString {
-    appendLine("checked\tfingerprint\tstate\tversion_free\tholder\texpires\trevoked\treason\tservers\tsubkeys")
+  /** The receipt: one tab-separated line per key, dated, for the release checklist's record; [corroboration] by key id for the keys the list's header names. */
+  fun receipt(findings: List<Finding>, now: Instant, corroboration: Map<String, String> = emptyMap()): String = buildString {
+    appendLine("checked\tfingerprint\tstate\tversion_free\tholder\texpires\trevoked\treason\tservers\tsubkeys\tcorroboration")
     findings.forEach { f ->
       appendLine(listOf(now.toString(), f.key.id, f.state.name, f.key.versionFree.toString(), f.holder ?: "", f.expiresAt?.toString() ?: "",
-        f.revokedAt?.toString() ?: "", f.reason ?: "", f.servers.joinToString(","), f.subkeyNotes.joinToString("; ")).joinToString("\t") { it.replace('\t', ' ').replace('\n', ' ') })
+        f.revokedAt?.toString() ?: "", f.reason ?: "", f.servers.joinToString(","), f.subkeyNotes.joinToString("; "), corroboration[f.key.id] ?: "")
+        .joinToString("\t") { it.replace('\t', ' ').replace('\n', ' ') })
     }
   }
 

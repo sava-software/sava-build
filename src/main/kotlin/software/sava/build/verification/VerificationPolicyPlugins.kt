@@ -32,6 +32,7 @@ class VerificationPolicyRootPlugin : Plugin<Project> {
           .map { it.split(',').map(String::trim).filter(String::isNotEmpty) }
           .orElse(KeyStatus.DEFAULT_SERVERS)
       )
+      corroborationSource.set(project.providers.gradleProperty("savaBuildCorroborationSource").orElse(KeyStatus.GRADLE_POLICY))
       receipt.set(project.layout.buildDirectory.file("reports/verification/key-status.tsv"))
     }
   }
