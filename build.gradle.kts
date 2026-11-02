@@ -245,7 +245,7 @@ dependencies {
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   // https://github.com/melix/jmh-gradle-plugin
   // https://plugins.gradle.org/plugin/me.champeau.jmh
-  implementation("me.champeau.jmh:jmh-gradle-plugin:0.7.3")
+  implementation("me.champeau.jmh:jmh-gradle-plugin:0.7.4")
   // https://github.com/gradlex-org/java-module-dependencies
   implementation("org.gradlex:java-module-dependencies:1.13.2")
   // https://github.com/gradlex-org/java-module-testing
