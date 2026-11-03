@@ -16,7 +16,8 @@ import java.time.format.DateTimeFormatter
  * failOnError, a benchmark that errors must fail the 'jmh' task whichever way it errors: a
  * trial @Setup that throws, a fork that dies before it measures anything, and an iteration
  * @Setup that throws after measurements were posted, which under a silent harness would leave
- * a short row on the scoreboard. The harness version the convention holds
+ * a short row on the scoreboard. The archive under jmh-results/ must hold exactly the runs that
+ * wrote results, under names that stay chronological. The harness version the convention holds
  * must be the one the benchmark classpath resolves, and every graph here runs with
  * --warning-mode=fail, so a deprecation anywhere in the feature's graph fails the build.
  *
@@ -187,7 +188,7 @@ class JmhFeatureRunTest {
   }
 
   @Test
-  fun `a passing run archives a row, a failed run keeps the scoreboard, and jmhFailOnError=false lets an erroring run pass`() {
+  fun `the archive holds exactly the runs that wrote results, under chronological names`() {
     // The default JVM flag list (compact object headers, generational ZGC, a pre-touched 2g
     // heap) boots the fork on this JDK, and the run's row reaches the merged scoreboard.
     val passed = runner(*jmhRun("OkBench")).build()
@@ -199,6 +200,15 @@ class JmhFeatureRunTest {
     assertTrue(okRow != null && okRow.contains("thrpt"), "merged scoreboard lacks the OkBench row:\n" + results.readText())
     val scoreboard = results.readText()
 
+    // Plugin 0.7.4's --jmhArgs reaches JMH's list flags, which end the run before JMH writes
+    // results: the task passes, and the previous scoreboard must not be archived as a run.
+    val listed = runner("jmh", "--jmhArgs=-l").build()
+    assertEquals(TaskOutcome.SUCCESS, listed.task(":jmh")?.outcome, listed.output)
+    assertTrue(listed.output.contains("probe.OkBench.probe"), listed.output)
+    assertFalse(listed.output.contains("JMH results merged"), listed.output)
+    assertEquals(1, archivedRuns().size, "a listing run must archive nothing: " + archivedRuns())
+    assertEquals(scoreboard, results.readText())
+
     // A failed run under the default fail-on-error archives nothing, and the scoreboard keeps
     // its rows.
     val failed = runner(*jmhRun("SetupFailBench"), smallHeap).buildAndFail()
@@ -206,14 +216,11 @@ class JmhFeatureRunTest {
     assertEquals(1, archivedRuns().size, "a failed run must archive nothing: " + archivedRuns())
     assertEquals(scoreboard, results.readText())
 
-    // This tree names an archive by the wall-clock second its run finished in and overwrites
-    // a same-second archive, which the next commit changes: keep the next run out of the
-    // passing run's second.
+    // Archive names must stay chronological whatever the clock does: with an archive named an
+    // hour ahead in place, the next run takes the second after it rather than its own second.
     val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
-    val first = LocalDateTime.parse(archivedRuns().single().name.removePrefix("results-").removeSuffix(".txt"), stamp)
-    while (!LocalDateTime.now().withNano(0).isAfter(first)) {
-      Thread.sleep(50)
-    }
+    val ahead = LocalDateTime.now().plusHours(1).withNano(0)
+    File(archiveDir, "results-${ahead.format(stamp)}.txt").writeText("Benchmark  Mode  Cnt  Score   Error  Units\n")
 
     // With fail-on-error switched off for the run, the same erroring benchmark lets the task
     // pass, as it always did under plugin 0.7.3: JMH reports the failure and writes a results
@@ -222,9 +229,10 @@ class JmhFeatureRunTest {
     assertEquals(TaskOutcome.SUCCESS, tolerated.task(":jmh")?.outcome, tolerated.output)
     assertTrue(tolerated.output.contains("<failure>"), tolerated.output)
     assertFalse(tolerated.output.contains("fail on error was requested"), tolerated.output)
-    assertTrue(tolerated.output.contains("JMH results merged from 2 archived runs"), tolerated.output)
+    assertTrue(tolerated.output.contains("JMH results merged from 3 archived runs"), tolerated.output)
     val runs = archivedRuns()
-    assertEquals(2, runs.size, runs.toString())
+    assertEquals(3, runs.size, runs.toString())
+    assertEquals("results-${ahead.plusSeconds(1).format(stamp)}.txt", runs.last().name, runs.toString())
     assertTrue(runs.last().readLines().none { it.contains("thrpt") }, "the erroring run's archive must hold no row:\n" + runs.last().readText())
     assertEquals(okRow, results.readLines().singleOrNull { it.startsWith("OkBench.probe") }, results.readText())
   }

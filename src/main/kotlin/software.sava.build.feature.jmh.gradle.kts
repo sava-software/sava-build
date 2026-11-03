@@ -18,16 +18,40 @@ tasks.named<me.champeau.jmh.JMHTask>("jmh") {
   // re-rendered as the merge of every archived run, chronological, so the
   // newest row wins per benchmark. Delete archive files to drop stale rows.
   val archiveRoot = layout.projectDirectory.dir("jmh-results")
+  // JMH ends a run that only lists (its -l, -lp, -lprof and -lrf flags, which the
+  // plugin's jmhOptions and --jmhArgs can pass) before it writes any results, and
+  // a results file this run did not rewrite is the previous scoreboard, not a run
+  // to archive: the file's state before the run is kept beside the task and compared.
+  val resultsBefore = temporaryDir.resolve("results-before.txt")
+  fun stateOf(results: File): String =
+    if (results.isFile) "${results.lastModified()} ${results.length()}" else "absent"
+  doFirst {
+    resultsBefore.parentFile.mkdirs()
+    resultsBefore.writeText(stateOf(resultsFile.get().asFile))
+  }
   doLast {
     val results = resultsFile.get().asFile
-    if (results.isFile) {
-      val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+    val written = results.isFile && stateOf(results) != resultsBefore.takeIf { it.isFile }?.readText()
+    if (written) {
       val archiveDir = archiveRoot.asFile
       archiveDir.mkdirs()
-      results.copyTo(
-          archiveDir.resolve("${results.nameWithoutExtension}-$stamp.${results.extension}"),
-          overwrite = true
-      )
+      // The names must stay chronological, since the merge below sorts by them:
+      // a run in the same second as the newest archive, or after the clock has
+      // stepped back, takes the second after that archive's instead of its own
+      // (compared at whole seconds, the names' precision).
+      val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+      val prefix = "${results.nameWithoutExtension}-"
+      val suffix = ".${results.extension}"
+      val newest = (archiveDir.listFiles() ?: emptyArray())
+          .map { it.name }
+          .filter { it.startsWith(prefix) && it.endsWith(suffix) }
+          .mapNotNull { runCatching { LocalDateTime.parse(it.removePrefix(prefix).removeSuffix(suffix), stamp) }.getOrNull() }
+          .maxOrNull()
+      var at = LocalDateTime.now().withNano(0)
+      if (newest != null && !at.isAfter(newest)) {
+        at = newest.plusSeconds(1)
+      }
+      results.copyTo(archiveDir.resolve("$prefix${at.format(stamp)}$suffix"))
       // Merging only understands the default text format.
       if (results.extension == "txt") {
         val archives = (archiveDir.listFiles() ?: emptyArray())
