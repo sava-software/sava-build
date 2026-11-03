@@ -67,7 +67,7 @@ class JmhFeatureSmokeTest {
           val expectedWarmupTime = providers.gradleProperty("expectedWarmupTime").orElse("1s")
           val expectedMeasureTime = providers.gradleProperty("expectedMeasureTime").orElse("1s")
           val expectedFailOnError = providers.gradleProperty("expectedFailOnError").map(String::toBoolean).orElse(true)
-          val expectedHarness = providers.gradleProperty("expectedHarness").orElse("1.36")
+          val expectedHarness = providers.gradleProperty("expectedHarness").orElse("1.37")
           val expectedArgs = providers.gradleProperty("expectedArgs").map { it.split(' ') }
           doLast {
             check(forks.get() == expectedForks.get()) { "unexpected forks: " + forks.get() }
@@ -122,7 +122,7 @@ class JmhFeatureSmokeTest {
         "-PjmhWarmup=500ms", "-PexpectedWarmupTime=500ms",
         "-PjmhTimeOnIteration=2s", "-PexpectedMeasureTime=2s",
         "-PjmhFailOnError=false", "-PexpectedFailOnError=false",
-        "-PjmhVersion=1.37", "-PexpectedHarness=1.37",
+        "-PjmhVersion=1.36", "-PexpectedHarness=1.36",
         "-PjmhJvmArgsAppend=-XX:+UseG1GC -Xmx4g", "-PexpectedArgs=-XX:+UseG1GC -Xmx4g",
       ).build()
     }

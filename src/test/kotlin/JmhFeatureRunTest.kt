@@ -238,11 +238,11 @@ class JmhFeatureRunTest {
   }
 
   @Test
-  fun `the benchmark classpath resolves the held harness version, overridable`() {
-    val held = runner("printJmhCore").build()
-    assertTrue(held.output.contains("JMH_CORE=jmh-core-1.36.jar"), held.output)
+  fun `the benchmark classpath resolves the default harness version, overridable`() {
+    val byDefault = runner("printJmhCore").build()
+    assertTrue(byDefault.output.contains("JMH_CORE=jmh-core-1.37.jar"), byDefault.output)
 
-    val moved = runner("printJmhCore", "-PjmhVersion=1.37").build()
-    assertTrue(moved.output.contains("JMH_CORE=jmh-core-1.37.jar"), moved.output)
+    val overridden = runner("printJmhCore", "-PjmhVersion=1.36").build()
+    assertTrue(overridden.output.contains("JMH_CORE=jmh-core-1.36.jar"), overridden.output)
   }
 }
