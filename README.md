@@ -520,7 +520,15 @@ idl-clients, idl-src-gen), never from a bulk copy of a policy, since every graph
 Trim per rule, not per key: a key the graph meets keeps only the scopes the graph resolves
 (a write run from an empty `<trusted-keys/>` with the fleet's keyring names them), a key the
 graph never meets leaves with its keyring block and any list line, and the proof that nothing
-was lost is a write run over the trimmed files that changes nothing. A write run names
+was lost is a write run over the trimmed files that changes nothing, then step 4's run of
+every build from an empty `GRADLE_USER_HOME`. Gradle keeps the parent POMs and imported BOMs
+of every POM it parses among that module's metadata and checks them on every run; a POM that
+defers to Gradle Module Metadata (`do_not_remove: published-with-gradle-metadata`) it parses,
+parent and imports included, only while it has nothing cached for that module, and then uses
+the `.module`. No warm run, check or write, meets such a POM's parent or imported BOM, so a
+policy missing one passes every warm run: json-iterator's warm-derived policy never carried
+`org.ow2:ow2:1.5`, the parent of asm 9.0's POM, passed its write runs, and was refused once a
+cold cache fetched it (2026-11-02). A write run names
 nothing that only the IDE sync or a workflow's init script resolves (the Gradle sources zip
 under `gradle:gradle`, Groovy's sources, the dependency-graph plugin), so those rules keep
 their scopes and keys through a trim, and step 5 is what checks them.
@@ -597,7 +605,8 @@ policy and for every change to one:
    no dependency change is a no-op and any diff is a change to review.
 
 4. A warm cache can hide parent-POM metadata that a cold one fetches. Validate a new parent
-   or BOM once with an empty `GRADLE_USER_HOME`: copy only the `org.gradle.java.*` lines of
+   or BOM, and every trim, with an empty `GRADLE_USER_HOME`, running every build of the
+   repository as in step 1: copy only the `org.gradle.java.*` lines of
    your `gradle.properties`, and pass package credentials as `ORG_GRADLE_PROJECT_*`
    environment variables. Offline use needs an online run first; cached signature files
    alone do not prove an offline run can resolve them. A cold run resolves and verifies every
