@@ -57,6 +57,7 @@ class JmhFeatureSmokeTest {
           val warmupTime = jmh.warmup
           val measureTime = jmh.timeOnIteration
           val failsOnError = jmh.failOnError
+          val harness = jmh.jmhVersion
           val jmhArgs = jmh.jvmArgsAppend
           val expectedForks = providers.gradleProperty("expectedForks").map(String::toInt).orElse(1)
           val expectedIncludes = providers.gradleProperty("expectedIncludes")
@@ -66,6 +67,7 @@ class JmhFeatureSmokeTest {
           val expectedWarmupTime = providers.gradleProperty("expectedWarmupTime").orElse("1s")
           val expectedMeasureTime = providers.gradleProperty("expectedMeasureTime").orElse("1s")
           val expectedFailOnError = providers.gradleProperty("expectedFailOnError").map(String::toBoolean).orElse(true)
+          val expectedHarness = providers.gradleProperty("expectedHarness").orElse("1.36")
           val expectedArgs = providers.gradleProperty("expectedArgs").map { it.split(' ') }
           doLast {
             check(forks.get() == expectedForks.get()) { "unexpected forks: " + forks.get() }
@@ -75,6 +77,7 @@ class JmhFeatureSmokeTest {
             check(warmupTime.get() == expectedWarmupTime.get()) { "unexpected warmup: " + warmupTime.get() }
             check(measureTime.get() == expectedMeasureTime.get()) { "unexpected timeOnIteration: " + measureTime.get() }
             check(failsOnError.get() == expectedFailOnError.get()) { "unexpected failOnError: " + failsOnError.get() }
+            check(harness.get() == expectedHarness.get()) { "unexpected jmhVersion: " + harness.get() }
             val args = jmhArgs.get()
             if (expectedArgs.isPresent) {
               check(args == expectedArgs.get()) { "unexpected jvmArgsAppend: " + args }
@@ -119,6 +122,7 @@ class JmhFeatureSmokeTest {
         "-PjmhWarmup=500ms", "-PexpectedWarmupTime=500ms",
         "-PjmhTimeOnIteration=2s", "-PexpectedMeasureTime=2s",
         "-PjmhFailOnError=false", "-PexpectedFailOnError=false",
+        "-PjmhVersion=1.37", "-PexpectedHarness=1.37",
         "-PjmhJvmArgsAppend=-XX:+UseG1GC -Xmx4g", "-PexpectedArgs=-XX:+UseG1GC -Xmx4g",
       ).build()
     }

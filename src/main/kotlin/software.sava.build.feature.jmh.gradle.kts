@@ -88,6 +88,12 @@ fun intProperty(name: String, defaultValue: Int): Provider<Int> =
 // property of the same camel-cased name, e.g.:
 //   ../gradlew jmh -PjmhFork=3 -PjmhIncludes=enumValues,kindDispatch
 jmh {
+  // The JMH harness version, resolved for jmh-core and the bytecode generator.
+  // Held at 1.36, the plugin's default through 0.7.3: plugin 0.7.4 moved its
+  // default to 1.37, and a harness change is a measurement change, so the
+  // scoreboards merged under <project>/jmh-results/ would otherwise mix rows
+  // from two harnesses without a word. Move it deliberately, consumers together.
+  jmhVersion = stringProperty("jmhVersion", "1.36")
   // Quick-look default; decision-grade comparisons need '-PjmhFork=3' or
   // more — single-fork scores swing 10-20% on JIT inlining luck alone — and
   // isolation from other load.
@@ -109,7 +115,12 @@ jmh {
   iterations = intProperty("jmhIterations", 8)
   timeOnIteration = stringProperty("jmhTimeOnIteration", "1s")
   // Fail the run on the first benchmark error instead of reporting partial
-  // results: @Setup cross-checks are treated as hard failures.
+  // results: @Setup cross-checks are treated as hard failures. JMH then exits
+  // non-zero before it writes a results file, so the task fails ahead of the
+  // archive step above: a failed run adds no row, and results.txt keeps its
+  // rows (JMH only creates it, empty, when it was missing). (Plugin 0.7.3 and
+  // earlier passed this to JMH as '-foe 1', which JMH reads as false, so no
+  // failure ever reached the task; 0.7.4 passes 'true'.)
   failOnError = providers.gradleProperty("jmhFailOnError").map(String::toBoolean).orElse(true)
   // Replicate the long-running-service JVM sava deployments run: compact
   // object headers (product since JDK 25), generational ZGC, a pinned
