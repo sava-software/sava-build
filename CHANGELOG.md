@@ -1,5 +1,23 @@
 # Changelog
 
+## [21.8.3](https://github.com/sava-software/sava-build/compare/21.8.2...21.8.3) (2026-11-03)
+
+
+### Features
+
+* **jmh:** run benchmarks on JMH 1.37, the plugin's own default ([f562e55](https://github.com/sava-software/sava-build/commit/f562e556daf4ceb776ee023394e7bb663fa5480b))
+
+
+### Bug Fixes
+
+* **jmh:** archive only a results file the run wrote, under a name that stays chronological ([b0804cb](https://github.com/sava-software/sava-build/commit/b0804cb47b66ed92a2d957749c840a146217669b))
+* **jmh:** take plugin 0.7.4 so failOnError reaches JMH, and hold JMH at 1.36 ([8683853](https://github.com/sava-software/sava-build/commit/8683853c3a8e569ae1517bcb64b918ec43028bce))
+
+
+### Documentation
+
+* a trim's proof ends with a cold run, which a warm write run cannot replace ([521c997](https://github.com/sava-software/sava-build/commit/521c997d8e5302d8fa0a76262281e55f42c0c939))
+
 ## [21.8.2](https://github.com/sava-software/sava-build/compare/21.8.1...21.8.2) (2026-11-01)
 
 
