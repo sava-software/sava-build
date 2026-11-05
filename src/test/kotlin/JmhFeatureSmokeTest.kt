@@ -66,7 +66,7 @@ class JmhFeatureSmokeTest {
           val expectedMeasures = providers.gradleProperty("expectedMeasures").map(String::toInt).orElse(8)
           val expectedWarmupTime = providers.gradleProperty("expectedWarmupTime").orElse("1s")
           val expectedMeasureTime = providers.gradleProperty("expectedMeasureTime").orElse("1s")
-          val expectedFailOnError = providers.gradleProperty("expectedFailOnError").map(String::toBoolean).orElse(true)
+          val expectedFailOnError = providers.gradleProperty("expectedFailOnError").map(String::toBoolean).orElse(false)
           val expectedHarness = providers.gradleProperty("expectedHarness").orElse("1.37")
           val expectedArgs = providers.gradleProperty("expectedArgs").map { it.split(' ') }
           doLast {
@@ -121,7 +121,7 @@ class JmhFeatureSmokeTest {
         "-PjmhIterations=4", "-PexpectedMeasures=4",
         "-PjmhWarmup=500ms", "-PexpectedWarmupTime=500ms",
         "-PjmhTimeOnIteration=2s", "-PexpectedMeasureTime=2s",
-        "-PjmhFailOnError=false", "-PexpectedFailOnError=false",
+        "-PjmhFailFast=true", "-PexpectedFailOnError=true",
         "-PjmhVersion=1.36", "-PexpectedHarness=1.36",
         "-PjmhJvmArgsAppend=-XX:+UseG1GC -Xmx4g", "-PexpectedArgs=-XX:+UseG1GC -Xmx4g",
       ).build()
