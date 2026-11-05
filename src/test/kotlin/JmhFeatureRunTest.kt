@@ -17,7 +17,8 @@ import java.time.format.DateTimeFormatter
  * trial @Setup that throws, a fork that dies before it measures anything, and an iteration
  * @Setup that throws after measurements were posted, which under a silent harness would leave
  * a short row on the scoreboard. The archive under jmh-results/ must hold exactly the runs that
- * wrote results, under names that stay chronological. The harness version the convention holds
+ * wrote results, under names that stay chronological, and the merged scoreboard must keep JMH's
+ * parameter columns. The harness version the convention holds
  * must be the one the benchmark classpath resolves, and every graph here runs with
  * --warning-mode=fail, so a deprecation anywhere in the feature's graph fails the build.
  *
@@ -125,6 +126,36 @@ class JmhFeatureRunTest {
           @Benchmark
           public int probe() {
             return 42;
+          }
+        }
+      """.trimIndent() + "\n"
+    )
+    File(benchmarks, "ParamBench.java").writeText(
+      """
+        package probe;
+
+        import org.openjdk.jmh.annotations.Benchmark;
+        import org.openjdk.jmh.annotations.Param;
+        import org.openjdk.jmh.annotations.Scope;
+        import org.openjdk.jmh.annotations.Setup;
+        import org.openjdk.jmh.annotations.State;
+
+        // Two parameter values, of which one fails its trial @Setup.
+        @State(Scope.Benchmark)
+        public class ParamBench {
+          @Param({"alpha", "beta"})
+          public String kind;
+
+          @Setup
+          public void setup() {
+            if ("beta".equals(kind)) {
+              throw new IllegalStateException("ParamBench: beta disagrees");
+            }
+          }
+
+          @Benchmark
+          public int probe() {
+            return kind.length();
           }
         }
       """.trimIndent() + "\n"
@@ -262,6 +293,24 @@ class JmhFeatureRunTest {
     // The merge re-pads every column to the widest name, so compare the row's tokens.
     val tokens = { row: String? -> row?.split(Regex("\\s+")) }
     assertEquals(tokens(okRow), tokens(results.readLines().singleOrNull { it.startsWith("OkBench.probe") }), results.readText())
+
+    // A parameterised benchmark whose one value fails its trial @Setup, with fail-on-error off:
+    // the passing value's row is archived under JMH's '(kind)' column, and the merged scoreboard
+    // keeps the column, N/A for the rows that lack it, under the next chronological name.
+    val params = runner(*jmhRun("ParamBench"), smallHeap, "-PjmhFailOnError=false").build()
+    assertEquals(TaskOutcome.SUCCESS, params.task(":jmh")?.outcome, params.output)
+    val fiveRuns = archivedRuns()
+    assertEquals(5, fiveRuns.size, fiveRuns.toString())
+    assertEquals("results-${ahead.plusSeconds(3).format(stamp)}.txt", fiveRuns.last().name, fiveRuns.toString())
+    val paramArchive = fiveRuns.last().readText()
+    assertTrue(Regex("^Benchmark\\s+\\(kind\\)\\s+Mode").containsMatchIn(paramArchive), paramArchive)
+    assertTrue(Regex("^ParamBench\\.probe\\s+alpha\\s+thrpt", RegexOption.MULTILINE).containsMatchIn(paramArchive), paramArchive)
+    assertFalse(paramArchive.contains("beta"), paramArchive)
+    val merged = results.readText()
+    assertTrue(Regex("^Benchmark\\s+\\(kind\\)\\s+Mode").containsMatchIn(merged), merged)
+    assertTrue(Regex("^OkBench\\.probe\\s+N/A\\s+thrpt", RegexOption.MULTILINE).containsMatchIn(merged), merged)
+    assertTrue(Regex("^LateFailBench\\.probe\\s+N/A\\s+thrpt\\s+2\\s", RegexOption.MULTILINE).containsMatchIn(merged), merged)
+    assertTrue(Regex("^ParamBench\\.probe\\s+alpha\\s+thrpt", RegexOption.MULTILINE).containsMatchIn(merged), merged)
   }
 
   @Test

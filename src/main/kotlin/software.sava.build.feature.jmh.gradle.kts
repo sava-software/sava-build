@@ -1,3 +1,4 @@
+import software.sava.build.jmh.JmhResults
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -16,7 +17,8 @@ tasks.named<me.champeau.jmh.JMHTask>("jmh") {
   // raw output archived timestamped under <project>/jmh-results/ — measurement
   // history, kept outside build/ so 'clean' cannot erase it — and results.txt
   // is then re-rendered as the merge of every archived run, chronological, so
-  // the newest row wins per benchmark. Delete archive files to drop stale rows.
+  // the newest row wins per benchmark, mode and parameter values, under a header
+  // that keeps JMH's parameter columns. Delete archive files to drop stale rows.
   val archiveRoot = layout.projectDirectory.dir("jmh-results")
   // JMH ends a run that only lists (its -l, -lp, -lprof and -lrf flags, which the
   // plugin's jmhOptions and --jmhArgs can pass) before it writes any results, and
@@ -57,44 +59,8 @@ tasks.named<me.champeau.jmh.JMHTask>("jmh") {
         val archives = (archiveDir.listFiles() ?: emptyArray())
             .filter { it.isFile && it.extension == "txt" }
             .sortedBy { it.name } // timestamped names: lexicographic == chronological
-        // token layout: name [param...] mode [cnt] score [± error] units —
-        // JMH omits Cnt for single-iteration runs and Error whenever cnt < 3.
-        // Rows key on name plus parameter values so @Param variants do not
-        // overwrite each other.
-        val benchModes = setOf("avgt", "thrpt", "sample", "ss")
-        val rows = sortedMapOf<String, List<String>>()
-        for (file in archives) {
-          for (line in file.readLines()) {
-            if (line.isBlank() || line.startsWith("Benchmark")) {
-              continue
-            }
-            val tokens = line.trim().split(Regex("\\s+"))
-            val modeIdx = tokens.indexOfFirst { it in benchModes }
-            if (modeIdx < 1 || tokens.size < modeIdx + 3) {
-              continue
-            }
-            val key = tokens.subList(0, modeIdx).joinToString("  ")
-            val mid = tokens.subList(modeIdx + 1, tokens.size - 1)
-            val pm = mid.indexOf("±")
-            val (cnt, score, error) = if (pm >= 0) {
-              Triple(if (pm > 1) mid[0] else "", mid[pm - 1], "± ${mid[pm + 1]}")
-            } else {
-              Triple(if (mid.size > 1) mid[0] else "", mid.last(), "")
-            }
-            rows[key] = listOf(key, tokens[modeIdx], cnt, score, error, tokens.last())
-          }
-        }
-        if (rows.isNotEmpty()) {
-          val cells = mutableListOf(listOf("Benchmark", "Mode", "Cnt", "Score", "Error", "Units"))
-          cells.addAll(rows.values)
-          val widths = IntArray(6) { column -> cells.maxOf { it[column].length } }
-          results.writeText(
-              cells.joinToString(separator = "\n", postfix = "\n") { row ->
-                row.withIndex().joinToString(separator = "  ") { (column, cell) ->
-                  if (column == 0) cell.padEnd(widths[0]) else cell.padStart(widths[column])
-                }.trimEnd()
-              }
-          )
+        JmhResults.merge(archives)?.let {
+          results.writeText(it)
           logger.lifecycle("JMH results merged from {} archived runs into {}", archives.size, results)
         }
       }
