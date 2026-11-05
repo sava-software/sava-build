@@ -258,9 +258,12 @@ one:
   cannot keep its report over them. A build-script change owes the project's
   suites only when it changes what PIT is given: a dependency, a compiler or
   suite setting, the PIT task itself. A plugin upgrade is that kind of change
-  unless the notes of every release between the two pins state that neither
-  the PIT task nor what PIT is given changed, so a range that bumps the pin
-  owes the project's suites once, at its gate. A verify refuses a report
+  unless the files that changed between the two pins, with the patch of any
+  build file among them (`build.gradle.kts`, `gradle/libs.versions.toml`),
+  touch neither the PIT task nor what PIT is given; a release's notes are its
+  commit subjects (and any BREAKING CHANGE footer) and rule nothing out, so
+  the compare's file list and those patches are the record to cite. A range
+  that bumps the pin otherwise owes the project's suites once, at its gate. A verify refuses a report
   whose recorded plugin build is not the loaded one, and that refusal proves
   nothing by itself.
 
