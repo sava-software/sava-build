@@ -170,7 +170,11 @@ object VerificationPolicyRules {
       val component = pgp.parentNode.parentNode as Element
       problems += "<pgp value=\"${pgp.getAttribute("value")}\"> trusts a key for " +
         "${component.getAttribute("group")}:${component.getAttribute("name")}:${component.getAttribute("version")} only. " +
-        "Move it to a trusted-key scoped to the publisher's group or module, or to an exact-version rule for a key in $VERSION_SCOPED_KEYS."
+        "A key that must not vouch (expired, revoked or superseded, DSA-1024, or a retired release manager's that signed only old " +
+        "releases), or that no source authenticates, belongs in an exact-version rule for a key listed in $VERSION_SCOPED_KEYS with " +
+        "the reason, and when a trim once dropped that rule, restore the rule, the line and the keyring block from git history, not " +
+        "from a write run. Any other key gets a trusted-key scoped to the publisher's group or module once the publisher confirms it " +
+        "or gradle/gradle's policy trusts it within the same group, the latter named in the list's header as trusted on that."
     }
     // A regeneration run with -PsavaBuildLocalRepo pins the unsigned local test publication.
     // (Key ids need no rule: Gradle refuses to read a trusted-key id shorter than 160 bits.)
@@ -221,7 +225,11 @@ object VerificationPolicyRules {
             "lists it (${listed[id]}). Pin the exact version(s) it signed, without a regex."
         id !in listed && version.isNotEmpty() ->
           problems += "trusted-key $id trusts ${scope.attributesText()} only at that version. Publisher keys stay version-free " +
-            "so a bump signed by the same key needs no edit: drop the version, or list the key in $VERSION_SCOPED_KEYS with the reason."
+            "so a bump signed by the same key needs no edit. A key that must not vouch (expired, revoked or superseded, DSA-1024, or a " +
+            "retired release manager's that signed only old releases), or that no source authenticates, stays at exact versions: list " +
+            "it in $VERSION_SCOPED_KEYS with the reason, and when a trim once dropped that line, restore the line, the rule and the " +
+            "keyring block from git history, not from a write run. Any other key loses its version once the publisher confirms it or " +
+            "gradle/gradle's policy trusts it within the same group, the latter named in the list's header as trusted on that."
       }
     }
     (listed.keys - scopes.map { it.first }.toSet()).forEach {

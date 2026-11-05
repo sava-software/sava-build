@@ -521,7 +521,20 @@ Trim per rule, not per key: a key the graph meets keeps only the scopes the grap
 (a write run from an empty `<trusted-keys/>` with the fleet's keyring names them), a key the
 graph never meets leaves with its keyring block and any list line, and the proof that nothing
 was lost is a write run over the trimmed files that changes nothing, then step 4's run of
-every build from an empty `GRADLE_USER_HOME`. Gradle keeps the parent POMs and imported BOMs
+every build from an empty `GRADLE_USER_HOME`. A key a trim dropped comes back from git
+history, its exact-version rule, its list line and its keyring block together
+(`git show <trim commit> -- gradle/verification-metadata.xml gradle/verification-keyring.keys gradle/verification/version-scoped-keys.txt | git apply -R`
+reverses everything that commit dropped from those files, so keep only that key's rule,
+line and block, or trim such a chain in a commit of its own, and review the result), never
+from a write run: Gradle consults key servers while writing whatever
+`<key-servers enabled="false"/>` says, unless the run is `--offline`, and writes the key
+back as an exact-version rule without its list line or as per-artifact `<pgp>` entries,
+which the guard refuses; the guard's widening fixes, drop the version or trust the
+publisher's group or module, are for a current key the publisher confirms or gradle/gradle
+corroborates and never for a key that must not vouch, whoever corroborates it (gradle/gradle
+trusts `12D16069219C90212A974D119AE296FD02E9F65B`, the retired release manager's key behind
+commons-math3 3.2, for the whole module): taken for such a key they hand it the module
+(json-iterator, restoring JMH 1.36's chain, 2026-11-04). Gradle keeps the parent POMs and imported BOMs
 of every POM it parses among that module's metadata and checks them on every run; a POM that
 defers to Gradle Module Metadata (`do_not_remove: published-with-gradle-metadata`) it parses,
 parent and imports included, only while it has nothing cached for that module, and then uses
@@ -593,22 +606,28 @@ policy and for every change to one:
    version-scoped key to every version, and it can narrow a publisher key to the one version
    it saw, as a rule with a version or as a per-artifact `<pgp>` entry; it writes an
    `<ignored-keys>` fallback, with checksums, for a key it cannot find, after which that
-   signature is never checked; it never removes a stale entry; and it may consult a key
-   server while writing, so authenticate any key it adds. `--export-keys` writes every key
+   signature is never checked; it never removes a stale entry; and it consults key servers
+   while writing, whatever `<key-servers enabled="false"/>` says, unless the run is
+   `--offline`, so authenticate any key it adds. `--export-keys` writes every key
    Gradle met during the run together with every key already in the keyring file, so an
    export never drops a key: after a prune, delete by hand only the blocks that no remaining
    rule or `<pgp>` entry names (a key that keeps any scope keeps its block; a rule's id may
    be a subkey's fingerprint, so match a block by its primary or subkey fingerprint, whose
-   last sixteen hex digits are the `pub` and `sub` labels in the file), then write once
-   more, which leaves the trimmed file unchanged. The
+   last sixteen hex digits are the `pub` and `sub` labels in the file; cut each block with
+   one adjacent blank line, the one before it for the file's last block), then write once
+   more and commit what it leaves, since that write drops a blank line a cut left at the end
+   of the file; the proof is the write after it, which changes nothing. The
    committed files should be Gradle's own output for the graph, so that a regeneration with
    no dependency change is a no-op and any diff is a change to review.
 
 4. A warm cache can hide parent-POM metadata that a cold one fetches. Validate a new parent
    or BOM, and every trim, with an empty `GRADLE_USER_HOME`, running every build of the
-   repository as in step 1: copy only the `org.gradle.java.*` lines of
-   your `gradle.properties`, and pass package credentials as `ORG_GRADLE_PROJECT_*`
-   environment variables. Offline use needs an online run first; cached signature files
+   repository as in step 1, each standalone build with its own step-1 tasks (the hardened
+   tasks and `resolveVerificationTools` exist only where the hardening feature is applied):
+   copy only the `org.gradle.java.*` lines of your `gradle.properties`, keep the environment
+   variables those lines name (`org.gradle.java.installations.fromEnv=JAVA_HOME` needs
+   `JAVA_HOME`, which an `env -i` drops), and pass package credentials as
+   `ORG_GRADLE_PROJECT_*` environment variables. Offline use needs an online run first; cached signature files
    alone do not prove an offline run can resolve them. A cold run resolves and verifies every
    class path but re-executes no task whose outputs are present, since task history lives in
    the project's own `.gradle` directory: it proves resolution, not a test run.
