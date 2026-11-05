@@ -12,11 +12,11 @@ tasks.named<me.champeau.jmh.JMHTask>("jmh") {
   outputs.upToDateWhen { false }
   // The plugin rewrites its results file with only the benchmarks the run
   // selected, which would make a '-PjmhIncludes' subset run discard every
-  // other benchmark's numbers. Instead, each run's raw output is archived
-  // timestamped under <project>/jmh-results/ — measurement history, kept
-  // outside build/ so 'clean' cannot erase it — and results.txt is
-  // re-rendered as the merge of every archived run, chronological, so the
-  // newest row wins per benchmark. Delete archive files to drop stale rows.
+  // other benchmark's numbers. Instead, each run that writes results has its
+  // raw output archived timestamped under <project>/jmh-results/ — measurement
+  // history, kept outside build/ so 'clean' cannot erase it — and results.txt
+  // is then re-rendered as the merge of every archived run, chronological, so
+  // the newest row wins per benchmark. Delete archive files to drop stale rows.
   val archiveRoot = layout.projectDirectory.dir("jmh-results")
   // JMH ends a run that only lists (its -l, -lp, -lprof and -lrf flags, which the
   // plugin's jmhOptions and --jmhArgs can pass) before it writes any results, and
@@ -142,9 +142,14 @@ jmh {
   // results: @Setup cross-checks are treated as hard failures. JMH then exits
   // non-zero before it writes a results file, so the task fails ahead of the
   // archive step above: a failed run adds no row, and results.txt keeps its
-  // rows (JMH only creates it, empty, when it was missing). (Plugin 0.7.3 and
-  // earlier passed this to JMH as '-foe 1', which JMH reads as false, so no
-  // failure ever reached the task; 0.7.4 passes 'true'.)
+  // rows (JMH only creates it, empty, when it was missing). JMH writes that
+  // file only after its last benchmark, so the benchmarks that finished before
+  // the error survive in the console output alone. With the property false the
+  // task passes: a late failure posts a short row (Cnt below forks x iterations)
+  // that the merge takes as newest, and a dead fork or a trial @Setup failure
+  // posts no row, so the old row stays. (Plugin 0.7.3 and earlier passed this to
+  // JMH as '-foe 1', which JMH reads as false, so no failure ever reached the
+  // task; 0.7.4 passes 'true'.)
   failOnError = providers.gradleProperty("jmhFailOnError").map(String::toBoolean).orElse(true)
   // Replicate the long-running-service JVM sava deployments run: compact
   // object headers (product since JDK 25), generational ZGC, a pinned

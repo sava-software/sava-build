@@ -170,6 +170,16 @@ class JmhFeatureRunTest {
     assertFalse(archiveDir.exists(), "a failed run must archive nothing")
     assertTrue(results.isFile && results.length() == 0L, "JMH leaves a results file it created empty: " + results.isFile)
 
+    // A passing benchmark ahead of the erroring one (JMH runs them in name order): JMH writes
+    // its results file only after the last benchmark, so the first error ends the run with the
+    // passing benchmark's score in the console output alone, and the task fails.
+    val mixed = runner(*jmhRun("OkBench,SetupFailBench"), smallHeap).buildAndFail()
+    assertJmhFailed(mixed)
+    assertTrue(mixed.output.contains("Result \"probe.OkBench.probe\":"), mixed.output)
+    assertTrue(mixed.output.contains("SetupFailBench: variants disagree"), mixed.output)
+    assertFalse(archiveDir.exists(), "a failed run must archive nothing")
+    assertTrue(results.isFile && results.length() == 0L, "the passing benchmark's score must not reach the results file:\n" + results.readText())
+
     // A fork that dies before measuring: no <failure> line, only the dead fork's exit code.
     val forkDied = runner(*jmhRun("OkBench"), "-PjmhJvmArgsAppend=-XX:+NoSuchFlagForProbe").buildAndFail()
     assertJmhFailed(forkDied)
@@ -235,6 +245,23 @@ class JmhFeatureRunTest {
     assertEquals("results-${ahead.plusSeconds(1).format(stamp)}.txt", runs.last().name, runs.toString())
     assertTrue(runs.last().readLines().none { it.contains("thrpt") }, "the erroring run's archive must hold no row:\n" + runs.last().readText())
     assertEquals(okRow, results.readLines().singleOrNull { it.startsWith("OkBench.probe") }, results.readText())
+
+    // With fail-on-error off, a benchmark that fails after two measurement iterations posted
+    // numbers passes the task with a short row (Cnt 2 of the 4 requested), which the merge
+    // takes as the newest row: nothing on the scoreboard marks it short.
+    val lateTolerated = runner(*jmhRun("LateFailBench", iterations = 4), smallHeap, "-PjmhFailOnError=false").build()
+    assertEquals(TaskOutcome.SUCCESS, lateTolerated.task(":jmh")?.outcome, lateTolerated.output)
+    assertTrue(Regex("Iteration\\s+3:\\s+<failure>").containsMatchIn(lateTolerated.output), lateTolerated.output)
+    assertTrue(lateTolerated.output.contains("JMH results merged from 4 archived runs"), lateTolerated.output)
+    val fourRuns = archivedRuns()
+    assertEquals(4, fourRuns.size, fourRuns.toString())
+    assertEquals("results-${ahead.plusSeconds(2).format(stamp)}.txt", fourRuns.last().name, fourRuns.toString())
+    val shortRow = Regex("LateFailBench\\.probe\\s+thrpt\\s+2\\s+\\S+")
+    assertTrue(shortRow.containsMatchIn(fourRuns.last().readText()), "the archive must hold the short row (Cnt 2 of 4):\n" + fourRuns.last().readText())
+    assertTrue(shortRow.containsMatchIn(results.readText()), "the short row must reach the scoreboard:\n" + results.readText())
+    // The merge re-pads every column to the widest name, so compare the row's tokens.
+    val tokens = { row: String? -> row?.split(Regex("\\s+")) }
+    assertEquals(tokens(okRow), tokens(results.readLines().singleOrNull { it.startsWith("OkBench.probe") }), results.readText())
   }
 
   @Test
