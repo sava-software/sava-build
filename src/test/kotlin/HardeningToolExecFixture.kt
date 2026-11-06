@@ -73,8 +73,8 @@ $settingsTail
         dependencies {
           // hardeningCertify includes the real test lifecycle; generated corpus
           // replay tests therefore need the API a real consumer already carries.
-          testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
-          testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.0.3")
+          testImplementation("org.junit.jupiter:junit-jupiter:${savaBuildTestVersion("junit")}")
+          testRuntimeOnly("org.junit.platform:junit-platform-launcher:${savaBuildTestVersion("junit")}")
         }
 
         tasks.test {

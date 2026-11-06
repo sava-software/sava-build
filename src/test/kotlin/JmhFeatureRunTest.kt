@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.jmh.JmhToolDefaults
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -356,7 +357,7 @@ class JmhFeatureRunTest {
   @Test
   fun `the benchmark classpath resolves the default harness version, overridable`() {
     val byDefault = runner("printJmhCore").build()
-    assertTrue(byDefault.output.contains("JMH_CORE=jmh-core-1.37.jar"), byDefault.output)
+    assertTrue(byDefault.output.contains("JMH_CORE=jmh-core-${JmhToolDefaults.JMH}.jar"), byDefault.output)
 
     val overridden = runner("printJmhCore", "-PjmhVersion=1.36").build()
     assertTrue(overridden.output.contains("JMH_CORE=jmh-core-1.36.jar"), overridden.output)

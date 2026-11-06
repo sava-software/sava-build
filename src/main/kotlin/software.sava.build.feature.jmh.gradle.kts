@@ -1,5 +1,6 @@
 import org.gradle.api.logging.StandardOutputListener
 import software.sava.build.jmh.JmhResults
+import software.sava.build.jmh.JmhToolDefaults
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -143,11 +144,11 @@ fun intProperty(name: String, defaultValue: Int): Provider<Int> =
 //   ../gradlew jmh -PjmhFork=3 -PjmhIncludes=enumValues,kindDispatch
 jmh {
   // The JMH harness version, resolved for jmh-core and the bytecode generator:
-  // 1.37, the plugin's own default since 0.7.4, and 1.36 before this. A harness
-  // change is a measurement change, so a consumer records in its benchmark notes
+  // The default comes from gradle/libs.versions.toml. A harness change is a
+  // measurement change, so a consumer records in its benchmark notes
   // where the rows archived under <project>/jmh-results/ move from one harness
   // to the other; the override re-measures against the old one.
-  jmhVersion = stringProperty("jmhVersion", "1.37")
+  jmhVersion = stringProperty("jmhVersion", JmhToolDefaults.JMH)
   // Quick-look default; decision-grade comparisons need '-PjmhFork=3' or
   // more — single-fork scores swing 10-20% on JIT inlining luck alone — and
   // isolation from other load.

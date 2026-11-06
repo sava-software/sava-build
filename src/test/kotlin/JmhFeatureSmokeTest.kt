@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.jmh.JmhToolDefaults
 import java.io.File
 import java.util.jar.JarOutputStream
 
@@ -67,7 +68,7 @@ class JmhFeatureSmokeTest {
           val expectedWarmupTime = providers.gradleProperty("expectedWarmupTime").orElse("1s")
           val expectedMeasureTime = providers.gradleProperty("expectedMeasureTime").orElse("1s")
           val expectedFailOnError = providers.gradleProperty("expectedFailOnError").map(String::toBoolean).orElse(false)
-          val expectedHarness = providers.gradleProperty("expectedHarness").orElse("1.37")
+          val expectedHarness = providers.gradleProperty("expectedHarness").orElse("${JmhToolDefaults.JMH}")
           val expectedArgs = providers.gradleProperty("expectedArgs").map { it.split(' ') }
           doLast {
             check(forks.get() == expectedForks.get()) { "unexpected forks: " + forks.get() }

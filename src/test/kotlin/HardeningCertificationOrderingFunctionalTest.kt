@@ -143,8 +143,8 @@ class HardeningCertificationOrderingFunctionalTest {
           repositories { mavenCentral() }
 
           dependencies {
-            testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
-            testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.0.3")
+            testImplementation("org.junit.jupiter:junit-jupiter:${savaBuildTestVersion("junit")}")
+            testRuntimeOnly("org.junit.platform:junit-platform-launcher:${savaBuildTestVersion("junit")}")
           }
 
           val orderingEvents = rootProject.layout.projectDirectory.dir(".ordering-events").asFile

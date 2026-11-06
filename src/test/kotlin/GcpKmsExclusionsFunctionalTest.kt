@@ -14,10 +14,10 @@ import java.io.File
  * dependency outside that family keeps its own graph. The first test reads the excludes as
  * declared and as both writers print them, without resolving, under the configuration cache;
  * the second resolves the client's runtime graph from the local cache or Maven Central and
- * holds the resolved set. The module-info path, a `requires google.cloud.kms` the
- * java-module-dependencies plugin turns into the dependency, needs the fleet's version
- * catalog from GitHub Packages, so it was validated in a clone of ravina (2026-10-31) rather
- * than here.
+ * holds the resolved set. The module-info fixture supplies its own platform and compiles
+ * a `requires google.cloud.kms` against the patched module path. Dependency versions come
+ * from this build's catalog, passed into the test JVM by ':test', so Dependabot updates the
+ * same pins these fixtures resolve.
  */
 class GcpKmsExclusionsFunctionalTest {
 
@@ -50,7 +50,7 @@ class GcpKmsExclusionsFunctionalTest {
           `java-library`
           `maven-publish`
           id("software.sava.build.modules.gcp-kms")
-          ${if (moduleRequires) "id(\"org.gradlex.java-module-dependencies\") version \"1.13.2\"" else ""}
+          ${if (moduleRequires) "id(\"org.gradlex.java-module-dependencies\") version \"${savaBuildTestVersion("gradlex-java-module-dependencies")}\"" else ""}
         }
 
         group = "software.sava"
@@ -59,11 +59,11 @@ class GcpKmsExclusionsFunctionalTest {
         repositories { mavenCentral() }
 
         dependencies {
-          implementation("com.google.cloud:google-cloud-kms:2.103.0")
-          testImplementation("com.google.api:gax:2.88.0")
-          testImplementation("com.google.api:gax-grpc:2.88.0:testlib")
-          testImplementation("io.grpc:grpc-xds:1.83.0")
-          implementation("org.junit.jupiter:junit-jupiter-api:6.1.3")
+          implementation("com.google.cloud:google-cloud-kms:${savaBuildTestVersion("google-cloud-kms")}")
+          testImplementation("com.google.api:gax:${savaBuildTestVersion("google-gax")}")
+          testImplementation("com.google.api:gax-grpc:${savaBuildTestVersion("google-gax")}:testlib")
+          testImplementation("io.grpc:grpc-xds:${savaBuildTestVersion("grpc-xds")}")
+          implementation("org.junit.jupiter:junit-jupiter-api:${savaBuildTestVersion("junit")}")
         }
 
         ${if (moduleRequires) "testModuleInfo { requires(\"com.google.auth.oauth2\"); requires(\"com.google.auth\") }" else ""}
@@ -114,7 +114,7 @@ class GcpKmsExclusionsFunctionalTest {
     File(fixtureDir, "platform/build.gradle.kts").writeText(
       """
         plugins { `java-platform` }
-        dependencies { constraints { api("com.google.cloud:google-cloud-kms:2.103.0") } }
+        dependencies { constraints { api("com.google.cloud:google-cloud-kms:${savaBuildTestVersion("google-cloud-kms")}") } }
       """.trimIndent() + "\n"
     )
     File(fixtureDir, "build.gradle.kts").writeText(
@@ -124,7 +124,7 @@ class GcpKmsExclusionsFunctionalTest {
         plugins {
           `java-library`
           id("software.sava.build.modules.gcp-kms")
-          id("org.gradlex.java-module-dependencies") version "1.13.2"
+          id("org.gradlex.java-module-dependencies") version "${savaBuildTestVersion("gradlex-java-module-dependencies")}"
         }
 
         repositories { mavenCentral() }

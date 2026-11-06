@@ -30,6 +30,9 @@ val savaBuildPluginManagement: String = run {
 fun savaBuildTestProperty(name: String): String = System.getProperty(name)
   ?: error("System property '$name' is not set; run the tests through Gradle (./gradlew test).")
 
+/** A dependency version supplied by ':test' from the Dependabot-visible version catalog. */
+fun savaBuildTestVersion(alias: String): String = savaBuildTestProperty("savaBuild.fixtureVersion.$alias")
+
 /**
  * A repository file, or a directory read whole, that a test reads, by its path under the checkout.
  * The ':test' task declares the paths it passes in 'savaBuild.rootFiles' as inputs
