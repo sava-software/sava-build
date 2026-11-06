@@ -59,9 +59,9 @@ class GcpKmsExclusionsFunctionalTest {
         repositories { mavenCentral() }
 
         dependencies {
-          implementation("com.google.cloud:google-cloud-kms:2.102.0")
-          testImplementation("com.google.api:gax:2.87.0")
-          testImplementation("com.google.api:gax-grpc:2.87.0:testlib")
+          implementation("com.google.cloud:google-cloud-kms:2.103.0")
+          testImplementation("com.google.api:gax:2.88.0")
+          testImplementation("com.google.api:gax-grpc:2.88.0:testlib")
           testImplementation("io.grpc:grpc-xds:1.83.0")
           implementation("org.junit.jupiter:junit-jupiter-api:6.1.3")
         }
@@ -114,7 +114,7 @@ class GcpKmsExclusionsFunctionalTest {
     File(fixtureDir, "platform/build.gradle.kts").writeText(
       """
         plugins { `java-platform` }
-        dependencies { constraints { api("com.google.cloud:google-cloud-kms:2.102.0") } }
+        dependencies { constraints { api("com.google.cloud:google-cloud-kms:2.103.0") } }
       """.trimIndent() + "\n"
     )
     File(fixtureDir, "build.gradle.kts").writeText(
