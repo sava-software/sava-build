@@ -1,5 +1,31 @@
 # Changelog
 
+## [21.8.4](https://github.com/sava-software/sava-build/compare/21.8.3...21.8.4) (2026-11-07)
+
+
+### Features
+
+* **jmh:** fail the jmh task at the end of the run, keeping the passing benchmarks' rows ([6f57439](https://github.com/sava-software/sava-build/commit/6f574395679ee3c5680b9b49f697c04cfe182adb))
+
+
+### Bug Fixes
+
+* **build:** upgrade to Gradle 9.9 and narrow dependency lookups ([d319045](https://github.com/sava-software/sava-build/commit/d3190457edcb47650ebfc7db71158e6979f5209e))
+* **deps:** expose fixture and JMH versions to Dependabot ([19d7b26](https://github.com/sava-software/sava-build/commit/19d7b26ab754c28d7d6cc9a6b569ab5f8f4bd89d))
+* **jmh:** the merged scoreboard keeps JMH's parameter columns ([1154cb7](https://github.com/sava-software/sava-build/commit/1154cb7ff9446f42af083346eeaaa378989ec53b))
+* **verification:** a key a trim dropped comes back from git history, and the guard's notice says so ([a00bad8](https://github.com/sava-software/sava-build/commit/a00bad892a3897ddf0eaf4bc37c17fe710f23c86))
+
+
+### Build System
+
+* **deps:** bump the codeql-action group across 1 directory with 2 updates ([#156](https://github.com/sava-software/sava-build/issues/156)) ([8c033c7](https://github.com/sava-software/sava-build/commit/8c033c7b6382c818c7f04059930045e46bfbda43))
+
+
+### Documentation
+
+* **jmh:** the first error costs the scores before it, and only a run that writes results is archived ([5f4d5de](https://github.com/sava-software/sava-build/commit/5f4d5defcc8b8d34038f4d2cd9176b4fa0cee282))
+* the mutation-suite rule reads the files between the pins, since release notes are commit subjects ([8ddcdf4](https://github.com/sava-software/sava-build/commit/8ddcdf482443b32fd2e9aa11c97e7faa3358b0f8))
+
 ## [21.8.3](https://github.com/sava-software/sava-build/compare/21.8.2...21.8.3) (2026-11-03)
 
 
