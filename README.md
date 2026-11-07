@@ -229,8 +229,8 @@ build is not the loaded one.
 | `software.sava.build` | Entry point. Applies centralized repositories, module discovery (`javaModules {}`), and build-wide dependency analysis, including the root `buildHealth` aggregate. Includes the `:aggregation` project when `gradle/aggregation/build.gradle.kts` exists ([Publishing](#publishing)). |
 | `software.sava.build.feature.jdk-provisioning` | Auto-provisions JDK toolchains via the [foojay resolver](https://github.com/gradle/foojay-toolchains). Separate from the entry point so provisioning (and its network access) stays opt-in. |
 | `software.sava.build.feature-jdk-provisioning` | **Deprecated** alias for the above. |
-| `software.sava.build.version-catalog` | Standalone: exposes the solana version catalog as `savaCatalog` without the rest of the conventions. |
-| `software.sava.build.base.repositories` | Centralized dependency repositories: Maven Central plus sava GitHub Packages (and `extraGithubPackageRepos`). Project-level `repositories {}` blocks are rejected (`FAIL_ON_PROJECT_REPOS`). Applied by `software.sava.build`. |
+| `software.sava.build.version-catalog` | Standalone: exposes the solana version catalog as `savaCatalog` without the rest of the conventions. Its GitHub repository is restricted to `software.sava:solana-version-catalog`. |
+| `software.sava.build.base.repositories` | Centralized dependency repositories: Maven Central plus sava GitHub Packages (and `extraGithubPackageRepos`). Built-in GitHub repositories accept only `software.sava`; Maven Central still serves public Sava artifacts, and extra repositories remain unrestricted for private or third-party groups. Project-level `repositories {}` blocks are rejected (`FAIL_ON_PROJECT_REPOS`). Applied by `software.sava.build`. |
 
 ### Project plugins
 
@@ -931,7 +931,7 @@ which it strips of comments on every write:
   subkey fingerprint (the file labels blocks with the last sixteen hex digits), and confirm
   the keyring's key set afterwards.
 - The unsigned `org.gradle.kotlin.kotlin-dsl` plugin marker is pinned by SHA-256 at the
-  version the wrapper embeds (9.7.1 took 6.7.3, 9.8.x takes 6.7.6): a wrapper bump moves it,
+  version the wrapper embeds (9.7.1 took 6.7.3, 9.8.x took 6.7.6, 9.9.0 takes 6.7.13): a wrapper bump moves it,
   failing with "Dependency verification failed ... kotlin-dsl.gradle.plugin-<v>.pom", so
   replace that pin in the commit that bumps `distributionSha256Sum`.
 - `org.gradle:github-dependency-graph-gradle-plugin` is resolved only by the
@@ -958,15 +958,17 @@ to at least 1.86, addressing [the name-constraints bypass](https://github.com/ad
 and [the lazy ASN.1 depth-limit bypass](https://github.com/advisories/GHSA-qp49-qgx5-5m26).
 These constraints preserve Kotlin's default helper dependencies and do not add dependencies
 to the published convention plugins. Remove them when Gradle's bundled Kotlin tooling
-supplies Bouncy Castle 1.86 or newer.
+supplies Bouncy Castle 1.86 or newer in the helper configuration. Kotlin 2.4.21 still
+defaults that helper to 1.84 even though Gradle 9.9.0 itself embeds 1.86.
 
 The separate [Kotlin cache advisory](https://github.com/advisories/GHSA-r937-wjx7-w2jp)
 affects KAPT's incremental-cache deserialization, as shown by the
 [upstream fix](https://github.com/JetBrains/kotlin/commit/bf51df665b458fda7c3eaf436c4d88dc119d7ec6).
-This build does not apply KAPT or configure annotation processors. Keep the alert open
-pending patched tooling compatible with Gradle's `kotlin-dsl` plugin; overriding Kotlin
-independently leaves Gradle's expected tooling combination. Reassess this exposure if
-KAPT is introduced or the Kotlin tooling changes.
+This build does not apply KAPT or configure annotation processors. Gradle 9.9.0 bundles
+Kotlin 2.4.21, beyond the advisory's patched threshold of 2.4.20-Beta1, so the wrapper
+upgrade also removes the affected Kotlin tooling version without overriding Gradle's
+expected tooling combination. Reassess this exposure if KAPT is introduced or the Kotlin
+tooling changes.
 
 ### Local adoption and releasing
 

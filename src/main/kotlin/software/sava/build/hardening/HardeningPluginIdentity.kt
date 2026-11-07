@@ -4,6 +4,8 @@ import org.gradle.api.provider.Property
 import org.gradle.api.services.BuildService
 import org.gradle.api.services.BuildServiceParameters
 import org.gradle.api.DefaultTask
+import org.gradle.api.artifacts.Configuration
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.UntrackedTask
@@ -31,6 +33,18 @@ internal data class HardeningPluginIdentity(
   fun matchesLoadedArtifact(artifact: File): Boolean =
       artifact.isFile && sha256 == PitestEvidence.sha256(artifact)
 
+  /** Match the resolved module and its bytes, without downloading unrelated artifacts. */
+  fun findClasspathArtifact(classpath: Configuration): HardeningClasspathArtifact? =
+      classpath.incoming.artifactView {
+        componentFilter { component ->
+          component is ModuleComponentIdentifier &&
+              component.group == "software.sava" && component.module == "sava-build"
+        }
+      }.artifacts.artifacts.firstOrNull { matchesLoadedArtifact(it.file) }?.let { artifact ->
+        val module = artifact.id.componentIdentifier as ModuleComponentIdentifier
+        HardeningClasspathArtifact("${module.group}:${module.module}:${module.version}", artifact.file)
+      }
+
   companion object {
 
     fun capture(owner: Class<*>): HardeningPluginIdentity {
@@ -41,6 +55,8 @@ internal data class HardeningPluginIdentity(
     }
   }
 }
+
+internal data class HardeningClasspathArtifact(val coordinates: String, val file: File)
 
 /** Earliest plugin identity shared by settings and every project in one Gradle build. */
 internal abstract class HardeningPluginIdentityService :

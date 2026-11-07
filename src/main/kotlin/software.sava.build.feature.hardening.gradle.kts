@@ -462,15 +462,10 @@ val hardeningImplementationSha256AtProjectApplication = hardeningImplementationI
 // A standalone hardening project has no settings identity service. Its project
 // buildscript classpath is already the plugin-resolution classpath; capture only the
 // matching sava-build artifact so identity output retains actual public coordinates.
-val hardeningProjectClasspathArtifact = buildscript.configurations.findByName("classpath")
-    ?.resolvedConfiguration?.resolvedArtifacts
-    ?.firstOrNull { artifact ->
-      artifact.moduleVersion.id.group == "software.sava" &&
-          artifact.moduleVersion.id.name == "sava-build" &&
-          hardeningImplementationIdentity.matchesLoadedArtifact(artifact.file)
-    }
+private val hardeningProjectClasspathArtifact = buildscript.configurations.findByName("classpath")
+    ?.let(hardeningImplementationIdentity::findClasspathArtifact)
 val hardeningProjectClasspathCoordinates =
-    hardeningProjectClasspathArtifact?.moduleVersion?.id?.toString()
+    hardeningProjectClasspathArtifact?.coordinates
         ?: HardeningPluginIdentityService.UNAVAILABLE
 val hardeningProjectClasspathArtifactPath =
     hardeningProjectClasspathArtifact?.file?.absoluteFile?.normalize()?.path

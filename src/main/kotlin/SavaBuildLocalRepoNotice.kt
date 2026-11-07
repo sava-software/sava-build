@@ -62,14 +62,9 @@ abstract class SavaBuildLocalRepoNoticePlugin @Inject constructor(
     // Plugin resolution has already populated this classpath. Read only that resolved
     // configuration and retain the module metadata whose artifact contains the code
     // that applied this settings plugin; do not infer a version from a cache path.
-    val loadedArtifact = settings.buildscript.configurations.getByName("classpath")
-      .resolvedConfiguration.resolvedArtifacts
-      .firstOrNull { artifact ->
-        artifact.moduleVersion.id.group == "software.sava" &&
-            artifact.moduleVersion.id.name == "sava-build" &&
-            pluginIdentity.matchesLoadedArtifact(artifact.file)
-      }
-    val loadedCoordinates = loadedArtifact?.moduleVersion?.id?.toString()
+    val loadedArtifact = pluginIdentity.findClasspathArtifact(
+      settings.buildscript.configurations.getByName("classpath"))
+    val loadedCoordinates = loadedArtifact?.coordinates
       ?: HardeningPluginIdentityService.UNAVAILABLE
     val loadedArtifactPath = loadedArtifact?.file?.absoluteFile?.normalize()?.path
       ?: HardeningPluginIdentityService.UNAVAILABLE

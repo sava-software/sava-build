@@ -260,9 +260,9 @@ dependencies {
   testImplementation(libs.junit.jupiter)
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
-  // KGP 2.4.10 creates this isolated publishing-helper configuration with BC 1.84.
+  // KGP 2.4.21 still creates this isolated publishing-helper configuration with BC 1.84.
   // Constraints preserve its defaultDependencies (adding dependencies would suppress them).
-  // Remove this floor when Gradle's bundled Kotlin tooling supplies BC >= 1.86.
+  // Remove this floor when KGP's helper supplies BC >= 1.86; Gradle's own BC is separate.
   constraints {
     val bouncyCastleVersion = "1.86"
     add("kotlinBouncyCastleConfiguration", "org.bouncycastle:bcprov-jdk18on:$bouncyCastleVersion")

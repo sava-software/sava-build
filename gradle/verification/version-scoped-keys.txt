@@ -14,7 +14,7 @@
 # Keys that signed old releases in the graph and must not vouch for new ones: expired keys,
 # DSA-1024 keys (about 80 bits of security, whoever still signs with them), revoked keys and
 # retired release managers' keys; a new version under any of them is a reason to stop.
-1BD97A6A154E7810EE0BC832E2F38302C8075E3D Gradle Inc. publishing key, revoked 2026-08-08 as superseded (gradle.org/keys); signed gradle-kotlin-dsl-plugins 6.7.6 and foojay-resolver 1.0.0 while active
+1BD97A6A154E7810EE0BC832E2F38302C8075E3D Gradle Inc. publishing key, revoked 2026-08-08 as superseded (gradle.org/keys); signed foojay-resolver 1.0.0 while active
 0CDE80149711EB46DFF17AE421A24B3F8B0F594A expired key
 2E3A1AFFE42B5F53AF19F780BCF4173966770193 expired key
 808D78B17A5A2D7C3668E31FBFFC9B54721244AD expired key

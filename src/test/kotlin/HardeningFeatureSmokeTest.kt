@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.hardening.PitestEvidence
 import java.io.File
 
 /**
@@ -27,6 +28,24 @@ class HardeningFeatureSmokeTest {
   // daemon runs on, which is this test's JVM: the daemon JDK, which follows JAVA_HOME on CI and
   // org.gradle.java.home locally (both Java 25 since 2026-10).
   private val daemonRelease = Runtime.version().feature()
+
+  @Test
+  fun `standalone hardening identity retains resolved coordinates and loaded bytes`() {
+    writeFixture(emptyList())
+    val pluginJar = File(savaBuildTestProperty("savaBuild.testRepo"),
+      "software/sava/sava-build/$savaBuildTestRepoVersion/sava-build-$savaBuildTestRepoVersion.jar")
+    val expectedSha256 = PitestEvidence.sha256(pluginJar)
+    val (first, reused) = assertConfigurationCacheRoundTrip {
+      GradleRunner.create().withProjectDir(fixtureDir)
+        .withArguments("savaBuildIdentity", "--no-watch-fs", "--stacktrace").build()
+    }
+    for (result in listOf(first, reused)) {
+      assertTrue(result.output.contains(
+        "resolved coordinates: software.sava:sava-build:$savaBuildTestRepoVersion"), result.output)
+      assertTrue(result.output.contains("loaded SHA-256: $expectedSha256"), result.output)
+      assertFalse(result.output.contains("resolved artifact path: unavailable"), result.output)
+    }
+  }
 
   private fun writeFixture(
     hardeningSettings: List<String>,
