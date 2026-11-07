@@ -13,6 +13,12 @@ import java.io.File
  */
 val savaBuildTestRepoVersion: String = savaBuildTestProperty("savaBuild.testRepo.version")
 
+/** A file of the plugin's test publication by extension: its jar, module metadata, POM or a sidecar. */
+fun savaBuildTestArtifact(extension: String): File = File(
+  savaBuildTestProperty("savaBuild.testRepo"),
+  "software/sava/sava-build/$savaBuildTestRepoVersion/sava-build-$savaBuildTestRepoVersion.$extension",
+)
+
 val savaBuildPluginManagement: String = run {
   val repo = File(savaBuildTestProperty("savaBuild.testRepo"))
     .absolutePath.replace("\\", "\\\\")

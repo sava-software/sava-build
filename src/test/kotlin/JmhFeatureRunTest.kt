@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import software.sava.build.jmh.JmhPluginRequirement
 import software.sava.build.jmh.JmhToolDefaults
 import java.io.File
 import java.time.LocalDateTime
@@ -25,7 +26,9 @@ import java.time.format.DateTimeFormatter
  *
  * jmh-gradle-plugin 0.7.3 and earlier passed the plugin's failOnError to JMH as '-foe 1', which
  * JMH reads as false; 0.7.4 passes 'true', which -PjmhFailFast=true relies on. The runs here hold
- * that through any later plugin bump.
+ * that through any later plugin bump: the fixture declares the plugin with the declaration the
+ * feature prints, at the version the feature is compiled against, and the feature applies it, the
+ * path a benchmark build takes, so every run here goes through the feature's own application.
  */
 class JmhFeatureRunTest {
 
@@ -46,6 +49,8 @@ class JmhFeatureRunTest {
       """
         plugins {
           java
+          // The declaration the feature prints: the plugin is applied by the feature, as in a benchmark build.
+          ${JmhPluginRequirement.declaration()}
           id("software.sava.build.feature.jmh")
         }
 
@@ -185,7 +190,9 @@ class JmhFeatureRunTest {
 
   private val output: File get() = File(fixtureDir, "build/results/jmh/output.txt")
 
-  private fun archivedRuns(): List<File> = (archiveDir.listFiles() ?: emptyArray()).filter { it.extension == "txt" }.sortedBy { it.name }
+  private val archivedRunName = Regex("""results-\d{8}-\d{6}\.txt""")
+
+  private fun archivedRuns(): List<File> = (archiveDir.listFiles() ?: emptyArray()).filter { archivedRunName.matches(it.name) }.sortedBy { it.name }
 
   private val failedAtEnd = "so the jmh task fails now that the run is over"
 
@@ -316,6 +323,10 @@ class JmhFeatureRunTest {
     val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
     val ahead = LocalDateTime.now().plusHours(1).withNano(0)
     File(archiveDir, "results-${ahead.format(stamp)}.txt").writeText("Benchmark  Mode  Cnt  Score   Error  Units\n")
+    // A hand-kept table beside the archives, named after the results file but not stamped, is not
+    // an archive: the merge leaves it out, where it would sort after every stamp and win.
+    val handKept = File(archiveDir, "results-baseline.txt")
+    handKept.writeText("Benchmark      Mode  Cnt      Score   Error  Units\nOkBench.probe  thrpt    8  999999.000 ± 0.001  ops/s\n")
 
     // With fail-on-error off for the run, the same erroring benchmark beside a passing one lets
     // the task pass with a warning naming it: the passing row is archived, the failed one
@@ -333,6 +344,8 @@ class JmhFeatureRunTest {
     assertEquals("results-${ahead.plusSeconds(1).format(stamp)}.txt", runs.last().name, runs.toString())
     assertTrue(rowOf("OkBench.probe").containsMatchIn(runs.last().readText()), runs.last().readText())
     assertFalse(runs.last().readText().contains("SetupFailBench"), runs.last().readText())
+    assertFalse(results.readText().contains("999999"), "the hand-kept table reached the scoreboard:\n" + results.readText())
+    assertTrue(handKept.isFile, "the hand-kept table must be left alone")
 
     // A parameterised benchmark with one failing value, tolerated: its passing row is archived
     // under JMH's '(kind)' column, the failing value is named, and the merged scoreboard keeps

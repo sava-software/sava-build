@@ -10,8 +10,10 @@ import java.util.jar.JarOutputStream
 
 /**
  * Configuration and task-serialization smoke test for 'software.sava.build.feature.jmh':
- * a plain java consumer applies the plugin resolved from the local test repo, checks its
- * conventions, and selects the plugin-owned JMH task without resolving benchmark dependencies.
+ * a plain java consumer applies the plugin resolved from the local test repo, with the JMH
+ * Gradle plugin declared and applied by the build itself (JmhFeatureRunTest takes the other
+ * form, the feature applying it), checks its conventions, and selects the plugin-owned JMH task
+ * without resolving benchmark dependencies.
  */
 class JmhFeatureSmokeTest {
 
@@ -40,6 +42,9 @@ class JmhFeatureSmokeTest {
       """
         plugins {
           java
+          // Declared and applied by the build itself, the other form a benchmark build may use:
+          // the feature's own application is then a no-op.
+          id("me.champeau.jmh") version "${JmhToolDefaults.JMH_GRADLE_PLUGIN}"
           id("software.sava.build.feature.jmh")
         }
 

@@ -245,7 +245,12 @@ dependencies {
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
   // https://github.com/melix/jmh-gradle-plugin
   // https://plugins.gradle.org/plugin/me.champeau.jmh
-  implementation("me.champeau.jmh:jmh-gradle-plugin:0.7.4")
+  // Compile-only: the published module does not depend on the plugin, which the benchmark
+  // build declares beside 'software.sava.build.feature.jmh' (JmhPluginRequirement, and the
+  // feature's README row). Not transitive: no precompiled script requests the plugin any
+  // more, so the accessor-generation classpath, which resolves the plugin's runtime variant,
+  // has no use for jmh-core and its chain; their rules in the policy wait for its next trim.
+  compileOnly(libs.jmh.gradle.plugin) { isTransitive = false }
   // https://github.com/gradlex-org/java-module-dependencies
   implementation(libs.gradlex.java.module.dependencies)
   // https://github.com/gradlex-org/java-module-testing
@@ -314,14 +319,21 @@ val generateHardeningToolDefaults = tasks.register("generateHardeningToolDefault
 kotlin.sourceSets["main"].kotlin.srcDir(generateHardeningToolDefaults)
 
 // The JMH convention runs in consumer builds, so its catalog default is baked into
-// the plugin too. A caller's -PjmhVersion still overrides the generated value.
+// the plugin too. A caller's -PjmhVersion still overrides the generated value. The JMH
+// Gradle plugin's version goes with it: the version the feature is compiled against, which
+// JmhPluginRequirement names in the declaration it asks a benchmark build for.
 val jmhToolVersion = libsCatalog.findVersion("jmh")
   .orElseThrow { IllegalStateException("Version 'jmh' is missing from gradle/libs.versions.toml") }
   .requiredVersion
+val jmhGradlePluginVersion = libsCatalog.findVersion("jmh-gradle-plugin")
+  .orElseThrow { IllegalStateException("Version 'jmh-gradle-plugin' is missing from gradle/libs.versions.toml") }
+  .requiredVersion
 val generateJmhToolDefaults = tasks.register("generateJmhToolDefaults") {
-  description = "Generates JmhToolDefaults.kt from the version in gradle/libs.versions.toml"
+  description = "Generates JmhToolDefaults.kt from the versions in gradle/libs.versions.toml"
   val version = jmhToolVersion
+  val pluginVersion = jmhGradlePluginVersion
   inputs.property("version", version)
+  inputs.property("pluginVersion", pluginVersion)
   val outputDir = layout.buildDirectory.dir("generated/sources/jmh-tool-defaults/kotlin")
   outputs.dir(outputDir)
   doLast {
@@ -332,7 +344,10 @@ val generateJmhToolDefaults = tasks.register("generateJmhToolDefaults") {
       appendLine("package software.sava.build.jmh")
       appendLine()
       appendLine("internal object JmhToolDefaults {")
+      appendLine("  /** The JMH harness version the feature resolves unless -PjmhVersion says otherwise. */")
       appendLine("  const val JMH = \"$version\"")
+      appendLine("  /** The JMH Gradle plugin version the feature is compiled and tested against. */")
+      appendLine("  const val JMH_GRADLE_PLUGIN = \"$pluginVersion\"")
       appendLine("}")
     })
   }
