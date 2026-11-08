@@ -3,6 +3,7 @@ package software.sava.build.jmh
 import org.gradle.api.GradleException
 import org.gradle.api.Project
 import org.gradle.api.logging.Logging
+import org.gradle.api.provider.Property
 import java.lang.module.ModuleDescriptor
 import java.util.Properties
 
@@ -16,11 +17,12 @@ import java.util.Properties
  * refuses a plugin older than the one the feature is compiled against
  * (JmhToolDefaults.JMH_GRADLE_PLUGIN), the floor the feature's former implementation dependency
  * enforced through conflict resolution: 0.7.3 and earlier, for one, hand the feature's
- * failOnError to JMH as a flag JMH reads as false. A plugin whose version cannot be read, a
- * locally built jar without a manifest version, passes with a warning when its task has the
- * --jmhArgs option 0.7.4 added, which the conventions read, and is refused otherwise; a plugin
- * newer than the compiled-against version passes with a warning, since the conventions read
- * its --jmhArgs handling and its failOnError wiring as that version has them.
+ * failOnError to JMH as a flag JMH reads as false. A plugin whose task has no --jmhArgs property
+ * as 0.7.4 has it (the option 0.7.4 added, which the conventions read) is refused whatever its
+ * version says, so a locally built jar without a manifest version passes, with a warning, only
+ * when it has the property; a plugin newer than the compiled-against version passes with a
+ * warning, since the conventions read its --jmhArgs handling and its failOnError wiring as that
+ * version has them.
  *
  * Why this shape, so a later review need not weigh the others again: Gradle's guide to binary
  * plugins ("Avoiding plugin dependency conflicts") has a plugin that builds on another plugin's
@@ -55,18 +57,21 @@ internal object JmhPluginRequirement {
     val plugin = visiblePluginClass()
       ?: throw GradleException(if (declaredBelow(project)) declaredBelowMessage() else missingMessage())
     val version = plugin.`package`?.implementationVersion
-    val verdict = verdict(version) { hasJmhArgs(plugin.classLoader) }
+    val verdict = verdict(version, hasJmhArgs(plugin.classLoader))
     verdict.refusal?.let { throw GradleException(it) }
     verdict.warning?.let { logger.warn(it) }
     project.pluginManager.apply(plugin)
     try {
       JmhConventions.configure(project)
     } catch (e: LinkageError) {
-      // A newer plugin whose API moved: the conventions are compiled against one version.
-      throw GradleException("$FEATURE could not configure $PLUGIN ${version ?: "of unknown version"} with the conventions it is " +
-        "${compiledAgainst()} ($e): the plugin's API differs. Declare\n  ${declaration()}", e)
+      throw GradleException(apiMismatchMessage(version, e), e)
     }
   }
+
+  /** A plugin whose API moved under the conventions, which are compiled against one version: the error [e], with the declaration to keep. */
+  internal fun apiMismatchMessage(version: String?, e: LinkageError): String =
+    "$FEATURE could not run against $PLUGIN ${version ?: "of unknown version"} with the conventions it is " +
+      "${compiledAgainst()} ($e): the plugin's API differs. ${declare()}"
 
   /** The declaration a benchmark build adds, at the version the feature is compiled against. */
   fun declaration(): String = "id(\"$PLUGIN_ID\") version \"${JmhToolDefaults.JMH_GRADLE_PLUGIN}\" apply false"
@@ -78,27 +83,37 @@ internal object JmhPluginRequirement {
   internal data class Verdict(val refusal: String? = null, val warning: String? = null)
 
   /**
-   * The floor over the plugin's manifest [version] (null when the manifest has none): older than
-   * the compiled-against version is refused, newer passes with a warning, the version itself
-   * passes. A version that cannot be read passes with a warning when the plugin's task has
-   * --jmhArgs ([hasJmhArgs], read only then), the option 0.7.4 added and the archive step reads,
-   * and is refused otherwise: the plugin predates the floor.
+   * The floor over the plugin's manifest [version] (null when the manifest has none) and whether
+   * its task [hasJmhArgs], the property 0.7.4 added and the archive step reads: older than the
+   * compiled-against version is refused; without the property the plugin is refused whatever its
+   * version says (it predates 0.7.4, or its API moved); newer passes with a warning; a version that
+   * cannot be read passes with a warning; the version itself passes.
    */
-  internal fun verdict(version: String?, hasJmhArgs: () -> Boolean): Verdict {
+  internal fun verdict(version: String?, hasJmhArgs: Boolean): Verdict {
     val order = version?.let { compareToCompiledAgainst(it) }
-    if (version == null || order == null) {
-      return if (hasJmhArgs()) Verdict(warning = unreadableVersionMessage(version)) else Verdict(refusal = predatesMessage(version))
-    }
     return when {
-      order < 0 -> Verdict(refusal = olderMessage(version))
+      version != null && order != null && order < 0 -> Verdict(refusal = olderMessage(version))
+      !hasJmhArgs -> Verdict(refusal = lacksJmhArgsMessage(version))
+      version == null || order == null -> Verdict(warning = unreadableVersionMessage(version))
       order > 0 -> Verdict(warning = newerMessage(version))
       else -> Verdict()
     }
   }
 
-  /** Whether the plugin's task class, on [loader], has the --jmhArgs option (0.7.4's), by name and without initializing it. */
-  private fun hasJmhArgs(loader: ClassLoader): Boolean =
-    runCatching { Class.forName(TASK_CLASS, false, loader).getMethod("getJmhArgs") }.isSuccess
+  /**
+   * Whether the plugin's task class, on [loader], has the --jmhArgs property as 0.7.4 has it
+   * (a Property-typed getJmhArgs), by name and signature and without initializing the class. A
+   * task class that does not link is a plugin the feature cannot use, failed with its cause.
+   */
+  private fun hasJmhArgs(loader: ClassLoader): Boolean = try {
+    Class.forName(TASK_CLASS, false, loader).getMethod("getJmhArgs").returnType == Property::class.java
+  } catch (e: NoSuchMethodException) {
+    false
+  } catch (e: ClassNotFoundException) {
+    false
+  } catch (e: LinkageError) {
+    throw GradleException("$FEATURE found $PLUGIN whose task class $TASK_CLASS could not be loaded ($e). The feature is ${compiledAgainst()}. ${declare()}", e)
+  }
 
   /** Where [version] stands against the version the feature is compiled against; null when it is not a version. */
   internal fun compareToCompiledAgainst(version: String): Int? = compare(version, JmhToolDefaults.JMH_GRADLE_PLUGIN)
@@ -139,13 +154,27 @@ internal object JmhPluginRequirement {
   /** The descriptor the feature found is of a plugin it cannot use. */
   private fun unusable(descriptor: String, detail: String, cause: Throwable?): GradleException =
     GradleException("$FEATURE found a descriptor of $PLUGIN at $descriptor that it cannot use: $detail. The feature is " +
-      "${compiledAgainst()}: declare\n  ${declaration()}", cause)
+      "${compiledAgainst()}. ${declare()}", cause)
 
   /** Whether the project's script classloader holds the plugin's descriptor: Gradle's own lookup, on the loader it consults last. */
   private fun declaredBelow(project: Project): Boolean =
     project.buildscript.classLoader.getResource(PLUGIN_DESCRIPTOR) != null
 
   private fun compiledAgainst(): String = "compiled and tested against ${JmhToolDefaults.JMH_GRADLE_PLUGIN}"
+
+  /**
+   * The remedy of a placement refusal (the plugin missing or declared where the feature cannot see
+   * it): the declaration, and where it goes.
+   */
+  private fun declareWhere(): String = "Declare\n  ${declaration()}\n${places()}"
+
+  /**
+   * The remedy of a version or API verdict, given to a build that already declares the plugin where
+   * the feature sees it: the declaration to hold, and the form build logic uses.
+   */
+  private fun declare(): String =
+    "Declare\n  ${declaration()}\nin the plugins {} block that has the plugin now (build logic that depends on sava-build declares " +
+      "${dependency()} beside it)."
 
   /** Where the plugin is declared: on the classpath the feature loads from, whichever that is. */
   private fun places(): String =
@@ -158,32 +187,26 @@ internal object JmhPluginRequirement {
       "settings, the settings copy of the feature is the one that runs, and the settings block supplies the plugin."
 
   private fun missingMessage(): String =
-    "$FEATURE configures $PLUGIN but does not ship it, and none is declared where the feature can see it. Declare\n" +
-      "  ${declaration()}\n" +
-      "${places()} The feature is ${compiledAgainst()}; the Plugin Portal serves the plugin unsigned, so a strict " +
+    "$FEATURE configures $PLUGIN but does not ship it, and none is declared where the feature can see it. " +
+      "${declareWhere()} The feature is ${compiledAgainst()}; the Plugin Portal serves the plugin unsigned, so a strict " +
       "dependency verification policy pins the checksums of its jar, module metadata, marker POM and, for IDE sync, " +
       "sources jar."
 
   private fun declaredBelowMessage(): String =
     "$FEATURE found $PLUGIN on this project's classpath but not on the one the feature loads from, where the " +
-      "feature's classes cannot see it. Declare it\n" +
-      "  ${declaration()}\n" +
-      "${places()}"
+      "feature's classes cannot see it. ${declareWhere()}"
 
   private fun olderMessage(version: String): String =
     "$FEATURE is ${compiledAgainst()} and the plugin on its classpath is $version, which the feature refuses. " +
-      "Declare\n" +
-      "  ${declaration()}\n" +
-      "${places()} Where the lower version arrived through a dependency of build logic or of another plugin, raise " +
+      "${declare()} Where the lower version arrived through a dependency of build logic or of another plugin, raise " +
       "that dependency to ${JmhToolDefaults.JMH_GRADLE_PLUGIN} instead. A sava-build release that moves this version " +
       "moves a benchmark build's declaration and plugin pins with it."
 
   private fun newerMessage(version: String): String =
     "$FEATURE is ${compiledAgainst()} and the plugin on its classpath is $version, newer. The conventions read the " +
       "plugin's --jmhArgs handling and its failOnError wiring as ${JmhToolDefaults.JMH_GRADLE_PLUGIN} has them and were " +
-      "tested against that version alone, so a benchmark build keeps\n" +
-      "  ${declaration()}\n" +
-      "until a sava-build release moves it."
+      "tested against that version alone, so a benchmark build keeps the declaration at that version until a " +
+      "sava-build release moves it. ${declare()}"
 
   private fun unreadable(version: String?): String =
     "$FEATURE could not read the version of $PLUGIN " +
@@ -191,12 +214,13 @@ internal object JmhPluginRequirement {
 
   private fun unreadableVersionMessage(version: String?): String =
     "${unreadable(version)}; the feature is ${compiledAgainst()}, and 0.7.3 and earlier hand failOnError to JMH as a " +
-      "flag JMH reads as false. The plugin's task has the --jmhArgs option 0.7.4 added, so it passes."
+      "flag JMH reads as false. The plugin's task has the --jmhArgs property as ${JmhToolDefaults.JMH_GRADLE_PLUGIN} " +
+      "has it, so it passes."
 
-  private fun predatesMessage(version: String?): String =
-    "${unreadable(version)}, and the plugin's task has no --jmhArgs option, which 0.7.4 added and the feature's " +
-      "archive step reads: the plugin predates the version the feature is ${compiledAgainst()}, which refuses it. " +
-      "Declare\n" +
-      "  ${declaration()}\n" +
-      "${places()}"
+  private fun lacksJmhArgsMessage(version: String?): String =
+    "$FEATURE is ${compiledAgainst()}, and the task of $PLUGIN on its classpath " +
+      (if (version == null) "(no Implementation-Version in its manifest) " else "(version $version) ") +
+      "is without the --jmhArgs property as ${JmhToolDefaults.JMH_GRADLE_PLUGIN} has it (0.7.4 added the option, and " +
+      "the feature's archive step reads it): the plugin predates that version or its API moved, and the feature " +
+      "refuses it. ${declare()}"
 }

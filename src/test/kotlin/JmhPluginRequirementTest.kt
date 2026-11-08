@@ -53,31 +53,37 @@ class JmhPluginRequirementTest {
 
   @Test
   fun `the verdict refuses an older plugin, warns of a newer one and passes the compiled-against version in silence`() {
-    assertEquals(JmhPluginRequirement.Verdict(), JmhPluginRequirement.verdict(floor) { true })
-    val older = JmhPluginRequirement.verdict("$floor-rc1") { true }
+    assertEquals(JmhPluginRequirement.Verdict(), JmhPluginRequirement.verdict(floor, hasJmhArgs = true))
+    val older = JmhPluginRequirement.verdict("$floor-rc1", hasJmhArgs = true)
     assertNull(older.warning)
     assertTrue(older.refusal!!.contains("the plugin on its classpath is $floor-rc1, which the feature refuses"), older.refusal)
     assertTrue(older.refusal!!.contains(JmhPluginRequirement.declaration()), older.refusal)
-    val newer = JmhPluginRequirement.verdict("$floor.1") { true }
+    assertTrue(older.refusal!!.contains(JmhPluginRequirement.dependency()), older.refusal)
+    val newer = JmhPluginRequirement.verdict("$floor.1", hasJmhArgs = true)
     assertNull(newer.refusal)
     assertTrue(newer.warning!!.contains("the plugin on its classpath is $floor.1, newer"), newer.warning)
     assertTrue(newer.warning!!.contains("tested against that version alone"), newer.warning)
+    assertTrue(newer.warning!!.contains(JmhPluginRequirement.dependency()), newer.warning)
   }
 
   @Test
-  fun `a version the floor cannot read passes with a warning when the plugin has --jmhArgs and is refused without it`() {
-    val unreadable = JmhPluginRequirement.verdict(null) { true }
+  fun `a task without the --jmhArgs property is refused whatever the version, and an unreadable version passes with a warning when it has it`() {
+    val unreadable = JmhPluginRequirement.verdict(null, hasJmhArgs = true)
     assertNull(unreadable.refusal)
     assertTrue(unreadable.warning!!.contains("(no Implementation-Version in its manifest)"), unreadable.warning)
-    assertTrue(unreadable.warning!!.contains("has the --jmhArgs option 0.7.4 added, so it passes"), unreadable.warning)
-    val garbage = JmhPluginRequirement.verdict("unspecified") { true }
+    assertTrue(unreadable.warning!!.contains("has the --jmhArgs property as $floor has it, so it passes"), unreadable.warning)
+    val garbage = JmhPluginRequirement.verdict("unspecified", hasJmhArgs = true)
     assertNull(garbage.refusal)
     assertTrue(garbage.warning!!.contains("('unspecified' is not a version)"), garbage.warning)
-    val predates = JmhPluginRequirement.verdict(null) { false }
-    assertNull(predates.warning)
-    assertTrue(predates.refusal!!.contains("has no --jmhArgs option, which 0.7.4 added"), predates.refusal)
-    assertTrue(predates.refusal!!.contains(JmhPluginRequirement.declaration()), predates.refusal)
-    // The check is not consulted when the version reads.
-    assertEquals(JmhPluginRequirement.Verdict(), JmhPluginRequirement.verdict(floor) { error("not consulted") })
+    for (version in listOf(null, "unspecified", floor, "$floor.1")) {
+      val lacking = JmhPluginRequirement.verdict(version, hasJmhArgs = false)
+      assertNull(lacking.warning, version)
+      assertTrue(lacking.refusal!!.contains("is without the --jmhArgs property as $floor has it"), lacking.refusal)
+      assertTrue(lacking.refusal!!.contains(if (version == null) "(no Implementation-Version in its manifest)" else "(version $version)"), lacking.refusal)
+      assertTrue(lacking.refusal!!.contains(JmhPluginRequirement.dependency()), lacking.refusal)
+    }
+    // Older than the floor is refused as older, whatever the property.
+    val older = JmhPluginRequirement.verdict("$floor-rc1", hasJmhArgs = false)
+    assertTrue(older.refusal!!.contains("which the feature refuses"), older.refusal)
   }
 }

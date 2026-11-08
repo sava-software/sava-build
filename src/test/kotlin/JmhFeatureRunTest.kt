@@ -62,6 +62,11 @@ class JmhFeatureRunTest {
           mavenCentral()
         }
 
+        // -PfixtureResultsFile=<path under build/> moves the task's results file, as a build's jmh block may.
+        providers.gradleProperty("fixtureResultsFile").orNull?.let { path ->
+          (extensions.getByName("jmh") as me.champeau.jmh.JmhParameters).resultsFile.set(layout.buildDirectory.file(path))
+        }
+
         // -PfixtureZone=<id> runs the jmh task with that zone as the build JVM's default (a daemon
         // keeps its own whatever the JVM arguments say), so a stamp taken in local time shows;
         // the default is put back once the task is done. The actions capture the zone alone:
@@ -407,29 +412,109 @@ class JmhFeatureRunTest {
     val report = File(fixtureDir, "elsewhere/report.txt")
     val redirected = runner(*jmhRun("OkBench,SetupFailBench"), smallHeap, "--jmhArgs=-rff elsewhere/bench.txt -o elsewhere/report.txt").buildAndFail()
     assertFailedAtEnd(redirected, "probe.SetupFailBench.probe [thrpt]: failed in iteration 1; it posted no row")
-    assertTrue(report.isFile && report.readText().contains("<failure>"), "JMH's report went to -o: " + report.readText())
+    assertTrue(report.isFile) { "JMH's report must have gone to -o: " + (report.parentFile.listFiles() ?: emptyArray()).map { it.name } }
+    assertTrue(report.readText().contains("<failure>")) { "JMH's report went to -o: " + report.readText() }
     assertEquals(report.readText(), output.readText(), "the report is saved beside the task's results file")
     assertFalse(results.exists(), "the task's own results file must not be written by a redirected run")
     assertTrue(rowOf("OkBench.probe").containsMatchIn(elsewhere.readText()), "the table is left as JMH wrote it: " + elsewhere.readText())
     assertFalse(redirected.output.contains("JMH results merged"), redirected.output)
     assertEquals(emptyList<String>(), (archiveDir.listFiles() ?: emptyArray()).map { it.name }, "a redirected run is not archived")
 
+    // A redirected run with a late failure: the short row stays in the table where -rff sent it,
+    // and the failure says so.
+    val redirectedLate = runner(*jmhRun("OkBench,LateFailBench", iterations = 4), smallHeap, "--jmhArgs=-rff elsewhere/late.txt").buildAndFail()
+    assertFailedAtEnd(redirectedLate, "probe.LateFailBench.probe [thrpt]: failed in iteration 3; its row stays in the table, which is left as JMH wrote it where -rff sent it")
+    assertTrue(File(fixtureDir, "elsewhere/late.txt").readText().contains("LateFailBench"), "the redirected table is left as JMH wrote it")
+
+    // -rff /dev/null discards the table: no file is rewritten, yet the run is a run, so its
+    // failures are reported from the report; a run into something that is not a regular file is
+    // checked whatever its flags say (JMH may read them otherwise than the feature), so a SILENT
+    // run and a listing run there are both refused as unreadable.
+    val discarded = runner(*jmhRun("OkBench,SetupFailBench"), smallHeap, "--jmhArgs=-rff /dev/null").buildAndFail()
+    assertFailedAtEnd(discarded, "probe.SetupFailBench.probe [thrpt]: failed in iteration 1; it posted no row")
+    val discardedSilent = runner(*jmhRun("SetupFailBench"), smallHeap, "--jmhArgs=-rff /dev/null -v SILENT").buildAndFail()
+    assertEquals(TaskOutcome.FAILED, discardedSilent.task(":jmh")?.outcome, discardedSilent.output)
+    assertTrue(discardedSilent.output.contains("the feature cannot tell which benchmarks failed"), discardedSilent.output)
+    val discardedListing = runner("jmh", "--jmhArgs=-rff /dev/null -l").buildAndFail()
+    assertEquals(TaskOutcome.FAILED, discardedListing.task(":jmh")?.outcome, discardedListing.output)
+    assertTrue(discardedListing.output.contains("a listing or help run into a results file that is not a regular file"), discardedListing.output)
+    // A value-taking option without its value swallows the token after it: here JMH reads '-e -o'
+    // as an exclude regex and prints the report to the console, while the feature's reading of
+    // --jmhArgs names the -o file of an earlier run. That file was not rewritten, so the console,
+    // and the failure in it, decide the run.
+    val reported = runner(*jmhRun("OkBench"), smallHeap, "--jmhArgs=-rff /dev/null -o elsewhere/rep.txt").build()
+    assertEquals(TaskOutcome.SUCCESS, reported.task(":jmh")?.outcome, reported.output)
+    assertTrue(File(fixtureDir, "elsewhere/rep.txt").readText().contains("OkBench"), "the first run's report went to -o")
+    val staleReport = runner(*jmhRun("OkBench,SetupFailBench"), smallHeap, "--jmhArgs=-rff /dev/null -e -o elsewhere/rep.txt").buildAndFail()
+    assertFailedAtEnd(staleReport, "probe.SetupFailBench.probe [thrpt]: failed in iteration 1; it posted no row")
+    assertFalse(File(fixtureDir, "elsewhere/rep.txt").readText().contains("SetupFailBench"), "the earlier report was left alone")
+    assertFalse(results.exists(), "the task's own results file must not be written by a discarded run")
+    assertEquals(0, archivedRuns().size, "a discarded run is not archived: " + archivedRuns())
+
+    // A results file or a report under jmh-results/ would be taken for an archive: refused before JMH runs.
+    for (named in listOf("-rff jmh-results/results-20261108-120000.txt", "-o jmh-results/results-20990101-000000.txt")) {
+      val intoArchives = runner(*jmhRun("OkBench"), smallHeap, "--jmhArgs=$named").buildAndFail()
+      assertEquals(TaskOutcome.FAILED, intoArchives.task(":jmh")?.outcome, intoArchives.output)
+      assertTrue(intoArchives.output.contains("which holds the jmh task's archives: send it elsewhere"), intoArchives.output)
+      assertFalse(intoArchives.output.contains("# JMH version"), "JMH must not have run:\n" + intoArchives.output)
+    }
+    assertFalse(File(archiveDir, "results-20261108-120000.txt").exists() || File(archiveDir, "results-20990101-000000.txt").exists(), "nothing may be written under jmh-results/")
+
     // -rff naming the task's own results file, by another path, is no redirection.
     val explicit = runner(*jmhRun("OkBench"), smallHeap, "--jmhArgs=-rff build/results/jmh/results.txt").build()
     assertEquals(TaskOutcome.SUCCESS, explicit.task(":jmh")?.outcome, explicit.output)
     assertTrue(explicit.output.contains("JMH results merged from 1 archived runs"), explicit.output)
     assertEquals(1, archivedRuns().size, archivedRuns().toString())
+    // Nor is a hard link to it (one inode, two paths: the same file by Files.isSameFile, not by path).
+    val hardLink = File(fixtureDir, "elsewhere/hard.txt")
+    java.nio.file.Files.createLink(hardLink.toPath(), results.toPath())
+    val linked = runner(*jmhRun("OkBench"), smallHeap, "--jmhArgs=-rff elsewhere/hard.txt").build()
+    assertEquals(TaskOutcome.SUCCESS, linked.task(":jmh")?.outcome, linked.output)
+    assertTrue(linked.output.contains("JMH results merged from 2 archived runs"), linked.output)
+    assertEquals(2, archivedRuns().size, archivedRuns().toString())
+    assertEquals(results.readText(), hardLink.readText())
 
-    // -rf json into the task's results file: another format, archived whole under its own
-    // extension, the file left as JMH wrote it, and no text scoreboard rendered over it.
+    // -rf json into the task's results file: another format, archived whole under the file's whole
+    // name and the format's extension, the file left as JMH wrote it, and no text scoreboard
+    // rendered over it.
     val json = runner(*jmhRun("OkBench"), smallHeap, "--jmhArgs=-rf json").build()
     assertEquals(TaskOutcome.SUCCESS, json.task(":jmh")?.outcome, json.output)
     assertTrue(results.readText().trimStart().startsWith("["), "results.txt holds JMH's JSON: " + results.readText().take(80))
-    val jsonArchives = archivedRuns(extension = "json")
+    val jsonArchives = archivedRuns(name = "results.txt", extension = "json")
     assertEquals(1, jsonArchives.size, (archiveDir.listFiles() ?: emptyArray()).map { it.name }.toString())
     assertEquals(results.readText(), jsonArchives.single().readText())
     assertFalse(json.output.contains("JMH results merged"), json.output)
-    assertEquals(1, archivedRuns().size, "no text archive from a JSON run: " + archivedRuns())
+    assertEquals(2, archivedRuns().size, "no text archive from a JSON run: " + archivedRuns())
+    // A late failure in another format: the run is archived whole, its short entry included, and the failure says so.
+    val jsonLate = runner(*jmhRun("OkBench,LateFailBench", iterations = 4), smallHeap, "--jmhArgs=-rf json").buildAndFail()
+    assertFailedAtEnd(jsonLate, "probe.LateFailBench.probe [thrpt]: failed in iteration 3; its row stays in the archive (only the text result format is filtered)")
+    assertEquals(2, archivedRuns(name = "results.txt", extension = "json").size, (archiveDir.listFiles() ?: emptyArray()).map { it.name }.toString())
+
+    // Another results file in the text format, results.log, has a series of its own under its whole
+    // name: its scoreboard merges that series alone, and results.txt's series stands untouched.
+    val log = File(fixtureDir, "build/results/jmh/results.log")
+    val moved = runner(*jmhRun("OkBench,ParamBench"), smallHeap, "-PjmhFailOnError=false", "-PfixtureResultsFile=results/jmh/results.log").build()
+    assertEquals(TaskOutcome.SUCCESS, moved.task(":jmh")?.outcome, moved.output)
+    assertTrue(moved.output.contains("JMH results merged from 1 archived runs into ${log.canonicalPath}"), moved.output)
+    assertEquals(1, archivedRuns(name = "results.log").size, (archiveDir.listFiles() ?: emptyArray()).map { it.name }.toString())
+    assertTrue(rowOf("ParamBench.probe", "alpha").containsMatchIn(log.readText()), log.readText())
+    assertFalse(results.readText().contains("ParamBench"), "results.txt must not take results.log's rows: " + results.readText())
+    assertEquals(2, archivedRuns().size, "results.txt's series must stand: " + archivedRuns())
+    // Nor does results.log.txt share results.log's series: its extension is the format's, but the
+    // rest of its name holds a dot, so the whole name is kept.
+    val logTxt = File(fixtureDir, "build/results/jmh/results.log.txt")
+    val movedAgain = runner(*jmhRun("OkBench"), smallHeap, "-PfixtureResultsFile=results/jmh/results.log.txt").build()
+    assertEquals(TaskOutcome.SUCCESS, movedAgain.task(":jmh")?.outcome, movedAgain.output)
+    assertTrue(movedAgain.output.contains("JMH results merged from 1 archived runs into ${logTxt.canonicalPath}"), movedAgain.output)
+    assertEquals(1, archivedRuns(name = "results.log.txt").size, (archiveDir.listFiles() ?: emptyArray()).map { it.name }.toString())
+    assertFalse(logTxt.readText().contains("ParamBench"), "results.log.txt must not take results.log's rows: " + logTxt.readText())
+    assertEquals(1, archivedRuns(name = "results.log").size, "results.log's series must stand: " + (archiveDir.listFiles() ?: emptyArray()).map { it.name })
+    // Nor does results.TXT share results.txt's: another file where the file system tells case apart,
+    // so the extension counts as the format's only in the plugin's own spelling.
+    val upper = runner(*jmhRun("OkBench"), smallHeap, "-PfixtureResultsFile=results/jmh/results.TXT").build()
+    assertEquals(TaskOutcome.SUCCESS, upper.task(":jmh")?.outcome, upper.output)
+    assertEquals(1, archivedRuns(name = "results.TXT").size, (archiveDir.listFiles() ?: emptyArray()).map { it.name }.toString())
+    assertEquals(2, archivedRuns().size, "results.txt's series must stand: " + archivedRuns())
   }
 
   @Test

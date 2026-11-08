@@ -55,6 +55,13 @@ class JmhRunOutputsTest {
   }
 
   @Test
+  fun `jopt-simple's option=value spelling is read too`() {
+    assertEquals(mapOf("-o" to "out.txt", "-rf" to "json"), JmhRunOutputs.overrides("-o=out.txt -rf=json"))
+    assertEquals(emptyMap<String, String>(), JmhRunOutputs.overrides("-o="))
+    assertEquals(File("/work/out.txt"), JmhRunOutputs.of("-o=out.txt", results, null, null, workingDir).report)
+  }
+
+  @Test
   fun `the archive extension follows the plugin's naming of the results file`() {
     assertEquals("txt", JmhRunOutputs.of("-rf TEXT", results, null, null, workingDir).archiveExtension)
     assertEquals("latex", JmhRunOutputs.of("-rf LATEX", results, null, null, workingDir).archiveExtension)
