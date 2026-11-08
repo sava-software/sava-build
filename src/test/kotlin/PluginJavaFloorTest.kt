@@ -2,7 +2,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.DataInputStream
-import java.io.File
 import java.util.zip.ZipFile
 
 /**
@@ -20,15 +19,12 @@ import java.util.zip.ZipFile
  */
 class PluginJavaFloorTest {
 
-  private val artifactDir =
-    File(savaBuildTestProperty("savaBuild.testRepo"), "software/sava/sava-build/$savaBuildTestRepoVersion")
-
   /** Class file major version 65 is Java 21. */
   private val java21 = 65
 
   @Test
   fun `every class in the published jar is Java 21 bytecode`() {
-    val jar = File(artifactDir, "sava-build-$savaBuildTestRepoVersion.jar")
+    val jar = savaBuildTestArtifact("jar")
     assertTrue(jar.isFile, "missing $jar")
     val majors = ZipFile(jar).use { zip ->
       zip.entries().asSequence().filter { it.name.endsWith(".class") }.associate { entry ->
@@ -60,7 +56,7 @@ class PluginJavaFloorTest {
 
   @Test
   fun `the module metadata declares Java 21`() {
-    val module = File(artifactDir, "sava-build-$savaBuildTestRepoVersion.module")
+    val module = savaBuildTestArtifact("module")
     assertTrue(module.isFile, "missing $module")
     val declared = Regex("\"org\\.gradle\\.jvm\\.version\"\\s*:\\s*(\\d+)").findAll(module.readText())
       .map { it.groupValues[1].toInt() }.toSet()

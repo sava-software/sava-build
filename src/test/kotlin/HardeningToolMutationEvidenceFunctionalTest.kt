@@ -1104,10 +1104,7 @@ class HardeningToolMutationEvidenceFunctionalTest : HardeningToolExecFixture() {
   fun `PIT refuses a plugin code path replaced after application`() {
     val privateRepo = fixtureDir.resolve("private-test-repo")
     check(File(savaBuildTestProperty("savaBuild.testRepo")).copyRecursively(privateRepo))
-    val fixturePlugin = privateRepo.resolve(
-      "software/sava/sava-build/$savaBuildTestRepoVersion/" +
-        "sava-build-$savaBuildTestRepoVersion.jar"
-    )
+    val fixturePlugin = savaBuildTestArtifact("jar", privateRepo)
     val escapedRepo = privateRepo.absolutePath.replace("\\", "\\\\")
     val privatePluginManagement =
       "pluginManagement { repositories { maven(url = \"$escapedRepo\"); gradlePluginPortal() }; " +

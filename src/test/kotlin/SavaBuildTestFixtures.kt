@@ -13,11 +13,12 @@ import java.io.File
  */
 val savaBuildTestRepoVersion: String = savaBuildTestProperty("savaBuild.testRepo.version")
 
-/** A file of the plugin's test publication by extension: its jar, module metadata, POM or a sidecar. */
-fun savaBuildTestArtifact(extension: String): File = File(
-  savaBuildTestProperty("savaBuild.testRepo"),
-  "software/sava/sava-build/$savaBuildTestRepoVersion/sava-build-$savaBuildTestRepoVersion.$extension",
-)
+/**
+ * A file of the plugin's test publication by extension (its jar, module metadata or POM), in the
+ * test repo or in a copy of it a test made.
+ */
+fun savaBuildTestArtifact(extension: String, repo: File = File(savaBuildTestProperty("savaBuild.testRepo"))): File =
+  repo.resolve("software/sava/sava-build/$savaBuildTestRepoVersion/sava-build-$savaBuildTestRepoVersion.$extension")
 
 val savaBuildPluginManagement: String = run {
   val repo = File(savaBuildTestProperty("savaBuild.testRepo"))

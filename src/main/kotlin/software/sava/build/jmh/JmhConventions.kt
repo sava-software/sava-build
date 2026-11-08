@@ -5,10 +5,12 @@ import me.champeau.jmh.JmhParameters
 import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.Project
+import org.gradle.api.logging.Logger
 import org.gradle.api.logging.StandardOutputListener
 import org.gradle.api.provider.Provider
 import java.io.File
 import java.time.LocalDateTime
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 /**
@@ -34,11 +36,15 @@ internal object JmhConventions {
     // selected, which would make a '-PjmhIncludes' subset run discard every
     // other benchmark's numbers. Instead, each run that writes a row has its
     // table archived timestamped under <project>/jmh-results/ — measurement
-    // history, kept outside build/ so 'clean' cannot erase it — and results.txt
-    // is then re-rendered as the merge of every archived run, chronological, so
-    // the newest row wins per benchmark, mode and parameter values, under a header
-    // that keeps JMH's parameter columns. Delete archive files to drop stale rows.
+    // history, kept outside build/ so 'clean' cannot erase it — and the task's
+    // results file is then re-rendered as the merge of every archived run,
+    // chronological, so the newest row wins per benchmark, mode and parameter
+    // values, under a header that keeps JMH's parameter columns (in the default
+    // text format: a run in another format is archived whole and its file left as
+    // JMH wrote it). Delete archive files to drop stale rows.
     val archiveDir = project.layout.projectDirectory.dir("jmh-results").asFile
+    // JMH's working directory, against which a relative path in --jmhArgs resolves.
+    val workingDir = project.layout.projectDirectory.asFile
     // The run's console output, captured here while it still prints live: JMH runs
     // with its own fail-on-error off (unless -PjmhFailFast=true), so every benchmark
     // runs, and the output says which attempts failed (a '<failure>' in a warmup or
@@ -46,9 +52,9 @@ internal object JmhConventions {
     // rows, a late failure's short row included, are left out of the archive (in
     // the default text format; another format is archived whole), the passing
     // benchmarks' rows are kept, and the task fails once the run is over (a warning
-    // under -PjmhFailOnError=false). The output is saved beside the results file,
-    // never under jmh-results/, whose stamped copies of the results file are the
-    // archives the merge reads.
+    // under -PjmhFailOnError=false). The output is saved as output.txt beside the
+    // task's results file, never under jmh-results/, whose stamped copies of that
+    // file are the archives the merge reads.
     val console = StringBuilder()
     val consoleListener = StandardOutputListener { console.append(it) }
     val failOnError = project.providers.gradleProperty("jmhFailOnError").map(String::toBoolean).orElse(true)
@@ -56,16 +62,21 @@ internal object JmhConventions {
     // plugin's jmhOptions and --jmhArgs can pass) before it writes any results, and
     // a results file this run did not rewrite is the previous scoreboard, not a run
     // to archive: the file's state before the run is kept beside the task and compared.
+    // The file, its format and the report are the run's (JmhRunOutputs): --jmhArgs may
+    // have moved them with -rff, -rf or -o, which the plugin lets replace its own values.
     val resultsBefore = task.temporaryDir.resolve("results-before.txt")
+    fun JMHTask.runOutputs(): JmhRunOutputs =
+      JmhRunOutputs.of(jmhArgs.orNull, resultsFile.get().asFile, resultFormat.orNull, humanOutputFile.orNull?.asFile, workingDir)
     task.doFirst {
       console.setLength(0)
       logging.addStandardOutputListener(consoleListener)
       resultsBefore.parentFile.mkdirs()
-      resultsBefore.writeText(stateOf((this as JMHTask).resultsFile.get().asFile))
+      resultsBefore.writeText(stateOf((this as JMHTask).runOutputs().results))
     }
     task.doLast {
       logging.removeStandardOutputListener(consoleListener)
-      archiveRun(this as JMHTask, console, resultsBefore, archiveDir, failOnError.get())
+      val run = this as JMHTask
+      archiveRun(run.logger, run.resultsFile.get().asFile, run.runOutputs(), console, resultsBefore, archiveDir, failOnError.get())
     }
   }
 
@@ -138,44 +149,84 @@ internal object JmhConventions {
 private fun stateOf(results: File): String =
   if (results.isFile) "${results.lastModified()} ${results.length()}" else "absent"
 
+private fun sameFile(left: File, right: File): Boolean = left.canonicalFile == right.canonicalFile
+
 /**
  * The archive step of a finished 'jmh' run: saves the run's report, keeps the passing rows of
  * a run that wrote results, archives the table and re-renders the scoreboard, then fails the
- * task for the attempts that failed (a warning when [fails] is false).
+ * task for the attempts that failed (a warning when [fails] is false). The archive and the
+ * scoreboard are [taskResults]', the task's results file: a run that --jmhArgs sent elsewhere
+ * with -rff is checked and reported like any other, but its table is left where it went, as
+ * JMH wrote it, since an archive keyed by the file's name would join or shadow the series of
+ * a file that shares it.
  */
-private fun archiveRun(run: JMHTask, captured: CharSequence, resultsBefore: File, archiveDir: File, fails: Boolean) {
-  val logger = run.logger
-  val results = run.resultsFile.get().asFile
-  // The run's report: the file JMH wrote when the plugin's humanOutputFile (its -o) is set,
-  // since JMH then prints nothing to the console, otherwise the capture.
-  val report = run.humanOutputFile.orNull?.asFile?.takeIf { it.isFile }?.readText() ?: captured.toString()
-  val output = results.resolveSibling("output.txt")
+private fun archiveRun(
+  logger: Logger,
+  taskResults: File,
+  outputs: JmhRunOutputs,
+  captured: CharSequence,
+  resultsBefore: File,
+  archiveDir: File,
+  fails: Boolean,
+) {
+  val results = outputs.results
+  // Whether the run rewrote its results file, read before anything is written beside it: a run
+  // that did not (a listing run, JMH's help) has nothing to check or archive, and the previous
+  // scoreboard is never acted on.
+  val written = results.isFile && stateOf(results) != resultsBefore.takeIf { it.isFile }?.readText()
+  // The run's report: the file JMH wrote when its -o is set (the plugin's humanOutputFile, or
+  // --jmhArgs), since JMH then prints nothing to the console, otherwise the capture. Saved as
+  // output.txt beside the task's results file whichever file the run wrote, under another name
+  // when the run's results file is that very file (--jmhArgs=-rff pointing at it).
+  val report = outputs.report?.takeIf { it.isFile }?.readText() ?: captured.toString()
+  val output = taskResults.resolveSibling("output.txt").let { if (sameFile(it, results)) it.resolveSibling("report.txt") else it }
   output.parentFile.mkdirs()
   output.writeText(report)
-  val written = results.isFile && stateOf(results) != resultsBefore.takeIf { it.isFile }?.readText()
-  val textFormat = results.extension == "txt"
-  val attempts = if (written) JmhResults.attempts(report) else emptyList()
+  val attempts = JmhResults.attempts(report)
   val failed = attempts.filter { it.failure != null }
-  // The archives of this results file: its name, a yyyyMMdd-HHmmss stamp, its extension.
-  // Another file's archives (a renamed resultsFile) and a hand-kept table stay out of the
-  // merge, which would otherwise take them in name order.
+  fun fail(message: String) {
+    if (fails) throw GradleException(message) else logger.warn(message)
+  }
+  // A run that wrote results but whose report shows no benchmark section (JMH's verbosity
+  // SILENT, or its output redirected somewhere the feature cannot read) cannot be checked
+  // for failures, even when its table has no row: nothing of it is archived.
+  val unreadable = "JMH wrote results but its report shows no benchmark run, so the feature cannot tell which " +
+    "benchmarks failed (JMH's verbosity SILENT, its output redirected, or a log format the feature does not read?): the run is not archived. " +
+    "The report the feature read is at $output"
+  if (!sameFile(results, taskResults)) {
+    // Sent elsewhere with -rff: the attempts the report shows are checked whether or not the file
+    // was rewritten (-rff /dev/null discards the table and is a run all the same), and the table,
+    // wherever it went, is left as JMH wrote it.
+    when {
+      attempts.isNotEmpty() -> if (failed.isNotEmpty()) fail(JmhResults.failureMessage(attempts, output, fails, JmhResults.RowFate.LEFT))
+      written -> fail(unreadable)
+    }
+    return
+  }
+  if (!written) return
+  val textFormat = outputs.textFormat
+  // The archives of this results file: its name, a yyyyMMdd-HHmmss stamp in UTC, the format's
+  // extension. Another file's archives (a renamed resultsFile), another format's and a
+  // hand-kept table stay out of the merge, which would otherwise take them in name order.
   val prefix = "${results.nameWithoutExtension}-"
-  val suffix = ".${results.extension}"
+  val suffix = ".${outputs.archiveExtension}"
   val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
   fun stampOf(name: String): LocalDateTime? =
     if (name.startsWith(prefix) && name.endsWith(suffix)) {
       runCatching { LocalDateTime.parse(name.removePrefix(prefix).removeSuffix(suffix), stamp) }.getOrNull()
     } else null
-  fun archives(): List<File> = (archiveDir.listFiles() ?: emptyArray())
-    .filter { it.isFile && stampOf(it.name) != null }
-    .sortedBy { it.name } // stamped names: lexicographic == chronological
+  // Each archive with its stamp, in name order (stamped names: lexicographic == chronological).
+  fun archives(): List<Pair<File, LocalDateTime>> = (archiveDir.listFiles() ?: emptyArray())
+    .filter { it.isFile }
+    .mapNotNull { file -> stampOf(file.name)?.let { file to it } }
+    .sortedBy { it.first.name }
   // Merging only understands the default text format. Re-rendered after every run that
   // wrote results, archived or not, so a run whose every attempt failed, or one whose
   // failures could not be read, leaves the scoreboard in results.txt and not JMH's table;
   // with no archived row to show, results.txt keeps its header alone.
   fun renderScoreboard() {
     if (!textFormat) return
-    val archives = archives()
+    val archives = archives().map { it.first }
     val merged = JmhResults.merge(archives)
     if (merged != null) {
       results.writeText(merged)
@@ -185,18 +236,12 @@ private fun archiveRun(run: JMHTask, captured: CharSequence, resultsBefore: File
       results.writeText((header ?: "Benchmark  Mode  Cnt  Score  Error  Units") + "\n")
     }
   }
-  // A run that wrote results but whose report shows no benchmark section (JMH's verbosity
-  // SILENT, or its output redirected somewhere the feature cannot read) cannot be checked
-  // for failures, even when its table has no row: nothing of it is archived.
-  if (written && attempts.isEmpty()) {
+  if (attempts.isEmpty()) {
     renderScoreboard()
-    val message = "JMH wrote results but its report shows no benchmark run, so the feature cannot tell which " +
-      "benchmarks failed (JMH's verbosity SILENT, its output redirected, or a log format the feature does not read?): the run is not archived. " +
-      "The report the feature read is at $output"
-    if (fails) throw GradleException(message) else logger.warn(message)
+    fail(unreadable)
     return
   }
-  if (written && textFormat && failed.isNotEmpty()) {
+  if (textFormat && failed.isNotEmpty()) {
     val kept = try {
       JmhResults.withoutFailedRows(results.readText(), attempts)
     } catch (e: IllegalStateException) {
@@ -209,22 +254,25 @@ private fun archiveRun(run: JMHTask, captured: CharSequence, resultsBefore: File
   }
   // A table without a row (every attempt failed) adds nothing to the merge; in another
   // format, which is archived whole, a run archives when an attempt produced a result.
-  if (written && (if (textFormat) JmhResults.parse(results.readText()).rows.isNotEmpty() else attempts.any { it.hasResult })) {
+  if (if (textFormat) JmhResults.parse(results.readText()).rows.isNotEmpty() else attempts.any { it.hasResult }) {
     archiveDir.mkdirs()
     // The names must stay chronological, since the merge below sorts by them:
     // a run in the same second as the newest archive, or after the clock has
     // stepped back, takes the second after that archive's instead of its own
-    // (compared at whole seconds, the names' precision).
-    val newest = archives().mapNotNull { stampOf(it.name) }.maxOrNull()
-    var at = LocalDateTime.now().withNano(0)
+    // (compared at whole seconds, the names' precision). The stamp is UTC, so
+    // archives from machines in different zones order as the runs did. Archives
+    // stamped in local time before this stay ordered through the same clamp on the
+    // checkout that holds them; the names carry no zone, so archives combined
+    // across checkouts through git interleave for one zone offset after the change.
+    val newest = archives().maxOfOrNull { it.second }
+    var at = LocalDateTime.now(ZoneOffset.UTC).withNano(0)
     if (newest != null && !at.isAfter(newest)) {
       at = newest.plusSeconds(1)
     }
     results.copyTo(archiveDir.resolve("$prefix${at.format(stamp)}$suffix"))
   }
-  if (written) renderScoreboard()
+  renderScoreboard()
   if (failed.isNotEmpty()) {
-    val message = JmhResults.failureMessage(attempts, output, fails, filtered = textFormat)
-    if (fails) throw GradleException(message) else logger.warn(message)
+    fail(JmhResults.failureMessage(attempts, output, fails, if (textFormat) JmhResults.RowFate.FILTERED else JmhResults.RowFate.ARCHIVED))
   }
 }

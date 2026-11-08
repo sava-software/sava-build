@@ -10,7 +10,9 @@ import org.junit.jupiter.api.io.TempDir
 import software.sava.build.jmh.JmhPluginRequirement
 import software.sava.build.jmh.JmhToolDefaults
 import java.io.File
+import java.time.Duration
 import java.time.LocalDateTime
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 /**
@@ -47,6 +49,8 @@ class JmhFeatureRunTest {
     )
     File(fixtureDir, "build.gradle.kts").writeText(
       """
+        import java.util.TimeZone
+
         plugins {
           java
           // The declaration the feature prints: the plugin is applied by the feature, as in a benchmark build.
@@ -56,6 +60,22 @@ class JmhFeatureRunTest {
 
         repositories {
           mavenCentral()
+        }
+
+        // -PfixtureZone=<id> runs the jmh task with that zone as the build JVM's default (a daemon
+        // keeps its own whatever the JVM arguments say), so a stamp taken in local time shows;
+        // the default is put back once the task is done. The actions capture the zone alone:
+        // a script property would drag the script object into the configuration cache.
+        providers.gradleProperty("fixtureZone").orNull?.let { zone ->
+          tasks.named("jmh") {
+            doFirst {
+              TimeZone.setDefault(TimeZone.getTimeZone(zone))
+              println("JMH_ZONE=" + TimeZone.getDefault().id)
+            }
+            doLast {
+              TimeZone.setDefault(null)
+            }
+          }
         }
 
         // The harness the benchmark classpath resolves, read at execution from the resolved
@@ -190,9 +210,13 @@ class JmhFeatureRunTest {
 
   private val output: File get() = File(fixtureDir, "build/results/jmh/output.txt")
 
-  private val archivedRunName = Regex("""results-\d{8}-\d{6}\.txt""")
+  private val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
 
-  private fun archivedRuns(): List<File> = (archiveDir.listFiles() ?: emptyArray()).filter { archivedRunName.matches(it.name) }.sortedBy { it.name }
+  /** The stamped archives of [name]'s series in [extension], in name order: the files that file's merge reads. */
+  private fun archivedRuns(name: String = "results", extension: String = "txt"): List<File> {
+    val archived = Regex(Regex.escape("$name-") + """\d{8}-\d{6}""" + Regex.escape(".$extension"))
+    return (archiveDir.listFiles() ?: emptyArray()).filter { archived.matches(it.name) }.sortedBy { it.name }
+  }
 
   private val failedAtEnd = "so the jmh task fails now that the run is over"
 
@@ -280,11 +304,17 @@ class JmhFeatureRunTest {
   @Test
   fun `the archive holds exactly the runs that wrote a row, under chronological names, with the parameter columns`() {
     // The default JVM flag list (compact object headers, generational ZGC, a pre-touched 2g
-    // heap) boots the fork on this JDK, and the run's row reaches the merged scoreboard.
-    val passed = runner(*jmhRun("OkBench")).build()
+    // heap) boots the fork on this JDK, and the run's row reaches the merged scoreboard. The
+    // build JVM runs this task fourteen hours off UTC, so the UTC check below has teeth.
+    val passed = runner(*jmhRun("OkBench"), "-PfixtureZone=Etc/GMT-14").build()
     assertEquals(TaskOutcome.SUCCESS, passed.task(":jmh")?.outcome, passed.output)
+    assertTrue(passed.output.contains("JMH_ZONE=Etc/GMT-14"), "the fixture's zone did not take in the build JVM:\n" + passed.output)
     assertTrue(passed.output.contains("JMH results merged from 1 archived runs"), passed.output)
     assertEquals(1, archivedRuns().size, archivedRuns().toString())
+    // The stamp is UTC: within minutes of the UTC clock, where the zone the run just had would
+    // put a local-time stamp fourteen hours out.
+    val firstStamp = LocalDateTime.parse(archivedRuns().single().name.removePrefix("results-").removeSuffix(".txt"), stamp)
+    assertTrue(Duration.between(firstStamp, LocalDateTime.now(ZoneOffset.UTC)).abs() < Duration.ofMinutes(10), "a stamp off UTC: " + archivedRuns())
     // JMH prints benchmark names without the package every benchmark shares.
     val okRow = results.readLines().singleOrNull { it.startsWith("OkBench.probe") }
     assertTrue(okRow != null && okRow.contains("thrpt"), "merged scoreboard lacks the OkBench row:\n" + results.readText())
@@ -320,8 +350,7 @@ class JmhFeatureRunTest {
 
     // Archive names must stay chronological whatever the clock does: with an archive named an
     // hour ahead in place, the next run takes the second after it rather than its own second.
-    val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
-    val ahead = LocalDateTime.now().plusHours(1).withNano(0)
+    val ahead = LocalDateTime.now(ZoneOffset.UTC).plusHours(1).withNano(0)
     File(archiveDir, "results-${ahead.format(stamp)}.txt").writeText("Benchmark  Mode  Cnt  Score   Error  Units\n")
     // A hand-kept table beside the archives, named after the results file but not stamped, is not
     // an archive: the merge leaves it out, where it would sort after every stamp and win.
@@ -365,6 +394,42 @@ class JmhFeatureRunTest {
     assertTrue(rowOf("OkBench.probe", "N/A").containsMatchIn(merged), merged)
     assertTrue(rowOf("ParamBench.probe", "alpha").containsMatchIn(merged), merged)
     assertFalse(merged.contains("beta"), merged)
+  }
+
+  @Test
+  fun `a run --jmhArgs sends elsewhere is checked but not archived, and another format into the task's file archives whole`() {
+    // -rff elsewhere, with -o, both relative (JMH's, against the project directory): JMH writes the
+    // table and the report there and prints nothing. The failing benchmark still fails the task at
+    // the end, the report is saved beside the task's results file, and the table is left where it
+    // went, as JMH wrote it: neither archived nor merged, the task's own file untouched. JMH
+    // creates neither file's directory, so the build that redirects them does.
+    val elsewhere = File(fixtureDir, "elsewhere/bench.txt").apply { parentFile.mkdirs() }
+    val report = File(fixtureDir, "elsewhere/report.txt")
+    val redirected = runner(*jmhRun("OkBench,SetupFailBench"), smallHeap, "--jmhArgs=-rff elsewhere/bench.txt -o elsewhere/report.txt").buildAndFail()
+    assertFailedAtEnd(redirected, "probe.SetupFailBench.probe [thrpt]: failed in iteration 1; it posted no row")
+    assertTrue(report.isFile && report.readText().contains("<failure>"), "JMH's report went to -o: " + report.readText())
+    assertEquals(report.readText(), output.readText(), "the report is saved beside the task's results file")
+    assertFalse(results.exists(), "the task's own results file must not be written by a redirected run")
+    assertTrue(rowOf("OkBench.probe").containsMatchIn(elsewhere.readText()), "the table is left as JMH wrote it: " + elsewhere.readText())
+    assertFalse(redirected.output.contains("JMH results merged"), redirected.output)
+    assertEquals(emptyList<String>(), (archiveDir.listFiles() ?: emptyArray()).map { it.name }, "a redirected run is not archived")
+
+    // -rff naming the task's own results file, by another path, is no redirection.
+    val explicit = runner(*jmhRun("OkBench"), smallHeap, "--jmhArgs=-rff build/results/jmh/results.txt").build()
+    assertEquals(TaskOutcome.SUCCESS, explicit.task(":jmh")?.outcome, explicit.output)
+    assertTrue(explicit.output.contains("JMH results merged from 1 archived runs"), explicit.output)
+    assertEquals(1, archivedRuns().size, archivedRuns().toString())
+
+    // -rf json into the task's results file: another format, archived whole under its own
+    // extension, the file left as JMH wrote it, and no text scoreboard rendered over it.
+    val json = runner(*jmhRun("OkBench"), smallHeap, "--jmhArgs=-rf json").build()
+    assertEquals(TaskOutcome.SUCCESS, json.task(":jmh")?.outcome, json.output)
+    assertTrue(results.readText().trimStart().startsWith("["), "results.txt holds JMH's JSON: " + results.readText().take(80))
+    val jsonArchives = archivedRuns(extension = "json")
+    assertEquals(1, jsonArchives.size, (archiveDir.listFiles() ?: emptyArray()).map { it.name }.toString())
+    assertEquals(results.readText(), jsonArchives.single().readText())
+    assertFalse(json.output.contains("JMH results merged"), json.output)
+    assertEquals(1, archivedRuns().size, "no text archive from a JSON run: " + archivedRuns())
   }
 
   @Test

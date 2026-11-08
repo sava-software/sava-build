@@ -70,10 +70,7 @@ class LocalRepoNoticeFunctionalTest {
 
   private val localRepo: String = savaBuildTestProperty("savaBuild.testRepo")
 
-  private fun pluginArtifact(repo: File): File = repo.resolve(
-    "software/sava/sava-build/$savaBuildTestRepoVersion/" +
-      "sava-build-$savaBuildTestRepoVersion.jar"
-  )
+  private fun pluginArtifact(repo: File): File = savaBuildTestArtifact("jar", repo)
 
   private fun publicationProvenance(repo: File): File =
     SavaBuildLocalPublicationProvenance.sidecarFor(pluginArtifact(repo))

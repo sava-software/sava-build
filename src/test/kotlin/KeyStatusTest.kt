@@ -197,7 +197,7 @@ class KeyStatusTest {
   @Test
   fun `this repository's policy reads as trusted keys with their version-freeness`() {
     val keys = KeyStatus.trustedKeys(savaBuildRootFile(VerificationPolicyRules.METADATA))
-    assertTrue(keys.size >= 30, "${keys.size} keys")
+    assertTrue(keys.size >= 25, "${keys.size} keys")
     assertTrue(keys.all { it.id.length == 40 && it.id == it.id.uppercase() })
     assertEquals(keys.map { it.id }, keys.map { it.id }.sorted().distinct())
     val gradle = keys.single { it.id == "1BD97A6A154E7810EE0BC832E2F38302C8075E3D" }
@@ -241,7 +241,7 @@ class KeyStatusTest {
   @Test
   fun `the list's by-decision note names this repository's corroboration-only keys, and no listed key`() {
     val noted = KeyStatus.corroborationKeys(savaBuildRootFile(VerificationPolicyRules.VERSION_SCOPED_KEYS))
-    assertEquals(setOf("C7BE5BCC9FEC15518CFDA882B0F3710FA64900E7", "019082BC00E0324E2AEF4CF00D3B328562A119A7", "6DE9B8077FBB2F8A019F4904BD17A565509DEE20", "E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB"), noted)
+    assertEquals(setOf("C7BE5BCC9FEC15518CFDA882B0F3710FA64900E7", "6DE9B8077FBB2F8A019F4904BD17A565509DEE20", "E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB"), noted)
     val listed = savaBuildRootFile(VerificationPolicyRules.VERSION_SCOPED_KEYS).readLines().filter { it.isNotBlank() && !it.startsWith("#") }.map { it.substringBefore(' ').uppercase() }
     assertTrue(listed.none { it in noted }, "a listed key is at exact versions, not corroborated")
     val keys = KeyStatus.trustedKeys(savaBuildRootFile(VerificationPolicyRules.METADATA)).associateBy { it.id }

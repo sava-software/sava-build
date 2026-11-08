@@ -32,8 +32,7 @@ class HardeningFeatureSmokeTest {
   @Test
   fun `standalone hardening identity retains resolved coordinates and loaded bytes`() {
     writeFixture(emptyList())
-    val pluginJar = File(savaBuildTestProperty("savaBuild.testRepo"),
-      "software/sava/sava-build/$savaBuildTestRepoVersion/sava-build-$savaBuildTestRepoVersion.jar")
+    val pluginJar = savaBuildTestArtifact("jar")
     val expectedSha256 = PitestEvidence.sha256(pluginJar)
     val (first, reused) = assertConfigurationCacheRoundTrip {
       GradleRunner.create().withProjectDir(fixtureDir)

@@ -335,10 +335,10 @@ class VerificationPolicyFunctionalTest {
   @Test
   fun `listed keys stay at exact versions and the others version-free, whatever the case`() {
     writeFixture()
-    // the expired apache key, listed: widened by dropping its version, under a lower-case id
+    // the expired JetBrains annotations key, listed: widened by dropping its version, under a lower-case id
     mutate(
-      "<trusted-key id=\"0CDE80149711EB46DFF17AE421A24B3F8B0F594A\" group=\"org.apache\" name=\"apache\" version=\"16\"/>",
-      "<trusted-key id=\"0cde80149711eb46dff17ae421a24b3f8b0f594a\" group=\"org.apache\" name=\"apache\"/>"
+      "<trusted-key id=\"2E3A1AFFE42B5F53AF19F780BCF4173966770193\" group=\"org.jetbrains\" name=\"annotations\" version=\"13.0\"/>",
+      "<trusted-key id=\"2e3a1affe42b5f53af19f780bcf4173966770193\" group=\"org.jetbrains\" name=\"annotations\"/>"
     )
     // a publisher key narrowed to one version, as a regeneration that saw one version writes it
     mutate(
@@ -346,15 +346,15 @@ class VerificationPolicyFunctionalTest {
       "<trusted-key id=\"1D217F8475EEE9F19AB8DD6B793FD5751A0F0780\" group=\"com.squareup.okio\" version=\"3.15.0\"/>"
     )
     val result = fails("verificationPolicy")
-    assertProblem(result, "trusted-key 0CDE80149711EB46DFF17AE421A24B3F8B0F594A trusts group=\"org.apache\" name=\"apache\" beyond exact versions")
+    assertProblem(result, "trusted-key 2E3A1AFFE42B5F53AF19F780BCF4173966770193 trusts group=\"org.jetbrains\" name=\"annotations\" beyond exact versions")
     assertProblem(result, "trusted-key 1D217F8475EEE9F19AB8DD6B793FD5751A0F0780 trusts group=\"com.squareup.okio\" version=\"3.15.0\" only at that version")
     // a listed key under a regex, with the flag as Gradle reads it
     writeFixture()
     mutate(
-      "<trusted-key id=\"0CDE80149711EB46DFF17AE421A24B3F8B0F594A\" group=\"org.apache\" name=\"apache\" version=\"16\"/>",
-      "<trusted-key id=\"0CDE80149711EB46DFF17AE421A24B3F8B0F594A\" group=\"^org[.]apache($|([.].*))\" regex=\"TRUE\"/>"
+      "<trusted-key id=\"2E3A1AFFE42B5F53AF19F780BCF4173966770193\" group=\"org.jetbrains\" name=\"annotations\" version=\"13.0\"/>",
+      "<trusted-key id=\"2E3A1AFFE42B5F53AF19F780BCF4173966770193\" group=\"^org[.]jetbrains($|([.].*))\" regex=\"TRUE\"/>"
     )
-    assertProblem(fails("verificationPolicy"), "trusted-key 0CDE80149711EB46DFF17AE421A24B3F8B0F594A trusts group=\"^org[.]apache($|([.].*))\" regex=\"TRUE\" beyond exact versions")
+    assertProblem(fails("verificationPolicy"), "trusted-key 2E3A1AFFE42B5F53AF19F780BCF4173966770193 trusts group=\"^org[.]jetbrains($|([.].*))\" regex=\"TRUE\" beyond exact versions")
   }
 
   @Test

@@ -249,7 +249,7 @@ dependencies {
   // build declares beside 'software.sava.build.feature.jmh' (JmhPluginRequirement, and the
   // feature's README row). Not transitive: no precompiled script requests the plugin any
   // more, so the accessor-generation classpath, which resolves the plugin's runtime variant,
-  // has no use for jmh-core and its chain; their rules in the policy wait for its next trim.
+  // has no use for jmh-core and its chain, whose rules left this build's policy with it.
   compileOnly(libs.jmh.gradle.plugin) { isTransitive = false }
   // https://github.com/gradlex-org/java-module-dependencies
   implementation(libs.gradlex.java.module.dependencies)

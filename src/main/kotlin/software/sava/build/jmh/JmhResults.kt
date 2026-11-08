@@ -358,16 +358,20 @@ object JmhResults {
     return kept.joinToString(separator = "\n", postfix = "\n")
   }
 
+  /** What became of a failed attempt's row, named in [failureMessage]. */
+  enum class RowFate(val note: String) {
+    /** The default text format: the row is left out of the archive. */
+    FILTERED("its row is left out of the archive"),
+    /** Another format, archived whole. */
+    ARCHIVED("its row stays in the archive (only the text result format is filtered)"),
+    /** A table --jmhArgs sent elsewhere with -rff, neither archived nor merged. */
+    LEFT("its row stays in the table, which is left as JMH wrote it where -rff sent it"),
+  }
+
   /** The task's failure text for a run with failed attempts, or its warning under -PjmhFailOnError=false. */
-  fun failureMessage(attempts: List<Attempt>, output: File, fails: Boolean, filtered: Boolean): String {
+  fun failureMessage(attempts: List<Attempt>, output: File, fails: Boolean, rowFate: RowFate): String {
     val failed = attempts.filter { it.failure != null }
-    val lines = failed.map {
-      "  ${it.label}: ${it.failure}; " + when {
-        !it.hasResult -> "it posted no row"
-        filtered -> "its row is left out of the archive"
-        else -> "its row stays in the archive (only the text result format is filtered)"
-      }
-    }
+    val lines = failed.map { "  ${it.label}: ${it.failure}; " + if (it.hasResult) rowFate.note else "it posted no row" }
     val verdict = if (fails) {
       "so the jmh task fails now that the run is over (-PjmhFailOnError=false makes this a warning; -PjmhFailFast=true has JMH stop at the first error)"
     } else {
