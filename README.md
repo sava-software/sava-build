@@ -47,6 +47,12 @@ pluginManagement {
       maven {
         name = "savaGithubPackages"
         url = uri("https://maven.pkg.github.com/sava-software/sava-build")
+        // Serves sava-build and its plugin markers (every plugin id is its marker's group),
+        // nothing else: a publish of another name into this repository resolves nothing here.
+        content {
+          includeModule("software.sava", "sava-build")
+          includeGroupByRegex("software[.]sava[.]build($|[.].*)")
+        }
         credentials {
           username = gprUser
           password = gprToken
@@ -96,6 +102,11 @@ pluginManagement {
       ?: error("savaGithubPackagesPassword is required to resolve sava-build")
     maven {
       url = uri("https://maven.pkg.github.com/sava-software/sava-build")
+      // sava-build and its plugin markers only, as in the quick start above.
+      content {
+        includeModule("software.sava", "sava-build")
+        includeGroupByRegex("software[.]sava[.]build($|[.].*)")
+      }
       credentials {
         username = gprUser
         password = gprToken
@@ -857,7 +868,11 @@ pluginManagement {
   // each build, so this block stays silent. The useModule call also bypasses plugin
   // markers, which the test repo does not contain. Pass '--dependency-verification
   // lenient' with the property, on every command: the test repo's artifacts are
-  // unsigned, so a strict verification policy refuses them.
+  // unsigned, so a strict verification policy refuses them. The repository filters
+  // below are the same as on the sava GitHub Packages repository: sava-build and its
+  // plugin markers only, so a stray file in either repository resolves nothing here
+  // (the marker regex is unmatched while the test repo carries no markers, and
+  // stays for the day it does).
   val savaBuildLocalRepo = providers.gradleProperty("savaBuildLocalRepo")
     .orNull?.takeIf { it.isNotBlank() }
   if (savaBuildLocalRepo != null) {
@@ -869,7 +884,12 @@ pluginManagement {
   }
   repositories {
     if (savaBuildLocalRepo != null) {
-      maven(url = savaBuildLocalRepo)
+      maven(url = savaBuildLocalRepo) {
+        content {
+          includeModule("software.sava", "sava-build")
+          includeGroupByRegex("software[.]sava[.]build($|[.].*)")
+        }
+      }
     }
     gradlePluginPortal()
     mavenCentral()
