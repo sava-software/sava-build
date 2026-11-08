@@ -1,5 +1,29 @@
 # Changelog
 
+## [21.8.5](https://github.com/sava-software/sava-build/compare/21.8.4...21.8.5) (2026-11-08)
+
+
+### Features
+
+* **jmh:** the benchmark build declares the JMH Gradle plugin; sava-build no longer ships it ([6e0f7a2](https://github.com/sava-software/sava-build/commit/6e0f7a2b531a05085e70d0d42000b2ccd3d6cc79))
+
+
+### Bug Fixes
+
+* **jmh:** a redirected run is checked by its files, each results file and format has its own series, and the -o report counts only when the run wrote it ([fb0e2fb](https://github.com/sava-software/sava-build/commit/fb0e2fb3c1617ec712409c627e92771ce5da966d))
+* **jmh:** every refusal says where the plugin goes, a newer plugin is warned of, a version-less one is checked for --jmhArgs ([eee4a9e](https://github.com/sava-software/sava-build/commit/eee4a9e06558a21f319ab6ef03a116cbab900b21))
+* **jmh:** the archive step follows --jmhArgs, stamps in UTC, and the policy drops jmh-core's chain ([4c0df38](https://github.com/sava-software/sava-build/commit/4c0df38c5af3df3470d60f49d8e2ef7908b46ef3))
+
+
+### Chores
+
+* **build:** the keyring carries only the keys the policy names ([5995566](https://github.com/sava-software/sava-build/commit/59955661c1449f3e5f637bb64bcf06a499301de8))
+
+
+### Documentation
+
+* **readme:** the consumer settings blocks carry the repository content filters the fleet uses ([c607d6c](https://github.com/sava-software/sava-build/commit/c607d6cdb4ac0a01d7a1c58107b902e400687845))
+
 ## [21.8.4](https://github.com/sava-software/sava-build/compare/21.8.3...21.8.4) (2026-11-07)
 
 
