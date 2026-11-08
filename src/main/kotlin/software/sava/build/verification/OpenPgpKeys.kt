@@ -11,8 +11,9 @@ import java.util.Base64
  * key server holds is a reason to look, and what the policy trusts is decided by its reviewer,
  * never here, and a signature's issuer is read from its subpackets, not proven, so a copy a key
  * server accepted from anyone is read as that uploader wrote it. Gradle's own keyring export
- * strips user ids and primary self-signatures, so this reads the server's copy, not the committed
- * keyring, when a status is wanted.
+ * keeps at most one user id per key and strips the self-signatures over the primary and its user
+ * ids (subkey bindings stay), so this reads the server's copy, not the committed keyring, when a
+ * status is wanted.
  */
 object OpenPgpKeys {
 
@@ -54,12 +55,13 @@ object OpenPgpKeys {
     }
   }
 
-  /** Parses every v4 key in every armored public key block of [text]; a block that does not parse is skipped. */
+  /** Parses every v4 key in every armored public key block of [text]; a block that does not decode or parse is skipped. */
   fun parse(text: String): List<PublicKey> =
-    armoredBlocks(text).flatMap { runCatching { parseBlock(it) }.getOrDefault(emptyList()) }
+    armoredBlocks(text).flatMap { runCatching { parseBlock(Base64.getMimeDecoder().decode(it)) }.getOrDefault(emptyList()) }
 
-  private fun armoredBlocks(text: String): List<ByteArray> {
-    val blocks = mutableListOf<ByteArray>()
+  /** The base64 body of each armored block, undecoded: a body that is not base64 is the block's own failure, not the file's. */
+  private fun armoredBlocks(text: String): List<String> {
+    val blocks = mutableListOf<String>()
     var i = 0
     while (true) {
       val begin = text.indexOf("-----BEGIN PGP PUBLIC KEY BLOCK-----", i)
@@ -70,7 +72,7 @@ object OpenPgpKeys {
         .dropWhile { it.isNotBlank() }            // armor headers up to the blank line
         .filter { it.isNotBlank() && !it.startsWith("=") }
         .joinToString("")
-      blocks += Base64.getMimeDecoder().decode(body)
+      blocks += body
       i = end + 1
     }
     return blocks

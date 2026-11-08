@@ -469,7 +469,8 @@ val rootFilesReadByTests = listOf(
   "src/main/kotlin/software.sava.build.feature.hardening.gradle.kts",
   "src/test/kotlin",
   // this repository's own dependency verification policy, which VerificationPolicySelfTest
-  // holds to the rules and VerificationPolicyFunctionalTest drives a fixture with
+  // holds to the rules, VerificationPolicyFunctionalTest drives a fixture with, and
+  // KeyStatusTest reads for its trusted keys, its list and its keyring's blocks
   "gradle/verification-metadata.xml",
   "gradle/verification-keyring.keys",
   "gradle/verification/version-scoped-keys.txt",

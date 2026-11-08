@@ -199,12 +199,34 @@ class KeyStatusTest {
     val keys = KeyStatus.trustedKeys(savaBuildRootFile(VerificationPolicyRules.METADATA))
     assertTrue(keys.size >= 25, "${keys.size} keys")
     assertTrue(keys.all { it.id.length == 40 && it.id == it.id.uppercase() })
-    assertEquals(keys.map { it.id }, keys.map { it.id }.sorted().distinct())
+    assertEquals(keys.map { it.id }.sorted().distinct(), keys.map { it.id })
     val gradle = keys.single { it.id == "1BD97A6A154E7810EE0BC832E2F38302C8075E3D" }
     assertFalse(gradle.versionFree, "the revoked Gradle key is version-scoped: ${gradle.scopes}")
     assertTrue(gradle.scopes.all { "version=" in it }, gradle.scopes.toString())
     assertTrue(keys.count { it.versionFree } > keys.count { !it.versionFree }, "most keys are publisher keys trusted without a version")
     assertTrue(keys.single { it.id == "F3FF33E96F18AA62DD580F9651FBF517CE6D6B80" }.versionFree, "the Gradle signing subkey the policy names for gradle:gradle")
+  }
+
+  @Test
+  fun `the keyring holds exactly the keys this repository's policy names, each block read by the policy's reader`() {
+    // A block no rule names grants nothing, but the README has a trimmed key leave with its block
+    // and its list line, so from here on the keyring and the rules move together; a block the
+    // reader skips (one it cannot decode or parse, or one without a v4 primary) could hide an
+    // orphan, so the keys read must be one per armored block, each under the pub label Gradle's
+    // export writes (the primary's last sixteen hex digits), which is how a reviewer finds a block.
+    val keyring = savaBuildRootFile(VerificationPolicyRules.KEYRING).readText()
+    val keys = OpenPgpKeys.parse(keyring)
+    assertEquals(Regex("-----BEGIN PGP PUBLIC KEY BLOCK-----").findAll(keyring).count(), keys.size, "every armored block must be read as one key")
+    val labels = Regex("(?m)^pub\\s+([0-9A-F]{16})\\s*$").findAll(keyring).map { it.groupValues[1] }.toList()
+    assertEquals(labels, keys.map { it.fingerprint.takeLast(16) }, "each block's pub label must be its primary key's, in file order")
+    val named = KeyStatus.trustedKeys(savaBuildRootFile(VerificationPolicyRules.METADATA)).map { it.id }.toSet()
+    val orphans = keys.filter { key -> key.fingerprints.none { it in named } }.map { "pub ${it.fingerprint.takeLast(16)} ${it.userIds}" }
+    assertEquals(
+      emptyList<String>(), orphans,
+      "keyring blocks no trusted-key rule names: remove the block, or restore the rule if only an IDE sync or a workflow resolves the key",
+    )
+    val missing = named - keys.flatMap { it.fingerprints }.toSet()
+    assertEquals(emptySet<String>(), missing, "trusted-key rules whose key no keyring block holds, as primary or subkey")
   }
 
   @Test

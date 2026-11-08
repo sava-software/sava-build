@@ -955,7 +955,9 @@ which it strips of comments on every write:
   so an export after a prune keeps the pruned entries' keys; prune by hand against a
   from-scratch regeneration, delete the blocks no remaining rule names by its primary or
   subkey fingerprint (the file labels blocks with the last sixteen hex digits), and confirm
-  the keyring's key set afterwards.
+  the keyring's key set afterwards: in this repository `KeyStatusTest` fails when a block is
+  named by no rule, a rule's key is in no block, or a block is not read as one key under its
+  label.
 - The unsigned `org.gradle.kotlin.kotlin-dsl` plugin marker is pinned by SHA-256 at the
   version the wrapper embeds (9.7.1 took 6.7.3, 9.8.x took 6.7.6, 9.9.0 takes 6.7.13): a wrapper bump moves it,
   failing with "Dependency verification failed ... kotlin-dsl.gradle.plugin-<v>.pom", so
