@@ -1,5 +1,12 @@
 # Changelog
 
+## [21.8.6](https://github.com/sava-software/sava-build/compare/21.8.5...21.8.6) (2026-11-08)
+
+
+### Bug Fixes
+
+* **build:** raise metaspace to 768 m to avoid Kotlin configuration OOM ([055d2b3](https://github.com/sava-software/sava-build/commit/055d2b3941f12bd36ae3d00d3551a1dc17c1ddf3))
+
 ## [21.8.5](https://github.com/sava-software/sava-build/compare/21.8.4...21.8.5) (2026-11-08)
 
 
