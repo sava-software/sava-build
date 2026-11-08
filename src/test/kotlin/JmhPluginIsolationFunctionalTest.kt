@@ -106,6 +106,8 @@ class JmhPluginIsolationFunctionalTest {
     val (cold, reused) = assertConfigurationCacheRoundTrip { runner("verifyJmhWired").build() }
     assertEquals(TaskOutcome.SUCCESS, cold.task(":verifyJmhWired")?.outcome, cold.output)
     assertEquals(TaskOutcome.SUCCESS, reused.task(":verifyJmhWired")?.outcome, reused.output)
+    // The floor read the version on this path: the warning for an unreadable one is absent.
+    assertFalse(cold.output.contains("could not read the version of the JMH Gradle plugin"), cold.output)
   }
 
   @Test
@@ -144,10 +146,11 @@ class JmhPluginIsolationFunctionalTest {
     assertTrue((JmhPluginRequirement.compareToCompiledAgainst(older) ?: 0) < 0, "fixture version is not older than ${JmhToolDefaults.JMH_GRADLE_PLUGIN}")
     writeSettings("jmh-older")
     writeBuild("id(\"me.champeau.jmh\") version \"$older\" apply false")
-    val result = runner("help").buildAndFail()
-    assertRefused(
-      result,
-      "is compiled and tested against the JMH Gradle plugin (me.champeau.jmh) ${JmhToolDefaults.JMH_GRADLE_PLUGIN} and this build declares $older, which the feature refuses",
-    )
+    val refusal = "is compiled and tested against ${JmhToolDefaults.JMH_GRADLE_PLUGIN} and the plugin on its classpath is $older, which the feature refuses"
+    assertRefused(runner("help").buildAndFail(), refusal, JmhPluginRequirement.dependency())
+    // The same floor on the settings classpath, where the plugin is declared beside the settings plugin.
+    writeSettings("jmh-older-settings", "id(\"software.sava.build\")", "id(\"me.champeau.jmh\") version \"$older\" apply false")
+    writeBuild()
+    assertRefused(runner("help").buildAndFail(), refusal)
   }
 }

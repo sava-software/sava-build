@@ -282,16 +282,16 @@ dependencies {
 // because precompiled script plugins run in consumer builds that cannot see this
 // build's version catalog.
 val libsCatalog = the<VersionCatalogsExtension>().named("libs")
+/** The catalog's version under [alias], which must exist: these versions are baked into the plugin or its fixtures. */
+fun catalogVersion(alias: String): String = libsCatalog.findVersion(alias)
+  .orElseThrow { IllegalStateException("Version '$alias' is missing from gradle/libs.versions.toml") }
+  .requiredVersion
 val hardeningToolVersions = listOf(
   "PITEST" to "pitest",
   "PITEST_JUNIT5_PLUGIN" to "pitest-junit5-plugin",
   "JAZZER" to "jazzer",
   "ARCMUTATE_BASE" to "arcmutate-base"
-).associate { (constant, alias) ->
-  constant to libsCatalog.findVersion(alias)
-    .orElseThrow { IllegalStateException("Version '$alias' is missing from gradle/libs.versions.toml") }
-    .requiredVersion
-}
+).associate { (constant, alias) -> constant to catalogVersion(alias) }
 
 val generateHardeningToolDefaults = tasks.register("generateHardeningToolDefaults") {
   description = "Generates HardeningToolDefaults.kt from the versions in gradle/libs.versions.toml"
@@ -322,12 +322,8 @@ kotlin.sourceSets["main"].kotlin.srcDir(generateHardeningToolDefaults)
 // the plugin too. A caller's -PjmhVersion still overrides the generated value. The JMH
 // Gradle plugin's version goes with it: the version the feature is compiled against, which
 // JmhPluginRequirement names in the declaration it asks a benchmark build for.
-val jmhToolVersion = libsCatalog.findVersion("jmh")
-  .orElseThrow { IllegalStateException("Version 'jmh' is missing from gradle/libs.versions.toml") }
-  .requiredVersion
-val jmhGradlePluginVersion = libsCatalog.findVersion("jmh-gradle-plugin")
-  .orElseThrow { IllegalStateException("Version 'jmh-gradle-plugin' is missing from gradle/libs.versions.toml") }
-  .requiredVersion
+val jmhToolVersion = catalogVersion("jmh")
+val jmhGradlePluginVersion = catalogVersion("jmh-gradle-plugin")
 val generateJmhToolDefaults = tasks.register("generateJmhToolDefaults") {
   description = "Generates JmhToolDefaults.kt from the versions in gradle/libs.versions.toml"
   val version = jmhToolVersion
@@ -359,11 +355,7 @@ kotlin.sourceSets["main"].kotlin.srcDir(generateJmhToolDefaults)
 // libraries to this build's dependency graph. There is no fallback pin in the test sources.
 val fixtureVersions = listOf(
   "google-cloud-kms", "google-gax", "grpc-xds", "junit", "gradlex-java-module-dependencies"
-).associateWith { alias ->
-  libsCatalog.findVersion(alias)
-    .orElseThrow { IllegalStateException("Version '$alias' is missing from gradle/libs.versions.toml") }
-    .requiredVersion
-}
+).associateWith(::catalogVersion)
 
 // The agent-instructions template in HARDENING.md is copied into each consuming repo's
 // AGENTS.md. Baking its '> ' blockquote lines into the plugin lets 'hardeningAgentTemplate'
