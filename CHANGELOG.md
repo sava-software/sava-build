@@ -1,5 +1,13 @@
 # Changelog
 
+## [21.8.7](https://github.com/sava-software/sava-build/compare/21.8.6...21.8.7) (2026-11-09)
+
+
+### Build System
+
+* **deps:** update Docker login, CodeQL and setup-java actions ([4741b33](https://github.com/sava-software/sava-build/commit/4741b33d9804b5b0ae3b2ba885fafb772352d6ae))
+* **hardening:** update PIT to 1.30.2 and ArcMutate base to 1.7.3; each suite owes a fresh review run and its BaselineRebase ([868ae66](https://github.com/sava-software/sava-build/commit/868ae66933838e2cc5af44362c8ca05b9ebfe723))
+
 ## [21.8.6](https://github.com/sava-software/sava-build/compare/21.8.5...21.8.6) (2026-11-08)
 
 
