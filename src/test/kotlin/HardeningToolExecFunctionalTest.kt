@@ -317,12 +317,12 @@ class HardeningToolExecFunctionalTest : HardeningToolExecFixture() {
 
     val diagnostic = runner("pitestEncodingDiagnostic").build()
     val clarification =
-      "With audited PIT 1.30.0, its raw arcmutateMissing field controls only the HTML promotion"
+      "With audited PIT 1.30.2, its raw arcmutateMissing field controls only the HTML promotion"
     val raw = "ReportOptions [... arcmutateMissing=true ...]"
 
     assertTrue(
       diagnostic.output.contains(
-        "licensed ArcMutate base 1.7.2 was validated on the effective tool classpath"
+        "licensed ArcMutate base 1.7.3 was validated on the effective tool classpath"
       ) && diagnostic.output.contains(clarification),
       diagnostic.output,
     )

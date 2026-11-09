@@ -27,7 +27,7 @@ class MutationToolchainRecordTest {
       pitestVersion = "1.25.9",
       junitPluginVersion = "1.2.3",
       toolClasspath = listOf(toolA, toolB),
-      arcMutateBaseVersion = "1.7.2",
+      arcMutateBaseVersion = "1.7.3",
       arcMutateEnabled = true,
       reportDirectory = projectLicence.parentFile.resolve("build/reports/pitest/encoding"),
       projectBaseDirectory = projectLicence.parentFile,
@@ -42,7 +42,7 @@ class MutationToolchainRecordTest {
           "pitest\t1.25.9\n" +
           "junitPlugin\t1.2.3\n" +
           "toolClasspathSha256\t$toolHash\n" +
-          "arcMutateBase\t1.7.2\n" +
+          "arcMutateBase\t1.7.3\n" +
           "arcMutateLicenceSha256\t$licenceHash\n" +
           "arcMutateLicenceExpires\t2027-08-15\n"
 
@@ -116,7 +116,7 @@ class MutationToolchainRecordTest {
       pitestVersion = "1.25.9",
       junitPluginVersion = "1.2.3",
       toolClasspath = listOf(tool),
-      arcMutateBaseVersion = "1.7.2",
+      arcMutateBaseVersion = "1.7.3",
       arcMutateEnabled = true,
       reportDirectory = leapDay.parentFile.resolve("build/reports/pitest/encoding"),
       projectBaseDirectory = leapDay.parentFile,
@@ -130,7 +130,7 @@ class MutationToolchainRecordTest {
         pitestVersion = "1.25.9",
         junitPluginVersion = "1.2.3",
         toolClasspath = listOf(tool),
-        arcMutateBaseVersion = "1.7.2",
+        arcMutateBaseVersion = "1.7.3",
         arcMutateEnabled = true,
         reportDirectory = leapDay.parentFile.resolve("build/reports/pitest/encoding"),
         projectBaseDirectory = leapDay.parentFile,
@@ -161,7 +161,7 @@ class MutationToolchainRecordTest {
       pitestVersion = "1.25.9",
       junitPluginVersion = "1.2.3",
       toolClasspath = listOf(tool),
-      arcMutateBaseVersion = "1.7.2",
+      arcMutateBaseVersion = "1.7.3",
       arcMutateEnabled = true,
       reportDirectory = expired.parentFile.resolve("build/reports/pitest/encoding"),
       projectBaseDirectory = expired.parentFile,
@@ -175,7 +175,7 @@ class MutationToolchainRecordTest {
         pitestVersion = "1.25.9",
         junitPluginVersion = "1.2.3",
         toolClasspath = listOf(tool),
-        arcMutateBaseVersion = "1.7.2",
+        arcMutateBaseVersion = "1.7.3",
         arcMutateEnabled = true,
         reportDirectory = expired.parentFile.resolve("build/reports/pitest/encoding"),
         projectBaseDirectory = expired.parentFile,
@@ -189,7 +189,7 @@ class MutationToolchainRecordTest {
       pitestVersion = "1.25.9",
       junitPluginVersion = "1.2.3",
       toolClasspath = listOf(genericJar("open/pitest.jar")),
-      arcMutateBaseVersion = "1.7.2",
+      arcMutateBaseVersion = "1.7.3",
       arcMutateEnabled = false,
       reportDirectory = tempDir.resolve("open/build/reports/pitest/encoding"),
       projectBaseDirectory = tempDir.resolve("open"),
@@ -246,23 +246,23 @@ class MutationToolchainRecordTest {
     licence("mismatch/arcmutate-licence.txt", "15/08/2027")
     val missingBase = assertThrows(IllegalArgumentException::class.java) {
       MutationToolchainRecord.capture(
-        "1.25.9", "1.2.3", listOf(openTool), "1.7.2", true,
+        "1.25.9", "1.2.3", listOf(openTool), "1.7.3", true,
         project.resolve("build/reports/pitest/encoding"), project, project,
         LocalDate.parse("2027-08-15"),
       )
     }
     assertTrue(missingBase.message.orEmpty().contains("disagrees with the effective PIT tool classpath"))
 
-    val previousBase = baseJar("mismatch/arcmutate-1.7.1.jar", "1.7.1")
+    val previousBase = baseJar("mismatch/arcmutate-1.7.2.jar", "1.7.2")
     val previousUnsupported = assertThrows(IllegalArgumentException::class.java) {
       MutationToolchainRecord.capture(
-        "1.25.9", "1.2.3", listOf(previousBase), "1.7.1", true,
+        "1.25.9", "1.2.3", listOf(previousBase), "1.7.2", true,
         project.resolve("build/reports/pitest/encoding"), project, project,
         LocalDate.parse("2027-08-15"),
       )
     }
     assertTrue(
-      previousUnsupported.message.orEmpty().contains("supports base 1.7.2"),
+      previousUnsupported.message.orEmpty().contains("supports base 1.7.3"),
       previousUnsupported.message,
     )
 
@@ -274,11 +274,11 @@ class MutationToolchainRecordTest {
         LocalDate.parse("2027-08-15"),
       )
     }
-    assertTrue(unsupported.message.orEmpty().contains("supports base 1.7.2"), unsupported.message)
+    assertTrue(unsupported.message.orEmpty().contains("supports base 1.7.3"), unsupported.message)
 
     val hiddenBase = assertThrows(IllegalArgumentException::class.java) {
       MutationToolchainRecord.capture(
-        "1.25.9", "1.2.3", listOf(baseJar("mismatch/hidden-base.jar")), "1.7.2", false,
+        "1.25.9", "1.2.3", listOf(baseJar("mismatch/hidden-base.jar")), "1.7.3", false,
         project.resolve("build/reports/pitest/encoding"), project, project,
         LocalDate.parse("2027-08-15"),
       )
@@ -305,7 +305,7 @@ class MutationToolchainRecordTest {
     val markerOnly = toolJar(
       "unidentified-arcmutate/marker-only.jar",
       markerPath = "META-INF/maven/com.arcmutate/base/pom.properties",
-      markerVersion = "1.7.2",
+      markerVersion = "1.7.3",
     )
     val realPit = toolJar(
       "unidentified-arcmutate/pitest-command-line.jar",
@@ -317,7 +317,7 @@ class MutationToolchainRecordTest {
     listOf(markerlessClass, markerlessService).forEach { artifact ->
       val refusal = assertThrows(IllegalArgumentException::class.java) {
         MutationToolchainRecord.capture(
-          "1.25.9", "1.2.3", listOf(artifact), "1.7.2", false,
+          "1.25.9", "1.2.3", listOf(artifact), "1.7.3", false,
           project.resolve("build/reports/pitest/encoding"), project, project,
           LocalDate.parse("2027-08-15"),
         )
@@ -327,7 +327,7 @@ class MutationToolchainRecordTest {
 
     val corrupt = assertThrows(IllegalArgumentException::class.java) {
       MutationToolchainRecord.capture(
-        "1.25.9", "1.2.3", listOf(corruptMarker), "1.7.2", false,
+        "1.25.9", "1.2.3", listOf(corruptMarker), "1.7.3", false,
         project.resolve("build/reports/pitest/encoding"), project, project,
         LocalDate.parse("2027-08-15"),
       )
@@ -336,7 +336,7 @@ class MutationToolchainRecordTest {
 
     val spoofed = assertThrows(IllegalArgumentException::class.java) {
       MutationToolchainRecord.capture(
-        "1.25.9", "1.2.3", listOf(realPit, markerOnly), "1.7.2", true,
+        "1.25.9", "1.2.3", listOf(realPit, markerOnly), "1.7.3", true,
         project.resolve("build/reports/pitest/encoding"), project, project,
         LocalDate.parse("2027-08-15"),
       )
@@ -364,7 +364,7 @@ class MutationToolchainRecordTest {
     )
 
     val identified = MutationToolchainRecord.capture(
-      "1.25.9", "1.2.3", listOf(pit, junit), "1.7.2", false,
+      "1.25.9", "1.2.3", listOf(pit, junit), "1.7.3", false,
       commonArguments[0], commonArguments[1], commonArguments[2],
       LocalDate.parse("2027-08-15"),
     )
@@ -373,7 +373,7 @@ class MutationToolchainRecordTest {
 
     val wrongPit = assertThrows(IllegalArgumentException::class.java) {
       MutationToolchainRecord.capture(
-        "1.25.8", "1.2.3", listOf(pit, junit), "1.7.2", false,
+        "1.25.8", "1.2.3", listOf(pit, junit), "1.7.3", false,
         commonArguments[0], commonArguments[1], commonArguments[2],
         LocalDate.parse("2027-08-15"),
       )
@@ -382,7 +382,7 @@ class MutationToolchainRecordTest {
 
     val wrongJunit = assertThrows(IllegalArgumentException::class.java) {
       MutationToolchainRecord.capture(
-        "1.25.9", "1.2.2", listOf(pit, junit), "1.7.2", false,
+        "1.25.9", "1.2.2", listOf(pit, junit), "1.7.3", false,
         commonArguments[0], commonArguments[1], commonArguments[2],
         LocalDate.parse("2027-08-15"),
       )
@@ -401,7 +401,7 @@ class MutationToolchainRecordTest {
     ).forEach { markerless ->
       val refusal = assertThrows(IllegalArgumentException::class.java) {
         MutationToolchainRecord.capture(
-          "1.25.9", "1.2.3", listOf(markerless), "1.7.2", false,
+          "1.25.9", "1.2.3", listOf(markerless), "1.7.3", false,
           commonArguments[0], commonArguments[1], commonArguments[2],
           LocalDate.parse("2027-08-15"),
         )
@@ -411,7 +411,7 @@ class MutationToolchainRecordTest {
 
     val fake = MutationToolchainRecord.capture(
       "fixture-pit", "fixture-junit", listOf(genericJar("effective-versions/fake.jar")),
-      "1.7.2", false,
+      "1.7.3", false,
       commonArguments[0], commonArguments[1], commonArguments[2],
       LocalDate.parse("2027-08-15"),
     )
@@ -451,7 +451,7 @@ class MutationToolchainRecordTest {
       valid.replace("junitPlugin\t1.2.3\n", ""),
       valid.replace("toolClasspathSha256\t$hash", "toolClasspathSha256\tNOT-A-HASH"),
       valid.replace("pitest\t1.25.9", "pitest\t1.25.9\textra"),
-      valid.replace("arcMutateBase\tabsent", "arcMutateBase\t1.7.2"),
+      valid.replace("arcMutateBase\tabsent", "arcMutateBase\t1.7.3"),
       valid.replace("arcMutateLicenceExpires\tabsent", "arcMutateLicenceExpires\t2027-8-15"),
       valid.replace("junitPlugin\t1.2.3\n", "junitPlugin\t1.2.3\n\n"),
       valid.replace("\n", "\r\n"),
@@ -472,7 +472,7 @@ class MutationToolchainRecordTest {
       pitestVersion = "1.25.9",
       junitPluginVersion = "1.2.3",
       toolClasspathSha256 = hash,
-      arcMutateBaseVersion = "1.7.2",
+      arcMutateBaseVersion = "1.7.3",
       arcMutateLicenceSha256 = licenceHash,
       arcMutateLicenceExpires = LocalDate.parse("2027-08-15"),
     )

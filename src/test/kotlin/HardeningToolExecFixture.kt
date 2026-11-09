@@ -366,7 +366,7 @@ $buildTail
       "src/main/resources/META-INF/maven/com.arcmutate/base/pom.properties",
     ).apply {
       parentFile.mkdirs()
-      writeText("groupId=com.arcmutate\nartifactId=base\nversion=1.7.2\n")
+      writeText("groupId=com.arcmutate\nartifactId=base\nversion=1.7.3\n")
     }
   }
 

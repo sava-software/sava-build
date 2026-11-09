@@ -230,22 +230,36 @@ class HardeningDocumentationBoundaryTest {
     val compactHardening = hardening.replace(Regex("\\s+"), " ")
     assertTrue(
       compactHardening.contains("captured toolchain is its activation identity") &&
-          compactHardening.contains("audited default PIT 1.30.0") &&
+          compactHardening.contains("audited default PIT 1.30.2") &&
           compactHardening.contains("`arcmutateMissing` value controls only the HTML promotion"),
       "diagnostic doctrine must distinguish PIT's promotion flag from validated tool identity",
     )
   }
 
   @Test
-  fun `ArcMutate 1_7_2 audit keeps opt-in Groovy and assisted history outside fresh evidence`() {
+  fun `ArcMutate 1_7_3 audit keeps opt-in Groovy, the enhanced HTML report and assisted history outside fresh evidence`() {
     val compactHardening = hardening.replace(Regex("\\s+"), " ")
     assertTrue(
-      compactHardening.contains("Base 1.7.2 also registers Groovy support") &&
+      compactHardening.contains("Base 1.7.3 also registers Groovy support") &&
           compactHardening.contains("`groovy` feature is off by default") &&
+          compactHardening.contains("`arcmutate_html` feature is off by default") &&
+          compactHardening.contains("neither enables it nor names `ARCMUTATE_HTML`") &&
           compactHardening.contains("historic `EQUIVALENT` result") &&
           compactHardening.contains("assisted output remains check-only") &&
           compactHardening.contains("fresh history-free evidence is required"),
       "the audited ArcMutate boundary must distinguish opt-in and assisted-only behavior",
+    )
+  }
+
+  @Test
+  fun `PIT 1_30_2 audit names the JSpecify filter beside subsumption as a cause of absence`() {
+    val compactHardening = hardening.replace(Regex("\\s+"), " ")
+    assertTrue(
+      compactHardening.contains("PIT 1.30.2 can remove mutants without any edit to their method") &&
+          compactHardening.contains("its JSpecify filter drops each `NULL_RETURNS` mutant") &&
+          compactHardening.contains("leaves the reports instead of receiving a status") &&
+          compactHardening.contains("any JSpecify annotation in scope, and the toolchain before pruning it"),
+      "an unmatched row under a JSpecify default must read as absence, not as a kill",
     )
   }
 }

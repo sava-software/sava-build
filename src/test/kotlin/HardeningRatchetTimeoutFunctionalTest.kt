@@ -138,7 +138,7 @@ class HardeningRatchetTimeoutFunctionalTest : HardeningRatchetFunctionalFixture(
       "adoption hint missing:\n$unadopted"
     )
     val missingAuditAction =
-      "  Watchdog context: Configured watchdog (audited PIT 1.30.0): " +
+      "  Watchdog context: Configured watchdog (audited PIT 1.30.2): " +
           "round(testDurationMs × 2.0) + 1500 ms. PIT CSV lacks the active covering test and " +
           "its recorded duration, so no per-mutant budget can be calculated.\n" +
           "  Remedy: Run :pitestEncodingTimeoutAuditInit (seeds " +
