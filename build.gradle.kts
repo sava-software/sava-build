@@ -354,7 +354,7 @@ kotlin.sourceSets["main"].kotlin.srcDir(generateJmhToolDefaults)
 // are Test task inputs, so a catalog bump reruns the fixtures without adding any of their
 // libraries to this build's dependency graph. There is no fallback pin in the test sources.
 val fixtureVersions = listOf(
-  "google-cloud-kms", "google-gax", "grpc-xds", "junit", "gradlex-java-module-dependencies"
+  "google-cloud-kms", "grpc-xds", "junit", "gradlex-java-module-dependencies"
 ).associateWith(::catalogVersion)
 
 // The agent-instructions template in HARDENING.md is copied into each consuming repo's

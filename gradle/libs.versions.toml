@@ -11,8 +11,7 @@ jmh = "1.37"
 jmh-gradle-plugin = "0.7.4"
 junit = "6.1.3"
 gradlex-java-module-dependencies = "1.13.2"
-google-cloud-kms = "2.103.0"
-google-gax = "2.88.0"
+google-cloud-kms = "2.104.0"
 grpc-xds = "1.83.0"
 
 [libraries]
@@ -28,6 +27,4 @@ junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version.re
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
 gradlex-java-module-dependencies = { module = "org.gradlex:java-module-dependencies", version.ref = "gradlex-java-module-dependencies" }
 google-cloud-kms = { module = "com.google.cloud:google-cloud-kms", version.ref = "google-cloud-kms" }
-google-gax = { module = "com.google.api:gax", version.ref = "google-gax" }
-google-gax-grpc = { module = "com.google.api:gax-grpc", version.ref = "google-gax" }
 grpc-xds = { module = "io.grpc:grpc-xds", version.ref = "grpc-xds" }

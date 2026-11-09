@@ -15,9 +15,11 @@ import java.io.File
  * declared and as both writers print them, without resolving, under the configuration cache;
  * the second resolves the client's runtime graph from the local cache or Maven Central and
  * holds the resolved set. The module-info fixture supplies its own platform and compiles
- * a `requires google.cloud.kms` against the patched module path. Dependency versions come
- * from this build's catalog, passed into the test JVM by ':test', so Dependabot updates the
- * same pins these fixtures resolve.
+ * a `requires google.cloud.kms` against the patched module path. KMS's version comes from
+ * this build's catalog; the direct GAX and GAX testlib declarations take their versions from
+ * its dependency graph. A test-runtime fixture resolves those declarations and checks that
+ * testlib retains its in-process channel. The explicit xDS declaration is used only to
+ * check exclusion rules, not to exercise DirectPath.
  */
 class GcpKmsExclusionsFunctionalTest {
 
@@ -33,7 +35,7 @@ class GcpKmsExclusionsFunctionalTest {
     "com.google.android:annotations", "com.google.code.findbugs:jsr305", "javax.annotation:javax.annotation-api",
   )
 
-  private fun writeFixture(moduleRequires: Boolean = false) {
+  private fun writeFixture(moduleRequires: Boolean = false, includeDirectXds: Boolean = true) {
     enableTestKitConfigurationCache(fixtureDir)
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
@@ -60,9 +62,12 @@ class GcpKmsExclusionsFunctionalTest {
 
         dependencies {
           implementation("com.google.cloud:google-cloud-kms:${savaBuildTestVersion("google-cloud-kms")}")
-          testImplementation("com.google.api:gax:${savaBuildTestVersion("google-gax")}")
-          testImplementation("com.google.api:gax-grpc:${savaBuildTestVersion("google-gax")}:testlib")
-          testImplementation("io.grpc:grpc-xds:${savaBuildTestVersion("grpc-xds")}")
+          // KMS supplies GAX's version on the inherited implementation graph.
+          testImplementation("com.google.api:gax")
+          testImplementation("com.google.api:gax-grpc") {
+            artifact { classifier = "testlib" }
+          }
+          ${if (includeDirectXds) "testImplementation(\"io.grpc:grpc-xds:${savaBuildTestVersion("grpc-xds")}\")" else ""}
           implementation("org.junit.jupiter:junit-jupiter-api:${savaBuildTestVersion("junit")}")
         }
 
@@ -90,6 +95,19 @@ class GcpKmsExclusionsFunctionalTest {
             }
           }
           doLast { lines.forEach { println(it) } }
+        }
+
+        tasks.register("printResolvedTestRuntime") {
+          val mainArtifacts = configurations.runtimeClasspath.get().incoming.artifacts.resolvedArtifacts
+          val testArtifacts = configurations.testRuntimeClasspath.get().incoming.artifacts.resolvedArtifacts
+          doLast {
+            listOf("main" to mainArtifacts.get(), "test" to testArtifacts.get()).forEach { (scope, artifacts) ->
+              artifacts.forEach { artifact ->
+                val id = artifact.id.componentIdentifier as ModuleComponentIdentifier
+                println("${'$'}scope artifact: ${'$'}{id.group}:${'$'}{id.module}:${'$'}{id.version} ${'$'}{artifact.file.name}")
+              }
+            }
+          }
         }
       """.trimIndent() + "\n"
     )
@@ -224,6 +242,40 @@ class GcpKmsExclusionsFunctionalTest {
       excluded.forEach { assertTrue(line.contains(" $it"), "$it missing from: $line") }
     }
     assertFalse(result.output.contains("missing in"), "java-module-dependencies must not warn of an unmapped name:\n${result.output}")
+  }
+
+  @Test
+  fun `direct GAX test dependencies resolve at KMS versions and retain the testlib in-process channel`() {
+    writeFixture(includeDirectXds = false)
+    val result = run("printResolvedTestRuntime", "--no-configuration-cache")
+    assertEquals(TaskOutcome.SUCCESS, result.task(":printResolvedTestRuntime")?.outcome, result.output)
+    fun artifacts(scope: String) = result.output.lines()
+      .filter { it.startsWith("$scope artifact: ") }
+      .map { it.removePrefix("$scope artifact: ").split(' ', limit = 2) }
+      .map { (coordinate, file) -> coordinate to file }
+    val mainArtifacts = artifacts("main")
+    val testArtifacts = artifacts("test")
+    listOf("com.google.api:gax", "com.google.api:gax-grpc").forEach { module ->
+      val kmsCoordinate = mainArtifacts.single { it.first.startsWith("$module:") }.first
+      assertEquals(
+        setOf(kmsCoordinate),
+        testArtifacts.filter { it.first.startsWith("$module:") }.map { it.first }.toSet(),
+        "$module must use the version selected through KMS:\n${result.output}",
+      )
+    }
+    assertTrue(
+      testArtifacts.any { (coordinate, file) ->
+        // extra-java-module-info appends -module when it patches the classified jar.
+        coordinate.startsWith("com.google.api:gax-grpc:") &&
+          (file.endsWith("-testlib.jar") || file.endsWith("-testlib-module.jar"))
+      },
+      "the classified GAX test library must actually resolve:\n${result.output}",
+    )
+    val testModules = testArtifacts.map { it.first.substringBeforeLast(':') }.toSet()
+    assertTrue("io.grpc:grpc-inprocess" in testModules, result.output)
+    (excluded - "io.grpc:grpc-inprocess").forEach { module ->
+      assertFalse(module in testModules, "$module returned through a direct GAX test dependency:\n${result.output}")
+    }
   }
 
   @Test
