@@ -12,7 +12,6 @@ jmh-gradle-plugin = "0.7.4"
 junit = "6.1.3"
 gradlex-java-module-dependencies = "1.13.2"
 google-cloud-kms = "2.104.0"
-grpc-xds = "1.83.0"
 
 [libraries]
 pitest-command-line = { module = "org.pitest:pitest-command-line", version.ref = "pitest" }
@@ -27,4 +26,3 @@ junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version.re
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
 gradlex-java-module-dependencies = { module = "org.gradlex:java-module-dependencies", version.ref = "gradlex-java-module-dependencies" }
 google-cloud-kms = { module = "com.google.cloud:google-cloud-kms", version.ref = "google-cloud-kms" }
-grpc-xds = { module = "io.grpc:grpc-xds", version.ref = "grpc-xds" }

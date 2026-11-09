@@ -18,7 +18,7 @@ import java.io.File
  * a `requires google.cloud.kms` against the patched module path. KMS's version comes from
  * this build's catalog; the direct GAX and GAX testlib declarations take their versions from
  * its dependency graph. A test-runtime fixture resolves those declarations and checks that
- * testlib retains its in-process channel. The explicit xDS declaration is used only to
+ * testlib retains its in-process channel. The versionless xDS declaration is used only to
  * check exclusion rules, not to exercise DirectPath.
  */
 class GcpKmsExclusionsFunctionalTest {
@@ -67,7 +67,7 @@ class GcpKmsExclusionsFunctionalTest {
           testImplementation("com.google.api:gax-grpc") {
             artifact { classifier = "testlib" }
           }
-          ${if (includeDirectXds) "testImplementation(\"io.grpc:grpc-xds:${savaBuildTestVersion("grpc-xds")}\")" else ""}
+          ${if (includeDirectXds) "testImplementation(\"io.grpc:grpc-xds\")" else ""}
           implementation("org.junit.jupiter:junit-jupiter-api:${savaBuildTestVersion("junit")}")
         }
 
