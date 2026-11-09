@@ -3,7 +3,7 @@
 # their modules without adding those dependencies to the plugin's own classpath.
 
 [versions]
-pitest = "1.30.0"
+pitest = "1.30.2"
 pitest-junit5-plugin = "1.2.3"
 jazzer = "0.30.0"
 arcmutate-base = "1.7.2"
