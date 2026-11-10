@@ -567,7 +567,9 @@ policy missing one passes every warm run: json-iterator's warm-derived policy ne
 cold cache fetched it (2026-11-02). A write run names
 nothing that only the IDE sync or a workflow's init script resolves (the Gradle sources zip
 under `gradle:gradle`, Groovy's sources, the dependency-graph plugin), so those rules keep
-their scopes and keys through a trim, and step 5 is what checks them.
+their scopes and keys through a trim: no command-line run checks them, and the IDE's next
+sync, or for the dependency-graph plugin the dependency-submission workflow, refuses what a
+trim took (the end of Adopting and updating, below).
 
 ### Adopting and updating
 
@@ -655,14 +657,29 @@ policy and for every change to one:
    class path but re-executes no task whose outputs are present, since task history lives in
    the project's own `.gradle` directory: it proves resolution, not a test run.
 
-5. Sync IntelliJ as well, with download sources on. It resolves artifacts through the same
-   policy that no command-line build does: the Gradle sources zip, which Gradle Inc.'s
-   publishing key (`EA96F38569C044AAEF7FCF732887F479B0B9771A`, signing subkey
-   `51FBF517CE6D6B80`) covers under a `gradle:gradle` rule, Groovy's sources and module
-   under the `org.apache.groovy` key, and unsigned plugin sources jars, pinned with their
-   plugin. A refusal shows in the sync output; the IDE reloads only after a build-script
-   change that is not a comment, and failures land in
-   `~/.gradle/daemon/<version>/daemon-<pid>.out.log`.
+No step needs the IDE, and no session asks for a sync. IntelliJ's sync resolves through the
+same policy in the same mode, so it can refuse an artifact and never admit one to a build,
+and once the steps above pass it can refuse only what no command-line run resolved. The
+known cases: the Gradle sources zip, which Gradle Inc.'s publishing key
+(`EA96F38569C044AAEF7FCF732887F479B0B9771A`, signing subkey `51FBF517CE6D6B80`) covers under
+a `gradle:gradle` rule, and the sources of the Kotlin libraries Gradle embeds, under the
+`org.jetbrains.kotlin` key, both asked for whatever the download-sources setting; Groovy's
+sources and module under the `org.apache.groovy` key, in a build that compiles against the
+Gradle API (this one, and sava's `gradle/plugins`); the sources jar of each module on a
+source set's, a build script's or the settings script's class path, in the build and any it
+includes, which passes under the rule that admits the jar when the module's key signs it
+too, and needs a pin of its own, beside the jar's, when the module is unsigned and publishes
+one; and the class path of a source set that no command-line task builds. An IDE or plugin
+update can add a case. No command-line run therefore checks what only those cases rest on:
+a rule, a scope or a keyring block that nothing on the command line uses, an unsigned
+module's sources pin and, after a wrapper bump, that the sources zip and the Kotlin and
+Groovy the new Gradle embeds are still signed by the keys the rules trust (gradle.org/keys
+lists Gradle Inc.'s). A session that edits one of them, or bumps the wrapper, says so where
+it reports the change, and the IDE's next sync, whenever it comes, is the check. A refusal
+shows in the sync output, a refused sources zip at first only as "Could not resolve Gradle
+distribution sources" (the IDE reloads only after a build-script change that is not a
+comment, and failures land in `~/.gradle/daemon/<version>/daemon-<pid>.out.log`), and the
+rule comes back from git history as a trimmed key does.
 
 ### The guard
 
@@ -978,9 +995,9 @@ which it strips of comments on every write:
   names the keys trusted on gradle/gradle's corroboration alone: gson, javaparser and
   kotlinx, after the fleet's per-key source audit of 2026-10-31 (jmh left the list with
   jmh-core's chain when the JMH Gradle plugin became a non-transitive compile-only dependency).
-- IntelliJ's sync, with download sources on, resolves artifacts no command-line build does:
-  the Gradle sources zip, which Gradle Inc.'s publishing key covers, Groovy's sources under
-  its group key, and the jmh plugin's unsigned sources jar, pinned with the plugin.
+- IntelliJ's sync resolves artifacts no command-line build does: the Gradle sources zip,
+  which Gradle Inc.'s publishing key covers, Groovy's sources under its group key, and the
+  jmh plugin's unsigned sources jar, pinned with the plugin.
 
 The root build constrains Kotlin's isolated Bouncy Castle publishing-helper dependencies
 to at least 1.86, addressing [the name-constraints bypass](https://github.com/advisories/GHSA-9pwp-9qqc-pr26)
