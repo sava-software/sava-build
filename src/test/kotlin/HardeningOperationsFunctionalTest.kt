@@ -1,3 +1,4 @@
+import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -575,6 +576,97 @@ class HardeningOperationsFunctionalTest {
       File(fixtureDir, "build/fake-pit/runs.txt").readLines(),
       "the writer reused the immediately preceding history-free report instead of running PIT",
     )
+  }
+
+  /**
+   * Whether a Rebase's own observation can stand as the suite's pre-push gate. The Rebase
+   * writes the record from its report and returns before the ratchet comparison, so its
+   * green build checks nothing. A later direct Verify, with no PIT run in its invocation,
+   * must accept that same report while its inputs are unchanged, must still apply the
+   * ratchet to it against whatever record is committed, and must refuse it once a
+   * compiled input moves.
+   */
+  @Test
+  fun `a direct verify gates the report a rebase wrote without running PIT`() {
+    writeFixture()
+    // A test-source class sits in the recompiled tree the evidence binds.
+    val probe = File(fixtureDir, "src/test/java/com/example/CodecTest.java").apply {
+      parentFile.mkdirs()
+      writeText("package com.example;\n\npublic final class CodecTest {\n  int probe() { return 1; }\n}\n")
+    }
+    // A retained foreign row keeps the record non-empty once the Rebase's own row is removed.
+    val baseline = File(fixtureDir, "config/pitest/encoding-accepted.csv").apply {
+      parentFile.mkdirs()
+      writeText(
+        BaselineDocument.CURRENT_HEADER + "\n" +
+            "com.example.Removed,oldMethod,MathMutator,SURVIVED # retained argument # line 99\n",
+      )
+    }
+    val runs = File(fixtureDir, "build/fake-pit/runs.txt")
+    val reportDir = File(fixtureDir, "build/reports/pitest/encoding")
+    val report = reportDir.resolve("mutations.csv")
+    val evidence = reportDir.resolve(".evidence.tsv")
+
+    val rebased = runner("pitestEncodingBaselineRebase").build()
+    assertEquals(TaskOutcome.SUCCESS, rebased.task(":pitestEncoding")?.outcome, rebased.output)
+    assertEquals(listOf("run"), runs.readLines(), rebased.output)
+    val rebasedRecord = baseline.readText()
+    val addedRow = "com.example.FakePit,main,MathMutator,SURVIVED # untriaged # line 12"
+    assertTrue(rebasedRecord.contains(addedRow), "the Rebase did not accept its unkilled row:\n$rebasedRecord")
+    assertTrue(evidence.isFile, "the Rebase left no evidence beside its report")
+    val reportBytes = report.readBytes()
+    val evidenceBytes = evidence.readBytes()
+
+    fun assertNoPitRun(result: BuildResult) {
+      assertEquals(null, result.task(":pitestEncoding"), "PIT was in the graph:\n${result.output}")
+      assertEquals(listOf("run"), runs.readLines(), "PIT ran again:\n${result.output}")
+      assertTrue(reportBytes.contentEquals(report.readBytes()), "the report was replaced:\n${result.output}")
+      assertTrue(evidenceBytes.contentEquals(evidence.readBytes()), "the evidence was replaced:\n${result.output}")
+    }
+
+    // (1) The Rebase's report passes a direct Verify on an unchanged tree.
+    val accepted = runner("pitestEncodingVerify").build()
+    assertNoPitRun(accepted)
+    assertEquals(TaskOutcome.SUCCESS, accepted.task(":pitestEncodingVerify")?.outcome, accepted.output)
+    assertFalse(accepted.output.contains(" [history]"), "the Rebase's report read as history-assisted:\n${accepted.output}")
+    assertFalse(accepted.output.contains("[kept report]"), "the Verify stood on a kept report, not an exact revalidation:\n${accepted.output}")
+    assertTrue(accepted.output.contains("pitest 'encoding': 0/1 detected"), "the Verify did not read the Rebase's report:\n${accepted.output}")
+    assertFalse(accepted.output.contains("not in the accepted baseline"), accepted.output)
+
+    // (2) The same Verify applies the ratchet the Rebase skipped: a record missing the
+    // report's survivor fails it.
+    baseline.writeText(rebasedRecord.lineSequence().filterNot { it == addedRow }.joinToString("\n"))
+    assertFalse(baseline.readText().contains("com.example.FakePit"), baseline.readText())
+    val ratcheted = runner("pitestEncodingVerify").buildAndFail()
+    assertNoPitRun(ratcheted)
+    assertEquals(TaskOutcome.FAILED, ratcheted.task(":pitestEncodingVerify")?.outcome, ratcheted.output)
+    assertEquals(TaskOutcome.SUCCESS, ratcheted.task(":pitestEncodingEvidenceValidate")?.outcome, ratcheted.output)
+    assertTrue(
+      ratcheted.output.contains("pitest 'encoding': 1 unkilled mutant(s) not in the accepted baseline:") &&
+          ratcheted.output.contains("com.example.FakePit,main,MathMutator,SURVIVED"),
+      "the direct Verify did not apply the ratchet to the Rebase's report:\n${ratcheted.output}",
+    )
+
+    // The row alone decided it: the Rebase's record passes again.
+    baseline.writeText(rebasedRecord)
+    assertNoPitRun(runner("pitestEncodingVerify").build())
+
+    // (3) Once a compiled input moves, the Rebase's report is refused, not gated.
+    probe.writeText(probe.readText().replace("return 1;", "return 2;"))
+    val refused = runner("pitestEncodingVerify").buildAndFail()
+    assertNoPitRun(refused)
+    assertEquals(
+      TaskOutcome.FAILED,
+      refused.task(":pitestEncodingEvidenceValidate")?.outcome,
+      refused.output,
+    )
+    assertEquals(null, refused.task(":pitestEncodingVerify"), refused.output)
+    assertTrue(
+      refused.output.contains("classesSha256: recorded=") &&
+          refused.output.contains("The recompiled classes differ from the recorded run"),
+      "the direct Verify did not refuse the Rebase's report after a class change:\n${refused.output}",
+    )
+    assertFalse(refused.output.contains("not in the accepted baseline"), refused.output)
   }
 
   @Test
