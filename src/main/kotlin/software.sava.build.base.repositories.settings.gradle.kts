@@ -11,8 +11,6 @@ dependencyResolutionManagement {
         "https://maven.pkg.github.com/sava-software/solana-version-catalog",
         "https://maven.pkg.github.com/sava-software/json-iterator",
         "https://maven.pkg.github.com/sava-software/sava",
-        "https://maven.pkg.github.com/sava-software/solana-programs",
-        "https://maven.pkg.github.com/sava-software/solana-web2",
         "https://maven.pkg.github.com/sava-software/ravina",
         "https://maven.pkg.github.com/sava-software/idl-clients",
         "https://maven.pkg.github.com/sava-software/http-servers",
