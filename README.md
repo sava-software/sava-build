@@ -573,7 +573,10 @@ unsigned module's sources jar, the dependency-graph plugin), so those rules keep
 scopes and keys through a trim, and a sources pin stays while its module is on a class
 path: no command-line run checks them, and the IDE's next sync, or for the dependency-graph
 plugin the dependency-submission workflow, refuses what a trim took (the end of Adopting and
-updating, below).
+updating, below). A repository with no build that compiles against the Gradle API, whose
+cold run meets Groovy only as the `groovy-bom` that PIT's JUnit plugin imports, scopes its
+`org.apache.groovy` rule to that module at its next policy edit, as it does the Spock key
+to `spock-bom`.
 
 ### Adopting and updating
 
