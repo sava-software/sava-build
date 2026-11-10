@@ -525,10 +525,11 @@ The policy trusts, and nothing else:
   unauthenticated, the PIT and ArcMutate signers and any library signer that neither source
   above authenticates, and keys listed as expired, DSA-1024 or a retired release manager's,
   which signed old releases in the graph and must not vouch for new ones. A bump under a key
-  listed as unauthenticated moves the version after the release is checked, unless its line
-  gives a reason to stop; a new release under a key that must not vouch is a reason to stop
-  and find out why an old key signed it. Every repository with a policy has the file,
-  comments alone when no key is version-scoped.
+  listed as unauthenticated moves the version after the release is checked, as step 2 of
+  Adopting and updating says how, unless its line gives a reason to stop; a new release
+  under a key that must not vouch is a reason to stop and find out why an old key signed
+  it. Every repository with a policy has the file, comments alone when no key is
+  version-scoped.
 - **SHA-256 checksums** for artifacts that are not signed, such as the jmh plugin in a
   repository with a benchmark build (its jar, module metadata, marker POM and sources jar; see
   [`feature.jmh`](#project-plugins)) and in sava-build itself, whose compile-only dependency
@@ -610,9 +611,12 @@ policy and for every change to one:
      on that key's rule, unless its line gives a reason to stop. For the PIT and ArcMutate
      signers sava-build audits the release in the commit that moves the tool, which the
      release notes link: read that audit, and check that the refused version is the one
-     sava-build's `gradle/libs.versions.toml` pins at the tag you adopt. Finding the publisher
-     source later widens the rule to the group or module the key signs and takes the key off
-     the list, in one edit, unless the key is also one that must not vouch.
+     sava-build's `gradle/libs.versions.toml` pins at the tag you adopt. For a library signer,
+     check that the refused version is the one the reviewed dependency change brings in and
+     that the project announces it in its own repository or on its own site, as a tag or in
+     release notes, and look once more for a publisher source. Finding one widens the rule to
+     the group or module the key signs and takes the key off the list, in one edit, unless
+     the key is also one that must not vouch.
    - **A new release signed by a key that must not vouch**: stop; do not extend its
      version. An existing old release that a dependency change brings into the graph under
      one of these keys can be added as another exact version once checked.
