@@ -225,7 +225,9 @@ footer) and rule nothing out, so the record to cite is the compare's file list,
 with the patch of any build file in it (`build.gradle.kts` and `gradle/libs.versions.toml`
 feed PIT's, ArcMutate's and Jazzer's versions into the plugin), for example
 `--jq '.files[] | select(.filename == "build.gradle.kts") | .patch'`; HARDENING.md
-(Lifecycle) holds the rule.
+(Lifecycle) holds the rule. A compare that moves PIT, PIT-JUnit, or (for a suite that runs
+it) ArcMutate also makes each provenance-bound suite a toolchain transition (HARDENING.md,
+Rebase is the sole transition path).
 Completed reports and certification receipts bind the plugin binary that wrote them,
 so those written under the previous plugin stay historical and the next release
 certifies fresh under the new one; a verify refuses a report whose recorded plugin
@@ -566,10 +568,12 @@ policy missing one passes every warm run: json-iterator's warm-derived policy ne
 `org.ow2:ow2:1.5`, the parent of asm 9.0's POM, passed its write runs, and was refused once a
 cold cache fetched it (2026-11-02). A write run names
 nothing that only the IDE sync or a workflow's init script resolves (the Gradle sources zip
-under `gradle:gradle`, Groovy's sources, the dependency-graph plugin), so those rules keep
-their scopes and keys through a trim: no command-line run checks them, and the IDE's next
-sync, or for the dependency-graph plugin the dependency-submission workflow, refuses what a
-trim took (the end of Adopting and updating, below).
+under `gradle:gradle`, Groovy's sources in a build that compiles against the Gradle API, an
+unsigned module's sources jar, the dependency-graph plugin), so those rules keep their
+scopes and keys through a trim, and a sources pin stays while its module is on a class
+path: no command-line run checks them, and the IDE's next sync, or for the dependency-graph
+plugin the dependency-submission workflow, refuses what a trim took (the end of Adopting and
+updating, below).
 
 ### Adopting and updating
 
@@ -592,14 +596,20 @@ policy and for every change to one:
    classpath only where `arcmutate-licence.txt` is present, so run this step on a licensed
    machine, or the ArcMutate rule goes unexercised until a licensed `pitest<Suite>` gate
    refuses the bump. Run a standalone build's own tasks too (`./gradlew -p jmh jmhJar`, in
-   sava).
+   sava). On a tool bump, each hardened project's `dependencies --configuration pitest` and
+   `jazzer` reports from before and after show the modules that left those graphs; one under
+   an exact-version rule or a pin makes the bump a trim. The reports fetch no jar and name no
+   parent POM, so they replace neither step 3's write run nor step 4's cold run.
 
 2. A "Dependency verification failed" report names each refused artifact and the reason.
    - **A bump under a key listed as unauthenticated** (the PIT and ArcMutate signers, a
      library signer with no publisher source): check the release, then change the `version`
-     on that key's rule, unless its line gives a reason to stop. Finding the publisher source
-     later widens the rule to the group or module the key signs and takes the key off the
-     list, in one edit, unless the key is also one that must not vouch.
+     on that key's rule, unless its line gives a reason to stop. For the PIT and ArcMutate
+     signers sava-build audits the release in the commit that moves the tool, which the
+     release notes link: read that audit, and check that the refused version is the one
+     sava-build's `gradle/libs.versions.toml` pins at the tag you adopt. Finding the publisher
+     source later widens the rule to the group or module the key signs and takes the key off
+     the list, in one edit, unless the key is also one that must not vouch.
    - **A new release signed by a key that must not vouch**: stop; do not extend its
      version. An existing old release that a dependency change brings into the graph under
      one of these keys can be added as another exact version once checked.
@@ -669,13 +679,15 @@ Gradle API (this one, and sava's `gradle/plugins`); the sources jar of each modu
 source set's, a build script's or the settings script's class path, in the build and any it
 includes, which passes under the rule that admits the jar when the module's key signs it
 too, and needs a pin of its own, beside the jar's, when the module is unsigned and publishes
-one; and the class path of a source set that no command-line task builds. An IDE or plugin
-update can add a case. No command-line run therefore checks what only those cases rest on:
+one; and the class path of a source set that no step above builds, such as the git-ignored
+`scratch` suite HARDENING.md has each hardened project register. An IDE or plugin update
+can add a case. No command-line run therefore checks what only those cases rest on:
 a rule, a scope or a keyring block that nothing on the command line uses, an unsigned
 module's sources pin and, after a wrapper bump, that the sources zip and the Kotlin and
 Groovy the new Gradle embeds are still signed by the keys the rules trust (gradle.org/keys
 lists Gradle Inc.'s). A session that edits one of them, or bumps the wrapper, says so where
-it reports the change, and the IDE's next sync, whenever it comes, is the check. A refusal
+it reports the change, and a report of any other change says nothing about the IDE; the
+IDE's next sync, whenever it comes, is the check. A refusal
 shows in the sync output, a refused sources zip at first only as "Could not resolve Gradle
 distribution sources" (the IDE reloads only after a build-script change that is not a
 comment, and failures land in `~/.gradle/daemon/<version>/daemon-<pid>.out.log`), and the
@@ -1049,6 +1061,12 @@ clean. Apply the normal
 anchor under configuration-on-demand; standalone hardening-only builds should run the
 aggregate with `--no-configure-on-demand`. Treat the aggregate's selection,
 transition-preflight, and completion tasks as internal implementation boundaries.
+
+A commit that moves PIT or ArcMutate carries this repository's audit of that release in its
+message: what was compared with the previous release and, for PIT, with its sources, and
+each verdict. Consumers trust both signers only at exact versions and move their rules on
+that audit ([Adopting and updating](#adopting-and-updating), step 2), so the commit keeps a
+type the release notes list, which link it.
 
 Releasing is Release Please plus the ordinary check:
 

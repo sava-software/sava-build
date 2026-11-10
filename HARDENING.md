@@ -263,9 +263,13 @@ one:
   touch neither the PIT task nor what PIT is given; a release's notes are its
   commit subjects (and any BREAKING CHANGE footer) and rule nothing out, so
   the compare's file list and those patches are the record to cite. A range
-  that bumps the pin otherwise owes the project's suites once, at its gate. A verify refuses a report
-  whose recorded plugin build is not the loaded one, and that refusal proves
-  nothing by itself.
+  that bumps the pin otherwise owes the project's suites once, at its gate.
+  When those patches move PIT, PIT-JUnit, or (for a suite that runs it)
+  ArcMutate, the bump is also a toolchain transition for each
+  provenance-bound suite: a history-free review run, then its
+  `pitest<Suite>BaselineRebase` (Rebase is the sole transition path). A
+  verify refuses a report whose recorded plugin build is not the loaded one,
+  and that refusal proves nothing by itself.
 
 When the affected suites are unclear, run `./gradlew qualityGate` from the Gradle
 root so the task selector includes dependent projects' gates.
@@ -435,7 +439,10 @@ run cheaper. The cost model is directly optimisable:
   proportion to its own runtime — and if `SURVIVED -> TIMED_OUT` churn
   appears in the ratchet afterwards, raise the constant back before
   suspecting the code *(casebook: timeout budgets sized to the tests, not the
-  default)*.
+  default)*. First rule out a host sleep during the run (`pmset -g log` on
+  macOS): a watchdog that fires across one says nothing about the budget or
+  the mutant, so retake the run with the host kept awake rather than
+  retuning or seeding an audit row.
 - **Use the coverage-phase cost advisory as a lead, not a verdict** — after a
   successful `pitest<Suite>` execution, the plugin repeats PIT's slowest coverage-phase
   test when it takes at least 250ms and its full JUnit identity matches a `KILLED`
@@ -657,7 +664,12 @@ claim provenance that no run earned. Rebase is the sole transition path:
 
 1. When provenance is a valid pair or both sidecars are missing as a legacy record,
    run `pitest<Suite> -PnoMutationHistory` and review the fresh population difference
-   while the old or explicitly unbound provenance remains visible. An assisted run's
+   while the old or explicitly unbound provenance remains visible. A fresh full verify
+   prints it, against `.pitest-history/<suite>.statuses`, before rewriting that stash:
+   the suite's mutants and the classes that moved. It counts every status, `KILLED`
+   included, but sums them per class, so a status change or moves that cancel in one
+   class never show, and silence means no class moved only while the stash predates
+   the bump. An assisted run's
    `[history]` statuses are reuse, not evidence for this decision. A torn pair, malformed
    sidecar, or internally disagreeing pair instead fails closed before the hardening
    baseline delta is available; do not soften that read gate or treat PIT's aggregate
@@ -686,12 +698,12 @@ claim provenance that no run earned. Rebase is the sole transition path:
    interrupted. An existing-record Rebase writes its safe-superset content first,
    so N-1 sees conservative debt while this plugin refuses the still-old provenance.
 
-Run committed-record writers one suite per invocation when you want an unambiguous
-all-or-nothing operator step. A command selecting several independent suite writers
-uses normal Gradle fail-fast behavior: a failed suite may stop later tasks from
-starting. `--continue` lets already-independent suites finish, but the command still
-fails overall and the rejected suite writes nothing; inspect every selected suite
-before committing a partial batch.
+Run step 1's observations and committed-record writers one suite per invocation when
+you want an unambiguous all-or-nothing operator step. A command selecting several
+independent suites, `qualityGate` included, uses normal Gradle fail-fast behavior: one
+suite's `RUN_ERROR` or refusal may stop later suites from starting. `--continue` lets
+already-independent suites finish, but the command still fails overall and a rejected
+writer writes nothing; inspect every selected suite before committing a partial batch.
 
 This path also adopts old records. A committed baseline or timeout set missing both
 sidecars is reported as the paired `legacy-unversioned` / `legacy-toolchain-unbound`
