@@ -1063,10 +1063,14 @@ aggregate with `--no-configure-on-demand`. Treat the aggregate's selection,
 transition-preflight, and completion tasks as internal implementation boundaries.
 
 A commit that moves PIT or ArcMutate carries this repository's audit of that release in its
-message: what was compared with the previous release and, for PIT, with its sources, and
-each verdict. Consumers trust both signers only at exact versions and move their rules on
-that audit ([Adopting and updating](#adopting-and-updating), step 2), so the commit keeps a
-type the release notes list, which link it.
+message: what was compared with the previous release and, for PIT, with its sources, each
+verdict, and a history-free run of a consumer's suites under the old and the new toolchain
+(a licensed consumer's when ArcMutate moves) with the mutant counts and whether the
+populations matched, so a consumer repeats that comparison only for a move it cannot explain
+(HARDENING.md, Rebase is the sole transition path). Consumers trust both signers only at
+exact versions and move their rules on that audit ([Adopting and
+updating](#adopting-and-updating), step 2), so the commit keeps a type the release notes
+list, which link it.
 
 Releasing is Release Please plus the ordinary check:
 

@@ -188,7 +188,8 @@ preflight refuse is the expected adoption stopping point: review each named fres
 history-free observation, run only the listed Rebase writers, review and commit those
 changes, and then rerun certification. The preflight never runs PIT or writes a baseline.
 Budget two fresh full observations per transitioning suite: the review run and Rebase's
-own write-boundary run. Final certification observes every suite again.
+own write-boundary run, plus an old-toolchain control where step 1 of the Rebase
+procedure calls for one. Final certification observes every suite again.
 It deliberately does not build suite outputs merely to predict an artifact-content
 identity; same-version tool-classpath or licence-content drift remains enforced by the
 suite's normal completed-evidence boundary.
@@ -677,7 +678,11 @@ claim provenance that no run earned. Rebase is the sole transition path:
    the suite's mutants and the classes that moved. It counts every status, `KILLED`
    included, but sums them per class, so a status change or moves that cancel in one
    class never show, and silence means no class moved only while the stash predates
-   the bump. An assisted run's
+   the bump. Where it shows a move that added or removed code does not explain, take
+   the difference from a control: the same code observed history-free under the old
+   toolchain, in a detached worktree at the old pin, with both `mutations.csv` diffed
+   on class, method, mutator, line and status (never the killing test, which races). A
+   mutant on one side only is the tool's, killed ones included. An assisted run's
    `[history]` statuses are reuse, not evidence for this decision. A torn pair, malformed
    sidecar, or internally disagreeing pair instead fails closed before the hardening
    baseline delta is available; do not soften that read gate or treat PIT's aggregate
