@@ -269,7 +269,13 @@ one:
   provenance-bound suite: a history-free review run, then its
   `pitest<Suite>BaselineRebase` (Rebase is the sole transition path). A
   verify refuses a report whose recorded plugin build is not the loaded one,
-  and that refusal proves nothing by itself.
+  and that refusal proves nothing by itself. Rebase adds every current gated
+  row the record lacks as `# untriaged` and skips the ratchet comparison, so
+  its green build is no gate, but its observation can be. After review, a
+  direct `pitest<Suite>Verify` that passes on the report Rebase wrote is
+  that suite's gate: it compares that report with the record as reviewed,
+  as a gate run does, and its pass shows that nothing PIT is given has moved
+  since. If it refuses, the bump's gate is still owed.
 
 When the affected suites are unclear, run `./gradlew qualityGate` from the Gradle
 root so the task selector includes dependent projects' gates.
@@ -299,7 +305,9 @@ lists what is compared *(casebook: the gate that ran on every amend)*.
 The owed suites run once per unpushed range, on its final content: after
 review says the range is clean and before it is pushed. They do not run per
 commit, per amend or per review round, and nothing before that gate records
-mutation evidence *(casebook: the gate that ran on every amend)*. A change the
+mutation evidence except a toolchain transition's review run and Rebase,
+whose report a direct verify at the gate may stand on (the plugin-upgrade
+bullet above) *(casebook: the gate that ran on every amend)*. A change the
 gate forces goes back through review as a delta, and that delta owes the gate
 again by the same reachability rule; a direct verify that keeps the report
 proves it does not. Both failure modes waste something real: per-change gates
