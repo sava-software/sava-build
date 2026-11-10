@@ -474,10 +474,12 @@ ArcMutate's subsumption is not necessarily edit-local. With the then-audited 1.7
 engine, changing one candidate in a method made a different candidate at an
 unchanged line disappear from the generated population. PIT 1.30.2 can remove mutants
 without any edit to their method, too: under a JSpecify `@NullMarked` default (on the
-method, its class or an enclosing class, the package's `package-info` anywhere on PIT's
-class path, test classes included, or the module's `module-info`) its JSpecify filter drops
-each `NULL_RETURNS` mutant of a method whose return is not `@Nullable` before it runs, so
-the mutant leaves the reports instead of receiving a status. An unmatched accepted row
+method, its class or an enclosing class, or the package's `package-info` anywhere on PIT's
+class path, test classes included) its JSpecify filter drops each `NULL_RETURNS` mutant of
+a method whose return is not `@Nullable` before it runs, so the mutant leaves the reports
+instead of receiving a status. A `@NullMarked` module never reaches it: PIT reads that
+default only from a `module-info` beside the mutated class, and `compileForPitest` leaves
+`module-info.java` out of `build/mutation-classes`. An unmatched accepted row
 therefore means only that its mutant is absent from this population — not that it was
 killed, or that its own source line changed. Review the whole method, any JSpecify
 annotation in scope, and the toolchain before pruning it *(casebook: the long retry bound
