@@ -795,8 +795,9 @@ val hardeningCertify = tasks.register<HardeningCertificationTask>("hardeningCert
       if (recordedToolchain != null &&
           recordedToolchain.identitySha256 != evidence.mutationToolchainSha256) {
         throw GradleException(
-            "hardeningCertify: '$suiteName' committed mutation toolchain differs from the fresh run; " +
-                "review it with $certificationBaselineRebaseTaskPath" +
+            "hardeningCertify: '$suiteName' committed mutation toolchain differs from the fresh run" +
+                completedToolchain.changeClauseSince(recordedToolchain) +
+                "; review it with $certificationBaselineRebaseTaskPath" +
                 receiptRetry)
       }
       val recordProvenance = when {
@@ -3480,22 +3481,30 @@ hardening.mutation.all {
           recordedToolchain.identitySha256 != currentToolchain.identitySha256) {
         if ((writingRecord || certificationActive) && !rebase) {
           refuseCommittedProvenance(
-              "pitest '$suiteName': committed mutation toolchain " +
-                  "${recordedToolchain.identitySha256} differs from this run's " +
-                  "${currentToolchain.identitySha256}. Review a history-free " +
+              "pitest '$suiteName': committed mutation toolchain differs from this run" +
+                  currentToolchain.changeClauseSince(recordedToolchain) + ": record identity " +
+                  "${recordedToolchain.identitySha256}, this run's ${currentToolchain.identitySha256}. " +
+                  "Review a history-free " +
                   "$evidencePitestTaskPath -PnoMutationHistory population, then run " +
                   "$evidenceBaselineRebaseTaskPath; it preserves old evidence and stamps only after a " +
                   "successful fresh run.")
         }
         if (!rebase) {
           logger.warn(
-              "pitest '$suiteName': mutation toolchain changed since the committed record — population " +
-                  "differences may be ArcMutate/PIT tooling, not code. Review a history-free " +
+              "pitest '$suiteName': mutation toolchain changed since the committed record" +
+                  currentToolchain.changeClauseSince(recordedToolchain) + " — population " +
+                  "differences may be the tool, not the code. Review a history-free " +
                   "$evidencePitestTaskPath -PnoMutationHistory observation, then run " +
                   "$evidenceBaselineRebaseTaskPath; other writers refuse.")
           advisoryLog.get().record(advisoryScope, "committed mutation toolchain differs from this run")
         }
       }
+      // The same two predicates as the PIT-version and toolchain notices above. Read by
+      // the status-stash block below, which says when this boundary has no stash to
+      // review the population against.
+      val mutationToolTransition = (recordedPit != null && recordedPit != currentPit) ||
+          (recordedToolchain != null && currentToolchain != null &&
+              recordedToolchain.identitySha256 != currentToolchain.identitySha256)
 
       fun warnIgnoredMutationRecords(recordFiles: Iterable<File>) {
         val ignored = (this as PitestVerifyTask).ignoredUntrackedRecordFiles(
@@ -4012,6 +4021,16 @@ hardening.mutation.all {
               advisoryScope, previous, current, ".pitest-history/${statusStash.name}",
               Instant.ofEpochMilli(statusStash.lastModified()),
           )?.let { logger.lifecycle(it) }
+        } else if (!staleFormat && mutationToolTransition) {
+          // Silence across a tool boundary would read as "no class moved". Only a
+          // fresh, unkept report gets here (the return above), the one kind whose
+          // verify writes the stash, so the next fresh run stops repeating this line.
+          logger.lifecycle(
+              "$advisoryScope: no stashed statuses to compare against at " +
+                  ".pitest-history/${statusStash.name} (missing or empty), so no per-class population comparison was " +
+                  "made across this mutation-tool change; the stash this run writes holds the " +
+                  "new tool's statuses (state notice; not an advisory finding)"
+          )
         }
         if (previous.isNotEmpty()) {
           // classification semantics live in BaselineEngine.driftCompare: the
@@ -5849,8 +5868,9 @@ hardening.mutation.all {
         }
         if (recordedToolchain.identitySha256 != effectiveToolchain.identitySha256) {
           caution(
-              "pitest '$suiteName': committed mutation toolchain differs from the current " +
-                  "PIT/ArcMutate/licence identity — population differences may be tool churn; " +
+              "pitest '$suiteName': committed mutation toolchain differs from the current one" +
+                  effectiveToolchain.changeClauseSince(recordedToolchain) +
+                  " — population differences may be the tool, not the code; " +
                   "review a history-free $evidencePitestTaskPath -PnoMutationHistory observation, then run " +
                   evidenceBaselineRebaseTaskPath)
         }

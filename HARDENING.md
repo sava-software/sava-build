@@ -678,7 +678,8 @@ claim provenance that no run earned. Rebase is the sole transition path:
    the suite's mutants and the classes that moved. It counts every status, `KILLED`
    included, but sums them per class, so a status change or moves that cancel in one
    class never show, and silence means no class moved only while the stash predates
-   the bump. Where it shows a move that added or removed code does not explain, take
+   the bump. With no stash the verify says no comparison was made, and the run after
+   it compares the new tool with itself. Where it shows a move that added or removed code does not explain, take
    the difference from a control: the same code observed history-free under the old
    toolchain, in a detached worktree at the old pin, with both `mutations.csv` diffed
    on class, method, mutator, line and status (never the killing test, which races). A

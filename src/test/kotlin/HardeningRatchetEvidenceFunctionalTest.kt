@@ -457,23 +457,73 @@ class HardeningRatchetEvidenceFunctionalTest : HardeningRatchetFunctionalFixture
     val stamped = toolVersionFile.readText().trim()
     assertTrue(stamped.isNotEmpty() && stamped.first().isDigit(), "stamped version looks wrong: '$stamped'")
     val toolchainBefore = toolchainFile.readText()
+    // the fixture carries no ArcMutate licence, so its rows read absent on both sides
+    assertTrue(toolchainBefore.contains("arcMutateBase\tabsent\n"), toolchainBefore)
 
     // Matching provenance: checking stays quiet even though this fixture removes
-    // report-local evidence after each synthetic writer.
+    // report-local evidence after each synthetic writer. Without a tool boundary a
+    // missing status stash is an ordinary first observation and earns no notice.
+    val statusStash = File(fixtureDir, ".pitest-history/encoding.statuses")
+    val noStashNotice = "no stashed statuses to compare against"
+    assertTrue(statusStash.delete(), "the rebase and update wrote no status stash to delete")
     val clean = runner("pitestEncodingVerify").build()
     assertFalse(clean.output.contains("written by PIT"), clean.output)
+    assertFalse(clean.output.contains(noStashNotice), clean.output)
+    assertTrue(statusStash.isFile, "the clean verify wrote no status stash")
 
     File(fixtureDir, "build.gradle.kts").appendText(
       "\nhardening.pitestVersion.set(\"0.0.0-new\")\n",
     )
 
     // A history-free ordinary observation is permitted and names both boundaries.
+    // The toolchain warning names the moved row; the absent ArcMutate rows stay out.
     val checked = runner("pitestEncoding", "-PnoMutationHistory").build()
     assertTrue(
       checked.output.contains("baseline record written by PIT $stamped, this run used PIT 0.0.0-new") &&
           checked.output.contains("mutation toolchain changed since the committed record"),
       "mismatch warning missing:\n" + checked.output
     )
+    val toolchainWarning = checked.output.lines()
+        .single { it.contains("mutation toolchain changed since the committed record") }
+    assertTrue(
+      toolchainWarning.contains("committed record (pitest $stamped -> 0.0.0-new) — population"),
+      "the warning did not name the moved row:\n$toolchainWarning",
+    )
+    assertFalse(toolchainWarning.contains("arcmutate", ignoreCase = true), toolchainWarning)
+    // the clean verify's stash is the comparison base, so nothing is missing
+    assertFalse(checked.output.contains(noStashNotice), checked.output)
+
+    // Across the same boundary with no stash, the silent population notice would
+    // read as "no class moved"; one lifecycle line says there was nothing to compare.
+    assertTrue(statusStash.delete(), "the mismatch run wrote no status stash to delete")
+    val cold = runner("pitestEncoding", "-PnoMutationHistory").build()
+    assertTrue(
+      cold.output.contains(
+        "pitest 'encoding': $noStashNotice at .pitest-history/encoding.statuses"),
+      "no-stash notice missing across the tool boundary:\n" + cold.output,
+    )
+    assertTrue(statusStash.isFile, "the cold mismatch run wrote no status stash")
+    // that run wrote the stash, so the next one compares against it and stays quiet
+    val warm = runner("pitestEncoding", "-PnoMutationHistory").build()
+    assertTrue(warm.output.contains("mutation toolchain changed since the committed record"), warm.output)
+    assertFalse(warm.output.contains(noStashNotice), warm.output)
+    // An assisted report never writes the stash, so the notice would repeat on every
+    // assisted run; it is gated like the population notice itself.
+    // (The synthetic marker sits on a report without evidence, as clearFakePitEvidence
+    // leaves it; the PIT-version boundary alone makes this run a transition.)
+    assertTrue(statusStash.delete(), "the warm mismatch run wrote no status stash to delete")
+    File(fixtureDir, "build/reports/pitest/encoding").let { reportDir ->
+      listOf(".evidence.tsv", ".toolchain.tsv", ".evidence-invocation").forEach {
+        reportDir.resolve(it).delete()
+      }
+      reportDir.resolve(".history-assisted").writeText("")
+    }
+    val assisted = runner("pitestEncodingVerify").build()
+    assertTrue(assisted.output.contains(" [history]"), assisted.output)
+    assertTrue(assisted.output.contains("this run used PIT 0.0.0-new"), assisted.output)
+    assertFalse(assisted.output.contains(noStashNotice), assisted.output)
+    assertFalse(statusStash.exists(), "an assisted verify wrote the status stash")
+    File(fixtureDir, "build/reports/pitest/encoding/.history-assisted").delete()
 
     // An ordinary writer refuses without changing either sidecar.
     val refused = baselineUpdateRunner().buildAndFail()
@@ -484,9 +534,13 @@ class HardeningRatchetEvidenceFunctionalTest : HardeningRatchetFunctionalFixture
     )
     assertEquals(stamped, toolVersionFile.readText().trim(), "refused run changed the PIT stamp")
     assertEquals(toolchainBefore, toolchainFile.readText(), "refused run changed the toolchain stamp")
+    // a refusal is not an observation, so it says nothing about the stash
+    assertFalse(refused.output.contains(noStashNotice), refused.output)
 
     val rebased = runner("pitestEncodingBaselineRebase").build().output
     assertTrue(rebased.contains("baseline provenance"), rebased)
+    // the Rebase's own fresh run crosses the boundary with no stash, and says so
+    assertTrue(rebased.contains(noStashNotice), rebased)
     assertEquals("0.0.0-new", toolVersionFile.readText().trim())
     assertFalse(toolchainBefore == toolchainFile.readText(), "Rebase did not replace toolchain identity")
   }
@@ -658,6 +712,30 @@ class HardeningRatchetEvidenceFunctionalTest : HardeningRatchetFunctionalFixture
     val debt = runner("pitestEncodingDebt").build().output
 
     assertTrue(debt.contains("committed mutation toolchain differs from the current"), debt)
+    val caution = debt.lines().single { it.contains("committed mutation toolchain differs") }
+    assertTrue(
+      Regex("current one \\(toolClasspathSha256 00000000\\.\\.\\. -> [0-9a-f]{8}\\.\\.\\.\\) — population differences may be the tool, not the code;")
+          .containsMatchIn(caution),
+      "the caution did not name exactly the moved row:\n$caution",
+    )
+    assertFalse(caution.contains("arcmutate", ignoreCase = true), caution)
+
+    // The ordinary writer's refusal names the same row in place of two record digests.
+    val refused = baselineUpdateRunner().buildAndFail().output
+    val refusal = refused.lines().first { it.contains("committed mutation toolchain differs from this run") }
+    assertTrue(
+      Regex("differs from this run \\(toolClasspathSha256 00000000\\.\\.\\. -> [0-9a-f]{8}\\.\\.\\.\\): record identity [0-9a-f]{64}, this run's [0-9a-f]{64}\\. Review a history-free")
+          .containsMatchIn(refusal),
+      "the refusal did not name exactly the moved row:\n$refused",
+    )
+    assertFalse(refusal.contains("arcmutate", ignoreCase = true), refusal)
+
+    // Same PIT, moved class path: the toolchain half alone makes this a transition, so a
+    // fresh run with no stash says there was nothing to compare.
+    File(fixtureDir, ".pitest-history/encoding.statuses").delete()
+    val cold = runner("pitestEncoding", "-PnoMutationHistory").build().output
+    assertFalse(cold.contains("this run used PIT"), cold)
+    assertTrue(cold.contains("pitest 'encoding': no stashed statuses to compare against"), cold)
   }
 
   @Test

@@ -1,6 +1,7 @@
 package software.sava.build.hardening
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -485,6 +486,123 @@ class MutationToolchainRecordTest {
       original.copy(arcMutateLicenceExpires = LocalDate.parse("2028-08-15")),
     )
     variants.forEach { variant -> assertNotEquals(original.identitySha256, variant.identitySha256) }
+  }
+
+  private val unlicensed = MutationToolchainRecord(
+    pitestVersion = "1.30.0",
+    junitPluginVersion = "1.2.3",
+    toolClasspathSha256 = "a53a1396" + "0".repeat(56),
+    arcMutateBaseVersion = null,
+    arcMutateLicenceSha256 = null,
+    arcMutateLicenceExpires = null,
+  )
+
+  @Test
+  fun `a PIT and class path move names exactly those two rows`() {
+    val bumped = unlicensed.copy(
+      pitestVersion = "1.30.2",
+      toolClasspathSha256 = "bde42615" + "f".repeat(56),
+    )
+
+    assertEquals(
+      listOf(
+        "pitest 1.30.0 -> 1.30.2",
+        "toolClasspathSha256 a53a1396... -> bde42615...",
+      ),
+      bumped.changedRowsSince(unlicensed),
+    )
+    assertEquals(
+      " (pitest 1.30.0 -> 1.30.2, toolClasspathSha256 a53a1396... -> bde42615...)",
+      bumped.changeClauseSince(unlicensed),
+    )
+    assertFalse(
+      bumped.changeClauseSince(unlicensed).contains("arcMutate", ignoreCase = true),
+      "an unlicensed pair named an ArcMutate row",
+    )
+    // the reverse direction names the same rows with old and new swapped
+    assertEquals(
+      listOf("pitest 1.30.2 -> 1.30.0", "toolClasspathSha256 bde42615... -> a53a1396..."),
+      unlicensed.changedRowsSince(bumped),
+    )
+  }
+
+  @Test
+  fun `a licence renewal names only the licence rows`() {
+    val licensed = unlicensed.copy(
+      arcMutateBaseVersion = "1.7.3",
+      arcMutateLicenceSha256 = "1".repeat(64),
+      arcMutateLicenceExpires = LocalDate.parse("2027-08-15"),
+    )
+    val renewed = licensed.copy(
+      arcMutateLicenceSha256 = "2".repeat(64),
+      arcMutateLicenceExpires = LocalDate.parse("2028-08-15"),
+    )
+
+    assertEquals(
+      listOf(
+        "arcMutateLicenceSha256 11111111... -> 22222222...",
+        "arcMutateLicenceExpires 2027-08-15 -> 2028-08-15",
+      ),
+      renewed.changedRowsSince(licensed),
+    )
+    // licensing an unlicensed toolchain shows the absent side as it is recorded
+    assertEquals(
+      listOf(
+        "arcMutateBase absent -> 1.7.3",
+        "arcMutateLicenceSha256 absent -> 11111111...",
+        "arcMutateLicenceExpires absent -> 2027-08-15",
+      ),
+      licensed.changedRowsSince(unlicensed),
+    )
+    // and dropping the licence reads the other way round
+    assertEquals(
+      listOf(
+        "arcMutateBase 1.7.3 -> absent",
+        "arcMutateLicenceSha256 11111111... -> absent",
+        "arcMutateLicenceExpires 2027-08-15 -> absent",
+      ),
+      unlicensed.changedRowsSince(licensed),
+    )
+  }
+
+  @Test
+  fun `identical records name no row and leave no dangling punctuation`() {
+    assertEquals(emptyList<String>(), unlicensed.changedRowsSince(unlicensed.copy()))
+    assertEquals("", unlicensed.changeClauseSince(unlicensed.copy()))
+  }
+
+  @Test
+  fun `the row diff survives rows that differ in number order or form`() {
+    val current = unlicensed.render()
+    // a future schema row on the current side only, and one on the recorded side only
+    assertEquals(
+      listOf("futureRow (no row) -> on"),
+      MutationToolchainRecord.changedRows(current, current + "futureRow\ton\n"),
+    )
+    assertEquals(
+      listOf("futureRow off -> (no row)"),
+      MutationToolchainRecord.changedRows(current + "futureRow\toff\n", current),
+    )
+    // the same rows in another order are no change
+    assertEquals(
+      emptyList<String>(),
+      MutationToolchainRecord.changedRows(current.lines().reversed().joinToString("\n"), current),
+    )
+    // a tab-less line and an empty value neither throw nor print a blank
+    assertEquals(
+      listOf("garbage \"\" -> (no row)", "pitest \"\" -> 1.30.0"),
+      MutationToolchainRecord.changedRows(
+        "garbage\n" + current.replace("pitest\t1.30.0", "pitest\t"), current),
+    )
+    // two hashes sharing their displayed prefix print in full, never as an equal pair
+    val sharedPrefix = "abcdef01" + "0".repeat(56) to "abcdef01" + "1".repeat(56)
+    assertEquals(
+      listOf("toolClasspathSha256 ${sharedPrefix.first} -> ${sharedPrefix.second}"),
+      MutationToolchainRecord.changedRows(
+        "toolClasspathSha256\t${sharedPrefix.first}\n",
+        "toolClasspathSha256\t${sharedPrefix.second}\n",
+      ),
+    )
   }
 
   private fun licence(

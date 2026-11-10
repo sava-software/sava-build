@@ -63,6 +63,24 @@ internal data class MutationToolchainRecord(
   val identitySha256: String
     get() = PitestEvidence.sha256(render())
 
+  /**
+   * The rendered rows whose values moved since [recorded], as `name old -> new` in
+   * row order. Presentation only: decisions compare [identitySha256], never this list.
+   * ArcMutate rows render `absent` on both sides of an unlicensed pair, so they
+   * appear only when the licence or base actually moved.
+   */
+  fun changedRowsSince(recorded: MutationToolchainRecord): List<String> =
+      changedRows(recorded.render(), render())
+
+  /**
+   * [changedRowsSince] as a message fragment: ` (row, row)`, or empty when no row
+   * moved, so a sentence written around it reads the same either way.
+   */
+  fun changeClauseSince(recorded: MutationToolchainRecord): String =
+      changedRowsSince(recorded).let { rows ->
+        if (rows.isEmpty()) "" else rows.joinToString(", ", prefix = " (", postfix = ")")
+      }
+
   internal data class ResolvedArcMutateLicence(
     val sha256: String,
     val expires: LocalDate,
@@ -253,6 +271,47 @@ internal data class MutationToolchainRecord(
       }
       return PitestEvidence.sha256(identity)
     }
+
+    private const val NO_ROW = "(no row)"
+
+    /**
+     * Compares two rendered records row by row, keyed by row name rather than by
+     * position, so a row present on one side only (a later schema's addition) or a
+     * reordered row is still named once, and malformed text never throws. Rows keep
+     * the recorded side's order, then the current side's new rows. Full values are
+     * compared; a 64-hex value is shortened to its first 8 characters for display,
+     * unless both sides share that prefix, in which case both print in full.
+     */
+    fun changedRows(recordedRendered: String, currentRendered: String): List<String> {
+      val before = renderedRows(recordedRendered)
+      val after = renderedRows(currentRendered)
+      return (before.keys + after.keys).mapNotNull { name ->
+        val old = before[name]
+        val new = after[name]
+        if (old == new) return@mapNotNull null
+        val shortOld = old?.let(::displayValue) ?: NO_ROW
+        val shortNew = new?.let(::displayValue) ?: NO_ROW
+        if (shortOld != shortNew) "$name $shortOld -> $shortNew"
+        else "$name ${old?.let(::quoteEmpty) ?: NO_ROW} -> ${new?.let(::quoteEmpty) ?: NO_ROW}"
+      }
+    }
+
+    private fun renderedRows(text: String): Map<String, String> {
+      val rows = linkedMapOf<String, String>()
+      text.lineSequence().filter(String::isNotEmpty).forEach { line ->
+        val tab = line.indexOf('\t')
+        val name = if (tab < 0) line else line.substring(0, tab)
+        val value = if (tab < 0) "" else line.substring(tab + 1)
+        // first occurrence wins, matching the order the rows are named in
+        rows.putIfAbsent(name, value)
+      }
+      return rows
+    }
+
+    private fun displayValue(value: String): String =
+        if (sha256Pattern.matches(value)) value.take(8) + "..." else quoteEmpty(value)
+
+    private fun quoteEmpty(value: String): String = value.ifEmpty { "\"\"" }
 
     fun parse(text: String): MutationToolchainRecord {
       require('\r' !in text) { "mutation toolchain record contains a carriage return" }
