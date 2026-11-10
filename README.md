@@ -644,6 +644,10 @@ policy and for every change to one:
      build resolveVerificationTools
    ```
 
+   A new policy adds `-x verificationPolicy` to that run: the guard runs before anything
+   resolves and refuses a seeded list whose keys no rule names yet, so the write would fail
+   before it drafts them.
+
    The result is a candidate, never the reviewed policy. On a tool bump it widens the
    version-scoped key to every version, and it can narrow a publisher key to the one version
    it saw, as a rule with a version or as a per-artifact `<pgp>` entry; it writes an
