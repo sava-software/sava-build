@@ -683,7 +683,11 @@ claim provenance that no run earned. Rebase is the sole transition path:
    the difference from a control: the same code observed history-free under the old
    toolchain, in a detached worktree at the old pin, with both `mutations.csv` diffed
    on class, method, mutator, line and status (never the killing test, which races). A
-   mutant on one side only is the tool's, killed ones included. An assisted run's
+   mutant on one side only is the tool's, killed ones included. A status that differs,
+   `KILLED` against `TIMED_OUT` above all, is not yet the tool's, nor is a timeout
+   advisory the review run prints: a member that depends on test order or load trades
+   the two between runs of one toolchain, and Rebase's own observation is the second
+   run that shows which it is. An assisted run's
    `[history]` statuses are reuse, not evidence for this decision. A torn pair, malformed
    sidecar, or internally disagreeing pair instead fails closed before the hardening
    baseline delta is available; do not soften that read gate or treat PIT's aggregate
