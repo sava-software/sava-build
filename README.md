@@ -603,7 +603,10 @@ policy and for every change to one:
    sava). On a tool bump, each hardened project's `dependencies --configuration pitest` and
    `jazzer` reports from before and after show the modules that left those graphs; one under
    an exact-version rule or a pin makes the bump a trim. The reports fetch no jar and name no
-   parent POM, so they replace neither step 3's write run nor step 4's cold run.
+   parent POM, so they replace neither step 3's write run nor step 4's cold run, and they
+   show nothing of the plugin class path: what a sava-build bump takes off it, as 21.8.5
+   took the JMH plugin and its chain, shows only when the modules an empty home fetched are
+   compared with the policy.
 
 2. A "Dependency verification failed" report names each refused artifact and the reason.
    - **A bump under a key listed as unauthenticated** (the PIT and ArcMutate signers, a
