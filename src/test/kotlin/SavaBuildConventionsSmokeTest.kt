@@ -1,7 +1,5 @@
 import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
-import org.gradle.testkit.runner.TaskOutcome
-import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -13,8 +11,10 @@ import java.io.File
  * Smoke tests that configure a minimal consumer project against the plugin published
  * to the local test repo — resolving it by id and version the same way consumer
  * repositories do.
- * They exercise settings/project wiring and the root build-health aggregate without
- * consumer repository credentials, catching plugin wiring or Gradle API breakage.
+ * They exercise settings/project wiring without consumer repository credentials, catching
+ * plugin wiring or Gradle API breakage. A fixture that compiles its modules, with and without
+ * the dependency-analysis plugin and its root build-health aggregate, is
+ * DependencyAnalysisIsolationFunctionalTest's.
  */
 class SavaBuildConventionsSmokeTest {
 
@@ -76,53 +76,6 @@ class SavaBuildConventionsSmokeTest {
     assertFalse(result.output.contains(":aggregation"), result.output)
     assertTrue(reused.output.contains("Project ':lib'"), reused.output)
     assertFalse(reused.output.contains(":aggregation"), reused.output)
-  }
-
-  @Test
-  fun `settings entry point provides the root build health aggregate`() {
-    // Use the test JVM so an unavailable provisioned JDK cannot silently drop lib's advice.
-    writeFixture(
-      savaProperties = """
-        solanaBOMVersion=0.0.0-smoke
-        javaVersion=${Runtime.version().feature()}
-        javaVendor=${System.getProperty("java.vendor")}
-      """.trimIndent() + "\n",
-      settingsSuffix =
-        """
-
-        dependencyResolutionManagement {
-          repositories { maven { url = uri("stub-repo") } }
-        }
-        """.trimIndent() + "\n",
-    )
-    File(
-      fixtureDir,
-      "stub-repo/software/sava/solana-version-catalog/0.0.0-smoke/" +
-        "solana-version-catalog-0.0.0-smoke.pom",
-    ).apply {
-      parentFile.mkdirs()
-      writeText(
-        """
-        <project xmlns="http://maven.apache.org/POM/4.0.0">
-          <modelVersion>4.0.0</modelVersion>
-          <groupId>software.sava</groupId>
-          <artifactId>solana-version-catalog</artifactId>
-          <version>0.0.0-smoke</version>
-          <packaging>pom</packaging>
-        </project>
-        """.trimIndent() + "\n",
-      )
-    }
-    val result = runBuild(
-      "buildHealth", "--console=plain",
-      "-Dorg.gradle.java.installations.auto-detect=false",
-      "-Dorg.gradle.java.installations.auto-download=false",
-      "-Dorg.gradle.java.installations.paths=${System.getProperty("java.home")}",
-    )
-
-    assertEquals(TaskOutcome.SUCCESS, result.task(":buildHealth")?.outcome, result.output)
-    assertEquals(TaskOutcome.SUCCESS, result.task(":generateBuildHealth")?.outcome, result.output)
-    assertEquals(TaskOutcome.SUCCESS, result.task(":lib:filterAdvice")?.outcome, result.output)
   }
 
   @Test

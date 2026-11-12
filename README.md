@@ -239,7 +239,7 @@ build is not the loaded one.
 
 | Plugin | Description |
 |---|---|
-| `software.sava.build` | Entry point. Applies centralized repositories, module discovery (`javaModules {}`), and build-wide dependency analysis, including the root `buildHealth` aggregate. Includes the `:aggregation` project when `gradle/aggregation/build.gradle.kts` exists ([Publishing](#publishing)). |
+| `software.sava.build` | Entry point. Applies centralized repositories and module discovery (`javaModules {}`). Includes the `:aggregation` project when `gradle/aggregation/build.gradle.kts` exists ([Publishing](#publishing)). |
 | `software.sava.build.feature.jdk-provisioning` | Auto-provisions JDK toolchains via the [foojay resolver](https://github.com/gradle/foojay-toolchains). Separate from the entry point so provisioning (and its network access) stays opt-in; the resolver is a dependency of the published plugin, so every consumer resolves and verifies it, applied or not. |
 | `software.sava.build.feature-jdk-provisioning` | **Deprecated** alias for the above. |
 | `software.sava.build.version-catalog` | Standalone: exposes the solana version catalog as `savaCatalog` without the rest of the conventions. Its GitHub repository is restricted to `software.sava:solana-version-catalog`. |
@@ -270,10 +270,10 @@ in the second (its row below says how).
 | `software.sava.build.base.dependency-rules` | Consistent resolution against the solana version catalog BOM. |
 | `software.sava.build.base.version` | Sets the project version from `-Pversion`. |
 | `software.sava.build.feature.compile` | Java toolchain from `javaVersion` / `javaVendor`. |
-| `software.sava.build.feature.test` | JUnit test logging and strict test-dependency analysis. |
+| `software.sava.build.feature.test` | JUnit test logging; drops the `junit-jupiter` aggregate the test suite adds to the test dependencies, so a test module declares the JUnit modules it uses. |
 | `software.sava.build.check.attestations` | `verifySavaAttestations` task: verifies the GitHub build-provenance attestations of resolved sava dependencies (sha256 lookup in the org attestation store, cosign verification against the identity of the reusable publish workflow that released them, `publish.yml` or `publish-gh.yml`), plus their sources/javadoc jars and the sava-build plugin jar in use (attested by `gradle_plugin_publish.yml`). Missing attestations warn until `savaAttestations.requireAttestations = true`; failed verifications always fail. Configure via `savaAttestations {}`; needs a `cosign` executable or a Docker image passed as `-PsavaCosignImage=...`. Applied by `java-module`; not part of `check` (requires network). |
 | `software.sava.build.feature.javadoc` | Lenient javadoc (`Xdoclint:none`, HTML5). |
-| `software.sava.build.check.dependencies` | Per-project [dependency analysis](https://github.com/autonomousapps/dependency-analysis-gradle-plugin) (`projectHealth`) and module-directive scope checks wired into `check`; the `software.sava.build` settings entry point supplies the root `buildHealth` aggregate. |
+| `software.sava.build.check.dependencies` | Makes `check` depend on the module-directive scope check (`checkModuleDirectivesScope`) in a build that declares the dependency-analysis plugin, which sava-build does not ship: java-module-dependencies registers the check only when that plugin is applied, and [Dependency analysis](#dependency-analysis) says how a build opts in. Turns the directive ordering check off. |
 
 The hardening plugin is not restricted to Sava package names. Any Java project can
 register its own production namespaces, mutation suites, exclusions, and fuzz targets.
@@ -284,6 +284,91 @@ eligible repository normally activates it by deliberately placing the certificat
 that repository's root; a project-directory certificate can instead activate one module,
 with the nearest ancestry certificate becoming effective. Every other adopter uses the
 same process with open-source PIT.
+
+### Dependency analysis
+
+sava-build does not ship the
+[dependency-analysis plugin](https://github.com/autonomousapps/dependency-analysis-gradle-plugin).
+A build that declares nothing has no module-directive scope check, so `check` does not say that
+a `requires` should be `requires transitive` or that a module requires what it never uses, and
+it has none of the plugin's tasks (`buildHealth`, `projectHealth`, `fixDependencies`). The plugin
+and its dependencies were 27 of the 34 components the sava-build module put on a consumer's
+settings classpath: every build loaded them, a release build holding signing and publishing
+credentials included, and every consumer's [policy](#the-policy-and-what-it-trusts) trusted
+their signing keys.
+
+A build that wants the check declares the plugin itself, at the version sava-build is tested
+against (`dependency-analysis-gradle-plugin` in
+[`gradle/libs.versions.toml`](gradle/libs.versions.toml)), in one of two forms. In both,
+[java-module-dependencies](https://github.com/gradlex-org/java-module-dependencies) registers
+`checkModuleDirectivesScope` in every module, `software.sava.build.check.dependencies` makes
+`check` depend on it, and the plugin's tasks exist.
+
+**Always.** One line in the settings plugins block:
+
+```kotlin
+plugins {
+  id("software.sava.build") version "<version>"
+  id("com.autonomousapps.build-health") version "<dependency-analysis-version>"
+}
+```
+
+**On demand.** The plugin joins the settings classpath only when the invocation sets a Gradle
+property, so an ordinary build, a release build among them, resolves and loads nothing of it,
+and `./gradlew -PdependencyAudit check` runs the check. Between `pluginManagement {}` and
+`plugins {}`:
+
+```kotlin
+buildscript {
+  if (providers.gradleProperty("dependencyAudit").isPresent) {
+    dependencies { classpath("com.autonomousapps:dependency-analysis-gradle-plugin:<dependency-analysis-version>") }
+  }
+}
+```
+
+and after the plugins block:
+
+```kotlin
+if (providers.gradleProperty("dependencyAudit").isPresent) {
+  apply(plugin = "com.autonomousapps.build-health")
+}
+```
+
+Beside a plugins block the buildscript block needs no repositories of its own: it resolves from
+the `pluginManagement` repositories. Each switch between an ordinary and an audit invocation
+recomputes the configuration cache entry.
+
+Dependency verification covers whatever a build resolves, the settings classpath included, so
+either form keeps the plugin's chain in the policy. A policy written before sava-build stopped
+shipping the plugin has those rules; write an on-demand build's policy with the property set,
+since a write without it sees none of the chain. The first form also resolves the plugin's
+marker POM, `com.autonomousapps.build-health:com.autonomousapps.build-health.gradle.plugin`,
+which the Plugin Portal, ahead of Maven Central in the `pluginManagement` repositories of the
+[settings script](#settingsgradlekts), serves unsigned: pin its checksum. A build that declares
+neither form can prune the chain's rules, keys and list lines.
+
+The plugin's classes have to be visible to the class loader that loaded sava-build, which both
+forms arrange. A declaration in a project's own plugins block alone sits below that loader and
+fails the configuration with
+`NoClassDefFoundError: com/autonomousapps/AbstractPostProcessingTask`.
+
+A typed `dependencyAnalysis { }` block in a project script compiles only where the plugin is
+always present. A script that also has to compile without it, as under the on-demand form,
+configures the extension when the plugin is applied:
+
+```kotlin
+pluginManager.withPlugin("com.autonomousapps.dependency-analysis") {
+  extensions.getByName("dependencyAnalysis").withGroovyBuilder {
+    "issues" {
+      "ignoreSourceSet"("scratch")
+    }
+  }
+}
+```
+
+Without the plugin nothing analyses a source set, so `check` compiles no source set it does not
+otherwise reach, a `scratch` suite ([HARDENING.md](HARDENING.md)) among them, and a build needs
+no such block; a suite that should compile on `check` wires its compile task there itself.
 
 ## Configuration
 

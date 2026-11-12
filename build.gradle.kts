@@ -235,11 +235,6 @@ version = providers.gradleProperty("version").getOrElse("")
 
 // ./gradlew --write-verification-metadata pgp,sha256 check generatePrecompiledScriptPluginAccessors
 dependencies {
-  // https://github.com/autonomousapps/dependency-analysis-gradle-plugin
-  // https://plugins.gradle.org/plugin/com.autonomousapps.dependency-analysis
-  // https://mvnrepository.com/artifact/com.autonomousapps.dependency-analysis/com.autonomousapps.dependency-analysis.gradle.plugin
-  implementation("com.autonomousapps:dependency-analysis-gradle-plugin:3.19.2")
-
   // https://github.com/gradle/foojay-toolchains
   // https://plugins.gradle.org/plugin/org.gradle.toolchains.foojay-resolver-convention
   implementation("org.gradle.toolchains:foojay-resolver:1.0.0")
@@ -354,7 +349,7 @@ kotlin.sourceSets["main"].kotlin.srcDir(generateJmhToolDefaults)
 // are Test task inputs, so a catalog bump reruns the fixtures without adding any of their
 // libraries to this build's dependency graph. There is no fallback pin in the test sources.
 val fixtureVersions = listOf(
-  "google-cloud-kms", "junit", "gradlex-java-module-dependencies"
+  "google-cloud-kms", "junit", "gradlex-java-module-dependencies", "dependency-analysis-gradle-plugin"
 ).associateWith(::catalogVersion)
 
 // The agent-instructions template in HARDENING.md is copied into each consuming repo's

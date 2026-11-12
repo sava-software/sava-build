@@ -2078,8 +2078,9 @@ else: the evidence inventory and the PIT and Jazzer recompiles take those two
 source sets alone, so a third source set in the same project is invisible to
 every suite and certification. Register one per hardened project as a
 `scratch` JvmTestSuite at `src/scratch/java`, git-ignore the tree, disable
-its test task, and tell the dependency analysis to ignore the source set so
-`check` never compiles it; the programs keep their package and with it
+its test task, and, in a build that declares the dependency analysis (README,
+Dependency analysis), tell it to ignore the source set so `check` never
+compiles it; the programs keep their package and with it
 package-private access to what they try out, which a separate project cannot
 give them under JPMS (a module cannot share a package with another), and the
 IDE runs them from there as before. A hardened project then carries no

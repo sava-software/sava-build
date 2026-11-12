@@ -80,7 +80,7 @@ jobs:
             echo "::error::Dependency snapshot omits the configured Gradle version"
             exit 1
           fi
-          for anchor in pkg:maven/com.autonomousapps/dependency-analysis-gradle-plugin@ pkg:maven/org.junit.jupiter/junit-jupiter@; do
+          for anchor in pkg:maven/org.gradlex/java-module-dependencies@ pkg:maven/org.junit.jupiter/junit-jupiter@; do
             if ! awk -v anchor="$anchor" 'index($0, anchor) == 1 { found = 1 } END { exit !found }' "$RUNNER_TEMP/packages"; then
               echo "::error::Dependency snapshot omits expected build/test dependency: $anchor"
               exit 1

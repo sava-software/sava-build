@@ -11,6 +11,7 @@ jmh = "1.37"
 jmh-gradle-plugin = "0.7.4"
 junit = "6.1.3"
 gradlex-java-module-dependencies = "1.13.2"
+dependency-analysis-gradle-plugin = "3.19.2"
 google-cloud-kms = "2.104.0"
 
 [libraries]
@@ -25,4 +26,5 @@ junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "jun
 junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
 gradlex-java-module-dependencies = { module = "org.gradlex:java-module-dependencies", version.ref = "gradlex-java-module-dependencies" }
+dependency-analysis-gradle-plugin = { module = "com.autonomousapps:dependency-analysis-gradle-plugin", version.ref = "dependency-analysis-gradle-plugin" }
 google-cloud-kms = { module = "com.google.cloud:google-cloud-kms", version.ref = "google-cloud-kms" }

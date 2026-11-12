@@ -1,14 +1,16 @@
 import org.gradlex.javamodule.dependencies.tasks.ModuleDirectivesOrderingCheck
-import org.gradlex.javamodule.dependencies.tasks.ModuleDirectivesScopeCheck
 
 plugins {
   id("java")
-  id("com.autonomousapps.dependency-analysis")
   id("org.gradlex.java-module-dependencies")
 }
 
 tasks.withType<ModuleDirectivesOrderingCheck>().configureEach { enabled = false }
 
+// The module-directive scope check exists only in a build that declares the dependency-analysis
+// plugin, which sava-build does not ship (README: Dependency analysis): java-module-dependencies
+// registers 'checkModuleDirectivesScope' when that plugin is applied. Matched by name and lazily,
+// since the task's type extends a class of that plugin and cannot be loaded without it.
 tasks.check {
-  dependsOn(tasks.withType<ModuleDirectivesScopeCheck>())
+  dependsOn(tasks.named { it == "checkModuleDirectivesScope" })
 }

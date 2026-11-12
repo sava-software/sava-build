@@ -14,6 +14,7 @@ tasks.test {
 }
 
 // remove automatically added compile time dependencies for strict dependency analysis
+// (in a build that declares the analysis; a test module declares what it uses either way)
 configurations.testImplementation {
   withDependencies {
     removeIf { it.group == "org.junit.jupiter" && it.name == "junit-jupiter" }

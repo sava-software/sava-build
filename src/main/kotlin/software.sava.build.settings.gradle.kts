@@ -1,5 +1,4 @@
 plugins {
-  id("com.autonomousapps.build-health")
   id("software.sava.build.base.repositories")
   id("org.gradlex.java-module-dependencies")
 }
