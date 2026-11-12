@@ -11,7 +11,7 @@ jmh = "1.37"
 jmh-gradle-plugin = "0.7.4"
 junit = "6.1.3"
 gradlex-java-module-dependencies = "1.13.2"
-dependency-analysis-gradle-plugin = "3.19.2"
+dependency-analysis-gradle-plugin = "3.20.2"
 google-cloud-kms = "2.104.0"
 
 [libraries]
