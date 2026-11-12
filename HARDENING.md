@@ -680,7 +680,10 @@ claim provenance that no run earned. Rebase is the sole transition path:
    class never show, and silence means no class moved only while the stash predates
    the bump. With no stash the verify says no comparison was made (through 21.8.7 it
    says nothing, so check that the stash exists before reading silence), and the run after
-   it compares the new tool with itself. Where it shows a move that added or removed code does not explain, take
+   it compares the new tool with itself. Copy the stash aside before the bump: sorted
+   and compared with the one the fresh verify rewrites, it shows the moves the per-class
+   sums hide, for no PIT run, and like the notice it speaks for the tool only where the
+   stash was written on the code now under review. Where either shows a move that added or removed code does not explain, take
    the difference from a control: the same code observed history-free under the old
    toolchain, in a detached worktree at the old pin, with both `mutations.csv` diffed
    on class, method, mutator, line and status (never the killing test, which races). A

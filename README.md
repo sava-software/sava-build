@@ -577,7 +577,8 @@ plugin the dependency-submission workflow, refuses what a trim took (the end of 
 updating, below). A repository with no build that compiles against the Gradle API, whose
 cold run meets Groovy only as the `groovy-bom` that PIT's JUnit plugin imports, scopes its
 `org.apache.groovy` rule to that module at its next policy edit, as it does the Spock key
-to `spock-bom`.
+to `spock-bom`. The change that later adds such a build takes the group-wide rule back,
+since the IDE's sync then asks for Groovy's sources and module under it.
 
 ### Adopting and updating
 
@@ -699,7 +700,8 @@ can add a case. No command-line run therefore checks what only those cases rest 
 a rule, a scope or a keyring block that nothing on the command line uses, an unsigned
 module's sources pin and, after a wrapper bump, that the sources zip and the Kotlin and
 Groovy the new Gradle embeds are still signed by the keys the rules trust (gradle.org/keys
-lists Gradle Inc.'s). A session that edits one of them, or bumps the wrapper, says so where
+lists Gradle Inc.'s). A session that edits one of them, bumps the wrapper, or adds a build
+that compiles against the Gradle API says so where
 it reports the change, and a report of any other change says nothing about the IDE; the
 IDE's next sync, whenever it comes, is the check. A refusal
 shows in the sync output, a refused sources zip at first only as "Could not resolve Gradle
