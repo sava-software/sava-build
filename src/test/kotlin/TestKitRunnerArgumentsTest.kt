@@ -4,66 +4,46 @@ import org.junit.jupiter.api.Test
 import java.io.File
 
 /**
- * Every TestKit argument list passes `--no-watch-fs`. The fixtures edit and delete files
- * between builds and rely on Gradle noticing; with macOS `fseventsd` backlogged, the TestKit
- * daemon's watcher missed those changes, reporting a deleted output UP-TO-DATE or building
- * without a fixture edit (2026-10-16: one to three different tests failed per full check, and
- * all passed with `--no-watch-fs`). Without watching, Gradle checks the files at the start of
- * each build.
+ * Every TestKit runner comes from savaBuildRunner, which passes `--no-watch-fs` (its KDoc says
+ * why), and no test replaces a runner's arguments afterwards: `withArguments` sets the whole list,
+ * so a second call would drop what the helper passed.
  *
- * This is a text check, not a parser. It reads every `.withArguments(` under src/test/kotlin
- * with its parenthesised arguments, and every file that calls `GradleRunner.create(`; comments
- * and string literals count as code. It catches a new runner written the way every runner here
- * is, a dotted `.withArguments(...)` chain, and a runner file that never mentions the flag. A
- * runner that sets its arguments inside a scope function in a file that passes the flag
- * elsewhere gets past it.
+ * This is a text check, not a parser. It reads every `.kt` under src/test/kotlin except this file;
+ * comments and string literals count as code. It catches a runner made, or an argument list set,
+ * the way every one here was before the helper; a call through an alias or reflection gets past
+ * it.
  */
 class TestKitRunnerArgumentsTest {
 
   private val testSources = savaBuildRootFile("src/test/kotlin")
 
   private fun sources(): List<File> = testSources.walkTopDown()
-      .filter { it.isFile && it.extension == "kt" && it.name != "TestKitRunnerArgumentsTest.kt" }
-      .toList()
+    .filter { it.isFile && it.extension == "kt" && it.name != "TestKitRunnerArgumentsTest.kt" }
+    .toList()
+
+  /** The files, by name, with a line that contains [call]. */
+  private fun filesCalling(call: String): Map<String, List<Int>> = sources()
+    .associate { file -> file.name to file.readLines().withIndex().filter { call in it.value }.map { it.index + 1 } }
+    .filterValues { it.isNotEmpty() }
 
   @Test
-  fun `every TestKit argument list turns file-system watching off`() {
-    val argumentLists = sources().flatMap { file ->
-      val text = file.readText()
-      Regex("""\.withArguments\(""").findAll(text).map { match ->
-        val line = text.substring(0, match.range.first).count { it == '\n' } + 1
-        "${file.name}:$line" to argumentsAt(text, match.range.last)
-      }.toList()
-    }
-    assertTrue(argumentLists.isNotEmpty(), "found no .withArguments( under $testSources")
-    assertEquals(
-      emptyList<String>(),
-      argumentLists.filterNot { (_, arguments) -> arguments != null && "\"--no-watch-fs\"" in arguments }
-          .map { it.first },
-      "argument lists without --no-watch-fs (or without a closing parenthesis)",
-    )
+  fun `the shared helper is the one place a TestKit runner is made`() {
+    assertEquals(mapOf("SavaBuildTestFixtures.kt" to 1), filesCalling("GradleRunner.create(").mapValues { it.value.size })
   }
 
   @Test
-  fun `every file that creates a TestKit runner passes the flag`() {
-    val runnerFiles = sources().filter { "GradleRunner.create(" in it.readText() }
-    assertTrue(runnerFiles.isNotEmpty(), "found no GradleRunner.create( under $testSources")
-    assertEquals(
-      emptyList<String>(),
-      runnerFiles.filterNot { "\"--no-watch-fs\"" in it.readText() }.map { it.name },
-      "files that create a GradleRunner and never pass --no-watch-fs",
-    )
+  fun `the shared helper is the one place a runner's arguments are set, and it turns file-system watching off`() {
+    val sites = filesCalling(".withArguments(")
+    assertEquals(setOf("SavaBuildTestFixtures.kt"), sites.keys, "argument lists set outside the helper: $sites")
+    val helper = testSources.resolve("SavaBuildTestFixtures.kt").readLines()
+    sites.getValue("SavaBuildTestFixtures.kt").forEach { line ->
+      assertTrue("\"--no-watch-fs\"" in helper[line - 1], "SavaBuildTestFixtures.kt:$line sets arguments without --no-watch-fs")
+    }
   }
 
-  /** The text between the parenthesis at [open] and the one that closes it; null if none does. */
-  private fun argumentsAt(text: String, open: Int): String? {
-    var depth = 0
-    for (i in open until text.length) {
-      when (text[i]) {
-        '(' -> depth++
-        ')' -> if (--depth == 0) return text.substring(open + 1, i)
-      }
-    }
-    return null
+  @Test
+  fun `the fixtures call the helper`() {
+    // Not vacuous: the runners exist and go through it.
+    assertTrue(filesCalling("savaBuildRunner(").size > 20, "found few callers of savaBuildRunner under $testSources")
   }
 }

@@ -204,9 +204,7 @@ $fuzzBlock
     }
   }
 
-  protected fun runner(vararg args: String): GradleRunner = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments(*args, "--no-watch-fs", "--stacktrace")
+  protected fun runner(vararg args: String): GradleRunner = savaBuildRunner(fixtureDir, *args, "--stacktrace")
 
   /**
    * Most transition tests exercise row allocation, not legacy adoption. Bind an

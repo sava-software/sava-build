@@ -1,6 +1,5 @@
 import com.sun.net.httpserver.HttpServer
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -129,9 +128,7 @@ class KeyStatusFunctionalTest {
     )
   }
 
-  private fun runner(vararg arguments: String) = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "-PsavaBuildKeyServers=http://127.0.0.1:${server.address.port}", "--dependency-verification", "lenient", "--no-watch-fs")
+  private fun runner(vararg arguments: String) = savaBuildRunner(fixtureDir, *arguments, "-PsavaBuildKeyServers=http://127.0.0.1:${server.address.port}", "--dependency-verification", "lenient")
 
   private fun run(vararg arguments: String): BuildResult = runner(*arguments).build()
 
@@ -213,8 +210,7 @@ class KeyStatusFunctionalTest {
     assertEquals(listOf("UNDECIDED", "true"), rows.getValue(broken).subList(2, 4))
     assertEquals(listOf("CURRENT", "true"), rows.getValue(current).subList(2, 4))
     // no server at all is a mistake, not a pass
-    val empty = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("verificationKeyStatus", "-PsavaBuildKeyServers=", "--dependency-verification", "lenient", "--no-watch-fs").buildAndFail()
+    val empty = savaBuildRunner(fixtureDir, "verificationKeyStatus", "-PsavaBuildKeyServers=", "--dependency-verification", "lenient").buildAndFail()
     assertTrue(empty.output.contains("savaBuildKeyServers names no key server; leave the property unset for the two defaults"), empty.output)
   }
 

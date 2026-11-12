@@ -1,5 +1,4 @@
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -46,9 +45,7 @@ class ResolveVerificationToolsFunctionalTest {
     }
   }
 
-  private fun run(vararg arguments: String): BuildResult = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--no-watch-fs")
+  private fun run(vararg arguments: String): BuildResult = savaBuildRunner(fixtureDir, *arguments)
     .build()
 
   @Test
@@ -83,9 +80,7 @@ class ResolveVerificationToolsFunctionalTest {
         configurations.named("jazzer") { withDependencies { clear() } }
       """.trimIndent() + "\n"
     )
-    val result = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("resolveVerificationTools", "--no-watch-fs")
+    val result = savaBuildRunner(fixtureDir, "resolveVerificationTools")
       .buildAndFail()
     assertTrue(result.output.contains("resolved no artifacts for its 'jazzer' configuration"), result.output)
   }

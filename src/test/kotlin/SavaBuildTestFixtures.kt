@@ -1,4 +1,5 @@
 import org.gradle.testkit.runner.BuildResult
+import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import java.io.File
@@ -27,6 +28,18 @@ val savaBuildPluginManagement: String = run {
     "resolutionStrategy.eachPlugin { if (requested.id.id.startsWith(\"software.sava.build\")) { " +
     "useModule(\"software.sava:sava-build:$savaBuildTestRepoVersion\") } } }"
 }
+
+/**
+ * The one place a TestKit runner is made: a runner over the fixture build at [projectDir] with
+ * [arguments] and `--no-watch-fs`. The fixtures edit and delete files between builds and rely on
+ * Gradle noticing; with macOS `fseventsd` backlogged, the TestKit daemon's watcher missed those
+ * changes, reporting a deleted output UP-TO-DATE or building without a fixture edit (2026-10-16:
+ * one to three different tests failed per full check, and all passed with `--no-watch-fs`).
+ * Without watching, Gradle checks the files at the start of each build. TestKitRunnerArgumentsTest holds
+ * every test to this function.
+ */
+fun savaBuildRunner(projectDir: File, vararg arguments: String): GradleRunner =
+  GradleRunner.create().withProjectDir(projectDir).withArguments(*arguments, "--no-watch-fs")
 
 /**
  * The ':test' task supplies these; reading one straight into a non-null 'String' would

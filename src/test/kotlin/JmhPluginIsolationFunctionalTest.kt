@@ -33,9 +33,7 @@ class JmhPluginIsolationFunctionalTest {
     enableTestKitConfigurationCache(fixtureDir)
   }
 
-  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--no-watch-fs", "--stacktrace", "--warning-mode=fail")
+  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace", "--warning-mode=fail")
 
   /** The fixture's settings script: the test repo, the given settings plugin lines, and a tail. */
   private fun writeSettings(name: String, vararg plugins: String, tail: String = "") {

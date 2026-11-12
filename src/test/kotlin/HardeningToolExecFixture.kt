@@ -422,14 +422,10 @@ $buildTail
    * Neither is scoped to the offending task — they fail the consumer's whole build,
    * and a green run without the flag says nothing about either.
    */
-  protected fun runner(vararg args: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*args, "--configuration-cache", "--no-watch-fs", "--stacktrace")
+  protected fun runner(vararg args: String): GradleRunner = savaBuildRunner(fixtureDir, *args, "--configuration-cache", "--stacktrace")
 
   protected fun runnerWithoutConfigurationCache(vararg args: String): GradleRunner =
-    GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments(*args, "--no-configuration-cache", "--no-watch-fs", "--stacktrace")
+    savaBuildRunner(fixtureDir, *args, "--no-configuration-cache", "--stacktrace")
 
   protected fun occurrences(haystack: String, needle: String) = haystack.split(needle).size - 1
 

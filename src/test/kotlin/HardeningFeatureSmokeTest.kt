@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -35,8 +34,7 @@ class HardeningFeatureSmokeTest {
     val pluginJar = savaBuildTestArtifact("jar")
     val expectedSha256 = PitestEvidence.sha256(pluginJar)
     val (first, reused) = assertConfigurationCacheRoundTrip {
-      GradleRunner.create().withProjectDir(fixtureDir)
-        .withArguments("savaBuildIdentity", "--no-watch-fs", "--stacktrace").build()
+      savaBuildRunner(fixtureDir, "savaBuildIdentity", "--stacktrace").build()
     }
     for (result in listOf(first, reused)) {
       assertTrue(result.output.contains(
@@ -165,9 +163,7 @@ class HardeningFeatureSmokeTest {
     // daemon has been Java 25 too since the daemon pin went.
     writeFixture(emptyList())
 
-    val result = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("verifyHardeningConventions", "tasks", "--group=verification", "--no-watch-fs", "--stacktrace")
+    val result = savaBuildRunner(fixtureDir, "verifyHardeningConventions", "tasks", "--group=verification", "--stacktrace")
       .build()
 
     assertTrue(result.output.contains("pitestEncoding"), "pitestEncoding task missing:\n" + result.output)
@@ -177,18 +173,14 @@ class HardeningFeatureSmokeTest {
     assertFalse(result.output.contains("FAILED"), result.output)
 
     // the ratchet without a PIT report fails fast with a pointer to the run task
-    val verifyWithoutReport = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("pitestEncodingVerify", "--no-watch-fs", "--stacktrace")
+    val verifyWithoutReport = savaBuildRunner(fixtureDir, "pitestEncodingVerify", "--stacktrace")
       .buildAndFail()
     assertTrue(
       verifyWithoutReport.output.contains("no PIT report"),
       "expected missing-report failure:\n" + verifyWithoutReport.output
     )
 
-    val override = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("help", "-PmaxFuzzTime=15", "--no-watch-fs", "--stacktrace")
+    val override = savaBuildRunner(fixtureDir, "help", "-PmaxFuzzTime=15", "--stacktrace")
       .build()
     assertFalse(override.output.contains("FAILED"), override.output)
   }
@@ -200,8 +192,7 @@ class HardeningFeatureSmokeTest {
         """mutation.register("..") { targetClasses = listOf("com.example.*"); targetTests = "com.example.*Test*" }"""
       ),
     )
-    val unsafeSuite = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("help", "--no-watch-fs", "--stacktrace").buildAndFail().output
+    val unsafeSuite = savaBuildRunner(fixtureDir, "help", "--stacktrace").buildAndFail().output
     assertTrue(unsafeSuite.contains("mutation suite name '..' is unsafe"), unsafeSuite)
 
     writeFixture(
@@ -213,8 +204,7 @@ class HardeningFeatureSmokeTest {
       parentFile.mkdirs()
       writeText("preserve")
     }
-    val unsafeClass = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("generateFuzzReplayTests", "--no-watch-fs", "--stacktrace").buildAndFail().output
+    val unsafeClass = savaBuildRunner(fixtureDir, "generateFuzzReplayTests", "--stacktrace").buildAndFail().output
     assertTrue(
       unsafeClass.contains("fuzz target 'escape' targetClass '../Escape' must be a dotted Java package name"),
       unsafeClass)
@@ -225,8 +215,7 @@ class HardeningFeatureSmokeTest {
   fun `scheduled fuzz workflows are optional and local fuzz aggregate cannot drift`() {
     writeFixture(emptyList())
 
-    val without = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzWorkflowInSync", "--no-watch-fs", "--stacktrace").build()
+    val without = savaBuildRunner(fixtureDir, "fuzzWorkflowInSync", "--stacktrace").build()
     assertFalse(without.output.contains("FAILED"), without.output)
     assertTrue(without.output.contains("scheduled fuzz workflows are optional"), without.output)
 
@@ -236,15 +225,12 @@ class HardeningFeatureSmokeTest {
     workflow.parentFile.mkdirs()
     workflow.writeText("run: ./gradlew --continue fuzzCodec fuzzUnset fuzzPlainExtra\n")
 
-    val optional = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzWorkflowInSync", "--no-watch-fs", "--stacktrace").build()
+    val optional = savaBuildRunner(fixtureDir, "fuzzWorkflowInSync", "--stacktrace").build()
     assertFalse(optional.output.contains("FAILED"), optional.output)
 
-    val tasks = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("tasks", "--all", "--no-watch-fs", "--stacktrace").build().output
+    val tasks = savaBuildRunner(fixtureDir, "tasks", "--all", "--stacktrace").build().output
     assertTrue(tasks.contains("fuzzAll - Runs every registered fuzz target locally"), tasks)
-    val plan = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzAll", "--dry-run", "--no-watch-fs", "--stacktrace").build().output
+    val plan = savaBuildRunner(fixtureDir, "fuzzAll", "--dry-run", "--stacktrace").build().output
     listOf(":fuzzCodec SKIPPED", ":fuzzPlain SKIPPED", ":fuzzUnset SKIPPED").forEach { task ->
       assertTrue(plan.contains(task), "fuzzAll omitted $task:\n$plan")
     }
@@ -253,8 +239,7 @@ class HardeningFeatureSmokeTest {
       parentFile.mkdirs()
       writeText("old success\n")
     }
-    GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzAll", "-PmaxFuzzTime=0", "--no-watch-fs", "--stacktrace").buildAndFail()
+    savaBuildRunner(fixtureDir, "fuzzAll", "-PmaxFuzzTime=0", "--stacktrace").buildAndFail()
     assertEquals(
       "old success\n",
       oldReceipt.readText(),
@@ -277,8 +262,7 @@ class HardeningFeatureSmokeTest {
       """.trimIndent() + "\n"
     )
     oldReceipt.writeText("old success\n")
-    GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments("fuzzAll", "--no-watch-fs", "--stacktrace").buildAndFail()
+    savaBuildRunner(fixtureDir, "fuzzAll", "--stacktrace").buildAndFail()
     assertEquals(
       "old success\n",
       oldReceipt.readText(),
@@ -289,17 +273,16 @@ class HardeningFeatureSmokeTest {
       "failed fuzzAll did not leave its incomplete-campaign sentinel")
 
     listOf("0", "00", "abc", "2147483648").forEach { invalid ->
-      val refused = GradleRunner.create().withProjectDir(fixtureDir)
-        .withArguments("validateFuzzBudget", "-PmaxFuzzTime=$invalid", "--no-watch-fs", "--stacktrace")
+      val refused = savaBuildRunner(fixtureDir, "validateFuzzBudget", "-PmaxFuzzTime=$invalid", "--stacktrace")
         .buildAndFail().output
       assertTrue(refused.contains("0 is libFuzzer's run-forever sentinel"), refused)
     }
     listOf("0", "00", "abc", "2147483648").forEach { invalid ->
-      val refused = GradleRunner.create().withProjectDir(fixtureDir)
-        .withArguments(
-          "validateFuzzBudget", "-PmaxFuzzTime=1",
-          "-PmaxParallelFuzzTargets=$invalid", "--no-watch-fs", "--stacktrace",
-        )
+      val refused = savaBuildRunner(
+        fixtureDir,
+        "validateFuzzBudget", "-PmaxFuzzTime=1",
+        "-PmaxParallelFuzzTargets=$invalid", "--stacktrace",
+      )
         .buildAndFail().output
       assertTrue(refused.contains("-PmaxParallelFuzzTargets must be positive"), refused)
     }
@@ -323,10 +306,11 @@ class HardeningFeatureSmokeTest {
       """.trimIndent() + "\n"
     )
 
-    val result = GradleRunner.create().withProjectDir(fixtureDir)
-      .withArguments(
-        "clean", "fuzzAll", "generateFuzzReplayTests", "-PmaxFuzzTime=1",
-        "--configuration-cache", "--no-watch-fs", "--stacktrace")
+    val result = savaBuildRunner(
+      fixtureDir,
+      "clean", "fuzzAll", "generateFuzzReplayTests", "-PmaxFuzzTime=1",
+      "--configuration-cache", "--stacktrace",
+    )
       .build()
     val receipt = File(fixtureDir, ".pitest-history/local-fuzz.tsv")
 
@@ -359,9 +343,7 @@ class HardeningFeatureSmokeTest {
       expectedFuzzRelease = 21
     )
 
-    val result = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("verifyHardeningConventions", "--no-watch-fs", "--stacktrace")
+    val result = savaBuildRunner(fixtureDir, "verifyHardeningConventions", "--stacktrace")
       .build()
     assertFalse(result.output.contains("FAILED"), result.output)
   }

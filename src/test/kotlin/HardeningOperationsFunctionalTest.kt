@@ -1,5 +1,4 @@
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -139,9 +138,7 @@ class HardeningOperationsFunctionalTest {
     ).delete()
   }
 
-  private fun runner(vararg arguments: String) = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--configuration-cache", "--no-watch-fs", "--stacktrace")
+  private fun runner(vararg arguments: String) = savaBuildRunner(fixtureDir, *arguments, "--configuration-cache", "--stacktrace")
 
   private fun acceptedBaseline(schemaMarked: Boolean = true): Pair<File, String> {
     val file = File(fixtureDir, "config/pitest/encoding-accepted.csv")

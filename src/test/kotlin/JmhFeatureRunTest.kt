@@ -193,9 +193,7 @@ class JmhFeatureRunTest {
     )
   }
 
-  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--warning-mode=fail", "--no-watch-fs", "--stacktrace")
+  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--warning-mode=fail", "--stacktrace")
 
   /**
    * A quick run: no warmup, one fork, short iterations. The service JVM flags pre-touch a 2g

@@ -334,9 +334,7 @@ class HardeningCertificationOrderingFunctionalTest {
   private fun projectDirectory(project: String): File =
     if (project == "root") fixtureDir else fixtureDir.resolve(project)
 
-  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--configuration-cache", "--no-parallel", "--max-workers=4", "--no-watch-fs", "--stacktrace")
+  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--configuration-cache", "--no-parallel", "--max-workers=4", "--stacktrace")
 
   private fun initializeGitFixture() {
     fixtureDir.resolve(".gitignore").writeText(".gradle/\nbuild/\n.pitest-history/\n.ordering-events/\n")

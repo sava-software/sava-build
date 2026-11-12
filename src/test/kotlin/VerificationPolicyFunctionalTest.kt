@@ -1,5 +1,4 @@
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -75,9 +74,7 @@ class VerificationPolicyFunctionalTest {
     metadata.writeText(text.replace(from, to))
   }
 
-  private fun runner(vararg arguments: String) = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--dependency-verification", "lenient", "--no-watch-fs")
+  private fun runner(vararg arguments: String) = savaBuildRunner(fixtureDir, *arguments, "--dependency-verification", "lenient")
 
   private fun run(vararg arguments: String): BuildResult = runner(*arguments).build()
 
@@ -171,8 +168,7 @@ class VerificationPolicyFunctionalTest {
     }
   }
 
-  private fun runnerIn(dir: File) = GradleRunner.create().withProjectDir(dir)
-    .withArguments("verificationPolicy", "--dependency-verification", "lenient", "--no-watch-fs")
+  private fun runnerIn(dir: File) = savaBuildRunner(dir, "verificationPolicy", "--dependency-verification", "lenient")
 
   @Test
   fun `a repository with no policy and nothing of one is left to the notice`() {

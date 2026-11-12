@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -64,9 +63,7 @@ class AgentsTemplateSyncFunctionalTest {
     )
   }
 
-  private fun runner(vararg arguments: String) = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
+  private fun runner(vararg arguments: String) = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
 
   @Test
   fun `template task prints the baked block unquoted between its boundaries`() {

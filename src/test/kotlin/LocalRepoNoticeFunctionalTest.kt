@@ -1,5 +1,4 @@
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -63,9 +62,7 @@ class LocalRepoNoticeFunctionalTest {
     }
   }
 
-  private fun runBuild(vararg arguments: String): BuildResult = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--no-watch-fs")
+  private fun runBuild(vararg arguments: String): BuildResult = savaBuildRunner(fixtureDir, *arguments)
     .build()
 
   private val localRepo: String = savaBuildTestProperty("savaBuild.testRepo")
@@ -243,9 +240,7 @@ class LocalRepoNoticeFunctionalTest {
     assertTrue(publicationProvenance(privateRepo).delete())
     writeFixture(privateRepo)
 
-    val failed = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("help", "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace")
+    val failed = savaBuildRunner(fixtureDir, "help", "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace")
       .buildAndFail()
 
     assertTrue(failed.output.contains("local publication provenance is missing"), failed.output)
@@ -263,9 +258,7 @@ class LocalRepoNoticeFunctionalTest {
     sidecar.writeText(provenance.copy(jarSha256 = "0".repeat(64)).render())
     writeFixture(privateRepo)
 
-    val failed = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("help", "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace")
+    val failed = savaBuildRunner(fixtureDir, "help", "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace")
       .buildAndFail()
 
     assertTrue(failed.output.contains("provenance claims JAR SHA-256"), failed.output)
@@ -278,9 +271,7 @@ class LocalRepoNoticeFunctionalTest {
     pluginArtifact(configuredRepo).appendText("different configured candidate")
     writeFixture() // Resolve the plugin from the untouched fixture publication.
 
-    val failed = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments("help", "-PsavaBuildLocalRepo=$configuredRepo", "--no-watch-fs", "--stacktrace")
+    val failed = savaBuildRunner(fixtureDir, "help", "-PsavaBuildLocalRepo=$configuredRepo", "--stacktrace")
       .buildAndFail()
 
     assertTrue(failed.output.contains("loaded local plugin"), failed.output)
@@ -305,12 +296,11 @@ class LocalRepoNoticeFunctionalTest {
       """.trimIndent() + "\n"
     )
 
-    val failed = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments(
-        "replaceLocalProvenance", "--configuration-cache", "--refresh-dependencies",
-        "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace",
-      )
+    val failed = savaBuildRunner(
+      fixtureDir,
+      "replaceLocalProvenance", "--configuration-cache", "--refresh-dependencies",
+      "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace",
+    )
       .buildAndFail()
 
     assertTrue(
@@ -340,12 +330,11 @@ class LocalRepoNoticeFunctionalTest {
       """.trimIndent() + "\n"
     )
 
-    val failed = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments(
-        "replaceLocalPlugin", "--configuration-cache", "--refresh-dependencies",
-        "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace",
-      )
+    val failed = savaBuildRunner(
+      fixtureDir,
+      "replaceLocalPlugin", "--configuration-cache", "--refresh-dependencies",
+      "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace",
+    )
       .buildAndFail()
 
     assertTrue(
@@ -378,13 +367,12 @@ class LocalRepoNoticeFunctionalTest {
       )
     }
 
-    val failed = GradleRunner.create()
-      .withProjectDir(fixtureDir)
-      .withArguments(
-        ":a:hardeningCertifyPreflight", ":b:hardeningCertifyPreflight",
-        "--configuration-cache", "--refresh-dependencies",
-        "-PsavaBuildLocalRepo=$privateRepo", "--no-watch-fs", "--stacktrace",
-      )
+    val failed = savaBuildRunner(
+      fixtureDir,
+      ":a:hardeningCertifyPreflight", ":b:hardeningCertifyPreflight",
+      "--configuration-cache", "--refresh-dependencies",
+      "-PsavaBuildLocalRepo=$privateRepo", "--stacktrace",
+    )
       .buildAndFail()
 
     assertTrue(

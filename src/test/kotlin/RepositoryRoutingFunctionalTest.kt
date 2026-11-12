@@ -1,5 +1,4 @@
 import com.sun.net.httpserver.HttpServer
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -113,8 +112,7 @@ class RepositoryRoutingFunctionalTest {
     """.trimIndent() + "\n")
   }
 
-  private fun runBuild() = GradleRunner.create().withProjectDir(fixtureDir)
-    .withArguments("resolveFixture", "--no-watch-fs", "--stacktrace").build()
+  private fun runBuild() = savaBuildRunner(fixtureDir, "resolveFixture", "--stacktrace").build()
 
   private class RepositoryServer : AutoCloseable {
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)

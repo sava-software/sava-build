@@ -25,9 +25,7 @@ class JmhFeatureSmokeTest {
     enableTestKitConfigurationCache(fixtureDir)
   }
 
-  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
+  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
 
   @Test
   fun `jmh feature configures benchmark task and service jvm args`() {

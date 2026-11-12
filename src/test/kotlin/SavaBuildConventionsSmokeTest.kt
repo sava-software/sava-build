@@ -1,5 +1,4 @@
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -63,9 +62,7 @@ class SavaBuildConventionsSmokeTest {
     }
   }
 
-  private fun runBuild(vararg arguments: String): BuildResult = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
+  private fun runBuild(vararg arguments: String): BuildResult = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
     .build()
 
   @Test

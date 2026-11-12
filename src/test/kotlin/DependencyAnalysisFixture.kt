@@ -185,14 +185,13 @@ class DependencyAnalysisFixture(private val dir: File) {
   }
 
   /** A runner over the fixture with the test JVM as the only toolchain, so nothing is provisioned. */
-  fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(dir)
-    .withArguments(
-      *arguments, "--no-watch-fs", "--stacktrace", "--console=plain",
-      "-Dorg.gradle.java.installations.auto-detect=false",
-      "-Dorg.gradle.java.installations.auto-download=false",
-      "-Dorg.gradle.java.installations.paths=${System.getProperty("java.home")}",
-    )
+  fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(
+    dir,
+    *arguments, "--stacktrace", "--console=plain",
+    "-Dorg.gradle.java.installations.auto-detect=false",
+    "-Dorg.gradle.java.installations.auto-download=false",
+    "-Dorg.gradle.java.installations.paths=${System.getProperty("java.home")}",
+  )
 }
 
 /** The settings classpath line the fixture prints at configuration time; absent from a reused configuration. */

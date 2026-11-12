@@ -169,9 +169,7 @@ class HardeningConvergeFunctionalTest {
     )
   }
 
-  private fun runner(vararg args: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*args, "--no-watch-fs", "--stacktrace")
+  private fun runner(vararg args: String): GradleRunner = savaBuildRunner(fixtureDir, *args, "--stacktrace")
 
   private fun snapshotRun() = runner(
     "pitestConvergeSnapshot", "-x", "pitestEncoding", "-x", "pitestParsing"

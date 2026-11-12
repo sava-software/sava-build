@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -167,9 +166,7 @@ class GcpKmsExclusionsFunctionalTest {
     )
   }
 
-  private fun run(vararg arguments: String) = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--no-watch-fs")
+  private fun run(vararg arguments: String) = savaBuildRunner(fixtureDir, *arguments)
     .build()
 
   @Test

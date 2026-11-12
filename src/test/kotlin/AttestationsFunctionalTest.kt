@@ -28,9 +28,7 @@ class AttestationsFunctionalTest {
   /** The arguments the stub cosign was called with, one per line, across every call. */
   private val cosignArgs get() = File(fixtureDir, "cosign-args.txt")
 
-  private fun runner(vararg arguments: String): GradleRunner = GradleRunner.create()
-    .withProjectDir(fixtureDir)
-    .withArguments(*arguments, "--no-watch-fs", "--stacktrace")
+  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
 
   private fun writeFixture(apiPort: Int, extraConfig: String = "") {
     val repoDir = File(fixtureDir, "repo/software/sava/fake-lib/1.0.0")
