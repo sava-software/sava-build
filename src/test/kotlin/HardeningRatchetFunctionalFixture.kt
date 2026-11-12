@@ -1,5 +1,4 @@
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -204,7 +203,7 @@ $fuzzBlock
     }
   }
 
-  protected fun runner(vararg args: String): GradleRunner = savaBuildRunner(fixtureDir, *args, "--stacktrace")
+  protected fun runner(vararg args: String): FixtureRunner = savaBuildRunner(fixtureDir, *args, "--stacktrace")
 
   /**
    * Most transition tests exercise row allocation, not legacy adoption. Bind an
@@ -253,17 +252,17 @@ $fuzzBlock
    * PIT's main class with FakePit. It copies the staged synthetic report while the
    * real task lifecycle creates current-invocation evidence for the writer.
    */
-  protected fun baselineUpdateRunner(vararg args: String): GradleRunner {
+  protected fun baselineUpdateRunner(vararg args: String): FixtureRunner {
     bindLegacyFixtureRecord()
     return runner("pitestEncodingBaselineUpdate", "clearFakePitEvidence", *args)
   }
 
-  protected fun baselineUnionRunner(vararg args: String): GradleRunner {
+  protected fun baselineUnionRunner(vararg args: String): FixtureRunner {
     bindLegacyFixtureRecord()
     return runner("pitestEncodingBaselineUnion", "clearFakePitEvidence", *args)
   }
 
-  protected fun rawBaselinePruneRunner(vararg args: String): GradleRunner {
+  protected fun rawBaselinePruneRunner(vararg args: String): FixtureRunner {
     bindLegacyFixtureRecord()
     return runner("pitestEncodingBaselinePrune", "clearFakePitEvidence", *args)
   }
@@ -273,7 +272,7 @@ $fuzzBlock
    * public writer now requires. Refusal tests use [rawBaselinePruneRunner] so they
    * can exercise the missing/mismatched-evidence boundary itself.
    */
-  protected fun baselinePruneRunner(vararg args: String): GradleRunner {
+  protected fun baselinePruneRunner(vararg args: String): FixtureRunner {
     bindLegacyFixtureRecord()
     repeat(2) {
       runner("pitestEncoding", "-PnoMutationHistory", *args).build()
@@ -281,12 +280,12 @@ $fuzzBlock
     return rawBaselinePruneRunner(*args)
   }
 
-  protected fun baselineRetagRunner(vararg args: String): GradleRunner {
+  protected fun baselineRetagRunner(vararg args: String): FixtureRunner {
     bindLegacyFixtureRecord()
     return runner("pitestEncodingBaselineRetag", "clearFakePitEvidence", *args)
   }
 
-  protected fun timeoutAuditInitRunner(vararg args: String): GradleRunner {
+  protected fun timeoutAuditInitRunner(vararg args: String): FixtureRunner {
     bindLegacyFixtureRecord()
     return runner("pitestEncodingTimeoutAuditInit", "clearFakePitEvidence", *args)
   }

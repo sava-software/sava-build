@@ -1,5 +1,4 @@
 import com.sun.net.httpserver.HttpServer
-import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -51,7 +50,7 @@ class GitHubPackagesUploadFunctionalTest {
     enableTestKitConfigurationCache(fixtureDir)
   }
 
-  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
+  private fun runner(vararg arguments: String): FixtureRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
 
   private fun writeFixture(aggregation: String = CURRENT_AGGREGATION, libraries: List<String> = listOf("lib")) {
     File(fixtureDir, "settings.gradle.kts").writeText(
@@ -145,7 +144,7 @@ class GitHubPackagesUploadFunctionalTest {
     override fun close() = server.stop(0)
   }
 
-  private fun upload(registry: Registry, task: String = ":agg:publishToGitHubPackages"): GradleRunner = runner(
+  private fun upload(registry: Registry, task: String = ":agg:publishToGitHubPackages"): FixtureRunner = runner(
     task,
     "-PsavaGithubPackagesPublishUrl=${registry.url}",
     "-PsavaGithubPackagesPublishUsername=gh-user",

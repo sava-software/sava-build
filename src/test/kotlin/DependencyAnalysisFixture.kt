@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import java.io.File
 
 /**
@@ -155,6 +154,7 @@ class DependencyAnalysisFixture(private val dir: File) {
       </project>
       """.trimIndent() + "\n",
     )
+    FixtureVerification.signRepository(File(dir, "stub-repo"))
 
     source("a/src/main/java/module-info.java", "module software.sava.test.a {\n  exports software.sava.test.a;\n}\n")
     source("a/src/main/java/software/sava/test/a/A.java", "package software.sava.test.a;\n\npublic final class A {\n}\n")
@@ -185,7 +185,7 @@ class DependencyAnalysisFixture(private val dir: File) {
   }
 
   /** A runner over the fixture with the test JVM as the only toolchain, so nothing is provisioned. */
-  fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(
+  fun runner(vararg arguments: String): FixtureRunner = savaBuildRunner(
     dir,
     *arguments, "--stacktrace", "--console=plain",
     "-Dorg.gradle.java.installations.auto-detect=false",

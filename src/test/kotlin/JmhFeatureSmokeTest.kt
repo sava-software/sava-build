@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -25,7 +24,7 @@ class JmhFeatureSmokeTest {
     enableTestKitConfigurationCache(fixtureDir)
   }
 
-  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
+  private fun runner(vararg arguments: String): FixtureRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
 
   @Test
   fun `jmh feature configures benchmark task and service jvm args`() {

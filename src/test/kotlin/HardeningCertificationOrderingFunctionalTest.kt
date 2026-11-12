@@ -1,5 +1,4 @@
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -334,7 +333,7 @@ class HardeningCertificationOrderingFunctionalTest {
   private fun projectDirectory(project: String): File =
     if (project == "root") fixtureDir else fixtureDir.resolve(project)
 
-  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--configuration-cache", "--no-parallel", "--max-workers=4", "--stacktrace")
+  private fun runner(vararg arguments: String): FixtureRunner = savaBuildRunner(fixtureDir, *arguments, "--configuration-cache", "--no-parallel", "--max-workers=4", "--stacktrace")
 
   private fun initializeGitFixture() {
     fixtureDir.resolve(".gitignore").writeText(".gradle/\nbuild/\n.pitest-history/\n.ordering-events/\n")

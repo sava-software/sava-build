@@ -259,12 +259,15 @@ dependencies {
   // https://github.com/junit-team/junit-framework
   testImplementation(libs.junit.jupiter)
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+  // The tests sign what a fixture serves itself (FixtureVerification), with the Bouncy Castle
+  // of the constraints below, whose signing key this build's policy already trusts for the group.
+  val bouncyCastleVersion = "1.86"
+  testImplementation("org.bouncycastle:bcpg-jdk18on:$bouncyCastleVersion")
 
   // KGP 2.4.21 still creates this isolated publishing-helper configuration with BC 1.84.
   // Constraints preserve its defaultDependencies (adding dependencies would suppress them).
   // Remove this floor when KGP's helper supplies BC >= 1.86; Gradle's own BC is separate.
   constraints {
-    val bouncyCastleVersion = "1.86"
     add("kotlinBouncyCastleConfiguration", "org.bouncycastle:bcprov-jdk18on:$bouncyCastleVersion")
     add("kotlinBouncyCastleConfiguration", "org.bouncycastle:bcutil-jdk18on:$bouncyCastleVersion")
     add("kotlinBouncyCastleConfiguration", "org.bouncycastle:bcpkix-jdk18on:$bouncyCastleVersion")
@@ -454,7 +457,8 @@ fun Test.declareReads(property: String, paths: List<String>) {
 //    package-scoped OSS certificate, and the test ensures no private subscription URL sits beside it.
 //  tools/local-fuzz.sh: LocalRepoNoticeFunctionalTest, the resolution notice's needle.
 //  The hardening script plugin: HardeningTypedTaskArchitectureTest, its wiring as spelled.
-//  src/test/kotlin: TestKitRunnerArgumentsTest and RootFileReadsTest, over the test sources.
+//  src/test: TestKitRunnerArgumentsTest, over every source file of the test source set wherever
+//    it sits, and RootFileReadsTest, over src/test/kotlin.
 val rootFilesReadByTests = listOf(
   "HARDENING.md",
   "README.md",
@@ -462,7 +466,7 @@ val rootFilesReadByTests = listOf(
   "arcmutate-licence.txt",
   localFuzzScriptPath,
   "src/main/kotlin/software.sava.build.feature.hardening.gradle.kts",
-  "src/test/kotlin",
+  "src/test",
   // this repository's own dependency verification policy, which VerificationPolicySelfTest
   // holds to the rules, VerificationPolicyFunctionalTest drives a fixture with, and
   // KeyStatusTest reads for its trusted keys, its list and its keyring's blocks
@@ -522,6 +526,10 @@ tasks.test {
         exclude("**/maven-metadata.*", "**/*-provenance.tsv")
       })
       testRepoDir = savaTestRepoDir
+      // What FixtureVerification keeps outside the fixtures: each test JVM's signed copy of the
+      // test publication, and the Gradle user home of the fixtures that run offline. Under the
+      // build directory, which git ignores and 'clean' removes.
+      fixtureVerificationDir = layout.buildDirectory.dir("fixture-verification")
       testRepoVersion = savaTestRepoVersion
       // The Java 21 floor as the compile tasks hold it, for PluginJavaFloorTest: javac's release
       // and kotlinc's JVM target and free arguments, read from the tasks' options rather than from
@@ -652,6 +660,9 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
   @get:Internal
   abstract val testRepoDir: DirectoryProperty
 
+  @get:Internal
+  abstract val fixtureVerificationDir: DirectoryProperty
+
   @get:Input
   abstract val javaRelease: Property<Int>
 
@@ -663,6 +674,7 @@ abstract class SavaBuildTestArguments : CommandLineArgumentProvider {
 
   override fun asArguments(): Iterable<String> = listOf(
     "-DsavaBuild.testRepo=${testRepoDir.get().asFile.absolutePath}",
+    "-DsavaBuild.fixtureVerificationDir=${fixtureVerificationDir.get().asFile.absolutePath}",
     "-DsavaBuild.testRepo.version=${testRepoVersion.get()}",
     "-DsavaBuild.javaRelease=${javaRelease.get()}",
     "-DsavaBuild.kotlinJvmTarget=${kotlinJvmTarget.get()}",

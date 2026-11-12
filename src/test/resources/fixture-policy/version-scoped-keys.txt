@@ -1,0 +1,49 @@
+# Signing keys that the fixture policy (verification-metadata.xml beside this file) trusts only
+# for exact versions. FixtureVerification installs this policy in every TestKit fixture but the
+# few whose subject is a policy of their own.
+# FixtureVerificationTest, and the verificationPolicy check in a fixture that applies the settings
+# plugin, hold it to the rules of any consumer's policy (README, Verifying sava artifacts): a
+# rule for one of these keys has a version and is no regex, a key that is not listed here has no
+# version, and a listed key is used by a rule. One key per line:
+# <fingerprint> <why it stays version-scoped>
+#
+# The rules, keyring blocks and reasons are those of this repository's own policy and of sava's
+# and ravina's, carried here as reviewed there (2026-11-12), with the three keys at the end added.
+#
+# Not listed, by decision: eight keys are trusted for their groups or modules with no version on
+# the corroboration of gradle/gradle's own policy alone, no publisher source having been found
+# for them (audited 2026-10-31 for sava's and ravina's policies): Aleksey Shipilev's
+# 019082BC00E0324E2AEF4CF00D3B328562A119A7 (jmh), the javaparser key
+# 6DE9B8077FBB2F8A019F4904BD17A565509DEE20, Eamonn McManus's
+# C7BE5BCC9FEC15518CFDA882B0F3710FA64900E7 (gson, auto-value), the Spock robot's
+# 76E94E8FF0AB5AF3B6F8366972FEFD1572EB75E1, the Google API client libraries key
+# 47504B76CF89C15C0512D9AFE16AB52D79FD224F, the protobuf release key
+# 1A55F091AD28C07F831FA44D7905DE25C78AD456, the grpc-java team's
+# B02335AA54CCF21E52BBF9ABD9C565AA72BA2FDD and Szczepan Faber's mockito key
+# 147B691A19097624902F4EA9689CBE64F4BC997F.
+
+# Tool signers listed as unauthenticated: no publisher source was found for them (what counts as
+# one, and what a release under such a key means, is the README's "Verifying sava artifacts").
+# A tool bump moves the version after the release is checked.
+18CD85CBC5C1DB1684C5E59FA8E3B39F19E1CCE7 PIT signer, publisher identity unauthenticated
+AC1A3DD4471FE0F6EA28300F1BA25353622A192B ArcMutate signer, publisher identity unauthenticated
+
+# Keys that signed old releases in the fixtures' graphs and must not vouch for new ones: expired
+# keys, DSA-1024 keys (about 80 bits of security, whoever still signs with them), revoked keys and
+# retired release managers' keys; a new version under any of them is a reason to stop.
+1BD97A6A154E7810EE0BC832E2F38302C8075E3D Gradle Inc. publishing key, revoked 2026-08-08 as superseded (gradle.org/keys); signed foojay-resolver 1.0.0 while active
+0CDE80149711EB46DFF17AE421A24B3F8B0F594A expired key
+808D78B17A5A2D7C3668E31FBFFC9B54721244AD expired key
+44FBDBBC1A00FE414F1C1873586654072EAD6677 DSA-1024 key
+517B94F8D0A46317A28D8AB30DA8A5EC02D11EAD DSA-1024 key
+2E3A1AFFE42B5F53AF19F780BCF4173966770193 expired key
+41A1A08C62FCA78B79D3081164A16FAAEC16A4BE release-manager key of an old release
+694621A7227D8D5289699830ABE9F3126BB741C1 release-manager key of an old release
+
+# In no current policy of the fleet; ravina's held all three, at these versions, from its 21.8.0
+# adoption (bee6c0b) until a trim (e3db703). The JMH version override test resolves jmh-core
+# 1.36, whose commons-math3 3.2 and parent POMs date from 2013. Apache publishes each fingerprint
+# (downloads.apache.org/commons/KEYS and downloads.apache.org/maven/KEYS, read 2026-11-12).
+12D16069219C90212A974D119AE296FD02E9F65B release-manager key of an old release (Luc Maisonobe; commons-math3 3.2)
+D6F1BC78607808EC8E9F69437A8860944FAD5F62 release-manager key of an old release (Sebastian Bazley; commons-parent 28)
+F254B35617DC255D9344BCFA873A8E86B4372146 DSA-1024 key (Olivier Lamy; org.apache:apache 13)

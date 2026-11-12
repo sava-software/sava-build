@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -46,7 +45,7 @@ class HardeningInitFunctionalTest {
     )
   }
 
-  private fun runner(): GradleRunner = savaBuildRunner(fixtureDir, "hardeningInit", "--stacktrace")
+  private fun runner(): FixtureRunner = savaBuildRunner(fixtureDir, "hardeningInit", "--stacktrace")
 
   @Test
   fun `a fresh repo gets the README, the gitignore line, and the checklist, idempotently`() {

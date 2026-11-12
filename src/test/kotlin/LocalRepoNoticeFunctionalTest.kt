@@ -29,6 +29,7 @@ class LocalRepoNoticeFunctionalTest {
     File(fixtureDir, "gradle.properties").writeText(
       "org.gradle.configuration-cache=true\norg.gradle.caching=true\n"
     )
+    FixtureVerification.install(fixtureDir)
     // This fixture always resolves the test publication, including with no override
     // property. It exercises override state, not published-release resolution.
     val escapedRepo = pluginRepo.absolutePath.replace("\\", "\\\\")
@@ -65,7 +66,8 @@ class LocalRepoNoticeFunctionalTest {
   private fun runBuild(vararg arguments: String): BuildResult = savaBuildRunner(fixtureDir, *arguments)
     .build()
 
-  private val localRepo: String = savaBuildTestProperty("savaBuild.testRepo")
+  /** The signed copy every fixture resolves from; a copy of it keeps the signatures. */
+  private val localRepo: String = savaBuildTestRepo.absolutePath
 
   private fun pluginArtifact(repo: File): File = savaBuildTestArtifact("jar", repo)
 
@@ -168,6 +170,7 @@ class LocalRepoNoticeFunctionalTest {
     val stored = runBuild(*arguments)
     assertTrue(stored.output.contains("Configuration cache entry stored"), stored.output)
     artifact.appendText("republished after the configuration-cache entry was stored")
+    FixtureVerification.sign(artifact) // a republication is signed like the first; the fixture policy refuses stale bytes
     val republishedSha256 = PitestEvidence.sha256(artifact)
     val priorProvenance = SavaBuildLocalPublicationProvenance.read(
       publicationProvenance(privateRepo)

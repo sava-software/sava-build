@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -137,7 +136,7 @@ class HardeningTestSelectionFunctionalTest {
     )
   }
 
-  private fun runner(vararg args: String): GradleRunner = savaBuildRunner(fixtureDir, *args, "--stacktrace")
+  private fun runner(vararg args: String): FixtureRunner = savaBuildRunner(fixtureDir, *args, "--stacktrace")
     .withPluginClasspath()
     .forwardOutput()
 

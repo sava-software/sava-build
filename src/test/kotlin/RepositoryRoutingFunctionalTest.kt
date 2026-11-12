@@ -124,7 +124,10 @@ class RepositoryRoutingFunctionalTest {
       server.createContext("/") { exchange ->
         val request = exchange.requestURI.path
         requests.add(request)
+        // The fixture policy asks for each file's signature beside it, as a published module has one.
         val content = contents[request]
+          ?: contents[request.removeSuffix(".asc")]?.takeIf { request.endsWith(".asc") }
+            ?.let { FixtureVerification.signature(it).toByteArray() }
         if (content == null) {
           exchange.sendResponseHeaders(404, -1)
         } else if (exchange.requestMethod == "HEAD") {

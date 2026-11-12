@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -169,7 +168,7 @@ class HardeningConvergeFunctionalTest {
     )
   }
 
-  private fun runner(vararg args: String): GradleRunner = savaBuildRunner(fixtureDir, *args, "--stacktrace")
+  private fun runner(vararg args: String): FixtureRunner = savaBuildRunner(fixtureDir, *args, "--stacktrace")
 
   private fun snapshotRun() = runner(
     "pitestConvergeSnapshot", "-x", "pitestEncoding", "-x", "pitestParsing"

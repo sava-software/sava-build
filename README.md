@@ -874,7 +874,9 @@ fails the run if anything else is refused. Never add trust for `0.0.0-test` to a
 never relax `org.gradle.dependency.verification` in a committed or a user-wide
 `gradle.properties`: the first `verificationPolicy` refuses, the second relaxes every build
 on the machine where no guard can see it; the committed value is `strict`, the policy's
-declaration. See [Local adoption and releasing](#local-adoption-and-releasing).
+declaration. See [Local adoption and releasing](#local-adoption-and-releasing). This
+repository's own tests pass the flag in one more place, offline, to the fixtures that run
+outside the fixture policy ([The fixtures' verification policy](#the-fixtures-verification-policy)).
 
 ### Engine controls
 
@@ -1044,8 +1046,9 @@ CodeQL observes the sources being compiled. The scan uses the repository's `JDK_
 `GRADLE_JAVA_VERSION` variables, matching the Gradle build workflow.
 
 The `check` task also runs TestKit functional tests against a local publication of the
-checkout. Tests use fresh fixture directories and two workers by default. The larger
-functional suites are split by feature so both workers can stay busy. To compare worker
+checkout. Tests use fresh fixture directories and two workers by default, and each fixture
+verifies what it downloads ([The fixtures' verification policy](#the-fixtures-verification-policy)).
+The larger functional suites are split by feature so both workers can stay busy. To compare worker
 counts on a particular machine, force just the test task to execute with, for example,
 `./gradlew test --rerun -PsavaBuildTestForks=4`; compare with the default two workers using
 the same warm caches. Extra workers also need extra TestKit daemons and memory.
@@ -1119,7 +1122,9 @@ and [the lazy ASN.1 depth-limit bypass](https://github.com/advisories/GHSA-qp49-
 These constraints preserve Kotlin's default helper dependencies and do not add dependencies
 to the published convention plugins. Remove them when Gradle's bundled Kotlin tooling
 supplies Bouncy Castle 1.86 or newer in the helper configuration. Kotlin 2.4.21 still
-defaults that helper to 1.84 even though Gradle 9.9.0 itself embeds 1.86.
+defaults that helper to 1.84 even though Gradle 9.9.0 itself embeds 1.86. The tests' own
+Bouncy Castle (`bcpg`, with which they sign what a fixture serves itself) is a test dependency
+at the same version, under the same rule of this build's policy.
 
 The separate [Kotlin cache advisory](https://github.com/advisories/GHSA-r937-wjx7-w2jp)
 affects KAPT's incremental-cache deserialization, as shown by the
@@ -1129,6 +1134,94 @@ Kotlin 2.4.21, beyond the advisory's patched threshold of 2.4.20-Beta1, so the w
 upgrade also removes the affected Kotlin tooling version without overriding Gradle's
 expected tooling combination. Reassess this exposure if KAPT is introduced or the Kotlin
 tooling changes.
+
+### The fixtures' verification policy
+
+A TestKit fixture is a build of its own, rooted in its own directory, and Gradle reads a
+verification policy only from the root build's `gradle/` directory, so this repository's
+policy does not reach what a fixture downloads into TestKit's Gradle user home, which the
+fixtures share. Every fixture but the few named below runs under a second, test-only policy
+instead, [src/test/resources/fixture-policy](src/test/resources/fixture-policy).
+`FixtureVerification` installs its three files and the `strict` declaration when a fixture is
+set up. `savaBuildRunner` refuses a fixture without them, when the runner is made and again
+when it runs, passes `--dependency-verification strict` itself, and takes only the options it
+lists, none of which can pick another mode, write a policy, run another build or move the
+Gradle user home. What it hands a test can run the build and nothing else. So a fixture checks
+what it downloads against a reviewed key or a pinned checksum before any of it runs, and fails
+with Gradle's "Dependency verification failed" otherwise.
+
+The fixture policy keeps the rules of [Verifying sava artifacts](#verifying-sava-artifacts).
+`FixtureVerificationTest` runs the guard's rules over what is installed and holds the keyring,
+the rules and the list together as `KeyStatusTest` holds this repository's own, and the guard
+itself checks the installed policy in every fixture that applies the settings plugin and runs
+`check`, `qualityGate` or `image`. It is a separate policy on purpose.
+[gradle/verification-metadata.xml](gradle/verification-metadata.xml) is what the build that
+signs and publishes trusts, and the fixtures resolve PIT, ArcMutate, Jazzer, the Google Cloud
+KMS client, the dependency-analysis plugin and an old JMH, none of which that build has a
+reason to trust. Its rules, keyring blocks and list reasons are those of this repository's
+policy and of sava's and ravina's, carried as reviewed there. The list's last section names
+three keys no current policy of the fleet holds; ravina's held them, at the same versions,
+until a trim.
+
+What a fixture serves itself is unsigned: the `0.0.0-test` publication, and the stub modules
+some tests write. No policy exempts them, and none could be committed that did: the guard
+refuses a `<trust>` entry and a pin of the test publication, and the jar changes with every
+edit. Each test JVM makes one OpenPGP key instead, keeps its private half in memory, signs a
+copy of the test publication and the stubs with it, and the installed policy trusts that key
+for the stubs' groups alone. The rule against trusting `0.0.0-test` in a consumer's policy
+stands: the committed fixture policy names neither that version nor a local group.
+
+Two classes run outside the fixture policy because their subject is a policy of their own,
+`VerificationPolicyFunctionalTest` and `KeyStatusFunctionalTest`, and so do two tests of
+`FixtureVerificationFunctionalTest`, which show what such a fixture can and cannot reach.
+Their runner, `savaBuildRunnerWithOwnPolicy`, passes `--dependency-verification lenient`,
+since the policy under test refuses the plugin's test copy, together with `--offline`, in a
+Gradle user home of their own that only a strict build downloads into. One strict build per
+test JVM resolves there what such a fixture asks of a remote repository, and anything else it
+asks of one is missing offline. A file repository it reads as it is: the plugin's test copy,
+and whatever a test writes beside the build. Not covered at all: a toolchain Gradle
+provisions, and anything a test fetches outside Gradle's dependency resolution.
+
+A version bump can change what the fixtures download. A new version under a key the policy
+trusts without a version needs nothing. Anything else fails a fixture, which names the refused
+artifacts; Dependabot's pull requests skip CI, so it fails first on `main`. Then, in the
+fixture policy, by the rules of any policy:
+
+- a new PIT or ArcMutate release, whose signer the list holds as unauthenticated, moves that
+  rule's version once the release is checked;
+- a new version signed by an expired, revoked, DSA-1024 or retired release manager's key is a
+  reason to stop: that key's rule is not extended, and why an old key signed a new release is
+  the question to answer first
+  ([Adopting and updating](#adopting-and-updating), step 2);
+- a new version signed by another key is a new signer, which takes a rule and a keyring
+  block, and the old rule stays for as long as a fixture resolves the old version;
+- an unsigned artifact (the jmh plugin, a plugin marker POM) takes a new `sha256` pin, of the
+  bytes the Plugin Portal serves, which is where the fixtures resolve plugins from (Maven
+  Central's copy of a marker POM differs);
+- a key the policy already trusts, signing in a group its rule does not name, takes that
+  group on the publisher's word or, for the keys the list's header names, only where
+  gradle/gradle's policy trusts the key for it.
+
+Gradle's failure names the artifact, not the key or the checksum it wanted. To see those,
+resolve the coordinate in a scratch build whose only repository is `gradlePluginPortal()`,
+with `--write-verification-metadata pgp,sha256 --export-keys`, and carry over what the rules
+allow: the draft is a candidate, as it is for this repository's own policy. Keep the
+`trusted-key` rules sorted by id and each keyring block under its `pub` label, which
+`FixtureVerificationTest` checks. Remove the rules, blocks and pins a bump left unused:
+nothing fails on a stale rule or pin, and `FixtureVerificationTest` fails only on what a
+partial removal leaves behind: a keyring block no rule names, a rule no block holds, a list
+line whose rule is gone, or a header note naming a key no rule trusts.
+Validate once with the fixtures' caches emptied, since a warm cache hides parent POMs:
+`rm -rf build/tmp/test/work/.gradle-test-kit build/fixture-verification`, then
+`./gradlew test --rerun`; without `--rerun` the test task is up to date and resolves nothing.
+
+`verificationKeyStatus` reads only the settings directory's policy, so it never sees this
+one. Its keys other than the three old Apache keys are in sava's or ravina's policy, so a
+finding of their key-status runs applies here. The three Apache keys, at exact versions, are
+checked by no run; a revocation of one is learned only from Apache's KEYS files.
+
+`./gradlew test --tests 'FixtureVerification*'` checks the files; the fixtures that resolve
+the bumped artifact check the rest.
 
 ### Local adoption and releasing
 

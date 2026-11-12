@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -422,9 +421,9 @@ $buildTail
    * Neither is scoped to the offending task — they fail the consumer's whole build,
    * and a green run without the flag says nothing about either.
    */
-  protected fun runner(vararg args: String): GradleRunner = savaBuildRunner(fixtureDir, *args, "--configuration-cache", "--stacktrace")
+  protected fun runner(vararg args: String): FixtureRunner = savaBuildRunner(fixtureDir, *args, "--configuration-cache", "--stacktrace")
 
-  protected fun runnerWithoutConfigurationCache(vararg args: String): GradleRunner =
+  protected fun runnerWithoutConfigurationCache(vararg args: String): FixtureRunner =
     savaBuildRunner(fixtureDir, *args, "--no-configuration-cache", "--stacktrace")
 
   protected fun occurrences(haystack: String, needle: String) = haystack.split(needle).size - 1

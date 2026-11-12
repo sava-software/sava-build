@@ -1,4 +1,3 @@
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -43,7 +42,7 @@ class HardeningFuzzReceiptLifecycleFunctionalTest {
     )
   }
 
-  private fun runner(vararg args: String): GradleRunner = savaBuildRunner(fixtureDir, *args, "--configuration-cache", "--stacktrace")
+  private fun runner(vararg args: String): FixtureRunner = savaBuildRunner(fixtureDir, *args, "--configuration-cache", "--stacktrace")
 
   @Test
   fun `successful aggregate survives clean without becoming a configuration input`() {

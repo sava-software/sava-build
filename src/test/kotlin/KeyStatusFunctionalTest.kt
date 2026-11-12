@@ -18,7 +18,8 @@ import java.net.URLDecoder
  * receipt is written; the same key at exact versions, an expired key and a key no server holds
  * warn; a repository with no policy has nothing to check. The fixture trusts the keys with
  * signature verification off, since the status check reads the policy's rules, not the
- * artifacts, and the fixture resolves this plugin's unsigned test publication.
+ * artifacts; the policy is the fixture's own, so every run goes through
+ * savaBuildRunnerWithOwnPolicy, lenient and offline.
  */
 class KeyStatusFunctionalTest {
 
@@ -100,7 +101,7 @@ class KeyStatusFunctionalTest {
   fun stopServer() = server.stop(0)
 
   private fun writeFixture(rules: String) {
-    enableTestKitConfigurationCache(fixtureDir)
+    enableTestKitConfigurationCache(fixtureDir, fixturePolicy = false)
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
         $savaBuildPluginManagement
@@ -128,7 +129,7 @@ class KeyStatusFunctionalTest {
     )
   }
 
-  private fun runner(vararg arguments: String) = savaBuildRunner(fixtureDir, *arguments, "-PsavaBuildKeyServers=http://127.0.0.1:${server.address.port}", "--dependency-verification", "lenient")
+  private fun runner(vararg arguments: String) = savaBuildRunnerWithOwnPolicy(fixtureDir, *arguments, "-PsavaBuildKeyServers=http://127.0.0.1:${server.address.port}")
 
   private fun run(vararg arguments: String): BuildResult = runner(*arguments).build()
 
@@ -210,7 +211,7 @@ class KeyStatusFunctionalTest {
     assertEquals(listOf("UNDECIDED", "true"), rows.getValue(broken).subList(2, 4))
     assertEquals(listOf("CURRENT", "true"), rows.getValue(current).subList(2, 4))
     // no server at all is a mistake, not a pass
-    val empty = savaBuildRunner(fixtureDir, "verificationKeyStatus", "-PsavaBuildKeyServers=", "--dependency-verification", "lenient").buildAndFail()
+    val empty = savaBuildRunnerWithOwnPolicy(fixtureDir, "verificationKeyStatus", "-PsavaBuildKeyServers=").buildAndFail()
     assertTrue(empty.output.contains("savaBuildKeyServers names no key server; leave the property unset for the two defaults"), empty.output)
   }
 

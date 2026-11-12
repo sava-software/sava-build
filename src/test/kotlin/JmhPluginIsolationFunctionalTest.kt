@@ -1,5 +1,4 @@
 import org.gradle.testkit.runner.BuildResult
-import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -33,7 +32,7 @@ class JmhPluginIsolationFunctionalTest {
     enableTestKitConfigurationCache(fixtureDir)
   }
 
-  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace", "--warning-mode=fail")
+  private fun runner(vararg arguments: String): FixtureRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace", "--warning-mode=fail")
 
   /** The fixture's settings script: the test repo, the given settings plugin lines, and a tail. */
   private fun writeSettings(name: String, vararg plugins: String, tail: String = "") {

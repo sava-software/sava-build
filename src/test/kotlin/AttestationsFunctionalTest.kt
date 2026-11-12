@@ -1,5 +1,4 @@
 import com.sun.net.httpserver.HttpServer
-import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -28,7 +27,7 @@ class AttestationsFunctionalTest {
   /** The arguments the stub cosign was called with, one per line, across every call. */
   private val cosignArgs get() = File(fixtureDir, "cosign-args.txt")
 
-  private fun runner(vararg arguments: String): GradleRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
+  private fun runner(vararg arguments: String): FixtureRunner = savaBuildRunner(fixtureDir, *arguments, "--stacktrace")
 
   private fun writeFixture(apiPort: Int, extraConfig: String = "") {
     val repoDir = File(fixtureDir, "repo/software/sava/fake-lib/1.0.0")
@@ -45,6 +44,7 @@ class AttestationsFunctionalTest {
         </project>
       """.trimIndent() + "\n"
     )
+    FixtureVerification.signRepository(File(fixtureDir, "repo"))
     // The stub records each call it gets as one line, the arguments tab-separated (a path holds
     // no tab), for the tests that read what the task tells cosign; the task keeps cosign's own
     // output to itself.
