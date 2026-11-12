@@ -342,12 +342,12 @@ class VerificationPolicyFunctionalTest {
     )
     // a publisher key narrowed to one version, as a regeneration that saw one version writes it
     mutate(
-      "<trusted-key id=\"1D217F8475EEE9F19AB8DD6B793FD5751A0F0780\" group=\"com.squareup.okio\"/>",
-      "<trusted-key id=\"1D217F8475EEE9F19AB8DD6B793FD5751A0F0780\" group=\"com.squareup.okio\" version=\"3.15.0\"/>"
+      "<trusted-key id=\"66D7CBFF956830FE9F5A723AFE6C7D77A1CE15A6\" group=\"org.gradlex\"/>",
+      "<trusted-key id=\"66D7CBFF956830FE9F5A723AFE6C7D77A1CE15A6\" group=\"org.gradlex\" version=\"1.13.2\"/>"
     )
     val result = fails("verificationPolicy")
     assertProblem(result, "trusted-key 2E3A1AFFE42B5F53AF19F780BCF4173966770193 trusts group=\"org.jetbrains\" name=\"annotations\" beyond exact versions")
-    assertProblem(result, "trusted-key 1D217F8475EEE9F19AB8DD6B793FD5751A0F0780 trusts group=\"com.squareup.okio\" version=\"3.15.0\" only at that version")
+    assertProblem(result, "trusted-key 66D7CBFF956830FE9F5A723AFE6C7D77A1CE15A6 trusts group=\"org.gradlex\" version=\"1.13.2\" only at that version")
     // a listed key under a regex, with the flag as Gradle reads it
     writeFixture()
     mutate(

@@ -197,7 +197,7 @@ class KeyStatusTest {
   @Test
   fun `this repository's policy reads as trusted keys with their version-freeness`() {
     val keys = KeyStatus.trustedKeys(savaBuildRootFile(VerificationPolicyRules.METADATA))
-    assertTrue(keys.size >= 25, "${keys.size} keys")
+    assertTrue(keys.size >= 16, "${keys.size} keys")
     assertTrue(keys.all { it.id.length == 40 && it.id == it.id.uppercase() })
     assertEquals(keys.map { it.id }.sorted().distinct(), keys.map { it.id })
     val gradle = keys.single { it.id == "1BD97A6A154E7810EE0BC832E2F38302C8075E3D" }

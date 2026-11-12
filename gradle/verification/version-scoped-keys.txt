@@ -17,5 +17,3 @@
 # retired release managers' keys; a new version under any of them is a reason to stop.
 1BD97A6A154E7810EE0BC832E2F38302C8075E3D Gradle Inc. publishing key, revoked 2026-08-08 as superseded (gradle.org/keys); signed foojay-resolver 1.0.0 while active
 2E3A1AFFE42B5F53AF19F780BCF4173966770193 expired key
-44FBDBBC1A00FE414F1C1873586654072EAD6677 DSA-1024 key
-694621A7227D8D5289699830ABE9F3126BB741C1 release-manager key of an old release

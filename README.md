@@ -1099,11 +1099,12 @@ which it strips of comments on every write:
 - `org.jetbrains.kotlinx` is trusted group-wide on purpose: `kotlin-gradle-plugin` floats to
   new patch releases, and a cold cache fetches BOM and parent POMs that a warm-cache
   regeneration narrows away. Publisher keys are version-free for the same reason, so a
-  `dependency-analysis-gradle-plugin` bump that moves `caffeine` or `jspecify` needs no edit.
+  `java-module-dependencies` bump that moves `asm` or `javaparser-core` needs no edit.
 - The keys in [gradle/verification/version-scoped-keys.txt](gradle/verification/version-scoped-keys.txt)
   are trusted only at the exact versions in the policy, each for the reason the file gives:
-  expired keys, DSA-1024 keys and retired release managers' keys that signed old releases in
-  the graph and must not vouch for new ones. A regeneration that widens one of them, or that
+  a revoked key and an expired key that signed old releases in the graph and must not vouch
+  for new ones (the DSA-1024 key and the retired release manager's key left with the
+  dependency-analysis plugin's chain). A regeneration that widens one of them, or that
   narrows a publisher key to the one version it saw, is a change to refuse. The file's header
   names the keys trusted on gradle/gradle's corroboration alone: gson, javaparser and
   kotlinx, after the fleet's per-key source audit of 2026-10-31 (jmh left the list with
