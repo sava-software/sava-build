@@ -1,5 +1,45 @@
 # Changelog
 
+## [21.8.8](https://github.com/sava-software/sava-build/compare/21.8.7...21.8.8) (2026-11-14)
+
+
+### Features
+
+* **check:** the dependency-analysis plugin is the consumer's to declare, and without it check has no module-directive scope check ([a67fc97](https://github.com/sava-software/sava-build/commit/a67fc972e6161d534bec3b5fce1ec62f6a00d180))
+
+
+### Bug Fixes
+
+* **hardening:** name what moved across a mutation toolchain change, and say when no stash exists to compare ([443883d](https://github.com/sava-software/sava-build/commit/443883d7364741ebf48e565726779f4ff32a9e1e))
+
+
+### Build System
+
+* update Gradle wrapper to 9.9.1 ([7e8d978](https://github.com/sava-software/sava-build/commit/7e8d978a9c31919984ee170b2a2d6895a457bf53))
+
+
+### Chores
+
+* **build:** the policy drops the nine keys only the dependency-analysis plugin's chain needed ([b6a30ef](https://github.com/sava-software/sava-build/commit/b6a30efebf3413c431ced3a551f01536c9e6e78a))
+* **repositories:** remove solana-programs and solana-web2 from GitHub Packages ([32462cb](https://github.com/sava-software/sava-build/commit/32462cb585211bcfe149149e7143b56b143bd0cd))
+
+
+### Documentation
+
+* answer adoption feedback from idl-clients, idl-src-gen and ravina ([f3a376e](https://github.com/sava-software/sava-build/commit/f3a376ea9ef44fd76bb2ac7b8c4633dd573a07ae))
+* **check:** what two local adoptions found in the dependency-analysis section ([d1d45ff](https://github.com/sava-software/sava-build/commit/d1d45ffe6673c07890aae1a88f5374bb34bcfc91))
+* **fixtures:** a download a strict build refused stays in the Gradle user home ([629741c](https://github.com/sava-software/sava-build/commit/629741c37fc574174e560f45639daa7b4c5c3b62))
+* **hardening:** a @NullMarked module never reaches PIT's JSpecify filter ([5f83c81](https://github.com/sava-software/sava-build/commit/5f83c8164c231b891c2f0dfa065bee4b9a49cb2d))
+* **hardening:** a timeout that differs across a transition is not yet the tool's ([131ac1c](https://github.com/sava-software/sava-build/commit/131ac1c387c9270023f0dfe7a17c55d9fc490520))
+* **hardening:** a transition owes an old-toolchain control only for an unexplained move ([fcad294](https://github.com/sava-software/sava-build/commit/fcad294ec5704c986bd469fa76cb6e808aad0abb))
+* **hardening:** after a Rebase, a passing direct verify is the suite's gate ([d7a964e](https://github.com/sava-software/sava-build/commit/d7a964eb1c79db41cfa4dd853f9bc6ad9af21684))
+* **verification:** a new policy's write run skips the guard ([5890ee4](https://github.com/sava-software/sava-build/commit/5890ee4db935f787847a56fdeed135f7ac503f2b))
+* **verification:** adding a Gradle-API build widens the Groovy rule back, and a copied stash is a free comparison ([65503fe](https://github.com/sava-software/sava-build/commit/65503fe47a9c8f4d99f978d4778837eeccca2680))
+* **verification:** drop the IntelliJ sync step ([269572a](https://github.com/sava-software/sava-build/commit/269572af3f020c116900d7644620471e15413c4e))
+* **verification:** say what checking a library signer's release means ([9957e23](https://github.com/sava-software/sava-build/commit/9957e239f561299950fa7ec87d0fe765e96009cc))
+* **verification:** scope the Groovy rule to groovy-bom where no build uses the Gradle API ([e38fd7e](https://github.com/sava-software/sava-build/commit/e38fd7eaaa0b3e6ccd25887b657edf859d702ea7))
+* **verification:** the dependencies reports do not show the plugin class path, and 21.8.7 is silent on a missing stash ([22e5eb4](https://github.com/sava-software/sava-build/commit/22e5eb4c7e25d9bb1568bcc9cffcbbc5003f4d2c))
+
 ## [21.8.7](https://github.com/sava-software/sava-build/compare/21.8.6...21.8.7) (2026-11-09)
 
 
