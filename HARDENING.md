@@ -259,12 +259,31 @@ one:
   cannot keep its report over them. A build-script change owes the project's
   suites only when it changes what PIT is given: a dependency, a compiler or
   suite setting, the PIT task itself. A plugin upgrade is that kind of change
-  unless the files that changed between the two pins, with the patch of any
-  build file among them (`build.gradle.kts`, `gradle/libs.versions.toml`),
-  touch neither the PIT task nor what PIT is given; a release's notes are its
-  commit subjects (and any BREAKING CHANGE footer) and rule nothing out, so
-  the compare's file list and those patches are the record to cite. A range
-  that bumps the pin otherwise owes the project's suites once, at its gate.
+  unless the files that changed between the two pins touch neither the PIT
+  task nor what PIT is given; a release's notes are its commit subjects (and
+  any BREAKING CHANGE footer) and rule nothing out, so the record to cite is
+  the compare's file list with the patch of every build file among them
+  (`build.gradle.kts`, `gradle/libs.versions.toml`) and of every file of the
+  plugin's source (`src/main/`). A source hunk touches neither when it
+  changes nothing PIT is given: no dependency, compiler or suite setting of a
+  consumer's project, no PIT argument, class path, target or tool version,
+  not the toolchain identity, and nothing a verify compares. In the files
+  that register and serve the PIT task
+  (`src/main/kotlin/software.sava.build.feature.hardening.gradle.kts` and
+  `src/main/kotlin/software/sava/build/hardening/`) that holds for a hunk
+  whose whole effect reaches only the log or an exception's message: the
+  text of a message, a new notice with the condition that decides when it
+  prints, a helper that only messages call, each free to read what it does
+  not change. Text that is written to a file, hashed or read back is not of
+  that kind (the toolchain record's rendering feeds its identity; a baseline
+  row's `# flip insurance` marker is parsed again). A hunk the reader cannot
+  place owes the suites.
+  21.8.8's range owed none: its hardening hunks reworded four messages and
+  added one notice, with helpers that only those messages call, and its
+  other hunks stopped shipping and applying the dependency-analysis plugin,
+  dropped two repositories and changed sava-build's own tests, moving no
+  dependency, version or setting that PIT is given. A range that bumps the
+  pin otherwise owes the project's suites once, at its gate.
   When those patches move PIT, PIT-JUnit, or (for a suite that runs it)
   ArcMutate, the bump is also a toolchain transition for each
   provenance-bound suite: a history-free review run, then its

@@ -222,12 +222,14 @@ gate, unless the files that changed between the two pins touch neither the PIT t
 what PIT is given: a release's notes are its commit subjects (and any BREAKING CHANGE
 footer) and rule nothing out, so the record to cite is the compare's file list,
 `gh api 'repos/sava-software/sava-build/compare/<old>...<new>' --jq '.files[].filename'`,
-with the patch of any build file in it (`build.gradle.kts` and `gradle/libs.versions.toml`
-feed PIT's, ArcMutate's and Jazzer's versions into the plugin), for example
-`--jq '.files[] | select(.filename == "build.gradle.kts") | .patch'`; HARDENING.md
-(Lifecycle) holds the rule. A compare that moves PIT, PIT-JUnit, or (for a suite that runs
-it) ArcMutate also makes each provenance-bound suite a toolchain transition (HARDENING.md,
-Rebase is the sole transition path).
+with the patch of every build file in it (`build.gradle.kts` and `gradle/libs.versions.toml`
+feed PIT's, ArcMutate's and Jazzer's versions into the plugin) and of every file under
+`src/main/`, the plugin's source, for example
+`--jq '.files[] | select(.filename == "build.gradle.kts" or .filename == "gradle/libs.versions.toml" or (.filename | startswith("src/main/"))) | .filename, .patch'`;
+HARDENING.md (Lifecycle) holds the rule and says how a hunk of that source is read. A
+compare that moves PIT, PIT-JUnit, or (for a suite that runs it) ArcMutate also makes each
+provenance-bound suite a toolchain transition (HARDENING.md, Rebase is the sole transition
+path).
 Completed reports and certification receipts bind the plugin binary that wrote them,
 so those written under the previous plugin stay historical and the next release
 certifies fresh under the new one; a verify refuses a report whose recorded plugin
