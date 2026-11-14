@@ -164,8 +164,12 @@ internal data class Mutant(
           .orEmpty()
         val runErrorHint = if (invalid.any { (_, _, mutant) -> mutant.rawStatus == "RUN_ERROR" }) {
           "\nRUN_ERROR alone diagnoses neither load nor memory and does not justify changing " +
-              "suite threads or heap. Retain the coordinate, record PIT/minion RSS as context " +
-              "when available, and repeat once on a quiet machine. Tune threads " +
+              "suite threads or heap. Retain the coordinate, and read pitest.stderr.log beside " +
+              "the report before repeating, since the next attempt replaces it: where it says " +
+              "'Minion did not start or died during analysis', the minion's process ended while " +
+              "PIT still waited to hear from it, and the row may name a mutant whose tests never " +
+              "ran. Record PIT/minion RSS as context when available, and repeat once; a quiet " +
+              "machine is not required. Tune threads " +
               "for measured aggregate contention or evidence-bound minionJvmArgs only when " +
               "PIT's preceding output explicitly diagnoses a process-resource or " +
               "insufficient-memory failure; generic minion death is not that diagnosis." +

@@ -148,7 +148,10 @@ class HardeningRatchetEvidenceFunctionalTest : HardeningRatchetFunctionalFixture
     assertTrue(
       invalid.contains("RUN_ERROR alone diagnoses neither load nor memory") &&
           invalid.contains("does not justify changing suite threads or heap") &&
-          invalid.contains("repeat once on a quiet machine") &&
+          invalid.contains("read pitest.stderr.log beside the report before repeating") &&
+          invalid.contains("'Minion did not start or died during analysis'") &&
+          invalid.contains("the row may name a mutant whose tests never ran") &&
+          invalid.contains("repeat once; a quiet machine is not required") &&
           invalid.contains("only when PIT's preceding output explicitly diagnoses"),
       invalid,
     )

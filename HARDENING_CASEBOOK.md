@@ -1597,6 +1597,44 @@ Rules: *load average is context, not diagnosis*; *recurrence localizes an observ
 not a cause*; *compare full, scoped-batched, and isolated shapes before blaming either the
 mutant or the machine*; *do not turn correlation into an automatic retry*.
 
+## The minion PIT never heard from
+
+Vault-stat-service's gate at its 21.8.8 adoption returned `RUN_ERROR` for three mutants
+in two suites, each with PIT's `Minion did not start or died during analysis`, and the
+refusal measured a one-minute load average of 165 on ten CPUs. All three had been killed
+three days earlier. Reruns of the two suites were clean at load 104 and 76, and four verbose runs
+were clean with the load reaching 203. Load again explained nothing.
+
+PIT 1.30.2's source says what the line means. It has one source: the parent found the
+minion's process gone, and ten seconds later its own socket task still had nothing from
+it. A minion that connects and then dies abruptly is reported another way (`Error while
+watching child process`), and the report cannot tell the two apart, since both rows read
+`RUN_ERROR`. PIT marks the first unrun mutant of a unit as started while it launches the
+minion, and only a started mutant takes the error; the minion learns its mutants only
+after the parent accepts its connection. So the three rows named mutants whose tests had
+never run. Each was the first of its unit in the order PIT holds them, so a death of this
+kind in a unit always names that unit's first mutant, which is how a stable packing can
+return one coordinate. Whether the recurrence in *The load average that explained nothing*
+had this shape was not checked.
+
+The host's log gave each minion's life. Each looked up `localhost` within half a second
+of launch. Two exited 20 seconds later, which is the minion's read timeout on its first
+read; the third exited after 10 seconds and is unexplained. PIT's parent listens on a
+wildcard socket at a port the system picks, and the minion dials `localhost`. On macOS a
+wildcard listener and a `127.0.0.1` listener can hold one port, the system hands a
+wildcard bind of port 0 a port that a loopback listener already holds, and a connection
+to `localhost` then reaches the loopback listener and never the parent: measured the same
+day against the 31 loopback listeners other programs held, 19 of 13,000 such sockets, about
+one in 700. On Linux the two cannot share a port: 8,000 paired binds all failed, and no
+allocation in two million collided. That a minion reached another program's listener is
+an inference that fits the two 20-second exits, and not the only one: a stray connection
+accepted first on PIT's own listener would leave the minion waiting the same way. No run
+was caught with its port, and nothing in it concerns Linux.
+
+Rules: *a `RUN_ERROR` row says where PIT stood, not what failed*; *read PIT's log before
+reading the coordinate*; *a quiet machine was never the condition, so repeat without
+waiting for one*.
+
 ## The fake clock that still waited 416ms
 
 Ravina's `EpochInfoServiceImpl.getAndSetEpochInfo` `MathMutator` moved between

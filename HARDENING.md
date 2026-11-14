@@ -840,7 +840,7 @@ point while the counts agree. Terminal `NON_VIABLE`/`EQUIVALENT` outcomes are
 shown but not counted as detected. Error or unfinished statuses (`RUN_ERROR`,
 `MEMORY_ERROR`, `STARTED`, `NOT_STARTED`) fail the report closed: they describe
 an experiment that did not complete, not evidence that can certify or shrink a
-ratchet (see the transient-failures section).
+ratchet (see *Invalid execution outcomes are not mutation results*).
 
 Baseline keys are **line-less** — `class,method,mutator,STATUS` — because line
 numbers churn whenever a mutated file is edited, and identity that churns
@@ -2590,10 +2590,17 @@ MINION_DIED, worker EOF, and the daemon log)*:
   detected score turn infrastructure failure into certification. The refusal prints
   every offending CSV row, and `pitest<Suite>Debt` repeats those rows while falling
   back to the committed baseline for its read-only tally. Save that coordinate (or run
-  Debt) before a quiet re-run replaces the report. `RUN_ERROR` alone diagnoses neither
+  Debt) and the attempt's `pitest.stderr.log`, which sits beside the report, before a
+  re-run replaces them. `RUN_ERROR` alone diagnoses neither
   load nor memory and never justifies retuning the suite. The refusal prints the load
   average and CPU count measured at validation as context beside the coordinates; add
-  PIT/minion RSS when you have it, then repeat once history-free on a quiet machine.
+  PIT/minion RSS when you have it, then repeat once history-free, without waiting for a
+  quiet machine. PIT writes this row for several kinds of minion failure, and that log
+  tells one kind apart: at `Minion did not start or died during analysis` the minion's
+  process ended while PIT's parent still waited to hear from it. Where that minion never
+  received its work, which is every such death traced so far, the row names the mutant
+  PIT marked as it launched the minion, not one whose tests ran, so nothing about that
+  mutant or its tests follows from it *(casebook: the minion PIT never heard from)*.
   Recurrence localizes a repeatable observation, not its cause: a stable mutation-unit
   partition can repeatedly attribute an aggregate-contention minion death to the same
   reported coordinate *(casebook: the load average that explained nothing)*. Compare
@@ -2820,8 +2827,8 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 > - Git-ignored scratch sources (`Integ.java` drivers) never sit in a hardened project's
 >   `main` or `test` source set; keep them in a git-ignored `scratch` source set instead.
 > - Verify by the absence of failures: trust the exit code and the `.running`
->   sentinel, not a summary. `MINION_DIED` and `RUN_ERROR` are not results; re-run once
->   on a quiet machine. A suite that got faster without getting narrower is a bug report.
+>   sentinel, not a summary. `MINION_DIED` and `RUN_ERROR` are not results; re-run once.
+>   A suite that got faster without getting narrower is a bug report.
 > - Fuzz findings become a committed seed input and a named regression test. Run
 >   `fuzzAll` locally with an explicit `-PmaxFuzzTime` and `-PmaxParallelFuzzTargets`
 >   before a release. Where one thing has two representations, fuzz the differential.
