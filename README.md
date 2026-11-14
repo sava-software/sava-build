@@ -1177,10 +1177,14 @@ Two classes run outside the fixture policy because their subject is a policy of 
 Their runner, `savaBuildRunnerWithOwnPolicy`, passes `--dependency-verification lenient`,
 since the policy under test refuses the plugin's test copy, together with `--offline`, in a
 Gradle user home of their own that only a strict build downloads into. One strict build per
-test JVM resolves there what such a fixture asks of a remote repository, and anything else it
-asks of one is missing offline. A file repository it reads as it is: the plugin's test copy,
-and whatever a test writes beside the build. Not covered at all: a toolchain Gradle
-provisions, and anything a test fetches outside Gradle's dependency resolution.
+test JVM resolves there what such a fixture asks of a remote repository, and what no build
+downloaded there is missing offline. That home is not a store of verified artifacts, though:
+Gradle keeps a download a strict build refused, and one an earlier fixture policy accepted,
+until `clean`, and a lenient, offline build resolves either. So these fixtures ask only for
+what the strict build resolves, and a dependency one of them is given goes into that build
+with it. A file repository such a fixture reads as it is: the plugin's test copy, and whatever
+a test writes beside the build. Not covered at all: a toolchain Gradle provisions, and
+anything a test fetches outside Gradle's dependency resolution.
 
 A version bump can change what the fixtures download. A new version under a key the policy
 trusts without a version needs nothing. Anything else fails a fixture, which names the refused

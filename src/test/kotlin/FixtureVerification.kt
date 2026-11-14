@@ -117,8 +117,12 @@ object FixtureVerification {
 
   /**
    * The Gradle user home of the fixtures that run outside the fixture policy
-   * ([savaBuildRunnerWithOwnPolicy]). Only a strict build downloads into it: those fixtures run
-   * offline, so everything they can resolve from it was verified when it arrived.
+   * ([savaBuildRunnerWithOwnPolicy]). Only a strict build downloads into it, and those fixtures
+   * run offline, so they fetch nothing. It does not hold verified artifacts alone: Gradle keeps a
+   * download a strict build refused, and one an earlier fixture policy accepted, until `clean`,
+   * and a lenient, offline build resolves either. What those fixtures ask for is what the strict
+   * primer resolves ([ownPolicyPrimer]), which each test JVM verifies before the first of them
+   * runs; a dependency one of them is given goes into the primer with it.
    */
   val ownPolicyGradleHome: File get() = File(workDirectory, "own-policy-gradle-home")
 

@@ -138,11 +138,13 @@ private val OWN_POLICY_WITHHELD = setOf(READ_ONLY_CACHE_VARIABLE)
  * downloads. It runs `--offline`, in a Gradle user home of its own
  * ([FixtureVerification.ownPolicyGradleHome]) that only a strict build downloads into: one strict
  * build of this fixture shape, in this JVM, resolves there first what such a fixture asks of a
- * remote repository ([ownPolicyPrimer]), and anything else it asks of one is missing offline: no
- * build in that home, the strict one included, carries [READ_ONLY_CACHE_VARIABLE]. A file
- * repository is read as it is, here as in any fixture: the plugin's test copy is one, and
- * whatever else a test writes into one is the test's own. TestKitRunnerArgumentsTest names the
- * classes that may call this.
+ * remote repository ([ownPolicyPrimer]), and what no build downloaded there is missing offline:
+ * no build in that home, the strict one included, carries [READ_ONLY_CACHE_VARIABLE]. A download
+ * a strict build refused is not missing, though. Gradle keeps it, and a lenient, offline build
+ * resolves it, so a fixture here asks only for what the primer resolves, and a dependency one is
+ * given goes into the primer with it, never into the fixture alone. A file repository is read as
+ * it is, here as in any fixture: the plugin's test copy is one, and whatever else a test writes
+ * into one is the test's own. TestKitRunnerArgumentsTest names the classes that may call this.
  */
 fun savaBuildRunnerWithOwnPolicy(projectDir: File, vararg arguments: String): FixtureRunner {
   refuseUnlistedOptions(arguments)
@@ -196,8 +198,9 @@ private val ownPolicyFixturesPrimed = java.util.concurrent.atomic.AtomicBoolean(
 /**
  * The strict build that fills the own-policy fixtures' Gradle user home: the fixture shape those
  * classes use, the settings plugin over a `java` project, through `check`, written into [dir]. It
- * is the only kind of build that downloads into that home, so what an offline fixture finds
- * there was verified when it arrived.
+ * is the only kind of build that downloads into that home, and it has to pass before an offline
+ * fixture runs, so what such a fixture asks for, the same graph, was verified in this JVM. The
+ * home may hold more than that: what this build once downloaded and refused stays in it.
  */
 internal fun ownPolicyPrimer(dir: File): FixtureRunner {
   enableTestKitConfigurationCache(dir)
