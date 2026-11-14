@@ -1,5 +1,13 @@
 # Changelog
 
+## [21.8.9](https://github.com/sava-software/sava-build/compare/21.8.8...21.8.9) (2026-11-14)
+
+
+### Documentation
+
+* **hardening:** a plugin upgrade's source patches are part of the record, and a print-only hunk owes no suite ([3aaf152](https://github.com/sava-software/sava-build/commit/3aaf152134221593088f77339192073d1e51f4c0))
+* **verification:** an on-demand build checks its policy a second time with the audit property ([738a145](https://github.com/sava-software/sava-build/commit/738a145832433da2b97d3d8e9baaa687bb92c543))
+
 ## [21.8.8](https://github.com/sava-software/sava-build/compare/21.8.7...21.8.8) (2026-11-14)
 
 
