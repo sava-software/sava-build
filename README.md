@@ -290,7 +290,9 @@ same process with open-source PIT.
 sava-build does not ship the
 [dependency-analysis plugin](https://github.com/autonomousapps/dependency-analysis-gradle-plugin).
 A build that declares nothing has no module-directive scope check, so `check` does not say that
-a `requires` should be `requires transitive` or that a module requires what it never uses, and
+a `requires` should be `requires transitive` or that a module requires a library it never uses
+(the check works from the plugin's advice on dependencies, so an unused JDK module such as
+`java.sql` was never in its reach), and
 it has none of the plugin's tasks (`buildHealth`, `projectHealth`, `fixDependencies`). The plugin
 and its dependencies were 27 of the 34 components the sava-build module put on a consumer's
 settings classpath: every build loaded them, a release build holding signing and publishing
@@ -315,8 +317,9 @@ plugins {
 
 **On demand.** The plugin joins the settings classpath only when the invocation sets a Gradle
 property, so an ordinary build, a release build among them, resolves and loads nothing of it,
-and `./gradlew -PdependencyAudit check` runs the check. Between `pluginManagement {}` and
-`plugins {}`:
+and `./gradlew -PdependencyAudit check` runs the check. The property's presence is the
+switch, whatever its value: `-PdependencyAudit=false` turns the audit on too, and so does a
+line in `gradle.properties`, in every build. Between `pluginManagement {}` and `plugins {}`:
 
 ```kotlin
 buildscript {
@@ -343,9 +346,12 @@ is given ([HARDENING.md](HARDENING.md)).
 
 Dependency verification covers whatever a build resolves, the settings classpath included, so
 either form keeps the plugin's chain in the policy. A policy written before sava-build stopped
-shipping the plugin has those rules; write an on-demand build's policy with the property set,
-since a write without it sees none of the chain. The first form also resolves the plugin's
-marker POM, `com.autonomousapps.build-health:com.autonomousapps.build-health.gradle.plugin`,
+shipping the plugin has those rules. An on-demand build resolves the chain only in an audit
+invocation, so each step of a policy change runs both ways, without the property and with it
+([Adopting and updating](#adopting-and-updating), step 1): a write without it drafts nothing
+for the chain, and a check without it passes whatever became of the chain's rules. The
+"Always" form also resolves the plugin's marker POM,
+`com.autonomousapps.build-health:com.autonomousapps.build-health.gradle.plugin`,
 which the Plugin Portal, ahead of Maven Central in the `pluginManagement` repositories of the
 [settings script](#settingsgradlekts), serves unsigned: pin its checksum. A build that declares
 neither form can trim the chain from its policy, by the rules of any trim
@@ -705,6 +711,28 @@ policy and for every change to one:
    show nothing of the plugin class path: what a sava-build bump takes off it, as 21.8.5
    took the JMH plugin and its chain, shows only when the modules an empty home fetched are
    compared with the policy.
+
+   A build that declares the dependency-analysis plugin [on demand](#dependency-analysis)
+   owes this step a second run, with the property set, and step 3's write and step 4's cold
+   run owe the same one:
+
+   ```bash
+   ./gradlew --no-configuration-cache -PdependencyAudit checkModuleDirectivesScope
+   ```
+
+   The property puts the plugin's chain on the settings class path and the analysis into
+   the build, and that one task runs the analysis in every module, so the second run does
+   not repeat `check` or `resolveVerificationTools`.
+   The run without the property resolves none of the plugin's chain, so it passes whatever
+   became of the rules only the chain meets: in one consumer it still passed with six of
+   them deleted, the `org.jetbrains.kotlin` rule among them, and only the audit run refused.
+   Which rules those are differs by graph (sava's own class paths still hold Kotlin) and
+   shows in an empty Gradle home: list the module directories under
+   `caches/modules-2/files-2.1` after the runs without the property, run the audit in the
+   same home, and compare. In sava they are nine, two of them exact-version rules for keys
+   on the version-scoped list, so a trim judged without the audit run takes those keys' list
+   lines and keyring blocks with it, and they come back only from git history. The second
+   run is in addition to the first, which checks the class path every other build loads.
 
 2. A "Dependency verification failed" report names each refused artifact and the reason.
    - **A bump under a key listed as unauthenticated** (the PIT and ArcMutate signers, a
