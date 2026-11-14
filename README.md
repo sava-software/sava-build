@@ -336,7 +336,10 @@ if (providers.gradleProperty("dependencyAudit").isPresent) {
 
 Beside a plugins block the buildscript block needs no repositories of its own: it resolves from
 the `pluginManagement` repositories. Each switch between an ordinary and an audit invocation
-recomputes the configuration cache entry.
+recomputes the configuration cache entry. Either form edits `settings.gradle.kts`, which every
+mutation suite records among its inputs: a direct `pitest<Suite>Verify` refuses over the edit
+exactly as it does over a pin bump, and the edit owes no suite, since it changes nothing PIT
+is given ([HARDENING.md](HARDENING.md)).
 
 Dependency verification covers whatever a build resolves, the settings classpath included, so
 either form keeps the plugin's chain in the policy. A policy written before sava-build stopped
@@ -345,7 +348,11 @@ since a write without it sees none of the chain. The first form also resolves th
 marker POM, `com.autonomousapps.build-health:com.autonomousapps.build-health.gradle.plugin`,
 which the Plugin Portal, ahead of Maven Central in the `pluginManagement` repositories of the
 [settings script](#settingsgradlekts), serves unsigned: pin its checksum. A build that declares
-neither form can prune the chain's rules, keys and list lines.
+neither form can trim the chain from its policy, by the rules of any trim
+([The policy and what it trusts](#the-policy-and-what-it-trusts)). Its own graph may still meet
+part of the chain (jspecify through JUnit, in one consumer), which only a write from an empty
+`<trusted-keys/>` shows, and the `org.jetbrains.kotlin` rule stays for the IDE sync even where
+no command-line run meets it any more.
 
 The plugin's classes have to be visible to the class loader that loaded sava-build, which both
 forms arrange. A declaration in a project's own plugins block alone sits below that loader and
@@ -365,6 +372,10 @@ pluginManager.withPlugin("com.autonomousapps.dependency-analysis") {
   }
 }
 ```
+
+Any other typed block takes the same shape, each name written as a string:
+`"issues" { "onAny" { "severity"("ignore") } }` ignores every finding of a module. A block that
+suppresses nothing can simply go.
 
 Without the plugin nothing analyses a source set, so `check` compiles no source set it does not
 otherwise reach, a `scratch` suite ([HARDENING.md](HARDENING.md)) among them, and a build needs
@@ -654,9 +665,10 @@ policy missing one passes every warm run: json-iterator's warm-derived policy ne
 `org.ow2:ow2:1.5`, the parent of asm 9.0's POM, passed its write runs, and was refused once a
 cold cache fetched it (2026-11-02). A write run names
 nothing that only the IDE sync or a workflow's init script resolves (the Gradle sources zip
-under `gradle:gradle`, Groovy's sources in a build that compiles against the Gradle API, an
-unsigned module's sources jar, the dependency-graph plugin), so those rules keep their
-scopes and keys through a trim, and a sources pin stays while its module is on a class
+under `gradle:gradle`, the sources of the Kotlin libraries Gradle embeds under
+`org.jetbrains.kotlin` in a build whose own class paths hold no Kotlin, Groovy's sources in a
+build that compiles against the Gradle API, an unsigned module's sources jar, the
+dependency-graph plugin), so those rules keep their scopes and keys through a trim, and a sources pin stays while its module is on a class
 path: no command-line run checks them, and the IDE's next sync, or for the dependency-graph
 plugin the dependency-submission workflow, refuses what a trim took (the end of Adopting and
 updating, below). A repository with no build that compiles against the Gradle API, whose
@@ -733,9 +745,9 @@ policy and for every change to one:
      build resolveVerificationTools
    ```
 
-   A new policy adds `-x verificationPolicy` to that run: the guard runs before anything
-   resolves and refuses a seeded list whose keys no rule names yet, so the write would fail
-   before it drafts them.
+   A new policy adds `-x verificationPolicy` to that run, and so does a trim's write from an
+   empty `<trusted-keys/>`: the guard runs before anything resolves and refuses a list whose
+   keys no rule names, so the write would fail before it drafts them.
 
    The result is a candidate, never the reviewed policy. On a tool bump it widens the
    version-scoped key to every version, and it can narrow a publisher key to the one version
