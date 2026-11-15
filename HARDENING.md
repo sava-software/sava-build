@@ -2576,7 +2576,9 @@ MINION_DIED, worker EOF, and the daemon log)*:
 
 - **PIT `MINION_DIED` during coverage generation** — the coverage minion's
   ~10s socket handshake timed out; upstream, intermittent, no exposed knob
-  (`--timeoutConst` is per-mutant test time, unrelated). It fails *before any
+  (`--timeoutConst` is per-mutant test time, unrelated). On macOS one cause is
+  shown: the minion had connected to another program that listened on PIT's
+  port *(casebook: the minion PIT never heard from)*. It fails *before any
   report is written*, so it can fail a build but never poison a result:
   re-run the suite. An automatic plugin retry was considered and declined at
   ~1 per 100 suite runs — it would mostly mask environment sickness;

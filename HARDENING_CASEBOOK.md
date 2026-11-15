@@ -1628,8 +1628,24 @@ day against the 31 loopback listeners other programs held, 19 of 13,000 such soc
 one in 700. On Linux the two cannot share a port: 8,000 paired binds all failed, and no
 allocation in two million collided. That a minion reached another program's listener is
 an inference that fits the two 20-second exits, and not the only one: a stray connection
-accepted first on PIT's own listener would leave the minion waiting the same way. No run
-was caught with its port, and nothing in it concerns Linux.
+accepted first on PIT's own listener would leave the minion waiting the same way. None of
+the three was caught with its port, and nothing in it concerns Linux.
+
+The next day the collision itself was caught, with unmodified PIT 1.30.2. Beside a helper
+that held `127.0.0.1` ports just ahead of the ones the system was handing out, PIT failed
+both ways on demand. A coverage minion's connection reached the helper, and the run ended
+with `Coverage generation minion exited abnormally! (MINION_DIED)`, exit 1 and no report:
+the signature of *MINION_DIED, worker EOF, and the daemon log*, down to the minion's
+ten-second read timeout. A mutation minion's connection reached it, and the run exited 0
+with one `RUN_ERROR` and the unit's other mutants killed by the minion PIT launched next.
+Both times the helper named the process at the other end of its connection: a child of
+PIT, started with the port PIT's parent was listening on. Then with no listener of ours:
+started when the system's next port was just below 65384, which IntelliJ IDEA held on
+`127.0.0.1`, PIT was given that port, and the IDE was seen holding an established
+connection from PIT's `MutationTestMinion 65384`. An IPv4 listener on every address takes
+the minion's connection the same way. GitHub's macOS runner reproduced both failures; on
+its Ubuntu runner none of 2,000 such sockets was given one of 200 held ports. So the
+collision is shown, and what stays an inference is that the gate's three deaths were it.
 
 Rules: *a `RUN_ERROR` row says where PIT stood, not what failed*; *read PIT's log before
 reading the coordinate*; *a quiet machine was never the condition, so repeat without
