@@ -117,6 +117,16 @@ internal data class Mutant(
     }
 
     /**
+     * Whether a physical report row is one [parseReport] refuses outright: too few columns,
+     * a blank identity or status column, or a line number that is not one. Shared so that
+     * nothing else reading a report counts such a row as a mutant.
+     */
+    fun malformedRow(mutant: Mutant?): Boolean =
+      mutant == null || mutant.sourceFile.isBlank() || mutant.className.isBlank() ||
+        mutant.mutator.isBlank() || mutant.method.isBlank() || mutant.line == null ||
+        mutant.rawStatus.isBlank()
+
+    /**
      * Parses a complete PIT report, failing closed on a row or status that cannot
      * certify the mutation population. [parse] stays nullable for single-row callers;
      * a report must never silently turn an unparsable physical row into a smaller
@@ -125,24 +135,26 @@ internal data class Mutant(
     fun parseReport(
       csvLines: List<String>,
       knownInvalidExecutionGuidance: String? = null,
+      automaticRerun: AutomaticRerun? = null,
     ): List<Mutant> {
       val malformed = mutableListOf<Pair<Int, String>>()
       val parsed = csvLines.mapIndexedNotNull { index, line ->
         val mutant = parse(line)
-        if (mutant == null || mutant.sourceFile.isBlank() || mutant.className.isBlank() ||
-            mutant.mutator.isBlank() || mutant.method.isBlank() || mutant.line == null ||
-            mutant.rawStatus.isBlank()) {
+        if (mutant == null || malformedRow(mutant)) {
           malformed.add(index + 1 to line)
           null
         } else {
           Triple(index + 1, line, mutant)
         }
       }
+      // Whatever is wrong with a report that is already the plugin's repeat, say that it is.
+      val rerunNote = automaticRerun?.let { "\n${it.note}" }.orEmpty()
       if (malformed.isNotEmpty()) {
         throw IllegalArgumentException(
             "PIT report contains ${malformed.size} malformed CSV row(s); an incomplete " +
                 "population is not evidence:\n" +
-                malformed.joinToString("\n") { (lineNumber, line) -> "  line $lineNumber: $line" }
+                malformed.joinToString("\n") { (lineNumber, line) -> "  line $lineNumber: $line" } +
+                rerunNote
         )
       }
       val invalid = parsed.filterNot { (_, _, mutant) -> mutant.validEvidence }
@@ -163,13 +175,20 @@ internal data class Mutant(
           ?.let { "\n$it" }
           .orEmpty()
         val runErrorHint = if (invalid.any { (_, _, mutant) -> mutant.rawStatus == "RUN_ERROR" }) {
+          // After the plugin's own repeat, "repeat once" would ask for a third run of
+          // something that has now failed twice.
+          val repeat = if (automaticRerun != null) {
+            "Record PIT/minion RSS as context when available. "
+          } else {
+            "Record PIT/minion RSS as context when available, and repeat once; a quiet " +
+              "machine is not required. "
+          }
           "\nRUN_ERROR alone diagnoses neither load nor memory and does not justify changing " +
               "suite threads or heap. Retain the coordinate, and read pitest.stderr.log beside " +
               "the report before repeating, since the next attempt replaces it: where it says " +
               "'Minion did not start or died during analysis', the minion's process ended while " +
               "PIT still waited to hear from it, and the row may name a mutant whose tests never " +
-              "ran. Record PIT/minion RSS as context when available, and repeat once; a quiet " +
-              "machine is not required. Tune threads " +
+              "ran. " + repeat + "Tune threads " +
               "for measured aggregate contention or evidence-bound minionJvmArgs only when " +
               "PIT's preceding output explicitly diagnoses a process-resource or " +
               "insufficient-memory failure; generic minion death is not that diagnosis." +
@@ -181,7 +200,8 @@ internal data class Mutant(
                   "  line $lineNumber: $line"
                 } + "\n" +
                 "Runtime errors, unfinished mutations, and unknown PIT statuses cannot certify " +
-                "the ratchet or any record writer." + invalidExecutionHint + runErrorHint
+                "the ratchet or any record writer." + invalidExecutionHint + runErrorHint +
+                rerunNote
         )
       }
       return parsed.map { (_, _, mutant) -> mutant }

@@ -1,3 +1,4 @@
+import software.sava.build.hardening.AutomaticRerun
 import software.sava.build.hardening.BaselineEngine
 import software.sava.build.hardening.BaselineDocument
 import software.sava.build.hardening.BaselineFiles
@@ -44,6 +45,7 @@ import software.sava.build.hardening.RecompileSourceStamp
 import software.sava.build.hardening.RecordedLineMetadata
 import software.sava.build.hardening.TimeoutAudit
 import software.sava.build.hardening.qualifiedHardeningTaskPath
+import software.sava.build.hardening.task.EarlyMinionDeaths
 import software.sava.build.hardening.task.FuzzMinimizeTask
 import software.sava.build.hardening.task.FuzzRunTask
 import software.sava.build.hardening.task.HardeningCertifyAllTask
@@ -1094,7 +1096,8 @@ val pitestConvergeSnapshot = tasks.register("pitestConvergeSnapshot") {
         }
       }
       try {
-        Mutant.parseReport(csv.readLines(), invalidReportClosure)
+        Mutant.parseReport(
+            csv.readLines(), invalidReportClosure, AutomaticRerun.forCurrentReport(csv.parentFile))
       } catch (e: IllegalArgumentException) {
         throw GradleException(
             "pitestConverge: '$suiteName' round-one report is invalid:\n${e.message}", e)
@@ -1492,7 +1495,8 @@ val pitestModeSnapshot = tasks.register("pitestModeSnapshot") {
                 "legacy snapshot accepted for N-1 migration; re-run under this plugin before unioning flips")
       }
       try {
-        Mutant.parseReport(csv.readLines(), invalidReportClosure)
+        Mutant.parseReport(
+            csv.readLines(), invalidReportClosure, AutomaticRerun.forCurrentReport(csv.parentFile))
       } catch (e: IllegalArgumentException) {
         throw GradleException(
             "pitestModeSnapshot: '$suiteName' report is invalid for mode '$label':\n${e.message}",
@@ -3068,25 +3072,30 @@ hardening.mutation.all {
       // it, this verify runs as the failed task's finalizer and a same-invocation
       // BaselinePrune rewrites the baseline from whatever fraction of
       // the population PIT reached before dying.
+      // Where the task has already repeated an early minion death once, the closures
+      // below would ask for a third run unread.
+      val automaticRerunNote = AutomaticRerun.forCurrentReport(csv.parentFile)
+          ?.let { "\n  ${it.note}" }.orEmpty()
       if (csv.parentFile.resolve(".running").isFile && csv.exists()) {
         throw GradleException(
             "pitest '$suiteName': the report at ${csv.parentFile} was left by an interrupted or " +
                 "failed run.\n" +
                 "  Evidence: a partial population is not evidence for the ratchet or any " +
-                "writer task." + incompleteReportClosure + retryGuidance
+                "writer task." + automaticRerunNote + incompleteReportClosure + retryGuidance
         )
       }
       if (!csv.exists()) {
         // As a finalizer this also fires when the pitest task itself just failed,
         // in which case the missing report is a symptom — don't let this message
         // bury the real error printed above it. A PIT MINION_DIED / coverage
-        // socket-timeout failure is a known transient: re-run the suite.
+        // socket-timeout failure is a known transient.
         throw GradleException(
             "pitest '$suiteName': no PIT report at $csv.\n" +
                 "  Cause: $evidencePitestTaskPath either has not run or failed before writing one; " +
                 "its original error is above this message.\n" +
                 "  If the preceding output shows a failed execution such as MINION_DIED, " +
-                "use the closure condition below." + incompleteReportClosure + retryGuidance +
+                "use the closure condition below." + automaticRerunNote +
+                incompleteReportClosure + retryGuidance +
                 "\n  Diagnostics: if the output above lacks the cause, inspect " +
                 "~/.gradle/daemon/<version>/daemon-<pid>.out.log for the minion's stack trace."
         )
@@ -3204,7 +3213,8 @@ hardening.mutation.all {
       // status semantic lives on Mutant/MutantStatus. Parse before committed-record
       // provenance so a trustworthy completed report can still name timeout-audit
       // findings when that independent committed metadata is torn or malformed.
-      val rows = Mutant.parseReport(finalReportLines, invalidExecutionClosure)
+      val rows = Mutant.parseReport(
+          finalReportLines, invalidExecutionClosure, AutomaticRerun.forCurrentReport(csv.parentFile))
       val timedOutByAuditKey = rows
           .filter { it.status == MutantStatus.TIMED_OUT }
           .groupBy { it.coordinate }
@@ -5973,7 +5983,8 @@ hardening.mutation.all {
           !csv.parentFile.resolve(".scoped").isFile &&
           !csv.parentFile.resolve(".running").isFile) {
         try {
-          Mutant.parseReport(csv.readLines(), invalidReportClosure)
+          Mutant.parseReport(
+              csv.readLines(), invalidReportClosure, AutomaticRerun.forCurrentReport(csv.parentFile))
         } catch (e: IllegalArgumentException) {
           invalidReport = true
           caution(
@@ -6272,6 +6283,12 @@ hardening.mutation.all {
     adviceAdvisoryScope.set(suiteAdvisoryScope)
     usesService(hardeningAdvisoryLog)
     advisoryLog.set(hardeningAdvisoryLog)
+    // On macOS PIT can be handed a port another program holds, and its minion then never
+    // reaches it. Such a first attempt is repeated once; its files are kept outside the
+    // report directory, which the converge and mode snapshots delete.
+    rerunEarlyMinionDeath.convention(
+        providers.systemProperty("os.name").map(EarlyMinionDeaths::hostReruns).orElse(false))
+    firstAttemptDirectory.set(layout.buildDirectory.dir("reports/pitest-rerun/$suiteName"))
   }
   // Realize only the normal typed task object, never either classpath's files. The
   // stable mirror observes later JavaExec `classpath = ...` customization in place;

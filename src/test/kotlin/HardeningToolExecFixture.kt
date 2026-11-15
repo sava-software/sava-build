@@ -183,6 +183,7 @@ $buildTail
 
         import java.nio.file.Files;
         import java.nio.file.Path;
+        import java.nio.file.StandardCopyOption;
         import java.nio.file.StandardOpenOption;
 
         public final class FakePit {
@@ -190,6 +191,19 @@ $buildTail
             String mode = "ok";
             Path modeFile = Path.of("fake-pit-mode.txt");
             if (Files.exists(modeFile)) mode = Files.readString(modeFile).trim();
+            // The 'early-death' and 'coverage-death' modes are a PIT whose minion never
+            // reaches it: on every run with the '-always' suffix, on the first run only
+            // with '-then-ok'. Runs are counted under build/, which no evidence reads.
+            boolean countsAttempts = mode.startsWith("early-death") || mode.startsWith("coverage-death");
+            int attemptNumber = 1;
+            Path attempts = Path.of("build/fake-pit-attempts");
+            if (countsAttempts) {
+              Files.createDirectories(attempts);
+              Path count = attempts.resolve("count");
+              if (Files.exists(count)) attemptNumber = Integer.parseInt(Files.readString(count).trim()) + 1;
+              Files.writeString(count, Integer.toString(attemptNumber));
+            }
+            boolean minionDies = countsAttempts && (mode.endsWith("-always") || attemptNumber == 1);
             if (mode.equals("below-cost-threshold") || mode.equals("at-cost-threshold") ||
                 mode.equals("slow-fail") || mode.equals("unattributed-slow-test")) {
               int millis = mode.equals("below-cost-threshold") ? 249 :
@@ -216,6 +230,54 @@ $buildTail
             Path dir = Path.of(reportDir);
             Files.createDirectories(dir);
             Files.writeString(dir.resolve("arguments.txt"), String.join("\n", args) + "\n");
+            if (countsAttempts) {
+              // What each run was given: its arguments, the invocation the task opened for
+              // it, and the history file as it found it, which the mutation phase of a
+              // licensed run then rewrites as ArcMutate does.
+              Files.writeString(attempts.resolve("arguments-" + attemptNumber + ".txt"), String.join("\n", args) + "\n");
+              Path invocation = dir.resolve(".evidence-invocation");
+              if (Files.exists(invocation)) {
+                Files.copy(invocation, attempts.resolve("invocation-" + attemptNumber + ".txt"), StandardCopyOption.REPLACE_EXISTING);
+              }
+              String historyInput = null;
+              String historyOutput = null;
+              for (String arg : args) {
+                if (arg.startsWith("--historyInputLocation=")) historyInput = arg.substring("--historyInputLocation=".length());
+                if (arg.startsWith("--historyOutputLocation=")) historyOutput = arg.substring("--historyOutputLocation=".length());
+              }
+              Files.writeString(attempts.resolve("history-read-" + attemptNumber + ".txt"),
+                  historyInput == null ? "<none>" : Files.readString(Path.of(historyInput)));
+              // Two things that stop a repeat between the attempts: a source the recompile
+              // read changes, or the place the first attempt's report is kept is not a file.
+              if (attemptNumber == 1 && mode.contains("-edits-input")) {
+                Files.writeString(Path.of("src/main/java/com/example/FakePit.java"),
+                    "\n// changed while PIT was running\n", StandardOpenOption.APPEND);
+              }
+              if (attemptNumber == 1 && mode.contains("-blocks-keep-file")) {
+                Files.createDirectories(Path.of("build/reports/pitest-rerun/encoding/mutations.csv"));
+              }
+              // The directory itself cannot be made: its parent is a file.
+              if (attemptNumber == 1 && mode.contains("-blocks-keep-directory")) {
+                Files.writeString(Path.of("build/reports/pitest-rerun"), "not a directory");
+              }
+              // A fixture's build script refuses to start the process once this file exists.
+              if (attemptNumber == 1 && mode.contains("-refuses-relaunch")) {
+                Files.writeString(attempts.resolve("refuse-launch"), "");
+              }
+              if (mode.startsWith("coverage-death") && minionDies) {
+                System.err.println("9:41:13 AM PIT >> INFO : MINION : 9:41:13 AM PIT >> SEVERE : Error calculating coverage. Process will exit.");
+                System.err.println("9:41:13 AM PIT >> INFO : MINION : org.pitest.util.PitError: Read timed out");
+                System.err.println("9:41:13 AM PIT >> INFO : MINION : Caused by: java.net.SocketTimeoutException: Read timed out");
+                System.err.println("9:41:28 AM PIT >> SEVERE : Coverage generator Minion exited abnormally due to MINION_DIED");
+                System.err.println("Exception in thread \"main\" org.pitest.util.PitError: Coverage generation minion exited abnormally! (MINION_DIED)");
+                System.exit(1);
+              }
+              if (historyOutput != null) Files.writeString(Path.of(historyOutput), "written by run " + attemptNumber);
+              if (minionDies) {
+                System.err.println("5:56:33 PM PIT >> SEVERE : Minion did not start or died during analysis. This may indicate an issue in your environment such as insufficient memory.");
+                System.err.println("5:56:33 PM PIT >> WARNING : Minion exited abnormally due to RUN_ERROR");
+              }
+            }
             if (mode.equals("zero-fire")) {
               System.exit(2);
             }
@@ -225,7 +287,7 @@ $buildTail
             }
             String status = mode.equals("timeout") ? "TIMED_OUT" :
                 (mode.equals("survive") ? "SURVIVED" :
-                    (mode.equals("run-error") ? "RUN_ERROR" : "KILLED"));
+                    (mode.equals("run-error") || minionDies ? "RUN_ERROR" : "KILLED"));
             String killer = mode.equals("below-cost-threshold") || mode.equals("at-cost-threshold")
                 ? "com.example.CodecTest.[engine:junit-jupiter]/[class:com.example.CodecTest]/[method:roundTrip()]"
                 : "com.example.CodecTest";

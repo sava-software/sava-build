@@ -406,7 +406,9 @@ handshake socket, hit `SocketTimeoutException`, and died (`MINION_DIED`,
 before any report was written); the test worker had died with no `hs_err`
 dump — killed from outside, not crashed. An automatic retry on `MINION_DIED`
 was considered and declined at ~1 occurrence per 100 suite runs: it would
-mostly mask environment sickness. A per-mutant `RUN_ERROR`, often first noticed
+mostly mask environment sickness. (That stood until the cause was shown; the
+plugin now repeats this one shape once on macOS, see *The minion PIT never heard
+from*.) A per-mutant `RUN_ERROR`, often first noticed
 during multi-suite execution, is the same shape smaller; load remains context,
 not diagnosis. The verify now refuses that incomplete report
 instead of accepting PIT's detected score.
@@ -1647,9 +1649,21 @@ the minion's connection the same way. GitHub's macOS runner reproduced both fail
 its Ubuntu runner none of 2,000 such sockets was given one of 200 held ports. So the
 collision is shown, and what stays an inference is that the gate's three deaths were it.
 
+With the cause shown, the decline of an automatic retry was reversed on 2026-11-15,
+narrowly. On macOS the suite's task runs PIT once more when the log shows only minions
+PIT never heard from, discards the first attempt and says so; HARDENING.md has the rule.
+*The load average that explained nothing* forbade turning a correlation into a retry.
+This one rests on a reproduced mechanism, is a single attempt, and leaves a warning and
+an advisory row every time, so a rising rate stays in view. What it buys is not
+measured: the gate's three deaths fell within about six minutes (17:50:52, 17:56:33,
+17:56:59), and the clean reruns on record started more than twenty minutes after the
+last of them, so nothing shows that a repeat started at once escapes whatever held the
+port.
+
 Rules: *a `RUN_ERROR` row says where PIT stood, not what failed*; *read PIT's log before
 reading the coordinate*; *a quiet machine was never the condition, so repeat without
-waiting for one*.
+waiting for one*; *repeat automatically only for a shown mechanism, once, and in the
+open*.
 
 ## The fake clock that still waited 416ms
 

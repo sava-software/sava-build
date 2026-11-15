@@ -450,7 +450,9 @@ run cheaper. The cost model is directly optimisable:
   retains the attempt's unfiltered `pitest.stdout.log` and `pitest.stderr.log`
   beside the selected report before console minion deduplication; failures after
   attempt startup and diagnostic runs print those paths. The files are truncated on
-  the next attempt selecting that full/scoped report directory,
+  the next attempt selecting that full/scoped report directory (a first attempt the
+  plugin itself repeats is moved to `build/reports/pitest-rerun/<suite>/` first, and
+  kept there until the next full `pitest<Suite>` run),
   are explicitly non-evidence, and may contain test output, paths, JVM arguments,
   or other machine-local sensitive data — do not publish them blindly. Attempt
   startup removes only the known decision-grade report leaves and markers, never
@@ -2579,10 +2581,10 @@ MINION_DIED, worker EOF, and the daemon log)*:
   (`--timeoutConst` is per-mutant test time, unrelated). On macOS one cause is
   shown: the minion had connected to another program that listened on PIT's
   port *(casebook: the minion PIT never heard from)*. It fails *before any
-  report is written*, so it can fail a build but never poison a result:
-  re-run the suite. An automatic plugin retry was considered and declined at
-  ~1 per 100 suite runs — it would mostly mask environment sickness;
-  reconsider if the rate rises.
+  report is written*, so it can fail a build but never poison a result. On
+  macOS the plugin repeats that shape once itself (below). On any other host
+  re-run the suite; after a repeat that failed too, read both attempts' logs
+  first.
 - **`java.io.EOFException` from a test task** — the forked worker JVM died
   abruptly; no `hs_err` file means killed from outside, not crashed.
   One-shot; re-run.
@@ -2597,7 +2599,8 @@ MINION_DIED, worker EOF, and the daemon log)*:
   load nor memory and never justifies retuning the suite. The refusal prints the load
   average and CPU count measured at validation as context beside the coordinates; add
   PIT/minion RSS when you have it, then repeat once history-free, without waiting for a
-  quiet machine. PIT writes this row for several kinds of minion failure, and that log
+  quiet machine, unless the refusal says the run was already the plugin's own repeat
+  (below). PIT writes this row for several kinds of minion failure, and that log
   tells one kind apart: at `Minion did not start or died during analysis` the minion's
   process ended while PIT's parent still waited to hear from it. Where that minion never
   received its work, which is every such death traced so far, the row names the mutant
@@ -2623,6 +2626,29 @@ MINION_DIED, worker EOF, and the daemon log)*:
   diagnoses a process-resource or insufficient-memory failure; a generic minion
   death is not that diagnosis.
 
+**On macOS the plugin repeats one shape, once.** A full-scope `pitest<Suite>` run,
+alone or under `qualityGate`, a record writer or `hardeningCertify`, whose PIT log shows
+a minion that ended before PIT heard from it is run once more by the same task, at
+once. In the coverage phase that is the minion's own `Read timed out` followed by
+`MINION_DIED`; in the mutation phase it is `Minion did not start or died during
+analysis` once for each `RUN_ERROR` row, for at most five rows, with nothing else
+invalid in the report or the log. A port PIT was given and another program held
+produces exactly this. In the mutation phase a minion killed before it connected
+looks the same, so the repeat is never silent: the task says what it discarded, the
+build's advisories count it, and a suite that keeps needing it is recurring. Nothing
+of the first attempt is evidence. Its logs and report move to
+`build/reports/pitest-rerun/<suite>/`. The repeat is a new attempt with an identity of
+its own, in the history mode the run was started in and with the history file as the
+first attempt found it, and the report, its evidence and a certification receipt hold
+the second attempt alone. The repeat is not repeated: if it is invalid too it fails as
+any invalid run does, and the refusal says that it was the repeat, so read both
+attempts' logs before any retry.
+Never repeated: a scoped or isolated run, `pitestConverge`'s second round, the
+diagnostic and trial tasks, a PIT release other than the one the rule was read
+against, the quiet verbosities (PIT then prints too little to tell), a run whose history
+file could not be copied aside first, and any host but macOS, where the collision has
+not been seen. There the manual rule above stands.
+
 A later clean, history-free, full unscoped run — or a successful
 `hardeningCertify` — is sufficient closure for a non-recurring invalid execution.
 The clean observation does not diagnose the earlier failure, and the invalid attempt
@@ -2632,7 +2658,9 @@ policy. Continued invalid attempts still warrant investigation even when their
 coordinates move. When an invalid outcome interrupts certification, retry the affected
 project's `hardeningCertify`: its receipt is project-atomic, so all suites in that
 project intentionally re-run in one invocation rather than stitching observations from
-different attempts. Receipts from other projects are independent
+different attempts. The plugin's own repeat is not stitching: it replaces a suite's
+only observation inside the suite's task, before anything is recorded, so the receipt
+still holds one complete run per suite from one Gradle invocation. Receipts from other projects are independent
 *(casebook: the invalid attempts that moved and then disappeared)*.
 
 **The evidence usually survives you discarding it.** The Gradle daemon keeps
@@ -2828,9 +2856,9 @@ the task prints it unquoted between `<!-- hardening-template block:start -->` an
 >   the test body. Exclusions must cover the test source set, not a naming convention.
 > - Git-ignored scratch sources (`Integ.java` drivers) never sit in a hardened project's
 >   `main` or `test` source set; keep them in a git-ignored `scratch` source set instead.
-> - Verify by the absence of failures: trust the exit code and the `.running`
->   sentinel, not a summary. `MINION_DIED` and `RUN_ERROR` are not results; re-run once.
->   A suite that got faster without getting narrower is a bug report.
+> - Verify by the absence of failures: trust the exit code and the `.running` sentinel,
+>   not a summary. `MINION_DIED` and `RUN_ERROR` are not results: re-run once, unless the
+>   plugin says it did. A suite that got faster without getting narrower is a bug report.
 > - Fuzz findings become a committed seed input and a named regression test. Run
 >   `fuzzAll` locally with an explicit `-PmaxFuzzTime` and `-PmaxParallelFuzzTargets`
 >   before a release. Where one thing has two representations, fuzz the differential.

@@ -24,6 +24,7 @@ import org.gradle.api.tasks.UntrackedTask
 import org.gradle.api.tasks.JavaExec
 import org.gradle.process.CommandLineArgumentProvider
 import org.gradle.work.DisableCachingByDefault
+import software.sava.build.hardening.AutomaticRerun
 import software.sava.build.hardening.BaselineFiles
 import software.sava.build.hardening.BaselineWriteOperation
 import software.sava.build.hardening.ExclusionAudit
@@ -45,6 +46,7 @@ import java.io.File
 import java.io.OutputStream
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.time.Clock
 import java.time.LocalDate
 import java.util.UUID
@@ -392,6 +394,18 @@ abstract class PitestExecTask : JavaExec() {
   /** Optional aggregate-workflow retry for a failed attempt that left generated partial output. */
   protected open fun failedGeneratedReportGuidance(): String? = null
 
+  /**
+   * Whether a first attempt that ended with a minion PIT never heard from is repeated
+   * once (see [EarlyMinionDeaths]). Only the ratcheted run task ever says yes.
+   */
+  protected open fun rerunsEarlyMinionDeath(): Boolean = false
+
+  /** Where a replaced first attempt's logs and report are kept; null where nothing is repeated. */
+  protected open fun firstAttemptKeepDirectory(): File? = null
+
+  /** Called once the repeat's PIT process has ended, with a one-line summary for the build's advisories. */
+  protected open fun onEarlyMinionDeathRepeat(summary: String) = Unit
+
   private fun withFailedGeneratedReportGuidance(failure: Throwable): Throwable {
     val guidance = failedGeneratedReportGuidance() ?: return failure
     if (!currentReportDirectory().resolve(RUNNING_MARKER).isFile) return failure
@@ -540,35 +554,79 @@ abstract class PitestExecTask : JavaExec() {
     // completion markers even if another task publishes build-service state later.
     commandLineProvider.useHistory(historyActive)
 
-    var attempt: PitestAttempt? = null
+    val keepDirectory = firstAttemptKeepDirectory()
+    val eligible = keepDirectory != null && rerunsEarlyMinionDeath() &&
+      bindSuiteEvidence.get() && enforceExit.get() && !diagnosticMode.get() &&
+      mutationUnitSize.get() == 0 && currentScope() == PitestEvidence.FULL_SCOPE &&
+      initialToolchain.pitestVersion == EARLY_MINION_DEATH_AUDITED_PITEST &&
+      EarlyMinionDeaths.readableVerbosity(
+        HardeningCommandLines.PitestVerbosity.normalize(verbosity.get())
+      )
+    // The history file as it stood before PIT touched it. A first attempt that reaches the
+    // end of its mutation phase rewrites the file with its own results, and a repeat must
+    // read what the first attempt read, never what it wrote. Where no copy can be taken
+    // nothing is repeated: preparing for a repeat must never cost a run that needs none.
+    var historyBefore: HistorySnapshot? = null
+    val repeatsEarlyMinionDeath = eligible && (!historyActive || try {
+      historyBefore = HistorySnapshot.take(historyFile.get().asFile, temporaryDir)
+      true
+    } catch (failure: Exception) {
+      logger.info(
+        "pitest '${suiteName.get()}': the history file could not be copied aside ($failure); " +
+          "an early minion death will not be repeated in this run"
+      )
+      false
+    })
+
+    try {
+      val first = runAttempt(historyActive, initialToolchain, replaced = null)
+      val death = if (repeatsEarlyMinionDeath) earlyMinionDeath(first) else null
+      if (death == null) {
+        finishAttempt(first, historyActive, replaced = null)
+        return
+      }
+      // Decided before the exit value is acted on and before completeAttempt, which never
+      // reads rows: a RUN_ERROR report exits 0 and would otherwise be written up as
+      // completed evidence for the verify to refuse.
+      val replaced = replaceFirstAttempt(first, death, checkNotNull(keepDirectory), historyBefore)
+      // The repeat is one more whole attempt: its own invocation, session attempt,
+      // sentinel, pre-run evidence and toolchain record. Nothing of the first is reused.
+      val second = runAttempt(historyActive, initialToolchain, replaced)
+      // Only now has PIT run twice; a repeat that could not start is a failure, not a count.
+      onEarlyMinionDeathRepeat("PIT ran twice: the first attempt was discarded after ${death.advisory}")
+      finishAttempt(second, historyActive, replaced)
+    } finally {
+      try {
+        historyBefore?.discard()
+      } catch (failure: IOException) {
+        logger.info("pitest '${suiteName.get()}': the copy of the history file was not removed ($failure)")
+      }
+    }
+  }
+
+  /**
+   * One PIT process, from the attempt sentinel to closed logs. [replaced] is the first
+   * attempt this one repeats, or null when this is the first.
+   */
+  private fun runAttempt(
+    historyActive: Boolean,
+    firstToolchain: MutationToolchainRecord,
+    replaced: ReplacedAttempt?,
+  ): AttemptRun {
+    var attemptLogs: PitestAttemptLogs? = null
     var outputSummary: PitestOutputSummary? = null
     var executionFailure: Throwable? = null
-    var attemptLogs: PitestAttemptLogs? = null
-    var attemptLogsPrinted = false
-    fun printAttemptLogs(disposition: AttemptLogDisposition, exitValue: Int? = null) {
-      if (attemptLogsPrinted) return
-      val logs = attemptLogs ?: return
-      attemptLogsPrinted = true
-      val prefix = when (disposition) {
-        AttemptLogDisposition.FAILED -> "failed attempt raw logs"
-        AttemptLogDisposition.TOLERATED_NON_ZERO -> buildString {
-          append("tolerated non-zero exit ")
-          append(requireNotNull(exitValue))
-          toleratedNonZeroExitContext()?.let { context ->
-            append("; ")
-            append(context)
-          }
-          append(". Raw logs")
-        }
+    var pitRan = false
+    return try {
+      val toolchain = if (replaced == null) {
+        firstToolchain
+      } else {
+        // What the first attempt mutated must still be what is on disk for the second,
+        // which is checked against a toolchain record of its own.
+        requireRecompileVouchesForClasses()
+        mutationToolchainRecord()
       }
-      logger.lifecycle(
-        "pitest '${suiteName.get()}': $prefix (diagnostic only; not evidence): " +
-          "${logs.standardOutput}, ${logs.errorOutput}"
-      )
-    }
-    fun printFailureLogs() = printAttemptLogs(AttemptLogDisposition.FAILED)
-    try {
-      attempt = beginAttempt(historyActive, initialToolchain)
+      val attempt = beginAttempt(historyActive, toolchain, firstAttempt = replaced == null)
       val logs = PitestAttemptLogs(currentReportDirectory())
       attemptLogs = logs
       // Gradle's default process streams are represented as null after a
@@ -606,8 +664,23 @@ abstract class PitestExecTask : JavaExec() {
         )
       }
       try {
-        afterAttemptStarted()
+        if (replaced == null) {
+          afterAttemptStarted()
+        } else {
+          // The class tree was audited before the first attempt and is unchanged. The
+          // marker is written, and the repeat announced, only now: with this attempt's
+          // invocation and with nothing left that could stop its process from starting,
+          // so that neither ever describes a second run that did not happen.
+          AutomaticRerun.write(
+            currentReportDirectory(),
+            AutomaticRerun(attempt.invocationId, replaced.death.phase, replaced.directory.path),
+          )
+          logger.warn(replaced.notice)
+        }
         super.exec()
+        // JavaExec ignores the exit value here, so it throws only where the process could
+        // not be started or waited for. Only a process that ended is a PIT run.
+        pitRan = true
       } catch (failure: Throwable) {
         executionFailure = failure
         throw failure
@@ -636,35 +709,166 @@ abstract class PitestExecTask : JavaExec() {
           postExecutionFailure?.let { throw it }
         }
       }
+      AttemptRun(attempt, logs, outputSummary, executionResult.get().exitValue)
     } catch (failure: Throwable) {
-      printFailureLogs()
-      throw withFailedGeneratedReportGuidance(failure)
-    }
-
-    val result = executionResult.get()
-    if (result.exitValue != 0) {
-      if (enforceExit.get()) {
-        printFailureLogs()
+      attemptLogs?.let { printAttemptLogs(it, AttemptLogDisposition.FAILED) }
+      if (replaced != null && !pitRan) {
+        // The marker says the report beside it is a second PIT run. There was none.
         try {
-          result.assertNormalExitValue()
+          BaselineFiles.deleteIfExists(currentReportDirectory().resolve(AutomaticRerun.FILE_NAME))
+        } catch (markerFailure: Exception) {
+          failure.addSuppressed(markerFailure)
+        }
+      }
+      throw withAttemptFailureContext(failure, replaced, repeatRan = pitRan)
+    }
+  }
+
+  /** Acts on a finished attempt's exit value: the only attempt, or the repeat of [replaced]. */
+  private fun finishAttempt(run: AttemptRun, historyActive: Boolean, replaced: ReplacedAttempt?) {
+    if (run.exitValue != 0) {
+      if (enforceExit.get()) {
+        printAttemptLogs(run.logs, AttemptLogDisposition.FAILED)
+        try {
+          executionResult.get().assertNormalExitValue()
         } catch (failure: Throwable) {
-          throw withFailedGeneratedReportGuidance(failure)
+          throw withAttemptFailureContext(failure, replaced)
         }
       } else {
-        printAttemptLogs(AttemptLogDisposition.TOLERATED_NON_ZERO, result.exitValue)
+        printAttemptLogs(run.logs, AttemptLogDisposition.TOLERATED_NON_ZERO, run.exitValue)
       }
       return
     }
     try {
-      completeAttempt(checkNotNull(attempt), historyActive)
+      completeAttempt(run.attempt, historyActive)
       afterSuccessfulAttempt(
-        outputSummary?.slowestTest?.name,
-        outputSummary?.slowestTest?.durationMillis,
+        run.outputSummary?.slowestTest?.name,
+        run.outputSummary?.slowestTest?.durationMillis,
       )
     } catch (failure: Throwable) {
-      printFailureLogs()
-      throw withFailedGeneratedReportGuidance(failure)
+      printAttemptLogs(run.logs, AttemptLogDisposition.FAILED)
+      throw withAttemptFailureContext(failure, replaced)
     }
+  }
+
+  private fun printAttemptLogs(
+    logs: PitestAttemptLogs,
+    disposition: AttemptLogDisposition,
+    exitValue: Int? = null,
+  ) {
+    val prefix = when (disposition) {
+      AttemptLogDisposition.FAILED -> "failed attempt raw logs"
+      AttemptLogDisposition.TOLERATED_NON_ZERO -> buildString {
+        append("tolerated non-zero exit ")
+        append(requireNotNull(exitValue))
+        toleratedNonZeroExitContext()?.let { context ->
+          append("; ")
+          append(context)
+        }
+        append(". Raw logs")
+      }
+    }
+    logger.lifecycle(
+      "pitest '${suiteName.get()}': $prefix (diagnostic only; not evidence): " +
+        "${logs.standardOutput}, ${logs.errorOutput}"
+    )
+  }
+
+  /**
+   * A failure after the first attempt was set aside says so, and says whether PIT ran a
+   * second time, so nobody takes it for a first failure or runs a third attempt unread.
+   */
+  private fun withAttemptFailureContext(
+    failure: Throwable,
+    replaced: ReplacedAttempt?,
+    repeatRan: Boolean = true,
+  ): Throwable {
+    val guided = withFailedGeneratedReportGuidance(failure)
+    if (replaced == null) return guided
+    val firstAttempt = "The first attempt ended with an early minion death in the " +
+      "${replaced.death.phase} phase and was set aside; its logs are kept, as diagnostics " +
+      "only, in ${replaced.directory}."
+    return GradleException(
+      (guided.message ?: guided::class.java.simpleName) + "\n" +
+        if (repeatRan) {
+          "pitest '${suiteName.get()}': this failure is in the plugin's one automatic repeat. " +
+            "$firstAttempt Read both attempts' logs before running the suite again."
+        } else {
+          "pitest '${suiteName.get()}': the plugin's one automatic repeat did not get as far " +
+            "as a finished PIT process, so PIT ran once. $firstAttempt"
+        },
+      guided,
+    )
+  }
+
+  /**
+   * Whether the first attempt ended with a minion PIT never heard from. Reading it must
+   * never cost a run that would otherwise have passed or change how one fails.
+   */
+  private fun earlyMinionDeath(run: AttemptRun): EarlyMinionDeath? = try {
+    EarlyMinionDeaths.classify(run.exitValue, currentCsvReport(), run.logs.errorOutput)
+  } catch (failure: Exception) {
+    logger.info(
+      "pitest '${suiteName.get()}': the attempt could not be read for an early minion death " +
+        "($failure); it is handled as the only attempt"
+    )
+    null
+  }
+
+  /**
+   * Sets the first attempt aside so that the repeat starts from what the first found: its
+   * logs and report leave the report directory for [keepDirectory], and a history file its
+   * mutation phase rewrote goes back to what it was.
+   */
+  private fun replaceFirstAttempt(
+    first: AttemptRun,
+    death: EarlyMinionDeath,
+    keepDirectory: File,
+    historyBefore: HistorySnapshot?,
+  ): ReplacedAttempt {
+    val suite = suiteName.get()
+    val rows = (death as? EarlyMinionDeath.Mutation)?.rows.orEmpty()
+    val rowText = if (rows.isEmpty()) "" else "\n  first-attempt rows marked RUN_ERROR:\n" +
+      rows.joinToString("\n") { "    $it" }
+    val kept = mutableListOf<File>()
+    val toKeep = listOf(first.logs.errorOutput, first.logs.standardOutput, currentCsvReport())
+      .filter(File::isFile)
+    try {
+      // Before anything else can fail, because it is the one thing that would outlast this
+      // task: a mutation phase that ran to its end left its own results in the history
+      // file. A coverage-phase death ends PIT before that file is opened for writing.
+      if (death is EarlyMinionDeath.Mutation) historyBefore?.restore()
+      BaselineFiles.requireDirectoryOrMissing(keepDirectory)
+      if (!keepDirectory.isDirectory && !keepDirectory.mkdirs()) {
+        throw IOException("cannot create $keepDirectory")
+      }
+      toKeep.forEach { source ->
+        val target = keepDirectory.resolve(source.name)
+        BaselineFiles.requireRegularFileOrMissing(target)
+        Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        kept.add(target)
+      }
+    } catch (failure: Exception) {
+      throw GradleException(
+        "pitest '$suite': the first attempt ended with an early minion death, but it could " +
+          "not be set aside for a repeat ($failure), so PIT ran once and the attempt stands " +
+          "as a failed one. ${death.description}. Its raw logs and report (diagnostic only; " +
+          "not evidence): moved to $keepDirectory: ${kept.map(File::getName)}; left in " +
+          "${currentReportDirectory()}: ${toKeep.map(File::getName) - kept.map(File::getName).toSet()}." +
+          rowText,
+        failure,
+      )
+    }
+    return ReplacedAttempt(
+      death,
+      keepDirectory,
+      "pitest '$suite': PIT's first attempt is discarded and the suite runs once more. " +
+        "${death.description}. Nothing from that attempt is evidence; kept as diagnostics " +
+        "only: ${kept.joinToString()}. This is what PIT reports when a minion's connection " +
+        "reached another program that held PIT's port (HARDENING.md, 'Invalid execution " +
+        "outcomes are not mutation results'). The log does not prove that cause, and a " +
+        "repeat that is hit again fails as an invalid run with no further repeat." + rowText,
+    )
   }
 
   private fun historyActiveNow(): Boolean =
@@ -680,6 +884,7 @@ abstract class PitestExecTask : JavaExec() {
   private fun beginAttempt(
     historyActive: Boolean,
     toolchain: MutationToolchainRecord,
+    firstAttempt: Boolean,
   ): PitestAttempt {
     val suite = suiteName.get()
     val reportDir = currentReportDirectory()
@@ -696,6 +901,9 @@ abstract class PitestExecTask : JavaExec() {
     }
 
     prepareAttemptDirectory(reportDir)
+    // After the report's own leaves, its repeat marker among them, were validated and
+    // removed: a refused preparation must not leave a marker pointing at deleted files.
+    if (firstAttempt) clearKeptFirstAttempt()
     reportDir.resolve(RUNNING_MARKER).writeText("")
     if (!bindsEvidence) return PitestAttempt(invocationId, null, toolchain, null, null)
 
@@ -910,6 +1118,81 @@ abstract class PitestExecTask : JavaExec() {
     val preRunFilterSourceSha256: String?,
   )
 
+  /** A PIT process that has ended, with what is needed to act on it. */
+  private class AttemptRun(
+    val attempt: PitestAttempt,
+    val logs: PitestAttemptLogs,
+    val outputSummary: PitestOutputSummary?,
+    val exitValue: Int,
+  )
+
+  /** The first attempt, once set aside for a repeat; [notice] announces the repeat when it starts. */
+  private class ReplacedAttempt(val death: EarlyMinionDeath, val directory: File, val notice: String)
+
+  /** The suite's history file as the first attempt found it, so a repeat can be given the same. */
+  private class HistorySnapshot private constructor(
+    private val history: File,
+    private val copy: File,
+    private val existed: Boolean,
+  ) {
+    private var keepCopy = false
+
+    fun restore() {
+      try {
+        if (!existed) {
+          Files.deleteIfExists(history.toPath())
+          return
+        }
+        val staged = File(history.parentFile, history.name + ".restore")
+        Files.copy(copy.toPath(), staged.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        Files.move(
+          staged.toPath(),
+          history.toPath(),
+          StandardCopyOption.REPLACE_EXISTING,
+          StandardCopyOption.ATOMIC_MOVE,
+        )
+      } catch (failure: IOException) {
+        // The file holds the first attempt's results. No history is always safe, since
+        // the next history-assisted run is then a full one; this file as it is, is not.
+        val removed = try {
+          Files.deleteIfExists(history.toPath())
+          true
+        } catch (_: IOException) {
+          false
+        }
+        keepCopy = !removed
+        throw IOException(
+          "the history file could not be put back to what it was before the first attempt " +
+            "($failure); " + if (removed) {
+              "it was removed instead, so the next history-assisted run is a full one"
+            } else {
+              "it could not be removed either and still holds the first attempt's results: " +
+                "delete $history before the next run; the earlier copy, if there was one, is $copy"
+            },
+          failure,
+        )
+      }
+    }
+
+    fun discard() {
+      if (!keepCopy) Files.deleteIfExists(copy.toPath())
+    }
+
+    companion object {
+      fun take(history: File, temporaryDirectory: File): HistorySnapshot {
+        BaselineFiles.requireRegularFileOrMissing(history)
+        val copy = File(temporaryDirectory, "history-before-first-attempt")
+        val existed = history.isFile
+        if (existed) {
+          Files.copy(history.toPath(), copy.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } else {
+          Files.deleteIfExists(copy.toPath())
+        }
+        return HistorySnapshot(history, copy, existed)
+      }
+    }
+  }
+
   private enum class AttemptLogDisposition {
     FAILED,
     TOLERATED_NON_ZERO,
@@ -950,11 +1233,25 @@ abstract class PitestExecTask : JavaExec() {
       EVIDENCE_INVOCATION_FILE,
       STANDARD_OUTPUT_LOG,
       ERROR_OUTPUT_LOG,
+      AutomaticRerun.FILE_NAME,
     ).map(reportDirectory::resolve)
     // Validate the complete set before deleting any leaf so a linked/non-regular
     // artifact cannot produce a half-invalidated attempt directory.
     staleLeaves.forEach(BaselineFiles::requireRegularFileOrMissing)
     staleLeaves.forEach(BaselineFiles::deleteIfExists)
+  }
+
+  /**
+   * A full-scope first attempt replaces the report that an older repeat's kept files
+   * described, so they go with it. A scoped run leaves that report, and them, alone.
+   */
+  private fun clearKeptFirstAttempt() {
+    val keepDirectory = firstAttemptKeepDirectory() ?: return
+    if (currentScope() != PitestEvidence.FULL_SCOPE) return
+    BaselineFiles.requireDirectoryOrMissing(keepDirectory)
+    val leaves = listOf(REPORT_FILE, STANDARD_OUTPUT_LOG, ERROR_OUTPUT_LOG).map(keepDirectory::resolve)
+    leaves.forEach(BaselineFiles::requireRegularFileOrMissing)
+    leaves.forEach(BaselineFiles::deleteIfExists)
   }
 
   private fun mutationToolchainRecord(): MutationToolchainRecord {
@@ -1029,11 +1326,33 @@ abstract class PitestRunTask : PitestExecTask() {
   @get:ServiceReference("hardeningAdvisoryLog")
   abstract val advisoryLog: Property<HardeningAdvisoryLog>
 
+  /**
+   * Whether a full-scope first attempt that ended with a minion PIT never heard from is
+   * repeated once. The plugin sets it from the host: true on macOS, where PIT can be
+   * given a port another program holds. Not on the hardening DSL and not evidence; it only
+   * decides how many PIT processes one execution may start.
+   */
+  @get:Input
+  abstract val rerunEarlyMinionDeath: Property<Boolean>
+
+  /** Where a replaced first attempt's logs and report are kept, outside the report directory. */
+  @get:Internal
+  abstract val firstAttemptDirectory: DirectoryProperty
+
   init {
+    rerunEarlyMinionDeath.convention(false)
     adviceSiblingTargets.convention(emptyMap())
     adviceSiblingExcludes.convention(emptyMap())
     adviceDeclinedMutators.convention(emptyMap())
     adviceDeclinedExclusions.convention(emptyMap())
+  }
+
+  override fun rerunsEarlyMinionDeath(): Boolean = rerunEarlyMinionDeath.get()
+
+  override fun firstAttemptKeepDirectory(): File? = firstAttemptDirectory.orNull?.asFile
+
+  override fun onEarlyMinionDeathRepeat(summary: String) {
+    advisoryLog.get().record(adviceAdvisoryScope.get(), summary)
   }
 
   override fun beforeAttempt() {
