@@ -261,7 +261,7 @@ dependencies {
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
   // The tests sign what a fixture serves itself (FixtureVerification), with the Bouncy Castle
   // of the constraints below, whose signing key this build's policy already trusts for the group.
-  val bouncyCastleVersion = "1.86"
+  val bouncyCastleVersion = "1.87"
   testImplementation("org.bouncycastle:bcpg-jdk18on:$bouncyCastleVersion")
 
   // KGP 2.4.21 still creates this isolated publishing-helper configuration with BC 1.84.
