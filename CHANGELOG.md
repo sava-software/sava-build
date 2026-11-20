@@ -1,5 +1,34 @@
 # Changelog
 
+## [21.8.9](https://github.com/sava-software/sava-build/compare/21.8.8...21.8.9) (2026-11-20)
+
+
+### Features
+
+* **hardening:** on macOS a PIT attempt whose minion never reached PIT is repeated once ([851c042](https://github.com/sava-software/sava-build/commit/851c042c1b202545f27d145c8c6b7f3d64024539))
+
+
+### Bug Fixes
+
+* **hardening:** a RUN_ERROR is repeated without waiting for a quiet machine, and its row may name a mutant whose tests never ran ([91ec659](https://github.com/sava-software/sava-build/commit/91ec6597ccfb6c59c37a21b4f44149c71fce6485))
+
+
+### Build System
+
+* **deps:** bump actions/create-github-app-token to 3.4.0 ([9a18385](https://github.com/sava-software/sava-build/commit/9a18385b02aa179f27b96fcefdb7a0e78fe8daed))
+* **deps:** bump actions/setup-java from 6.2.0 to 6.3.0 ([#173](https://github.com/sava-software/sava-build/issues/173)) ([f220fc2](https://github.com/sava-software/sava-build/commit/f220fc29b4ab91a0eaaea03dc6ad3acab2259567))
+* **deps:** bump bouncyCastleVersion from 1.86 to 1.87 ([#172](https://github.com/sava-software/sava-build/issues/172)) ([eb9b68f](https://github.com/sava-software/sava-build/commit/eb9b68f7700b8caa4a2e658e7fe725741f08a896))
+* **deps:** update dependency-analysis fixtures to 3.20.3 ([05b860f](https://github.com/sava-software/sava-build/commit/05b860f89afccdb3b0c36fe48ef703a08658e212))
+* **deps:** update dependency-analysis fixtures to 3.20.4 ([697f577](https://github.com/sava-software/sava-build/commit/697f577d64de80f11074f0a7204f4d6ca530e4bf))
+* the build's own dependencies resolve from Maven Central first, the Plugin Portal second ([b9a84bd](https://github.com/sava-software/sava-build/commit/b9a84bd3f1ce30bb117c7ddfad35b0f9301efacd))
+
+
+### Documentation
+
+* **hardening:** a plugin upgrade's source patches are part of the record, and a print-only hunk owes no suite ([3aaf152](https://github.com/sava-software/sava-build/commit/3aaf152134221593088f77339192073d1e51f4c0))
+* **hardening:** the port collision behind a minion PIT never hears from is shown with stock PIT ([a1e3b26](https://github.com/sava-software/sava-build/commit/a1e3b267e512d97ed7abff24b9e1c56a16447369))
+* **verification:** an on-demand build checks its policy a second time with the audit property ([738a145](https://github.com/sava-software/sava-build/commit/738a145832433da2b97d3d8e9baaa687bb92c543))
+
 ## [21.8.8](https://github.com/sava-software/sava-build/compare/21.8.7...21.8.8) (2026-11-14)
 
 
