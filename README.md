@@ -383,7 +383,12 @@ pluginManager.withPlugin("com.autonomousapps.dependency-analysis") {
 
 Any other typed block takes the same shape, each name written as a string:
 `"issues" { "onAny" { "severity"("ignore") } }` ignores every finding of a module. A block that
-suppresses nothing can simply go.
+suppresses nothing can simply go. A wrong plugin id in `withPlugin` is silent, since the block
+then never runs, and so is an `ignoreSourceSet` name that matches no source set. For an
+`ignoreSourceSet` block, an audit's dry run, `./gradlew -PdependencyAudit --dry-run check`,
+shows that it took effect when it lists no analysis task of the ignored source set (the analysis
+names each of a source set's tasks after it, `explodeJarScratch` and the like) and the same dry
+run without the block lists them.
 
 Without the plugin nothing analyses a source set, so `check` compiles no source set it does not
 otherwise reach, a `scratch` suite ([HARDENING.md](HARDENING.md)) among them, and a build needs
@@ -797,6 +802,27 @@ policy and for every change to one:
    of the file; the proof is the write after it, which changes nothing. The
    committed files should be Gradle's own output for the graph, so that a regeneration with
    no dependency change is a no-op and any diff is a change to review.
+
+   A write can also draft lines that are not the graph's. Two kinds are known, and both are
+   discarded:
+   - Under 21.8.8 and 21.8.9 `check` realized every task, java-module-dependencies'
+     `recommendModuleVersions` among them, whose `latestVersionsClasspath` (the newest release
+     of every module on the class paths) a write then resolves. Its lines trust what only that
+     configuration needs: releases newer than any the graph resolves, alphas included, and the
+     keys or version-free rules only those releases bring in (a Helidon regex, in one
+     consumer). A write under the release after 21.8.9, which no longer realizes the task,
+     drafts none of them.
+   - Now and then a write drafts a checksum-only line, with no `reason`, for a metadata file (a
+     `.module`, or a BOM's or a parent's `.pom`) under a key rule the policy already has,
+     sometimes at a version no command-line run resolves. Where the file's own detached
+     signature verifies under that rule (the Gradle cache keeps the `.asc` under the same
+     version, in a directory of its own), the line only pins bytes the rule already vouches
+     for, which this policy leaves to the signer; a file without a signature of its own is a
+     pin to review like any other. Its cause is not traced, and a later write does not repeat
+     it.
+
+   Any other line is a change to review, even one that no command-line run needs: a scratch
+   suite and the IDE's sync resolve what step 4's runs do not (the end of this section).
 
 4. A warm cache can hide parent-POM metadata that a cold one fetches. Validate a new parent
    or BOM, and every trim, with an empty `GRADLE_USER_HOME`, running every build of the

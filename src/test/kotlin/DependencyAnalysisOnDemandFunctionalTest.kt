@@ -26,6 +26,11 @@ class DependencyAnalysisOnDemandFunctionalTest {
 
   private fun reusedConfiguration(result: BuildResult) = result.output.contains("Reusing configuration cache")
 
+  /** The tasks a dry run lists for module b's scratch source set: the analysis names each after it. */
+  private fun scratchAnalysisTasks(result: BuildResult): List<String> =
+    result.output.lineSequence().map { it.trim() }
+      .filter { Regex(":b:\\w+Scratch SKIPPED").matches(it) }.toList()
+
   private fun assertOrdinary(result: BuildResult, reused: Boolean) {
     assertEquals(TaskOutcome.SUCCESS, result.task(":b:check")?.outcome, result.output)
     assertNull(result.task(":b:checkModuleDirectivesScope"), result.output)
@@ -111,10 +116,21 @@ class DependencyAnalysisOnDemandFunctionalTest {
     assertEquals(TaskOutcome.SUCCESS, audit.task(":b:checkModuleDirectivesScope")?.outcome, audit.output)
     assertEquals(TaskOutcome.SUCCESS, audit.task(":b:check")?.outcome, audit.output)
     assertNull(audit.task(":b:compileScratchJava"), audit.output)
+    // How the README has a build see that the block took effect, since a wrong plugin id or a
+    // source-set name that matches none is silent: an audit's dry run lists no analysis task of
+    // the ignored source set.
+    val dryRun = fixture.runner(DependencyAnalysisFixture.AUDIT, "--dry-run", ":b:check").build()
+    assertTrue(scratchAnalysisTasks(dryRun).isEmpty(), dryRun.output)
+    assertTrue(dryRun.output.lineSequence().any { it.trim() == ":b:checkModuleDirectivesScope SKIPPED" }, dryRun.output)
 
     // The control: the same audit without the block analyses the source set and refuses the
-    // suite's own dependencies, so the block is what the pass above rests on.
+    // suite's own dependencies, so the block is what the pass above rests on. Its dry run lists
+    // the source set's analysis tasks.
     fixture.source("b/build.gradle.kts", scratch)
+    val controlDryRun = fixture.runner(DependencyAnalysisFixture.AUDIT, "--dry-run", ":b:check").build()
+    assertTrue(scratchAnalysisTasks(controlDryRun).isNotEmpty(), controlDryRun.output)
+    // The task the README names as an example.
+    assertTrue(":b:explodeJarScratch" in scratchAnalysisTasks(controlDryRun).map { it.removeSuffix(" SKIPPED") }, controlDryRun.output)
     val control = fixture.runner(DependencyAnalysisFixture.AUDIT, ":b:check").buildAndFail()
     assertEquals(TaskOutcome.FAILED, control.task(":b:checkModuleDirectivesScope")?.outcome, control.output)
     assertTrue(control.output.contains("scratchModuleInfo {"), control.output)
