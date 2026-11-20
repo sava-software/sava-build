@@ -286,11 +286,14 @@ one:
   changing sava-build's own tests. One of those, a67fc97, wired `check` to the
   scope check through a name filter that realized every task, among them
   java-module-dependencies' `recommendModuleVersions`, whose constructor
-  installs a project-wide rule giving prerelease-named versions the status
-  `integration`. Status enters `latest.*` selectors and conflict
-  resolution, so that range could move what PIT is given after all, and the
-  release that stops the realization owes the suites again. A range that
-  bumps the pin otherwise owes the project's suites once, at its gate.
+  installs a project-wide rule giving the status `integration` to every
+  version whose lowercase form contains `alpha`, `-b`, `beta`, `cr`, `ea`,
+  `m` or `rc`: prereleases, and names like
+  `9999.0-empty-to-avoid-conflict-with-guava` or any `.RELEASE` as well.
+  Status enters `latest.*` selectors and conflict resolution, so that range
+  could move what PIT is given after all, and the release that stops the
+  realization owes the suites again. A range that bumps the pin otherwise
+  owes the project's suites once, at its gate.
   When those patches move PIT, PIT-JUnit, or (for a suite that runs it)
   ArcMutate, the bump is also a toolchain transition for each
   provenance-bound suite: a history-free review run, then its
