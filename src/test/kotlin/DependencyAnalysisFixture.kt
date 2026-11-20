@@ -93,6 +93,24 @@ class DependencyAnalysisFixture(private val dir: File) {
       }
     """.trimIndent() + "\n"
 
+    /** Printed when the probe's lazily registered task is realized. */
+    const val SENTINEL_REALIZED = "SENTINEL_REALIZED"
+
+    /** Printed when java-module-dependencies' help task, which check never runs, is realized. */
+    const val RECOMMEND_REALIZED = "RECOMMEND_VERSIONS_REALIZED"
+
+    /**
+     * A project script that reports two realizations a build's 'check' must not cause: a task
+     * registered lazily and never asked for, and 'recommendModuleVersions', whose realization
+     * creates java-module-dependencies' latestVersionsClasspath, a configuration of every
+     * module's latest.release that a write of verification metadata then resolves.
+     * configureEach adds an action for tasks as they are realized and forces none.
+     */
+    val REALIZATION_PROBE = """
+      tasks.register("sentinel") { println("$SENTINEL_REALIZED") }
+      tasks.configureEach { if (name == "recommendModuleVersions") println("$RECOMMEND_REALIZED") }
+    """.trimIndent() + "\n"
+
     /** The component groups the plugin brings and sava-build's remaining dependencies do not. */
     val PLUGIN_GROUPS = listOf("com.autonomousapps", "com.squareup", "dev.zacsweers", "com.github.ben-manes", "com.google.guava")
   }

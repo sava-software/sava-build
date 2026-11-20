@@ -62,6 +62,20 @@ class DependencyAnalysisOnDemandFunctionalTest {
   }
 
   @Test
+  fun `neither an ordinary nor an audit check realizes a lazily registered task or recommendModuleVersions`() {
+    fixture.write(Declaration.ON_DEMAND, bRequires = DependencyAnalysisFixture.TRANSITIVE, bBuild = DependencyAnalysisFixture.REALIZATION_PROBE)
+    val ordinary = fixture.runner(":b:check", "--warning-mode=fail").build()
+    assertOrdinary(ordinary, reused = false)
+    val audit = fixture.runner(DependencyAnalysisFixture.AUDIT, ":b:check", "--warning-mode=fail").build()
+    assertEquals(TaskOutcome.SUCCESS, audit.task(":b:checkModuleDirectivesScope")?.outcome, audit.output)
+    assertEquals(TaskOutcome.SUCCESS, audit.task(":b:check")?.outcome, audit.output)
+    for ((name, result) in listOf("ordinary" to ordinary, "audit" to audit)) {
+      assertFalse(result.output.contains(DependencyAnalysisFixture.SENTINEL_REALIZED), "$name: check realized a task it never runs:\n${result.output}")
+      assertFalse(result.output.contains(DependencyAnalysisFixture.RECOMMEND_REALIZED), "$name: check realized recommendModuleVersions:\n${result.output}")
+    }
+  }
+
+  @Test
   fun `an audit passes a corrected module and runs the root aggregate`() {
     fixture.write(Declaration.ON_DEMAND, bRequires = DependencyAnalysisFixture.TRANSITIVE, unusedModule = true)
     val corrected = fixture.runner(DependencyAnalysisFixture.AUDIT, ":b:check", "--warning-mode=fail").build()

@@ -94,6 +94,24 @@ class DependencyAnalysisIsolationFunctionalTest {
   }
 
   @Test
+  fun `check realizes neither a lazily registered task nor recommendModuleVersions, with or without the settings plugin line`() {
+    // 21.8.8 and 21.8.9 wired the scope check by a name filter over the task container, which
+    // realized every task of every module on check, recommendModuleVersions among them.
+    for (declaration in listOf(Declaration.NONE, Declaration.ALWAYS)) {
+      fixture.write(declaration, bRequires = DependencyAnalysisFixture.TRANSITIVE, bBuild = DependencyAnalysisFixture.REALIZATION_PROBE)
+      val result = fixture.runner(":b:check", "--warning-mode=fail").build()
+      assertEquals(TaskOutcome.SUCCESS, result.task(":b:check")?.outcome, result.output)
+      if (declaration == Declaration.ALWAYS) {
+        assertEquals(TaskOutcome.SUCCESS, result.task(":b:checkModuleDirectivesScope")?.outcome, result.output)
+      } else {
+        assertNull(result.task(":b:checkModuleDirectivesScope"), result.output)
+      }
+      assertFalse(result.output.contains(DependencyAnalysisFixture.SENTINEL_REALIZED), "$declaration: check realized a task it never runs:\n${result.output}")
+      assertFalse(result.output.contains(DependencyAnalysisFixture.RECOMMEND_REALIZED), "$declaration: check realized recommendModuleVersions:\n${result.output}")
+    }
+  }
+
+  @Test
   fun `a declaration in a project's own plugins block alone cannot reach the check`() {
     // Below the class path that loaded sava-build and java-module-dependencies, whose bridge
     // then cannot load the class its task extends. The README names this failure.
