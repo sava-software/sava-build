@@ -731,7 +731,8 @@ policy and for every change to one:
    Which rules those are differs by graph (sava's own class paths still hold Kotlin) and
    shows in an empty Gradle home: list the module directories under
    `caches/modules-2/files-2.1` after the runs without the property, run the audit in the
-   same home, and compare. In sava they are nine, two of them exact-version rules for keys
+   same home, and compare. In sava, measured at its adoption of 21.8.9 (the plugin at
+   3.20.4), they were eleven rules under nine keys, two of them exact-version rules for keys
    on the version-scoped list, so a trim judged without the audit run takes those keys' list
    lines and keyring blocks with it, and they come back only from git history. The second
    run is in addition to the first, which checks the class path every other build loads.
