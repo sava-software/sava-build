@@ -1,5 +1,20 @@
 # Changelog
 
+## [21.8.10](https://github.com/sava-software/sava-build/compare/21.8.9...21.8.10) (2026-11-20)
+
+
+### Bug Fixes
+
+* **check:** check no longer realizes every task to find the scope check ([f503b19](https://github.com/sava-software/sava-build/commit/f503b19fc2add8a09a913abc96ff72c10ee5f9c3))
+
+
+### Documentation
+
+* **hardening:** 21.8.8's range could move what PIT is given after all ([8329e7e](https://github.com/sava-software/sava-build/commit/8329e7e54f886c13b5a458123dac46a749bf72dc))
+* **hardening:** the status rule 21.8.8 applied matches more than prereleases ([9d86a52](https://github.com/sava-software/sava-build/commit/9d86a526711f44d121e8cc515de16c6225731c23))
+* **verification:** sava's audit-only rules at its 21.8.9 adoption are eleven under nine keys ([bc8c889](https://github.com/sava-software/sava-build/commit/bc8c889a960270bb5d6dc0670ee95de6f8e7dd1c))
+* **verification:** which drafted lines a write leaves out, and how to see an ignoreSourceSet block apply ([f6c69fd](https://github.com/sava-software/sava-build/commit/f6c69fd9d7317d49628dde0c531e547a9a41ebc3))
+
 ## [21.8.9](https://github.com/sava-software/sava-build/compare/21.8.8...21.8.9) (2026-11-20)
 
 
