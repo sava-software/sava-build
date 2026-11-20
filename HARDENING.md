@@ -278,12 +278,19 @@ one:
   that kind (the toolchain record's rendering feeds its identity; a baseline
   row's `# flip insurance` marker is parsed again). A hunk the reader cannot
   place owes the suites.
-  21.8.8's range owed none: its hardening hunks reworded four messages and
-  added one notice, with helpers that only those messages call, and its
-  other hunks stopped shipping and applying the dependency-analysis plugin,
-  dropped two repositories and changed sava-build's own tests, moving no
-  dependency, version or setting that PIT is given. A range that bumps the
-  pin otherwise owes the project's suites once, at its gate.
+  A hunk's effect is what it makes Gradle do, not only what it names: one
+  that changes which tasks are realized can install another plugin's rules.
+  21.8.8's range was read as owing none, its hardening hunks rewording four
+  messages and adding one notice, and its other hunks stopping shipping and
+  applying the dependency-analysis plugin, dropping two repositories and
+  changing sava-build's own tests. One of those, a67fc97, wired `check` to the
+  scope check through a name filter that realized every task, among them
+  java-module-dependencies' `recommendModuleVersions`, whose constructor
+  installs a project-wide rule giving prerelease-named versions the status
+  `integration`. Status enters `latest.*` selectors and conflict
+  resolution, so that range could move what PIT is given after all, and the
+  release that stops the realization owes the suites again. A range that
+  bumps the pin otherwise owes the project's suites once, at its gate.
   When those patches move PIT, PIT-JUnit, or (for a suite that runs it)
   ArcMutate, the bump is also a toolchain transition for each
   provenance-bound suite: a history-free review run, then its
