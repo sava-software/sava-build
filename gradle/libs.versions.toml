@@ -12,7 +12,7 @@ jmh-gradle-plugin = "0.7.4"
 junit = "6.1.3"
 gradlex-java-module-dependencies = "1.13.2"
 dependency-analysis-gradle-plugin = "3.20.4"
-google-cloud-kms = "2.104.0"
+google-cloud-kms = "2.106.0"
 
 [libraries]
 pitest-command-line = { module = "org.pitest:pitest-command-line", version.ref = "pitest" }

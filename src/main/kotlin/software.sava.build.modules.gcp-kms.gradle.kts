@@ -16,7 +16,8 @@ plugins {
 // excludes would be published on every dependency of the variant. The list is a
 // leaf-level denylist taken at google-cloud-kms 2.102.0: a transitive dependency a later
 // release adds to the flat list arrives unexcluded, so re-read the list at a bump.
-val kmsUnusedRuntimeDependencies = listOf(
+val unshadedCelModules = listOf("runtime", "common", "protobuf")
+val kmsOnlyExclusions = listOf(
   // The DirectPath bundle. In gax-grpc the one class that references io.grpc.alts is
   // InstantiatingGrpcChannelProvider, whose DirectPath branch runs only with Compute Engine
   // credentials on GCE, and grpc-googleapis is reached only by that branch's channel target
@@ -31,46 +32,31 @@ val kmsUnusedRuntimeDependencies = listOf(
   "io.grpc" to "grpc-alts",
   "io.grpc" to "grpc-services",
   "io.grpc" to "grpc-inprocess",
-  "dev.cel" to "runtime",
-  "dev.cel" to "common",
-  "dev.cel" to "protobuf",
   "com.google.re2j" to "re2j",
   "org.conscrypt" to "conscrypt-openjdk-uber",
   "org.threeten" to "threeten-extra",
-  // The legacy Apache transport, declared only by google-http-client, whose only classes
-  // referencing org.apache.http are com.google.api.client.http.apache.*; every transport
-  // in this graph, the auth library's token fetch included, is NetHttpTransport over
-  // java.net. opencensus stays: HttpRequest calls OpenCensusUtils unconditionally.
+)
+
+// Google Auth's default credential transport is NetHttpTransport, including on Compute
+// Engine. Apache HTTP classes are confined to google-http-client's optional Apache transport
+// and its mocks. Neither gRPC transport uses them.
+val httpAndAnnotationExclusions = listOf(
   "org.apache.httpcomponents" to "httpclient",
   "org.apache.httpcomponents" to "httpcore",
   "commons-codec" to "commons-codec",
-  // Two annotation-only jars whose signing keys the policy would otherwise have to carry
-  // at exact versions: com.google.android:annotations (one lint annotation in grpc-core,
-  // signed by a DSA-1024 key) and jsr305 (RUNTIME-retained javax.annotation.Nullable, which
-  // the JVM skips when the type cannot be loaded; the last release of a finished project).
-  // The other annotation jars in the graph sit under version-free publisher keys and stay.
+  // Android lint and JSR 305 annotations have no executable references in the graph.
+  // api-common's source-retained Generated annotation is absent from the compiled JAR,
+  // and javax.annotation-api otherwise splits the javax.annotation package with jsr305.
   "com.google.android" to "annotations",
   "com.google.code.findbugs" to "jsr305",
-  // api-common's javax.annotation-api, whose javax.annotation.Generated is SOURCE-retained
-  // and so never in a class file. google-cloud-kms's flattened POM keeps it out (provided
-  // scope, excluded on its api-common entry), but a direct edge to gax or api-common brings
-  // it in compile scope, where it splits the javax.annotation package with jsr305 on a
-  // module path and carries a signing key of its own.
   "javax.annotation" to "javax.annotation-api",
 )
+val kmsUnusedRuntimeDependencies = kmsOnlyExclusions + httpAndAnnotationExclusions + unshadedCelModules.map { "dev.cel" to it }
 
-// grpc-xds bundles its own relocated copy of CEL and never loads the three dev.cel jars its
-// POM declares, which are not modules and split a package between them. A module that wants
-// DirectPath (attemptDirectPath on GCE, below) and so declares grpc-xds directly gets them off
-// that edge here, so no
-// module patch is needed for them; a graph that reaches dev.cel another way patches the
-// three jars itself (they merge into dev.cel:common).
-val xdsUnusedRuntimeDependencies = listOf(
-  "dev.cel" to "runtime",
-  "dev.cel" to "common",
-  "dev.cel" to "protobuf",
-  "org.threeten" to "threeten-extra",
-)
+// grpc-googleapis also reaches grpc-xds. Keep the unshaded CEL jars off both edges:
+// grpc-xds relocates CEL, and the upstream jars cannot share a module path.
+val xdsEdges = setOf("grpc-googleapis", "grpc-xds")
+val directPathEdges = xdsEdges + "grpc-alts"
 
 // The dependencies that carry the exclusions: the client, and the libraries of its graph a
 // module may require directly (a test's gax, a credential helper's auth or HTTP client); the
@@ -80,10 +66,8 @@ val xdsUnusedRuntimeDependencies = listOf(
 // requires io.grpc or io.opencensus directly gets those libraries' declared dependencies back
 // on that class path, and adds the same excludes there if it wants them gone. The set names
 // artifacts, not groups, so another Google Cloud client beside KMS keeps the DirectPath its
-// channel provider attempts by default. A consumer that needs DirectPath for KMS itself
-// (attemptDirectPath on GCE) declares io.grpc:grpc-alts, grpc-googleapis and grpc-xds
-// directly, with versions (the catalog pins none), outside this set; they resolve with
-// their own dependencies, grpc-xds without the dev.cel jars (above). The automatic-module
+// channel provider attempts by default. A consumer that supplies its own DirectPath transport
+// declares the matching gRPC dependencies with versions (the catalog pins none). The automatic-module
 // patches kept below for excluded jars also map their module names for
 // java-module-dependencies, so a module that requires one of them (jsr305, re2j, the
 // android annotations) now needs a version for it, since no family edge supplies one.
@@ -115,9 +99,27 @@ plugins.withId("org.gradlex.java-module-dependencies") {
   extensions.configure<org.gradlex.javamodule.dependencies.JavaModuleDependenciesExtension> {
     moduleNameToGA.put("com.google.auth.oauth2", "com.google.auth:google-auth-library-oauth2-http")
     moduleNameToGA.put("com.google.auth", "com.google.auth:google-auth-library-credentials")
+    // GradleX maps |testlib to a capability. GAX publishes it as a Maven classifier.
+    moduleNameToGA.put("com.google.api.gax_grpc.testlib", "com.google.api:gax-grpc::testlib")
   }
 }
 
+fun matchesExclude(rule: String?, coordinate: String): Boolean = rule.isNullOrEmpty() || rule == "*" || rule == coordinate
+
+fun excludes(rules: Set<ExcludeRule>, group: String, module: String): Boolean =
+  rules.any { matchesExclude(it.group, group) && matchesExclude(it.module, module) }
+
+val threeTenGroup = "org.threeten"
+val threeTenModule = "threeten-extra"
+
+fun ExternalModuleDependency.needsThreeTen(configurationExcludes: Set<ExcludeRule>): Boolean {
+  if (group != "io.grpc" || name !in xdsEdges || !isTransitive) return false
+  if (excludes(excludeRules, threeTenGroup, threeTenModule)) return false
+  return name == "grpc-xds" ||
+      !(excludes(excludeRules, "io.grpc", "grpc-xds") || excludes(configurationExcludes, "io.grpc", "grpc-xds"))
+}
+
+val dependencyFactory = dependencies
 configurations.configureEach {
   dependencies.withType<ModuleDependency>().configureEach {
     if ("$group:$name" in kmsClientFamily) {
@@ -127,9 +129,24 @@ configurations.configureEach {
           exclude(group = excludedGroup, module = excludedModule)
         }
       }
-    } else if (group == "io.grpc" && name == "grpc-xds") {
-      xdsUnusedRuntimeDependencies.forEach { (excludedGroup, excludedModule) ->
+    } else if (this is ExternalModuleDependency && group == "io.grpc" && name in directPathEdges) {
+      httpAndAnnotationExclusions.forEach { (excludedGroup, excludedModule) ->
         exclude(group = excludedGroup, module = excludedModule)
+      }
+      if (name in xdsEdges) {
+        unshadedCelModules.forEach { exclude(group = "dev.cel", module = it) }
+      }
+    }
+  }
+  if (isCanBeDeclared) {
+    withDependencies {
+      if (withType<ExternalModuleDependency>().any { it.needsThreeTen(excludeRules) }
+        && none { it.group == threeTenGroup && it.name == threeTenModule }
+        && !excludes(excludeRules, threeTenGroup, threeTenModule)
+      ) {
+        // grpc-xds shades CEL, whose duration parser still calls ThreeTen. The
+        // upstream POM reaches ThreeTen only through the excluded dev.cel:runtime.
+        add(dependencyFactory.create("$threeTenGroup:$threeTenModule:1.8.0"))
       }
     }
   }
@@ -141,6 +158,8 @@ extraJavaModuleInfo {
     mergeJar("com.google.api.grpc:proto-google-cloud-kms-v1")
   }
   automaticModule("com.google.api:gax", "com.google.api.gax")
+  // GradleX uses the first match, and the unqualified coordinate also matches testlib.
+  automaticModule("com.google.api:gax-grpc|testlib", "com.google.api.gax_grpc.testlib")
   automaticModule("com.google.api:gax-grpc", "com.google.api.gax_grpc") {
     mergeJar("com.google.api.grpc:proto-google-common-protos")
   }

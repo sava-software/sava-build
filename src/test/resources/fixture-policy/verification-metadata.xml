@@ -18,6 +18,7 @@
          <trusted-key id="1A55F091AD28C07F831FA44D7905DE25C78AD456" group="com.google.protobuf"/>
          <trusted-key id="1BD97A6A154E7810EE0BC832E2F38302C8075E3D" group="org.gradle.toolchains" name="foojay-resolver" version="1.0.0"/>
          <trusted-key id="1D217F8475EEE9F19AB8DD6B793FD5751A0F0780" group="com.squareup.okio"/>
+         <trusted-key id="1DE5E75F1040F8B0DC3A4320F2B5B2B1B9B1180A" group="com.google.re2j" name="re2j" version="1.8"/>
          <trusted-key id="2DB4F1EF0FA761ECC4EA935C86FDC7E2A11262CB" group="org.apache.commons"/>
          <trusted-key id="2E3A1AFFE42B5F53AF19F780BCF4173966770193" group="org.jetbrains" name="annotations" version="13.0"/>
          <trusted-key id="32118CF76C9EC5D918E54967CA80D1F0EB6CA4BA" group="org.codehaus.mojo"/>
@@ -32,6 +33,7 @@
             <trusting group="com.google.cloud"/>
             <trusting group="com.google.http-client"/>
          </trusted-key>
+         <trusted-key id="49CF4E3B2996BE658A57DD39655CCC51B9BD2C38" group="org.conscrypt" name="conscrypt-openjdk-uber" version="2.6.1"/>
          <trusted-key id="517B94F8D0A46317A28D8AB30DA8A5EC02D11EAD">
             <trusting group="net.sf.jopt-simple" name="jopt-simple" version="4.9"/>
             <trusting group="net.sf.jopt-simple" name="jopt-simple" version="5.0.4"/>

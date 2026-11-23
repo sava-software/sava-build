@@ -1,9 +1,12 @@
+import groovy.json.JsonSlurper
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import java.io.File
 
 /**
@@ -17,24 +20,30 @@ import java.io.File
  * a `requires google.cloud.kms` against the patched module path. KMS's version comes from
  * this build's catalog; the direct GAX and GAX testlib declarations take their versions from
  * its dependency graph. A test-runtime fixture resolves those declarations and checks that
- * testlib retains its in-process channel. The versionless xDS declaration is used only to
- * check exclusion rules, not to exercise DirectPath.
+ * testlib retains its in-process channel.
  */
 class GcpKmsExclusionsFunctionalTest {
 
   @TempDir
   lateinit var fixtureDir: File
 
-  /** The convention's list, as the convention spells it. */
-  private val excluded = listOf(
-    "io.grpc:grpc-googleapis", "io.grpc:grpc-xds", "io.grpc:grpc-alts", "io.grpc:grpc-services", "io.grpc:grpc-inprocess",
-    "dev.cel:runtime", "dev.cel:common", "dev.cel:protobuf",
-    "com.google.re2j:re2j", "org.conscrypt:conscrypt-openjdk-uber", "org.threeten:threeten-extra",
+  private val unshadedCel = setOf("dev.cel:common", "dev.cel:protobuf", "dev.cel:runtime")
+
+  private val legacyTransportAndAnnotations = setOf(
     "org.apache.httpcomponents:httpclient", "org.apache.httpcomponents:httpcore", "commons-codec:commons-codec",
     "com.google.android:annotations", "com.google.code.findbugs:jsr305", "javax.annotation:javax.annotation-api",
   )
 
-  private fun writeFixture(moduleRequires: Boolean = false, includeDirectXds: Boolean = true) {
+  private val excluded = listOf(
+    "io.grpc:grpc-googleapis", "io.grpc:grpc-xds", "io.grpc:grpc-alts", "io.grpc:grpc-services", "io.grpc:grpc-inprocess",
+    "com.google.re2j:re2j", "org.conscrypt:conscrypt-openjdk-uber", "org.threeten:threeten-extra",
+  ) + unshadedCel + legacyTransportAndAnnotations
+
+  private fun writeFixture(
+    moduleRequires: Boolean = false,
+    includeDirectXds: Boolean = true,
+    extraDependencies: String = "",
+  ) {
     enableTestKitConfigurationCache(fixtureDir)
     File(fixtureDir, "settings.gradle.kts").writeText(
       """
@@ -67,6 +76,7 @@ class GcpKmsExclusionsFunctionalTest {
             artifact { classifier = "testlib" }
           }
           ${if (includeDirectXds) "testImplementation(\"io.grpc:grpc-xds\")" else ""}
+          $extraDependencies
           implementation("org.junit.jupiter:junit-jupiter-api:${savaBuildTestVersion("junit")}")
         }
 
@@ -83,6 +93,17 @@ class GcpKmsExclusionsFunctionalTest {
           doLast {
             val names = artifacts.get().map { (it.id.componentIdentifier as ModuleComponentIdentifier).moduleIdentifier.toString() }.sorted()
             println("resolved runtimeClasspath: " + names.joinToString(" "))
+          }
+        }
+
+        tasks.register<Exec>("validateRuntimeModules") {
+          val runtime = configurations.runtimeClasspath
+          doFirst {
+            commandLine(
+              File(System.getProperty("java.home"), "bin/java"),
+              "--module-path", runtime.get().asPath,
+              "--validate-modules",
+            )
           }
         }
 
@@ -164,6 +185,25 @@ class GcpKmsExclusionsFunctionalTest {
     File(sources, "Uses.java").writeText(
       "package fixture;\n\npublic final class Uses {\n  public static final String KEY = com.google.cloud.kms.v1.CryptoKeyName.of(\"p\", \"l\", \"r\", \"k\").toString();\n}\n"
     )
+
+    val testJava = File(fixtureDir, "src/test/java")
+    val testPackage = File(testJava, "fixture").apply { mkdirs() }
+    File(testJava, "module-info.java").writeText(
+      """
+        module fixture.gcp.kms.module.path.test {
+          requires com.google.api.gax_grpc;
+          requires com.google.api.gax_grpc.testlib;
+        }
+      """.trimIndent()
+    )
+    File(testPackage, "MockTransport.java").writeText(
+      """
+        package fixture;
+        import com.google.api.gax.grpc.GrpcTransportChannel;
+        import com.google.api.gax.grpc.testing.MockServiceHelper;
+        record MockTransport(GrpcTransportChannel channel, MockServiceHelper server) {}
+      """.trimIndent()
+    )
   }
 
   private fun run(vararg arguments: String) = savaBuildRunner(fixtureDir, *arguments)
@@ -189,8 +229,8 @@ class GcpKmsExclusionsFunctionalTest {
     // a classifier dependency (gax-grpc's test library) keeps the in-process channel it uses
     assertTrue(testlib.contains(" excludes ${excluded.size - 1}: "), testlib)
     assertFalse(testlib.contains(" io.grpc:grpc-inprocess"), testlib)
-    // the DirectPath opt-in: grpc-xds declared directly loses only the dev.cel jars and threeten-extra
-    assertTrue(xds.contains(" excludes 4: dev.cel:common dev.cel:protobuf dev.cel:runtime org.threeten:threeten-extra"), xds)
+    val xdsExcludes = unshadedCel + legacyTransportAndAnnotations
+    assertTrue(xds.endsWith(" excludes ${xdsExcludes.size}: ${xdsExcludes.sorted().joinToString(" ")}"), xds)
     assertTrue(junit.contains(" excludes 0: "), junit)
 
     val pom = File(fixtureDir, "build/publications/maven/pom-default.xml").readText()
@@ -225,6 +265,67 @@ class GcpKmsExclusionsFunctionalTest {
     val junitExcludes = runtimeElements.indexOf("\"excludes\": [", junitStart)
     val junitEnd = runtimeElements.indexOf("\"module\": \"", junitStart + 1).let { if (it < 0) runtimeElements.length else it }
     assertFalse(junitExcludes in junitStart until junitEnd, "junit-jupiter-api carries excludes:\n$runtimeElements")
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = [false, true])
+  fun `DirectPath publishes and resolves a usable module path`(declareXdsAndAlts: Boolean) {
+    val directPath = if (declareXdsAndAlts) listOf("grpc-googleapis", "grpc-xds", "grpc-alts") else listOf("grpc-googleapis")
+    val dependencies = if (declareXdsAndAlts) {
+      directPath.joinToString("\n") { """implementation("io.grpc:$it:1.85.1")""" }
+    } else {
+      """implementation("io.grpc:grpc-googleapis:1.85.1@jar") { isTransitive = true }"""
+    }
+    writeFixture(includeDirectXds = false, extraDependencies = dependencies)
+    run("generatePomFileForMavenPublication", "generateMetadataFileForMavenPublication", "--no-configuration-cache")
+
+    val publication = File(fixtureDir, "build/publications/maven")
+    val pom = File(publication, "pom-default.xml").readText()
+    val pomDependencies = Regex(
+      """<dependency>\s*<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>.*?</dependency>""",
+      RegexOption.DOT_MATCHES_ALL,
+    ).findAll(pom).associate { "${it.groupValues[1]}:${it.groupValues[2]}" to it.value }
+    val metadata = JsonSlurper().parse(File(publication, "module.json")) as Map<*, *>
+    val runtime = (metadata["variants"] as List<*>).filterIsInstance<Map<*, *>>()
+      .single { it["name"] == "runtimeElements" }
+    val runtimeDependencies = (runtime["dependencies"] as List<*>).filterIsInstance<Map<*, *>>()
+
+    assertTrue("org.threeten:threeten-extra" in pomDependencies, pom)
+    assertTrue(runtimeDependencies.any { it["group"] == "org.threeten" && it["module"] == "threeten-extra" }, runtime.toString())
+    directPath.forEach { name ->
+      val expected = if (name == "grpc-alts") legacyTransportAndAnnotations else legacyTransportAndAnnotations + unshadedCel
+      val edge = pomDependencies.getValue("io.grpc:$name")
+      val pomExcludes = Regex(
+        """<exclusion>\s*<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>\s*</exclusion>""",
+      ).findAll(edge).map { "${it.groupValues[1]}:${it.groupValues[2]}" }.toSet()
+      assertEquals(expected, pomExcludes, edge)
+      val entry = runtimeDependencies.single { it["group"] == "io.grpc" && it["module"] == name }
+      val excludes = (entry["excludes"] as List<*>).filterIsInstance<Map<*, *>>()
+      assertEquals(expected, excludes.map { "${it["group"]}:${it["module"]}" }.toSet(), entry.toString())
+    }
+
+    val result = run("printResolved", "validateRuntimeModules", "--no-configuration-cache")
+    val resolved = result.output.lines().single { it.startsWith("resolved runtimeClasspath: ") }
+      .removePrefix("resolved runtimeClasspath: ").split(' ').toSet()
+    (directPath + listOf("grpc-xds", "grpc-alts", "grpc-services")).forEach {
+      assertTrue("io.grpc:$it" in resolved, "$it missing from $resolved")
+    }
+    listOf("org.threeten:threeten-extra", "org.conscrypt:conscrypt-openjdk-uber", "com.google.re2j:re2j")
+      .forEach { assertTrue(it in resolved, "$it missing from $resolved") }
+    assertTrue(resolved.intersect(unshadedCel + legacyTransportAndAnnotations).isEmpty(), result.output)
+    assertEquals(TaskOutcome.SUCCESS, result.task(":validateRuntimeModules")?.outcome, result.output)
+  }
+
+  @Test
+  fun `a caller can exclude ThreeTen on the DirectPath dependency`() {
+    writeFixture(
+      includeDirectXds = false,
+      extraDependencies = """implementation("io.grpc:grpc-googleapis:1.85.1") { exclude(group = "*", module = "threeten-extra") }""",
+    )
+    val result = run("printResolved", "--no-configuration-cache")
+    val resolved = result.output.lines().single { it.startsWith("resolved runtimeClasspath: ") }
+    assertTrue("io.grpc:grpc-xds" in resolved, resolved)
+    assertFalse("org.threeten:threeten-extra" in resolved, resolved)
   }
 
   @Test
@@ -276,9 +377,10 @@ class GcpKmsExclusionsFunctionalTest {
   }
 
   @Test
-  fun `a named module requiring the client compiles on the module path the convention patches`() {
+  fun `named modules compile against the KMS client and the GAX test library`() {
     writeModulePathFixture()
-    val result = run("compileJava", "printCompileModulePath", "--no-configuration-cache")
+    val result = run("compileTestJava", "printCompileModulePath", "--no-configuration-cache")
+    assertEquals(TaskOutcome.SUCCESS, result.task(":compileTestJava")?.outcome, result.output)
     assertEquals(TaskOutcome.SUCCESS, result.task(":compileJava")?.outcome, result.output)
     assertFalse(result.output.contains("missing in"), "java-module-dependencies must map google.cloud.kms through the convention's patch:\n${result.output}")
     val resolved = result.output.lines().single { it.startsWith("resolved compileClasspath: ") }

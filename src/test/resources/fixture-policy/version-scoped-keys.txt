@@ -28,6 +28,10 @@
 18CD85CBC5C1DB1684C5E59FA8E3B39F19E1CCE7 PIT signer, publisher identity unauthenticated
 AC1A3DD4471FE0F6EA28300F1BA25353622A192B ArcMutate signer, publisher identity unauthenticated
 
+# DirectPath runtime signers reviewed in ravina before e3db703 trimmed the default KMS graph.
+1DE5E75F1040F8B0DC3A4320F2B5B2B1B9B1180A re2j signer (James Ring): keys.openpgp.org verifies the identity, but re2j's publisher names no fingerprint
+49CF4E3B2996BE658A57DD39655CCC51B9BD2C38 conscrypt signer (Juerg Wullschleger), publisher identity unauthenticated
+
 # Keys that signed old releases in the fixtures' graphs and must not vouch for new ones: expired
 # keys, DSA-1024 keys (about 80 bits of security, whoever still signs with them), revoked keys and
 # retired release managers' keys; a new version under any of them is a reason to stop.
